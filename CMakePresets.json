@@ -1,0 +1,14 @@
+{
+  "version": 6,
+  "configurePresets": [
+    { "name": "dev",  "generator": "Ninja", "binaryDir": "build/dev",
+      "cacheVariables": { "CMAKE_BUILD_TYPE": "Debug" } },
+    { "name": "prod", "inherits": "dev",   "binaryDir": "build/prod",
+      "cacheVariables": { "CMAKE_BUILD_TYPE": "RelWithDebInfo" } }
+  ],
+  "buildPresets": [
+    { "name": "dev",  "configurePreset": "dev"  },
+    { "name": "prod", "configurePreset": "prod" }
+  ],
+  "testPresets": [ { "name": "all", "configurePreset": "dev" } ]
+}
