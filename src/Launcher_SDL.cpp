@@ -20,6 +20,7 @@
 #include <cctype>
 #include <limits>
 #include <cmath>
+#include <SDLDetect.h>
 
 namespace fs = std::filesystem;
 
