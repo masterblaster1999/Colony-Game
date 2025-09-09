@@ -22,9 +22,13 @@
 #include <unordered_set>
 #include <utility>
 #include <vector>
+#include <chrono>   // added: used by the main loop timing
 
 // Built-in tiny bitmap font (5x7) for HUD text (no SDL_ttf needed)
 #include "Font5x7.h"
+
+// --- Dev Tools (single-header) ---
+#include "dev/DevTools.hpp"
 
 // --------------------------------- Helpers -----------------------------------
 namespace util {
@@ -450,6 +454,7 @@ public:
             auto tNow = clock::now();
             double frame = std::chrono::duration<double>(tNow - tPrev).count();
             tPrev = tNow;
+            lastFrameSec_ = frame;                   // <- for devtools dt
             fpsCounter(frame);
 
             if (paused_) {
@@ -492,6 +497,9 @@ private:
 
         // One colonist to start
         spawnColonist();
+
+        // ---- DevTools bridge wiring ----
+        setupDevToolsBridge_();
     }
 
     // ------------------------------ Event Pump --------------------------------
@@ -511,6 +519,9 @@ private:
                     // If building mode active, cancel; else quit back to launcher exit
                     if (buildMode_) { buildMode_=false; selectedBuild_=std::nullopt; }
                     else return false;
+                }
+                else if (key == SDLK_F1) {      // <-- toggle DevTools overlay
+                    dev::toggle();
                 }
                 else if (key == SDLK_p) { paused_ = !paused_; }
                 else if (key == SDLK_EQUALS || key == SDLK_PLUS || key == SDLK_KP_PLUS) {
@@ -976,6 +987,9 @@ private:
         if (floodDebug_) drawFloodOverlay();
         drawHUD();
 
+        // ---- DevTools overlay draws on top ----
+        dev::updateAndRender(renderer_, devBridge_, float(lastFrameSec_));
+
         SDL_RenderPresent(renderer_);
     }
 
@@ -1134,7 +1148,7 @@ private:
         drawText(x,y,std::string("Build: ") + bsel, colors::hud_fg); y += 14;
 
         // Tips
-        drawText(x,y,"1=Solar  2=Hab  3=O2Gen   LMB place  RMB cancel  G colonist  S/L save/load  P pause  +/- speed  WASD pan", colors::hud_accent);
+        drawText(x,y,"F1 DevTools   1=Solar  2=Hab  3=O2Gen   LMB place  RMB cancel  G colonist  S/L save/load  P pause  +/- speed  WASD pan", colors::hud_accent);
 
         // Banner (messages)
         if (!banner_.empty() && bannerTime_ > 0.0) {
@@ -1212,6 +1226,49 @@ private:
     }
 
 private:
+    // ---- DevTools helpers ----
+    void applyTileArchetype_(Tile& t, TileType nt) {
+        t.type = nt;
+        switch (nt) {
+            case TileType::Regolith: t.walkable=true; t.cost=10; t.resource=0; break;
+            case TileType::Sand:     t.walkable=true; t.cost=12; t.resource=0; break;
+            case TileType::Ice:      t.walkable=true; t.cost=14; if (t.resource==0) t.resource=10; break;
+            case TileType::Rock:     t.walkable=true; t.cost=16; if (t.resource==0) t.resource=8;  break;
+            case TileType::Crater:   t.walkable=false; t.cost=255; t.resource=0; break;
+        }
+    }
+
+    void setupDevToolsBridge_() {
+        // World size
+        devBridge_.gridSize = [&]() -> dev::Size {
+            return dev::Size{ world_.W, world_.H };
+        };
+        // Read tile id
+        devBridge_.getTile = [&](int x, int y) -> int {
+            if (!world_.inBounds(x,y)) return 0;
+            return int(world_.at(x,y).type);
+        };
+        // Write/paint tile id
+        devBridge_.setTile = [&](int x, int y, int id) {
+            if (!world_.inBounds(x,y)) return;
+            id = util::clamp(id, 0, 4);
+            Tile& t = world_.at(x,y);
+            applyTileArchetype_(t, TileType(id));
+        };
+        // Iterate agents
+        devBridge_.forEachAgent = [&](std::function<void(const dev::Agent&)> fn) {
+            for (auto& c : colonists_) {
+                dev::Agent a;
+                a.id = c.id;
+                a.x = c.tile.x;
+                a.y = c.tile.y;
+                a.name = std::string("C") + std::to_string(c.id);
+                fn(a);
+            }
+        };
+    }
+
+private:
     // SDL / options
     SDL_Window*   window_   = nullptr;
     SDL_Renderer* renderer_ = nullptr;
@@ -1238,6 +1295,7 @@ private:
     double dayTime_ = 0.25; // morning
     bool   paused_ = false;
     double simSpeed_ = 1.0;
+    double lastFrameSec_ = 1.0/60.0; // for DevTools dt
 
     // Input
     Vec2i keyPan_{0,0};
@@ -1257,6 +1315,9 @@ private:
     double frameAcc_ = 0.0;
     int    frameCount_ = 0;
     double fps_ = 0.0;
+
+    // DevTools
+    dev::Bridge devBridge_;
 };
 
 // -------------------------------- Game wrapper -------------------------------
