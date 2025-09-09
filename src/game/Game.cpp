@@ -1,6 +1,20 @@
+// Game.cpp — SDL version (defensive include & future-proofing)
+
 #include "Game.h"
 
-#include <SDL.h>
+// ---- Defensive SDL include ---------------------------------------------------
+#ifndef __has_include
+  #define __has_include(x) 0
+#endif
+
+#if __has_include(<SDL.h>)
+  #include <SDL.h>
+#elif __has_include(<SDL2/SDL.h>)
+  #include <SDL2/SDL.h>
+#else
+  #error "SDL2 headers not found. Install SDL2 and ensure your include paths are set."
+#endif
+
 #include <algorithm>
 #include <array>
 #include <cassert>
@@ -75,6 +89,11 @@ static std::string lower(std::string s){
 }
 } // namespace util
 
+namespace constants {
+    // Single source of truth for 2π
+    constexpr double Tau = 6.283185307179586;
+}
+
 // ------------------------------ Basic Math Types ------------------------------
 struct Vec2i {
     int x=0, y=0;
@@ -93,6 +112,9 @@ template<> struct hash<Vec2i> {
     }
 };
 } // namespace std
+
+// Shared 4-neighborhood directions (avoid duplication)
+static constexpr std::array<Vec2i,4> kCardinal{{ Vec2i{1,0}, Vec2i{-1,0}, Vec2i{0,1}, Vec2i{0,-1} }};
 
 // --------------------------------- RNG ---------------------------------------
 class Rng {
@@ -245,9 +267,8 @@ struct Node {
 };
 
 static bool neighbors4(const World& w, const Vec2i& p, std::array<Vec2i,4>& out, int& count) {
-    static const std::array<Vec2i,4> N={{ {1,0},{-1,0},{0,1},{0,-1} }};
     count=0;
-    for (auto d : N) {
+    for (auto d : kCardinal) {
         int nx = p.x + d.x, ny = p.y + d.y;
         if (!w.inBounds(nx,ny)) continue;
         if (!w.at(nx,ny).walkable) continue;
@@ -257,7 +278,7 @@ static bool neighbors4(const World& w, const Vec2i& p, std::array<Vec2i,4>& out,
 }
 static int manhattan(Vec2i a, Vec2i b) { return std::abs(a.x-b.x) + std::abs(a.y-b.y); }
 
-static bool findPathAStar(const World& w, Vec2i start, Vec2i goal, std::deque<Vec2i>& out) {
+[[nodiscard]] static bool findPathAStar(const World& w, Vec2i start, Vec2i goal, std::deque<Vec2i>& out) {
     if (!w.inBounds(start.x,start.y) || !w.inBounds(goal.x,goal.y)) return false;
     if (!w.at(start.x,start.y).walkable || !w.at(goal.x,goal.y).walkable) return false;
 
@@ -396,17 +417,17 @@ struct Job {
 
 struct Colonist {
     int   id=0;
-    Vec2i tile{0,0};         // current grid tile
+    Vec2i tile{0,0};
     Vec2i home{-1,-1};
-    std::deque<Vec2i> path;  // current path
+    std::deque<Vec2i> path;
     Job   job;
     int   carryMetal=0;
     int   carryIce=0;
 
-    // Life support
+    // Life support (kept for future features)
     double oxygen=100.0;
     double water=100.0;
-    double energy=100.0; // stamina
+    double energy=100.0;
 
     enum class State : uint8_t { Idle, Moving, Working, Returning } state = State::Idle;
 };
@@ -519,6 +540,9 @@ public:
 private:
     // ---------------------- Init / World / Entities --------------------------
     void init() {
+        // SDL version sanity (runtime vs. headers)
+        sdlVersionSanity_();
+
         tileSize_ = 24; // pixels per tile at zoom=1
         world_.resize(120, 80);
         world_.generate(rng_);
@@ -743,8 +767,7 @@ private:
             m -= 0.05 * double(colony_.population - colony_.housing);
         }
         // Small circadian buff midday
-        constexpr double TAU = 6.283185307179586;
-        double daylight = std::cos((dayTime_ - 0.5) * TAU)*0.5 + 0.5; // 0..1
+        double daylight = std::cos((dayTime_ - 0.5) * constants::Tau)*0.5 + 0.5; // 0..1
         m += (daylight - 0.5) * 0.04;
 
         m = std::clamp(m, 0.05, 0.95);
@@ -754,11 +777,6 @@ private:
 
     // ------------------------------ AI / Jobs ---------------------------------
     void aiTick(double dt) {
-        // Very small state machine:
-        // Idle: look for jobs
-        // Moving: follow path
-        // Working: mine/build with a short timer
-        // Returning: carry goods to HQ
         for (auto& c : colonists_) {
             switch (c.state) {
                 case Colonist::State::Idle:    aiIdle(c); break;
@@ -779,9 +797,7 @@ private:
             for (int dy=0; dy<pendingBuild_->def.size.y; ++dy)
                 for (int dx=0; dx<pendingBuild_->def.size.x; ++dx) {
                     Vec2i p = pendingBuild_->pos + Vec2i{dx,dy};
-                    // neighbors 4
-                    std::array<Vec2i,4> N={{ {1,0},{-1,0},{0,1},{0,-1} }};
-                    for (auto d : N) {
+                    for (auto d : kCardinal) {
                         Vec2i n = p + d;
                         if (world_.inBounds(n.x,n.y) && world_.at(n.x,n.y).walkable) options.push_back(n);
                     }
@@ -861,7 +877,7 @@ private:
     }
 
     void aiWork(Colonist& c, double /*dt*/) {
-        if (c.job.ticks > 0) { --c.job.ticks; return; }
+        if (c.job.ticks>0) { --c.job.ticks; return; }
         // Work complete
         if (c.job.type == JobType::MineIce || c.job.type == JobType::MineRock) {
             Tile& t = world_.at(c.job.target.x, c.job.target.y);
@@ -1040,7 +1056,7 @@ private:
     }
 
     // Try place building footprint; if area valid, reserve as pending for a builder
-    bool tryPlaceBuilding(BuildingKind k, Vec2i topLeft) {
+    [[nodiscard]] bool tryPlaceBuilding(BuildingKind k, Vec2i topLeft) {
         BuildingDef def = (k==BuildingKind::Solar) ? defSolar()
                          : (k==BuildingKind::Habitat) ? defHab()
                          : defOxyGen();
@@ -1163,10 +1179,9 @@ private:
         std::queue<Vec2i> q;
         int si = world_.idx(src.x,src.y);
         floodDist_[si] = 0; q.push(src);
-        std::array<Vec2i,4> N={{ {1,0},{-1,0},{0,1},{0,-1} }};
         while(!q.empty()){
             Vec2i p=q.front(); q.pop();
-            for(auto d:N){
+            for(auto d:kCardinal){
                 Vec2i n=p+d;
                 if(!world_.inBounds(n.x,n.y)) continue;
                 int i=world_.idx(n.x,n.y);
@@ -1181,8 +1196,7 @@ private:
     // ------------------------------ Rendering ---------------------------------
     void render() {
         // Background color varies with day/night
-        constexpr double TAU = 6.283185307179586;
-        double daylight = std::cos((dayTime_ - 0.5) * TAU)*0.5 + 0.5; // 0 at midnight, 1 at noon
+        double daylight = std::cos((dayTime_ - 0.5) * constants::Tau)*0.5 + 0.5; // 0 at midnight, 1 at noon
         Uint8 R = Uint8(130 + 60*daylight);
         Uint8 G = Uint8(40  + 30*daylight);
         Uint8 B = Uint8(35  + 25*daylight);
@@ -1483,6 +1497,25 @@ private:
     }
 
 private:
+    // ---- SDL version mismatch hint (runtime vs headers) ----
+    void sdlVersionSanity_() {
+        SDL_version compiled; SDL_VERSION(&compiled);
+        SDL_version linked; SDL_GetVersion(&linked);
+        // Strong compatibility requires same major; warn if minor/patch lower than headers
+        if (linked.major != compiled.major ||
+            (linked.major == compiled.major && linked.minor < compiled.minor)) {
+            std::ostringstream oss;
+            oss << "SDL runtime " << int(linked.major) << "." << int(linked.minor) << "." << int(linked.patch)
+                << " < headers " << int(compiled.major) << "." << int(compiled.minor) << "." << int(compiled.patch);
+            // In-game toast (also banner)
+            PushToast_(oss.str());
+            // Also echo to stderr for logs
+            std::cerr << "[warn] " << oss.str() << "\n";
+        }
+        // Compile-time check (should always pass for SDL2+)
+        static_assert(SDL_MAJOR_VERSION >= 2, "Requires SDL2 or newer.");
+    }
+
     // ---- DevTools helpers ----
     void applyTileArchetype_(Tile& t, TileType nt) {
         t.type = nt;
