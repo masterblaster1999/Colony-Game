@@ -15,9 +15,15 @@
 //
 // --------------------------------------------------------------------------------
 
+#ifndef UNICODE
 #define UNICODE
+#endif
+#ifndef _UNICODE
 #define _UNICODE
+#endif
+#ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
+#endif
 
 #include <windows.h>
 #include <windowsx.h>
@@ -49,6 +55,7 @@
 #include <set>
 #include <unordered_map>
 #include <unordered_set>
+#include <cmath>    // for std::cos, std::copysign
 
 #pragma comment(lib, "Comctl32.lib")
 #pragma comment(lib, "Shell32.lib")
@@ -166,7 +173,8 @@ public:
         if (!f_) return;
         auto t = util::NowStampCompact();
         std::wstring w = L"[" + t + L"] " + s + L"\r\n";
-        f_.write(reinterpret_cast<const char*>(w.c_str()), (std::streamsize)w.size() * sizeof(wchar_t));
+        // Correct wide-stream write: pass wchar_t* and count of wide chars.
+        f_.write(w.c_str(), static_cast<std::streamsize>(w.size()));
         f_.flush();
     }
 private:
@@ -228,12 +236,15 @@ static std::wstring ReadFileW(const std::wstring& path) {
     std::ifstream in(path, std::ios::in | std::ios::binary);
     if (!in) return L"";
     std::string bytes((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+    // Interpret config as UTF‑8
     return util::Widen(bytes);
 }
 static bool WriteFileW(const std::wstring& path, const std::wstring& content) {
+    // Write config as UTF‑8 to match ReadFileW
     std::ofstream out(path, std::ios::out | std::ios::binary | std::ios::trunc);
     if (!out) return false;
-    out.write(reinterpret_cast<const char*>(content.c_str()), (std::streamsize)content.size()*sizeof(wchar_t));
+    std::string bytes = util::Narrow(content);
+    out.write(bytes.data(), static_cast<std::streamsize>(bytes.size()));
     return true;
 }
 static void WriteDefaultConfig(const std::wstring& file, const Config& c) {
@@ -670,7 +681,9 @@ static const wchar_t* kWndTitle = L"Colony Game (Win32)";
 class GameApp {
 public:
     GameApp(HINSTANCE hInst, const AppPaths& paths, const Config& cfg)
-        : hInst_(hInst), paths_(paths), cfg_(cfg), rng_(cfg.seed.value_or(0xC01onyULL)) {}
+        : hInst_(hInst), paths_(paths), cfg_(cfg),
+          // Robust RNG seeding: remove invalid literal suffix and use a solid default
+          rng_(cfg.seed.value_or(0x9E3779B97F4A7C15ull)) {}
 
     int Run() {
         if (!CreateMainWindow()) return 3;
@@ -1155,7 +1168,7 @@ private:
             int bw = (int)banner_.size()*8+24; int bh=24;
             RECT b{ (clientW_-bw)/2, clientH_-bh-12, (clientW_+bw)/2, clientH_-12 };
             HBRUSH bb=CreateSolidBrush(RGB(30,30,35)); FillRect(back_.mem,&b,bb); DeleteObject(bb);
-            FrameRect(back_.mem,&b,(HBRUSH)GetStockObject(BLACK_BRUSH));
+            FrameRect(back_.mem, &b, (HBRUSH)GetStockObject(BLACK_BRUSH));
             HFONT of=(HFONT)SelectObject(back_.mem,font_);
             SetBkMode(back_.mem, TRANSPARENT); SetTextColor(back_.mem, RGB(255,255,255));
             RECT trc=b; trc.left+=12; trc.top+=4; DrawTextW(back_.mem, banner_.c_str(), -1, &trc, DT_LEFT|DT_VCENTER|DT_SINGLELINE);
