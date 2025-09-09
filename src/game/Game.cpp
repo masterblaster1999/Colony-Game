@@ -22,13 +22,38 @@
 #include <unordered_set>
 #include <utility>
 #include <vector>
-#include <chrono>   // added: used by the main loop timing
+#include <chrono>     // used by the main loop timing
+#include <functional> // for Storyteller bindings
+#include <cctype>     // tolower for resource mapping
 
 // Built-in tiny bitmap font (5x7) for HUD text (no SDL_ttf needed)
 #include "Font5x7.h"
 
 // --- Dev Tools (single-header) ---
 #include "dev/DevTools.hpp"
+
+// --------------------- Storyteller forward declarations -----------------------
+// (No header required; these match the implementation in Storyteller.cpp)
+namespace cg {
+  struct StorytellerBindings {
+    // colony snapshot
+    std::function<int()>                getColonistCount;
+    std::function<int()>                getWealth;
+    std::function<int()>                getHostileCount;
+    std::function<int()>                getAverageMood;   // 0..100
+    std::function<int()>                getDayIndex;      // day since start
+    // actuators
+    std::function<void(int)>            spawnRaid;        // strength points
+    std::function<void(const char*,int)>grantResource;    // id, amount
+    std::function<void(const std::string&)> toast;        // HUD toast/log
+  };
+
+  void Storyteller_Init(const StorytellerBindings& b, uint64_t seed);
+  void Storyteller_Update(float dtSeconds);
+  void Storyteller_Save(std::ostream& out);
+  bool Storyteller_Load(std::istream& in);
+}
+// -----------------------------------------------------------------------------
 
 // --------------------------------- Helpers -----------------------------------
 namespace util {
@@ -43,6 +68,10 @@ static void setDrawColor(SDL_Renderer* r, Uint32 packed) {
     Uint8 B = (packed >> 8 ) & 0xFF;
     Uint8 A = (packed      ) & 0xFF;
     SDL_SetRenderDrawColor(r, R, G, B, A);
+}
+static std::string lower(std::string s){
+    for (char& c : s) c = char(std::tolower(unsigned char(c)));
+    return s;
 }
 } // namespace util
 
@@ -72,6 +101,7 @@ public:
     int  irange(int lo, int hi) { std::uniform_int_distribution<int> d(lo, hi); return d(rng_); }
     bool chance(double p)       { std::bernoulli_distribution d(p); return d(rng_); }
     double frand(double a=0.0, double b=1.0) { std::uniform_real_distribution<double> d(a,b); return d(rng_); }
+    void reseed(uint64_t seed) { rng_ = std::mt19937_64(seed); } // for load-game reseed
 private:
     std::mt19937_64 rng_;
 };
@@ -381,6 +411,14 @@ struct Colonist {
     enum class State : uint8_t { Idle, Moving, Working, Returning } state = State::Idle;
 };
 
+// ------------------------------ Hostiles (raiders) ----------------------------
+struct Hostile {
+    int   id=0;
+    int   strength=10;
+    Vec2i tile{0,0};
+    std::deque<Vec2i> path;
+};
+
 // ------------------------------- Game Internals ------------------------------
 namespace colors {
 static const Uint32 hud_bg    = util::packColor(20,20,26,220);
@@ -403,6 +441,8 @@ static const Uint32 oxyGen    = util::packColor(90,200,140);
 
 static const Uint32 colonist  = util::packColor(240,90,70);
 static const Uint32 hq        = util::packColor(200,80,120);
+
+static const Uint32 hostile   = util::packColor(200,60,60);
 
 static const Uint32 banner_bg = util::packColor(30,30,35,240);
 static const Uint32 banner_fg = util::packColor(255,255,255,255);
@@ -454,7 +494,7 @@ public:
             auto tNow = clock::now();
             double frame = std::chrono::duration<double>(tNow - tPrev).count();
             tPrev = tNow;
-            lastFrameSec_ = frame;                   // <- for devtools dt
+            lastFrameSec_ = frame;                   // for devtools dt & banner fade
             fpsCounter(frame);
 
             if (paused_) {
@@ -500,10 +540,29 @@ private:
 
         // ---- DevTools bridge wiring ----
         setupDevToolsBridge_();
+
+        // ---- Storyteller bindings ----
+        cg::StorytellerBindings sb{};
+        sb.getColonistCount = [this]{ return (int)colonists_.size(); };
+        sb.getWealth        = [this]{ return colonyWealth_(); };
+        sb.getHostileCount  = [this]{ return (int)hostiles_.size(); };
+        sb.getAverageMood   = [this]{ return (int)std::clamp<int>(int(averageMood_*100.0),0,100); };
+        sb.getDayIndex      = [this]{ return dayIndex_; };
+
+        sb.spawnRaid        = [this](int pts){ SpawnRaidWithPoints_(pts); };
+        sb.grantResource    = [this](const char* id,int amt){ GiveResource_(id, amt); };
+        sb.toast            = [this](const std::string& s){ PushToast_(s); };
+
+        cg::Storyteller_Init(sb, opts_.seed);
     }
 
     // ------------------------------ Event Pump --------------------------------
     bool pumpEvents() {
+        auto isCtrl = [](const SDL_Event& e)->bool {
+            const Uint16 m = e.key.keysym.mod;
+            return (m & KMOD_CTRL) != 0;
+        };
+
         SDL_Event e;
         while (SDL_PollEvent(&e)) {
             if (e.type == SDL_QUIT) return false;
@@ -533,7 +592,8 @@ private:
                 else if (key == SDLK_1) { selectedBuild_ = BuildingKind::Solar;  buildMode_=true; }
                 else if (key == SDLK_2) { selectedBuild_ = BuildingKind::Habitat;buildMode_=true; }
                 else if (key == SDLK_3) { selectedBuild_ = BuildingKind::OxyGen; buildMode_=true; }
-                else if (key == SDLK_b) { // bulldoze: turn tile to regolith (debug)
+                else if (key == SDLK_b) {
+                    // bulldoze: turn tile to regolith (debug)
                     Vec2i t = currentMouseTile();
                     if (world_.inBounds(t.x,t.y)) {
                         auto& tt = world_.at(t.x,t.y);
@@ -551,16 +611,21 @@ private:
                 else if (key == SDLK_r) {
                     if (!buildings_.empty()) buildings_.pop_back();
                 }
-                else if (key == SDLK_s) {
+                // --- Save / Load now use CTRL+S / CTRL+L to avoid conflict with WASD
+                else if (key == SDLK_s && isCtrl(e)) {
                     saveGame();
                 }
-                else if (key == SDLK_l) {
+                else if (key == SDLK_l && isCtrl(e)) {
                     loadGame();
                 }
                 else if (key == SDLK_w || key == SDLK_UP)    { keyPan_.y = -1;  }
                 else if (key == SDLK_s || key == SDLK_DOWN)  { keyPan_.y = +1;  }
                 else if (key == SDLK_a || key == SDLK_LEFT)  { keyPan_.x = -1;  }
                 else if (key == SDLK_d || key == SDLK_RIGHT) { keyPan_.x = +1;  }
+                // Debug: force a small raid
+                else if (key == SDLK_h) {
+                    SpawnRaidWithPoints_(rng_.irange(20, 60));
+                }
             }
             if (e.type == SDL_KEYUP) {
                 auto key = e.key.keysym.sym;
@@ -570,16 +635,8 @@ private:
                 else if (key == SDLK_d || key == SDLK_RIGHT){ if (keyPan_.x==+1) keyPan_.x = 0; }
             }
             if (e.type == SDL_MOUSEWHEEL) {
-                double prev = camera_.zoom;
                 if (e.wheel.y > 0) camera_.zoom = util::clamp(camera_.zoom * 1.1, 0.5, 2.5);
                 if (e.wheel.y < 0) camera_.zoom = util::clamp(camera_.zoom / 1.1, 0.5, 2.5);
-                // Zoom towards cursor
-                if (camera_.zoom != prev) {
-                    int mx, my; SDL_GetMouseState(&mx,&my);
-                    Vec2i before = camera_.screenToTile(mx,my,tileSize_);
-                    Vec2i after  = camera_.screenToTile(mx,my,tileSize_);
-                    (void)before; (void)after; // Keep camera stable if you like; here we keep it simple.
-                }
             }
             if (e.type == SDL_MOUSEBUTTONDOWN) {
                 if (e.button.button == SDL_BUTTON_LEFT) {
@@ -599,9 +656,17 @@ private:
         camera_.x += keyPan_.x * panSpeed * dt;
         camera_.y += keyPan_.y * panSpeed * dt;
 
+        // Clamp camera to world bounds (account for zoom)
+        const double worldWpx = double(world_.W * tileSize_);
+        const double worldHpx = double(world_.H * tileSize_);
+        const double visWpx   = double(camera_.viewportW) / std::max(0.001, camera_.zoom);
+        const double visHpx   = double(camera_.viewportH) / std::max(0.001, camera_.zoom);
+        camera_.x = std::clamp(camera_.x, 0.0, std::max(0.0, worldWpx - visWpx));
+        camera_.y = std::clamp(camera_.y, 0.0, std::max(0.0, worldHpx - visHpx));
+
         // Day-night
         dayTime_ += dt * 0.02; // ~50 sec per day by default
-        if (dayTime_ >= 1.0) dayTime_ -= 1.0;
+        if (dayTime_ >= 1.0) { dayTime_ -= 1.0; ++dayIndex_; }
 
         // Economy pass
         economyTick(dt);
@@ -609,8 +674,23 @@ private:
         // AI / Jobs
         aiTick(dt);
 
+        // Hostiles behavior
+        hostileTick_(dt);
+
+        // Toasts lifetimes
+        toastTick_(dt);
+
+        // Banner lifetime fade
+        if (bannerTime_ > 0.0) {
+            bannerTime_ -= dt;
+            if (bannerTime_ <= 0.0) banner_.clear();
+        }
+
         // Flood debug overlay compute (optional)
         if (floodDebug_) computeFloodFrom(floodFrom_);
+
+        // Storyteller after sim advances
+        cg::Storyteller_Update(float(dt));
     }
 
     // ------------------------------ Economy -----------------------------------
@@ -640,16 +720,7 @@ private:
             colony_.housing += b.def.housing;
         }
 
-        // Consumption/production application:
-        // If power negative -> scale down oxygen/water production.
-        if (colony_.powerBalance < 0) {
-            // simplistic: if negative power, oxygen generator won't produce; habitats still consume
-            // handled by balances already being negative.
-        }
-
-        // Update stores from balances every in-game hour? For simplicity, per tick small amounts:
-        // Here balances are "units per tick" (abstract). We'll drip them into store gradually.
-        // Clamp store to non-negative.
+        // Update stores from balances every tick (simple model)
         colony_.store.oxygen = std::max(0, colony_.store.oxygen + colony_.oxygenBalance);
         colony_.store.water  = std::max(0, colony_.store.water  + colony_.waterBalance);
 
@@ -662,6 +733,23 @@ private:
             colony_.store.water  = std::max(0, colony_.store.water  - waterUse);
         }
         colony_.population = people;
+
+        // --- Mood estimation (0..1) ---
+        double m = 0.7;
+        if (colony_.store.oxygen < 30) m -= 0.20;
+        if (colony_.store.water  < 30) m -= 0.20;
+        if (colony_.powerBalance < 0)  m -= 0.10;
+        if (colony_.population > colony_.housing) {
+            m -= 0.05 * double(colony_.population - colony_.housing);
+        }
+        // Small circadian buff midday
+        constexpr double TAU = 6.283185307179586;
+        double daylight = std::cos((dayTime_ - 0.5) * TAU)*0.5 + 0.5; // 0..1
+        m += (daylight - 0.5) * 0.04;
+
+        m = std::clamp(m, 0.05, 0.95);
+        // Smooth
+        averageMood_ = averageMood_ * 0.95 + m * 0.05;
     }
 
     // ------------------------------ AI / Jobs ---------------------------------
@@ -819,6 +907,121 @@ private:
         c.state = Colonist::State::Idle;
     }
 
+    // ------------------------------ Hostiles ----------------------------------
+    bool inHQArea_(const Vec2i& p) const {
+        return (p.x==hq_.x || p.x==hq_.x+1) && (p.y==hq_.y || p.y==hq_.y+1);
+    }
+
+    void hostileTick_(double dt) {
+        hostileMoveAcc_ += dt;
+        const double stepTime = 0.14;
+        if (hostileMoveAcc_ < stepTime) return;
+        hostileMoveAcc_ -= stepTime;
+
+        for (size_t i=0; i<hostiles_.size();) {
+            Hostile& h = hostiles_[i];
+
+            if (h.path.empty()) {
+                // Re-path to HQ
+                std::deque<Vec2i> p;
+                if (!findPathAStar(world_, h.tile, hq_, p)) {
+                    // Stuck: remove
+                    i = (hostiles_.erase(hostiles_.begin()+i), i);
+                    continue;
+                }
+                h.path = std::move(p);
+            }
+
+            if (!h.path.empty()) {
+                h.tile = h.path.front();
+                h.path.pop_front();
+            }
+
+            if (inHQArea_(h.tile)) {
+                int lootM = std::min(colony_.store.metal, 2 + h.strength / 5);
+                int lootI = std::min(colony_.store.ice,   h.strength / 10);
+                colony_.store.metal -= lootM;
+                colony_.store.ice   -= lootI;
+                PushToast_(std::string("Raiders hit HQ: -") + std::to_string(lootM) + " Metal, -" + std::to_string(lootI) + " Ice");
+                i = (hostiles_.erase(hostiles_.begin()+i), i);
+                continue;
+            }
+
+            ++i;
+        }
+    }
+
+    void SpawnRaidWithPoints_(int points) {
+        int n = std::max(1, points / 20);
+        int spawned = 0;
+        for (int i=0;i<n;++i) {
+            // pick an edge
+            bool vertical = rng_.chance(0.5);
+            int x = vertical ? (rng_.chance(0.5)?0:world_.W-1) : rng_.irange(0, world_.W-1);
+            int y = vertical ? rng_.irange(0, world_.H-1) : (rng_.chance(0.5)?0:world_.H-1);
+
+            // find nearest walkable from that edge point
+            Vec2i s{x,y};
+            if (!world_.inBounds(s.x,s.y)) continue;
+            if (!world_.at(s.x,s.y).walkable) {
+                // scan a small neighborhood
+                bool found=false;
+                for (int dy=-3;dy<=3 && !found;++dy)
+                    for (int dx=-3;dx<=3 && !found;++dx) {
+                        int X=x+dx, Y=y+dy;
+                        if (!world_.inBounds(X,Y)) continue;
+                        if (world_.at(X,Y).walkable) { s={X,Y}; found=true; }
+                    }
+                if (!found) continue;
+            }
+
+            Hostile h;
+            h.id = nextHostileId_++;
+            h.strength = std::max(8, points / std::max(1,n)) + rng_.irange(-3,3);
+            h.tile = s;
+            std::deque<Vec2i> p;
+            if (!findPathAStar(world_, h.tile, hq_, p)) continue;
+            h.path = std::move(p);
+            hostiles_.push_back(std::move(h));
+            ++spawned;
+        }
+        if (spawned>0) {
+            bannerMessage("⚔️ Raid incoming! (" + std::to_string(spawned) + ")");
+        }
+    }
+
+    void GiveResource_(const char* id, int amt) {
+        std::string k = util::lower(id ? std::string(id) : std::string("metal"));
+        if (k=="metal" || k=="steel" || k=="components" || k=="silver") {
+            colony_.store.metal += std::max(0, amt);
+            PushToast_(std::string("Supply: +") + std::to_string(amt) + " Metal");
+        } else if (k=="ice") {
+            colony_.store.ice += std::max(0, amt);
+            PushToast_(std::string("Supply: +") + std::to_string(amt) + " Ice");
+        } else if (k=="oxygen" || k=="o2") {
+            colony_.store.oxygen += std::max(0, amt);
+            PushToast_(std::string("Supply: +") + std::to_string(amt) + " O2");
+        } else if (k=="water" || k=="h2o") {
+            colony_.store.water += std::max(0, amt);
+            PushToast_(std::string("Supply: +") + std::to_string(amt) + " H2O");
+        } else {
+            colony_.store.metal += std::max(0, amt);
+            PushToast_(std::string("Supply: +") + std::to_string(amt) + " (treated as Metal)");
+        }
+    }
+
+    void PushToast_(const std::string& s) {
+        toasts_.push_back(Toast{ s, 4.0 });
+        while (toasts_.size() > 6) toasts_.pop_front();
+        // Also echo as banner briefly for emphasis
+        bannerMessage(s);
+    }
+
+    void toastTick_(double dt) {
+        for (auto& t : toasts_) t.ttl -= dt;
+        while (!toasts_.empty() && toasts_.front().ttl <= 0.0) toasts_.pop_front();
+    }
+
     // ------------------------------ Input Actions -----------------------------
     void onLeftClick() {
         if (buildMode_ && selectedBuild_.has_value()) {
@@ -894,6 +1097,8 @@ private:
         for (auto& c : colonists_) {
             out << c.id << " " << c.tile.x << " " << c.tile.y << "\n";
         }
+        // Storyteller serialization (queue, cooldowns, budget, etc.)
+        cg::Storyteller_Save(out);
 
         bannerMessage("Game saved");
     }
@@ -910,6 +1115,7 @@ private:
 
         in >> tag; if (tag!="seed") { bannerMessage("Load failed: bad seed tag"); return; }
         in >> opts_.seed;
+        rng_.reseed(opts_.seed); // ensure deterministic after load
 
         int W,H; in >> tag; if (tag!="world") { bannerMessage("Load failed: world"); return; }
         in >> W >> H; world_.resize(W,H); world_.generate(rng_); // regen with current seed (okay for demo)
@@ -944,6 +1150,9 @@ private:
             nextColonistId_ = std::max(nextColonistId_, c.id+1);
         }
 
+        // Storyteller deserialize (ignore return; assumes saved with storyteller)
+        cg::Storyteller_Load(in);
+
         bannerMessage("Game loaded");
     }
 
@@ -972,7 +1181,8 @@ private:
     // ------------------------------ Rendering ---------------------------------
     void render() {
         // Background color varies with day/night
-        double daylight = std::cos((dayTime_ - 0.5) * 3.14159*2.0)*0.5 + 0.5; // 0 at midnight, 1 at noon
+        constexpr double TAU = 6.283185307179586;
+        double daylight = std::cos((dayTime_ - 0.5) * TAU)*0.5 + 0.5; // 0 at midnight, 1 at noon
         Uint8 R = Uint8(130 + 60*daylight);
         Uint8 G = Uint8(40  + 30*daylight);
         Uint8 B = Uint8(35  + 25*daylight);
@@ -982,10 +1192,12 @@ private:
         drawWorld();
         drawBuildings();
         drawColonists();
+        drawHostiles_();
         if (buildMode_ && selectedBuild_.has_value()) drawPlacementPreview(*selectedBuild_);
         drawHQ();
         if (floodDebug_) drawFloodOverlay();
         drawHUD();
+        drawToasts_();
 
         // ---- DevTools overlay draws on top ----
         dev::updateAndRender(renderer_, devBridge_, float(lastFrameSec_));
@@ -1072,6 +1284,27 @@ private:
         }
     }
 
+    void drawHostiles_() {
+        for (auto& h : hostiles_) {
+            util::setDrawColor(renderer_, colors::hostile);
+            SDL_Rect rc = camera_.tileRect(h.tile.x, h.tile.y, tileSize_);
+            SDL_RenderFillRect(renderer_, &rc);
+
+            if (!h.path.empty()) {
+                util::setDrawColor(renderer_, util::packColor(255,80,80,180));
+                Vec2i prev = h.tile;
+                int steps = 0;
+                for (auto p : h.path) {
+                    if (steps++ > 12) break; // short tail
+                    SDL_Rect a = camera_.tileRect(prev.x, prev.y, tileSize_);
+                    SDL_Rect b = camera_.tileRect(p.x,    p.y,    tileSize_);
+                    SDL_RenderDrawLine(renderer_, a.x + a.w/2, a.y + a.h/2, b.x + b.w/2, b.y + b.h/2);
+                    prev = p;
+                }
+            }
+        }
+    }
+
     void drawPlacementPreview(BuildingKind k) {
         Vec2i t = currentMouseTile();
         BuildingDef def = (k==BuildingKind::Solar)?defSolar(): (k==BuildingKind::Habitat)?defHab():defOxyGen();
@@ -1113,7 +1346,7 @@ private:
     // ------------------------------ HUD / Text --------------------------------
     void drawHUD() {
         int pad=8;
-        SDL_Rect hud{pad, pad, 540, 98};
+        SDL_Rect hud{pad, pad, 620, 112};
         util::setDrawColor(renderer_, colors::hud_bg);
         SDL_RenderFillRect(renderer_, &hud);
         util::setDrawColor(renderer_, util::packColor(0,0,0,200));
@@ -1124,7 +1357,7 @@ private:
         int y = hud.y + 8;
 
         std::ostringstream line1;
-        line1 << "Time " << std::fixed << std::setprecision(2) << dayTime_ << "   "
+        line1 << "Day " << dayIndex_ << "  Time " << std::fixed << std::setprecision(2) << dayTime_ << "   "
               << "FPS " << std::fixed << std::setprecision(0) << fps_
               << "   x" << std::fixed << std::setprecision(2) << simSpeed_
               << (paused_ ? "  [PAUSED]" : "");
@@ -1133,26 +1366,51 @@ private:
         // Resources
         std::ostringstream r1;
         r1 << "Metal " << colony_.store.metal << "   Ice " << colony_.store.ice
-           << "   O2 " << colony_.store.oxygen << "   H2O " << colony_.store.water;
+           << "   O2 " << colony_.store.oxygen << "   H2O " << colony_.store.water
+           << "   Wealth " << colonyWealth_();
         drawText(x,y,r1.str(), colors::hud_fg); y += 14;
 
         // Economy balances
         std::ostringstream r2;
         r2 << "Power " << colony_.powerBalance << "   O2 " << colony_.oxygenBalance
            << "   H2O " << colony_.waterBalance
-           << "   Pop " << colony_.population << "/" << colony_.housing;
+           << "   Pop " << colony_.population << "/" << colony_.housing
+           << "   Mood " << int(std::round(averageMood_*100.0)) << "%";
         drawText(x,y,r2.str(), colors::hud_fg); y += 14;
+
+        // Hostiles
+        std::ostringstream r3;
+        r3 << "Hostiles " << hostiles_.size();
+        drawText(x,y,r3.str(), colors::hud_fg); y += 14;
 
         // Selected build
         std::string bsel = (selectedBuild_.has_value() ? buildingName(*selectedBuild_) : "None");
         drawText(x,y,std::string("Build: ") + bsel, colors::hud_fg); y += 14;
 
         // Tips
-        drawText(x,y,"F1 DevTools   1=Solar  2=Hab  3=O2Gen   LMB place  RMB cancel  G colonist  S/L save/load  P pause  +/- speed  WASD pan", colors::hud_accent);
+        drawText(x,y,"F1 DevTools   1=Solar  2=Hab  3=O2Gen   LMB place  RMB cancel  G colonist  Ctrl+S save  Ctrl+L load  P pause  +/- speed  H raid  WASD/Arrows pan", colors::hud_accent);
 
         // Banner (messages)
         if (!banner_.empty() && bannerTime_ > 0.0) {
             drawBanner(banner_);
+        }
+    }
+
+    void drawToasts_() {
+        // Top-right stacked toasts
+        int x = camera_.viewportW - 8;
+        int y = 8;
+        for (int i = int(toasts_.size())-1; i>=0; --i) {
+            const auto& t = toasts_[i];
+            int w = int(t.text.size()) * 8 + 16;
+            SDL_Rect rc{ x - w, y, w, 20 };
+            Uint8 alpha = Uint8(std::clamp(t.ttl>1.0?255.0:255.0*(t.ttl/1.0), 0.0, 255.0));
+            util::setDrawColor(renderer_, util::packColor(35,35,45, alpha));
+            SDL_RenderFillRect(renderer_, &rc);
+            util::setDrawColor(renderer_, util::packColor(0,0,0, alpha));
+            SDL_RenderDrawRect(renderer_, &rc);
+            drawText(rc.x + 8, rc.y + 6, t.text, util::packColor(230,230,240, alpha));
+            y += rc.h + 4;
         }
     }
 
@@ -1166,8 +1424,7 @@ private:
         util::setDrawColor(renderer_, util::packColor(0,0,0,200));
         SDL_RenderDrawRect(renderer_, &rc);
         drawText(rc.x + 12, rc.y + 6, msg, colors::banner_fg);
-        bannerTime_ -= 0.016; // fade per frame (approx)
-        if (bannerTime_ <= 0.0) banner_.clear();
+        // (fade handled in update via bannerTime_)
     }
 
     void bannerMessage(const std::string& msg) {
@@ -1178,7 +1435,7 @@ private:
     void drawText(int x, int y, const std::string& text, Uint32 color) {
         Uint8 R=(color>>24)&0xFF, G=(color>>16)&0xFF, B=(color>>8)&0xFF, A=color&0xFF;
         for (char ch : text) {
-            if (ch=='\n') { y += 12; x -= int(text.size())*6; continue; }
+            if (ch=='\n') { y += 12; /* crude new line */ continue; }
             const uint8_t* glyph = font5x7::getGlyph(ch);
             if (glyph) {
                 for (int gy=0; gy<7; ++gy) {
@@ -1186,10 +1443,10 @@ private:
                     for (int gx=0; gx<5; ++gx) {
                         if (row & (1<<(4-gx))) {
                             SDL_SetRenderDrawColor(renderer_, R,G,B,A);
-                            SDL_Rect px{ x+gx*1, y+gy*1, 1, 1 };
+                            // 2x "bold" pixels for readability
+                            SDL_Rect px{ x+gx, y+gy, 1, 1 };
                             SDL_RenderFillRect(renderer_, &px);
-                            // scale up a bit for readability
-                            SDL_Rect px2{ x+gx*1+1, y+gy*1, 1, 1 };
+                            SDL_Rect px2{ x+gx+1, y+gy, 1, 1 };
                             SDL_RenderFillRect(renderer_, &px2);
                         }
                     }
@@ -1265,7 +1522,32 @@ private:
                 a.name = std::string("C") + std::to_string(c.id);
                 fn(a);
             }
+            for (auto& h : hostiles_) {
+                dev::Agent a;
+                a.id = -h.id;
+                a.x = h.tile.x;
+                a.y = h.tile.y;
+                a.name = std::string("R") + std::to_string(h.id);
+                fn(a);
+            }
         };
+    }
+
+    // ---- Wealth estimator for Storyteller ----
+    int colonyWealth_() const {
+        int w = 0;
+        // stores
+        w += colony_.store.metal * 2;
+        w += colony_.store.ice   * 1;
+        w += colony_.store.oxygen* 1;
+        w += colony_.store.water * 1;
+        // buildings (approx: cost*2 as value)
+        for (auto& b : buildings_) {
+            w += b.def.metalCost * 2 + b.def.iceCost * 1;
+        }
+        // population value
+        w += int(colonists_.size()) * 40;
+        return w;
     }
 
 private:
@@ -1290,12 +1572,19 @@ private:
     std::vector<Colonist> colonists_;
     int nextColonistId_ = 1;
 
+    // Hostiles
+    std::vector<Hostile> hostiles_;
+    int nextHostileId_ = 1;
+    double hostileMoveAcc_ = 0.0;
+
     // Sim
     double moveAccumulator_ = 0.0;
     double dayTime_ = 0.25; // morning
+    int    dayIndex_ = 0;
+    double averageMood_ = 0.7;
     bool   paused_ = false;
     double simSpeed_ = 1.0;
-    double lastFrameSec_ = 1.0/60.0; // for DevTools dt
+    double lastFrameSec_ = 1.0/60.0; // for DevTools dt & banner fade
 
     // Input
     Vec2i keyPan_{0,0};
@@ -1310,6 +1599,10 @@ private:
     // Banner message
     std::string banner_;
     double      bannerTime_ = 0.0;
+
+    // Toasts
+    struct Toast { std::string text; double ttl; };
+    std::deque<Toast> toasts_;
 
     // FPS
     double frameAcc_ = 0.0;
