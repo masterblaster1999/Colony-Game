@@ -1,14 +1,20 @@
 {
   "version": 6,
   "configurePresets": [
-    { "name": "dev",  "generator": "Ninja", "binaryDir": "build/dev",
-      "cacheVariables": { "CMAKE_BUILD_TYPE": "Debug" } },
-    { "name": "prod", "inherits": "dev",   "binaryDir": "build/prod",
-      "cacheVariables": { "CMAKE_BUILD_TYPE": "RelWithDebInfo" } }
-  ],
-  "buildPresets": [
-    { "name": "dev",  "configurePreset": "dev"  },
-    { "name": "prod", "configurePreset": "prod" }
-  ],
-  "testPresets": [ { "name": "all", "configurePreset": "dev" } ]
+    {
+      "name": "vs2022-x64",
+      "displayName": "VS 2022 x64",
+      "generator": "Visual Studio 17 2022",
+      "architecture": {
+        "value": "x64",
+        "strategy": "external"
+      },
+      "binaryDir": "${sourceDir}/build",
+      "cacheVariables": {
+        "CMAKE_MSVC_RUNTIME_LIBRARY": "MultiThreaded$<$<CONFIG:Debug>:Debug>DLL",
+        "CMAKE_INTERPROCEDURAL_OPTIMIZATION_RELEASE": "ON",
+        "CMAKE_INTERPROCEDURAL_OPTIMIZATION_RELWITHDEBINFO": "ON"
+      }
+    }
+  ]
 }
