@@ -1,10 +1,6 @@
 // Mars Colony Simulation — SDL2 Launcher (C++17, single file)
-// Hooks engine/windowing with SDL2 and a minimal renderer.
-//
-// Build (GCC/Clang):  g++ -std=c++17 -O2 -o MarsColonyLauncher Launcher_SDL.cpp `sdl2-config --cflags --libs`
-// Build (MSVC via CMake): see CMakeLists.txt below
+// Hooks engine/windowing with SDL2 and a minimal renderer, then hands off to Game.
 
-// ------------------------------- Standard lib --------------------------------
 #include <algorithm>
 #include <chrono>
 #include <csignal>
@@ -27,7 +23,6 @@
 
 namespace fs = std::filesystem;
 
-// --------------------------------- SDL2 --------------------------------------
 // Tell SDL we're providing our own main()
 #define SDL_MAIN_HANDLED
 
@@ -40,8 +35,11 @@ namespace fs = std::filesystem;
 #    error "SDL2 headers not found. Install SDL2 development headers and adjust include paths."
 #  endif
 #else
-#  include <SDL.h> // Fallback; adjust include paths if needed
+#  include <SDL.h>
 #endif
+
+// Include the game layer
+#include "game/Game.h"
 
 // ============================= Compile-time Platform =========================
 static const char* PlatformName() {
@@ -231,21 +229,17 @@ static void ensure_directories(const AppPaths& p) {
 
 // ================================ Configuration ==============================
 struct Config {
-    // Core presentation
     unsigned width  = 1280;
     unsigned height = 720;
     bool fullscreen = false;
     bool vsync      = true;
 
-    // General
     std::string profile = "default";
     std::string lang    = "en-US";
 
-    // Startup
     bool skipIntro = false;
     bool safeMode  = false;
 
-    // RNG seed (optional). If empty → random at launch.
     std::optional<uint64_t> seed;
 };
 
@@ -314,7 +308,6 @@ static Config load_config(const fs::path& file, bool create_if_missing = true) {
 
 // ================================ CLI Options ================================
 struct LaunchOptions {
-    // Parsed from CLI (optional overrides)
     std::optional<unsigned> width;
     std::optional<unsigned> height;
     std::optional<bool> fullscreen;
@@ -325,7 +318,7 @@ struct LaunchOptions {
 
     std::optional<bool> skipIntro;
     std::optional<bool> safeMode;
-    std::optional<uint64_t> seed;  // "random" on CLI maps to empty → then random
+    std::optional<uint64_t> seed;
 
     std::optional<fs::path> configFile;
     bool validateOnly = false;
@@ -409,7 +402,7 @@ static LaunchOptions parse_args(int argc, char** argv) {
                     opt.seed.reset();
                 } else {
                     try { opt.seed = static_cast<uint64_t>(std::stoull(*v)); }
-                    catch (...) { /* ignore, leave unset */ }
+                    catch (...) { /* ignore */ }
                 }
             }
         } else {
@@ -419,7 +412,6 @@ static LaunchOptions parse_args(int argc, char** argv) {
     return opt;
 }
 
-// Merge CLI overrides (highest precedence) into config defaults/file.
 static Config make_effective_config(const Config& file, const LaunchOptions& cli) {
     Config eff = file;
     if (cli.width)  eff.width  = *cli.width;
@@ -430,7 +422,7 @@ static Config make_effective_config(const Config& file, const LaunchOptions& cli
     if (cli.lang    && !cli.lang->empty())    eff.lang    = *cli.lang;
     if (cli.skipIntro) eff.skipIntro = *cli.skipIntro;
     if (cli.safeMode)  eff.safeMode  = *cli.safeMode;
-    if (cli.seed.has_value()) eff.seed = cli.seed; // may be empty to force random
+    if (cli.seed.has_value()) eff.seed = cli.seed;
     return eff;
 }
 
@@ -454,7 +446,7 @@ static void terminate_handler() {
     std::abort();
 }
 
-// ============================== Bootstrap Stubs ==============================
+// ============================== Bootstrap Helpers ============================
 static void print_splash(bool skipIntro) {
     if (!skipIntro) {
         std::cout <<
@@ -466,7 +458,7 @@ R"(   __  ___                 ______      _
 
              Mars Colony Simulation — Launcher
 )" << std::endl;
-        std::this_thread::sleep_for(std::chrono::milliseconds(300));
+        std::this_thread::sleep_for(std::chrono::milliseconds(200));
     } else {
         std::cout << "Mars Colony Simulation — Launcher (intro skipped)\n";
     }
@@ -480,7 +472,6 @@ static bool validate_installation(Logger& log) {
         log.warn("Assets folder not found at: " + assetsLocal.string());
         ok = false;
     } else {
-        // Basic expected subfolders (customize as you build out your project)
         std::vector<std::string> expected = {"core", "locale"};
         for (const auto& sub : expected) {
             if (!fs::exists(assetsLocal / sub)) {
@@ -499,22 +490,14 @@ struct EngineContext {
     uint64_t seed = 0;
 };
 
-// Global SDL handles for this simple launcher
 static SDL_Window*   g_window   = nullptr;
 static SDL_Renderer* g_renderer = nullptr;
 static int           g_win_w    = 0;
 static int           g_win_h    = 0;
 static bool          g_fullscreen = false;
 
-// Build meta (shown in logs and title)
 static constexpr const char* kAppName = "MarsColonySim";
-static constexpr const char* kVersion = "0.2.0-SDL";
-
-// Forward decls
-static bool InitializeEngine(const EngineContext& ctx);
-static bool PreloadAssets(const EngineContext& ctx);
-static int  RunGameLoop(const EngineContext& ctx);
-static void ShutdownEngine();
+static constexpr const char* kVersion = "0.3.0-Gameplay";
 
 // --------------------------------- Engine ------------------------------------
 static bool InitializeEngine(const EngineContext& ctx) {
@@ -527,11 +510,10 @@ static bool InitializeEngine(const EngineContext& ctx) {
         }
     }
 
-    // Nice-to-have hints
-    SDL_SetHint(SDL_HINT_RENDER_SCALE_QUALITY, ctx.config.safeMode ? "0" : "1"); // 0=nearest, 1=linear
-    SDL_SetHint(SDL_HINT_VIDEO_X11_NET_WM_BYPASS_COMPOSITOR, "0"); // keep compositing stable on Linux
+    SDL_SetHint(SDL_HINT_RENDER_SCALE_QUALITY, ctx.config.safeMode ? "0" : "1");
+    SDL_SetHint(SDL_HINT_VIDEO_X11_NET_WM_BYPASS_COMPOSITOR, "0");
 #if defined(__APPLE__)
-    SDL_SetHint(SDL_HINT_MAC_BACKGROUND_APP, "1"); // don't force foreground switch on launch
+    SDL_SetHint(SDL_HINT_MAC_BACKGROUND_APP, "1");
 #endif
 
     g_win_w = static_cast<int>(ctx.config.width);
@@ -591,119 +573,29 @@ static bool InitializeEngine(const EngineContext& ctx) {
     return true;
 }
 
-static bool PreloadAssets(const EngineContext& ctx) {
-    (void)ctx;
-    // Stub: load textures/fonts/audio here. For now just log a step.
+static bool PreloadAssets(const EngineContext&) {
     g_log.info("PreloadAssets(): begin");
-    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    std::this_thread::sleep_for(std::chrono::milliseconds(50));
     g_log.info("PreloadAssets(): ok");
     return true;
 }
 
-// Utility: set the animated Mars-like background color
-static void set_mars_clear_color(SDL_Renderer* r, double t, uint64_t seed) {
-    // Mild animation based on time + seed; keep it Mars‑red and calm.
-    double phase = t * 0.5 + (seed & 0xFFFF) * 0.0001;
-    auto clampu8 = [](double v) -> Uint8 {
-        if (v < 0.0) v = 0.0;
-        if (v > 255.0) v = 255.0;
-        return static_cast<Uint8>(v + 0.5);
-    };
-    Uint8 R = clampu8(170.0 + 80.0  * (0.5 + 0.5 * std::sin(phase)));
-    Uint8 G = clampu8(30.0  + 25.0  * (0.5 + 0.5 * std::sin(phase * 0.8 + 1.234)));
-    Uint8 B = clampu8(25.0  + 18.0  * (0.5 + 0.5 * std::sin(phase * 0.6 + 2.468)));
-    SDL_SetRenderDrawColor(r, R, G, B, 255);
-}
-
+// ---------------------- NEW: Hand off to Game loop here ----------------------
 static int RunGameLoop(const EngineContext& ctx) {
-    g_log.info("RunGameLoop(): start");
+    GameOptions opts;
+    opts.width      = static_cast<int>(ctx.config.width);
+    opts.height     = static_cast<int>(ctx.config.height);
+    opts.vsync      = ctx.config.vsync;
+    opts.fullscreen = ctx.config.fullscreen;
+    opts.safeMode   = ctx.config.safeMode;
+    opts.seed       = ctx.seed;
+    opts.profile    = ctx.config.profile;
+    opts.saveDir    = ctx.paths.savesDir.string();
+    opts.assetsDir  = (fs::current_path() / "assets").string();
 
-    using clock = std::chrono::steady_clock;
-    auto t0 = clock::now();
-    auto lastTitle = t0;
-
-    int frames = 0;
-    double fps = 0.0;
-
-    // For windowed mode, remember a preferred size to restore when leaving fullscreen
-    int windowed_w = g_win_w;
-    int windowed_h = g_win_h;
-
-    while (!g_should_quit) {
-        // --- Handle events ---
-        SDL_Event e;
-        while (SDL_PollEvent(&e)) {
-            if (e.type == SDL_QUIT) {
-                g_should_quit = 1;
-            } else if (e.type == SDL_KEYDOWN) {
-                if (e.key.keysym.sym == SDLK_ESCAPE) {
-                    g_should_quit = 1;
-                } else if (e.key.keysym.sym == SDLK_F11) {
-                    // Toggle fullscreen desktop
-                    g_fullscreen = !g_fullscreen;
-                    if (!g_fullscreen) {
-                        SDL_SetWindowFullscreen(g_window, 0);
-                        SDL_SetWindowSize(g_window, windowed_w, windowed_h);
-                    } else {
-                        // Remember windowed size before going fullscreen
-                        SDL_GetWindowSize(g_window, &windowed_w, &windowed_h);
-                        SDL_SetWindowFullscreen(g_window, SDL_WINDOW_FULLSCREEN_DESKTOP);
-                    }
-                    g_log.info(std::string("Fullscreen: ") + (g_fullscreen ? "on" : "off"));
-                }
-            } else if (e.type == SDL_WINDOWEVENT) {
-                if (e.window.event == SDL_WINDOWEVENT_SIZE_CHANGED) {
-                    g_win_w = e.window.data1;
-                    g_win_h = e.window.data2;
-                }
-            }
-        }
-
-        // --- Update timing + title ---
-        auto now = clock::now();
-        std::chrono::duration<double> sinceStart = now - t0;
-        std::chrono::duration<double> sinceTitle = now - lastTitle;
-
-        // --- Render ---
-        set_mars_clear_color(g_renderer, sinceStart.count(), ctx.seed);
-        SDL_RenderClear(g_renderer);
-
-        // Ground band (simple horizon)
-        SDL_Rect ground{0, static_cast<int>(g_win_h * 0.62), g_win_w, g_win_h};
-        // Slightly darker ground
-        Uint8 r, g, b, a;
-        SDL_GetRenderDrawColor(g_renderer, &r, &g, &b, &a);
-        Uint8 gr = static_cast<Uint8>(std::min(255, r / 2 + 30));
-        Uint8 gg = static_cast<Uint8>(g / 2);
-        Uint8 gb = static_cast<Uint8>(b / 2);
-        SDL_SetRenderDrawColor(g_renderer, gr, gg, gb, 255);
-        SDL_RenderFillRect(g_renderer, &ground);
-
-        SDL_RenderPresent(g_renderer);
-        frames++;
-
-        // Update FPS in title roughly once per second
-        if (sinceTitle.count() >= 1.0) {
-            fps = frames / sinceTitle.count();
-            frames = 0;
-            lastTitle = now;
-
-            std::ostringstream title;
-            title << "Mars Colony Simulation — " << kVersion
-                  << "  [" << PlatformName() << "]  "
-                  << g_win_w << "x" << g_win_h
-                  << (g_fullscreen ? "  Fullscreen" : "  Windowed")
-                  << (ctx.config.vsync ? "  VSync" : "  No VSync")
-                  << "  —  " << std::fixed << std::setprecision(0) << fps << " FPS";
-            SDL_SetWindowTitle(g_window, title.str().c_str());
-        }
-
-        // If vsync is off, add a very small delay to avoid 100% CPU in tiny scenes
-        if (!ctx.config.vsync) SDL_Delay(1);
-    }
-
-    g_log.info("RunGameLoop(): exiting");
-    return 0;
+    Game game(g_window, g_renderer, opts);
+    int rc = game.Run();
+    return rc;
 }
 
 static void ShutdownEngine() {
@@ -716,13 +608,12 @@ static void ShutdownEngine() {
 
 // ================================== main() ===================================
 int main(int argc, char** argv) {
-    // Basic meta
+    constexpr const char* kAppName = "MarsColonySim";
+    constexpr const char* kVersion = "0.3.0-Gameplay";
     const std::string     kBuildStamp = util::timestamp_compact();
 
-    // Parse CLI early (so we can honor --config before reading config)
     LaunchOptions cli = parse_args(argc, argv);
 
-    // Resolve paths and logging
     AppPaths paths = compute_paths(kAppName);
     try { ensure_directories(paths); }
     catch (const std::exception& e) {
@@ -736,7 +627,6 @@ int main(int argc, char** argv) {
         return 3;
     }
 
-    // Install crash/termination hooks
     std::set_terminate(terminate_handler);
     std::signal(SIGINT,  signal_handler);
     std::signal(SIGTERM, signal_handler);
@@ -747,15 +637,12 @@ int main(int argc, char** argv) {
 
     print_splash(cli.skipIntro.value_or(false));
 
-    // Load config (from CLI-specified path or default)
     fs::path cfgFile = cli.configFile.value_or(paths.defaultConfigFile());
     Config fileCfg = load_config(cfgFile, /*create_if_missing*/ true);
     Config cfg     = make_effective_config(fileCfg, cli);
 
-    // Persist default config if we just created it
     if (!fs::exists(cfgFile)) write_default_config(cfgFile, fileCfg);
 
-    // Early validate-only mode
     if (cli.validateOnly) {
         bool ok = validate_installation(g_log);
         std::cout << (ok ? "Validation OK\n" : "Validation FAILED\n");
@@ -763,7 +650,6 @@ int main(int argc, char** argv) {
         return ok ? 0 : 4;
     }
 
-    // Establish seed
     uint64_t seed = 0;
     if (cfg.seed.has_value()) {
         seed = *cfg.seed;
@@ -771,22 +657,15 @@ int main(int argc, char** argv) {
         std::random_device rd;
         seed = (static_cast<uint64_t>(rd()) << 32) ^ static_cast<uint64_t>(rd());
     }
-
     EngineContext ctx{cfg, paths, seed};
 
-    // Basic install sanity
     if (!validate_installation(g_log)) {
         g_log.warn("Continuing despite validation warnings/errors.");
     }
 
-    // Bootstrap sequence
-    if (g_should_quit) { g_log.warn("Startup aborted by signal."); return 130; }
     if (!InitializeEngine(ctx)) { g_log.error("Engine initialization failed."); return 5; }
-
-    if (g_should_quit) { g_log.warn("Startup aborted by signal."); ShutdownEngine(); return 130; }
     if (!PreloadAssets(ctx))   { g_log.error("Asset preload failed."); ShutdownEngine(); return 6; }
 
-    if (g_should_quit) { g_log.warn("Startup aborted by signal."); ShutdownEngine(); return 130; }
     int rc = RunGameLoop(ctx);
 
     ShutdownEngine();
