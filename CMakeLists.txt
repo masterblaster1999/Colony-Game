@@ -1,14 +1,12 @@
 # ==================================================================================================
 # Colony-Game — Windows-only, modern CMake build (front-end switch: Win32 or SDL)
 #
-# Drop-in replacement for your top-level CMakeLists.txt.
-#
 # Goals:
 #   - Windows-only toolchain, tuned for MSVC (also works with Ninja + MSVC toolset).
 #   - Switchable frontends (Win32 native vs SDL) via -DFRONTEND=win32|sdl
 #   - Safe, low-friction source discovery. SDL-only sources are compiled ONLY for FRONTEND=sdl.
 #   - Strict warnings (opt-in), fast builds (Unity), stable runtime (fixed MSVC runtime knob).
-#   - Post-build: copies assets and dependent DLLs (e.g., SDL2.dll) next to the .exe
+#   - Post-build: copies assets and dependent DLLs next to the .exe and stages to build/stage/<cfg>.
 #   - Future-proof toggles: LTO, ASAN (MSVC), PCH, GUI/Console subsystem.
 # ==================================================================================================
 
@@ -156,9 +154,6 @@ endforeach()
 
 # --------------------------------------------------------------------------------------------------
 # Source discovery (core engine)
-#   - Pulls all sources under ${SRC_DIR}
-#   - Excludes launchers by pattern
-#   - SDL-only sources are identified below and added back ONLY for FRONTEND=sdl.
 # --------------------------------------------------------------------------------------------------
 file(GLOB_RECURSE CORE_SOURCES CONFIGURE_DEPENDS
   "${SRC_DIR}/*.c" "${SRC_DIR}/*.cpp")
@@ -189,7 +184,6 @@ foreach(_cand IN ITEMS
   endif()
 endforeach()
 if(SDL_ONLY_SOURCES)
-  # remove them from the default core set; added back later only for FRONTEND=sdl
   list(REMOVE_ITEM CORE_SOURCES ${SDL_ONLY_SOURCES})
 endif()
 
@@ -230,6 +224,7 @@ target_compile_definitions(colony_core PUBLIC
 set(_ver_in  "${CMAKE_BINARY_DIR}/build_config.h.in")
 set(_ver_out "${CMAKE_BINARY_DIR}/generated/build_config.h")
 file(WRITE "${_ver_in}" [=[
+// Auto-generated at configure-time
 #pragma once
 #define CG_VERSION           "@PROJECT_VERSION@"
 #define CG_FRONTEND          "@CG_FRONTEND@"
@@ -260,18 +255,12 @@ if(Git_FOUND)
   endif()
 endif()
 
-# FRONTEND text goes in after we resolve the launcher; just configure_file later.
-# Include dir for generated header:
+# FRONTEND text goes in after we resolve the launcher; configure_file later.
 target_include_directories(colony_core PUBLIC "${CMAKE_BINARY_DIR}/generated")
 
 # --------------------------------------------------------------------------------------------------
 # Launcher discovery / frontend target
-#   - FRONTEND=win32: native Win32 launcher (no extra deps)
-#   - FRONTEND=sdl:   SDL2 launcher (requires SDL2 installed)
-#   - You can override with -DLAUNCHER_FILE="path/to/Launcher.cpp"
 # --------------------------------------------------------------------------------------------------
-
-# Potential launchers (auto-detection list)
 set(_KNOWN_WIN_LAUNCHERS
   "WinLauncher.cpp"
   "colonygame.cpp"
@@ -301,7 +290,6 @@ endif()
 set(_LAUNCHER "")
 set(CG_FRONTEND_STR "${FRONTEND}") # carries into header
 
-# If overridden explicitly, trust it
 if(LAUNCHER_FILE)
   if(EXISTS "${LAUNCHER_FILE}")
     set(_LAUNCHER "${LAUNCHER_FILE}")
@@ -359,11 +347,7 @@ configure_file("${_ver_in}" "${_ver_out}" @ONLY)
 # Executable
 # --------------------------------------------------------------------------------------------------
 add_executable(ColonyGame ${_WIN32_FLAG} "${_LAUNCHER}" ${_RES})
-
-# Set startup project for Visual Studio
 set_property(DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}" PROPERTY VS_STARTUP_PROJECT ColonyGame)
-
-# Link core
 target_link_libraries(ColonyGame PRIVATE colony_core)
 
 # Helpful definitions for the launcher/plat layer
@@ -379,13 +363,8 @@ target_link_libraries(ColonyGame PRIVATE
 
 # --------------------------------------------------------------------------------------------------
 # SDL2 integration (FRONTEND=sdl)
-#   - Robust: try Config (vcpkg/official) first, then legacy module.
-#   - If only module variables are available, synthesize imported targets for target-based linking.
-#   - Ensure core sees SDL headers when building SDL-only sources.
-#   - Add SDL-only sources back into core.
 # --------------------------------------------------------------------------------------------------
 if(FRONTEND STREQUAL "sdl")
-  # Add SDL-only files to core
   if(SDL_ONLY_SOURCES)
     target_sources(colony_core PRIVATE ${SDL_ONLY_SOURCES})
   endif()
@@ -395,7 +374,6 @@ if(FRONTEND STREQUAL "sdl")
   if(SDL2_FOUND)
     set(_SDL2_FOUND_KIND "config")
   else()
-    # Try legacy module
     find_package(SDL2 QUIET)
     if(SDL2_FOUND)
       set(_SDL2_FOUND_KIND "module")
@@ -410,7 +388,6 @@ if(FRONTEND STREQUAL "sdl")
 
   message(STATUS "SDL2 found via: ${_SDL2_FOUND_KIND}")
 
-  # If we have imported targets (Config packages), prefer them
   set(_SDL_TARGET "")
   if(TARGET SDL2::SDL2)
     set(_SDL_TARGET SDL2::SDL2)
@@ -419,18 +396,15 @@ if(FRONTEND STREQUAL "sdl")
   endif()
 
   if(_SDL_TARGET)
-    # Propagate headers to core (Game.cpp compiles there)
     target_link_libraries(colony_core PUBLIC ${_SDL_TARGET})
     target_link_libraries(ColonyGame PRIVATE ${_SDL_TARGET})
   else()
-    # Legacy module: use SDL2_INCLUDE_DIRS/SDL2_LIBRARIES and synthesize imported targets.
     if(SDL2_INCLUDE_DIRS)
       target_include_directories(colony_core PUBLIC ${SDL2_INCLUDE_DIRS})
     endif()
     if(SDL2_LIBRARIES)
       target_link_libraries(ColonyGame PRIVATE ${SDL2_LIBRARIES})
     endif()
-    # Create an INTERFACE imported target for consistent downstream usage
     if(NOT TARGET SDL2::SDL2)
       add_library(SDL2::SDL2 INTERFACE IMPORTED)
       if(SDL2_INCLUDE_DIRS)
@@ -445,14 +419,12 @@ if(FRONTEND STREQUAL "sdl")
     target_link_libraries(colony_core PUBLIC SDL2::SDL2)
   endif()
 
-  # SDL2main if available (helps on Windows for 'main' shim). Harmless if not present.
   if(TARGET SDL2::SDL2main)
     target_link_libraries(ColonyGame PRIVATE SDL2::SDL2main)
   elseif(DEFINED SDL2MAIN_LIBRARY AND SDL2MAIN_LIBRARY)
     target_link_libraries(ColonyGame PRIVATE "${SDL2MAIN_LIBRARY}")
   endif()
 
-  # Flag for code that wants to know we built the SDL path
   target_compile_definitions(colony_core PUBLIC CG_USE_SDL=1)
 endif()
 
@@ -488,6 +460,34 @@ add_custom_command(TARGET ColonyGame POST_BUILD
   COMMAND_EXPAND_LISTS
   VERBATIM)
 
+# --- Post-build staging to build/stage/<Config> --------------------------------
+# Creates a self-contained folder with the exe, runtime DLLs and assets.
+set(COLONY_STAGE_DIR "${CMAKE_BINARY_DIR}/stage")
+
+add_custom_command(TARGET ColonyGame POST_BUILD
+  COMMAND "${CMAKE_COMMAND}" -E make_directory
+          "${COLONY_STAGE_DIR}/$<CONFIG>"
+  COMMAND "${CMAKE_COMMAND}" -E copy_if_different
+          "$<TARGET_FILE:ColonyGame>"
+          "${COLONY_STAGE_DIR}/$<CONFIG>/"
+  COMMAND "${CMAKE_COMMAND}" -E copy_if_different
+          $<TARGET_RUNTIME_DLLS:ColonyGame>
+          "${COLONY_STAGE_DIR}/$<CONFIG>"
+  COMMAND_EXPAND_LISTS
+  COMMENT "Staging ColonyGame and runtime DLLs to ${COLONY_STAGE_DIR}/$<CONFIG>"
+  VERBATIM)
+
+# Stage assets into build/stage/<Config>/<dir> if they exist
+foreach(_d IN LISTS _ASSET_DIRS)
+  if(EXISTS "${CMAKE_SOURCE_DIR}/${_d}")
+    add_custom_command(TARGET ColonyGame POST_BUILD
+      COMMAND "${CMAKE_COMMAND}" -E copy_directory
+              "${CMAKE_SOURCE_DIR}/${_d}"
+              "${COLONY_STAGE_DIR}/$<CONFIG>/${_d}"
+      VERBATIM)
+  endif()
+endforeach()
+
 # Group sources in IDE by directory tree
 get_target_property(_exe_sources ColonyGame SOURCES)
 get_target_property(_core_sources colony_core SOURCES)
@@ -498,7 +498,7 @@ endif()
 # --------------------------------------------------------------------------------------------------
 # Install / Package (optional; produces a portable folder with exe + assets)
 #   - 'cmake --install <build_dir> --config Release'
-#   - Generates: install root with bin/ColonyGame.exe and copied assets
+#   - Generates: install root with ColonyGame.exe and copied assets
 # --------------------------------------------------------------------------------------------------
 include(GNUInstallDirs)
 
