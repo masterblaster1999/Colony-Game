@@ -46,11 +46,20 @@ namespace {
 
 using Clock = std::chrono::steady_clock;
 
+// Valid, deterministic default seed (replaces invalid 0xC01onyULL)
+constexpr uint64_t kDefaultSeed = 0xC01DCAFEULL;
+constexpr float    kMaxFrameDt  = 0.25f;     // clamp to avoid huge pauses/spikes
+
 // Small PRNG wrapper (deterministic)
 struct Rng {
   std::mt19937_64 eng;
-  explicit Rng(uint64_t seed) : eng(seed ? seed : 0xC01onyULL) {}
-  int   nextInt(int lo, int hi) { std::uniform_int_distribution<int> d(lo,hi); return d(eng); }
+  Rng() : eng(kDefaultSeed) {}
+  explicit Rng(uint64_t seed) : eng(seed ? seed : kDefaultSeed) {}
+  int   nextInt(int lo, int hi) {
+    if (lo > hi) std::swap(lo, hi);
+    std::uniform_int_distribution<int> d(lo, hi);
+    return d(eng);
+  }
   float next01() { std::uniform_real_distribution<float> d(0.f,1.f); return d(eng); }
 };
 
@@ -100,14 +109,14 @@ struct Incident {
 template <class T, class WFn>
 const T* weightedPick(const std::vector<T>& arr, WFn w, Rng& rng) {
   double total = 0.0;
-  for (auto& x : arr) {
-    double wx = (double)w(x);
+  for (const auto& x : arr) {
+    const double wx = static_cast<double>(w(x));
     if (wx > 0) total += wx;
   }
   if (total <= 0) return nullptr;
   double r = std::uniform_real_distribution<double>(0.0, total)(rng.eng);
-  for (auto& x : arr) {
-    double wx = (double)w(x);
+  for (const auto& x : arr) {
+    const double wx = static_cast<double>(w(x));
     if (wx <= 0) continue;
     if (r <= wx) return &x;
     r -= wx;
@@ -133,7 +142,7 @@ struct IncRaid final : Incident {
     return -base; // negative consumes budget
   }
   void fire(const IncidentCtx& c) override {
-    int points = (int)std::max(10.f, -pointsCost(c));
+    const int points = static_cast<int>(std::max(10.f, -pointsCost(c)));
     if (c.api->spawnRaid) c.api->spawnRaid(points);
     if (c.api->toast) c.api->toast("⚔️ Raid warning! Strength ~" + std::to_string(points));
   }
@@ -149,7 +158,7 @@ struct IncTrader final : Incident {
     if (c.api->toast) c.api->toast("🧳 A trader caravan arrives.");
     // Optionally drop some goods as a teaser:
     if (c.api->grantResource) {
-      int amt = 20 + c.rng->nextInt(0, 60);
+      const int amt = 20 + c.rng->nextInt(0, 60);
       c.api->grantResource("silver", amt);
     }
   }
@@ -164,7 +173,7 @@ struct IncDropPod final : Incident {
     if (c.api->grantResource) {
       static const char* ids[] = {"steel","wood","medicine","components"};
       const char* id = ids[c.rng->nextInt(0,3)];
-      int amt = 30 + c.rng->nextInt(0, 70);
+      const int amt = 30 + c.rng->nextInt(0, 70);
       c.api->grantResource(id, amt);
     }
   }
@@ -369,7 +378,7 @@ void Storyteller_Init(const StorytellerBindings& b, uint64_t seed){
   if (!G) G = new Director();
   G->api = b;
   if (!G->api.toast) G->api.toast = defaultToast;
-  G->rng = Rng(seed ? seed : 0xC01onyULL);
+  G->rng = Rng(seed ? seed : kDefaultSeed);
   G->pace = Pacing{};
   G->tick = 0.f; G->time = 0.f;
   G->cdRaid = G->cdDisease = G->cdWeather = G->cdGood = 0.f;
@@ -378,7 +387,7 @@ void Storyteller_Init(const StorytellerBindings& b, uint64_t seed){
 void Storyteller_Update(float dtSeconds){
   if (!G) return;
   // clamp dt to avoid spikes (pause/resume)
-  float dt = std::min(dtSeconds, 0.25f);
+  const float dt = std::min(dtSeconds, kMaxFrameDt);
   G->maybeSchedule(dt);
 }
 
