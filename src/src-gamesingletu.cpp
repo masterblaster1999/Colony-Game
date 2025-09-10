@@ -17,18 +17,22 @@
 //   3) (Optional) Keep --validate in your launcher to check assets folder; this TU
 //      does not implement validation because it is called post-bootstrap.
 //
-// Copyright:
-//   You own this file in your repo. I’ve written it from scratch for your request.
-//   No external licensed assets are required to compile or run.
-//
 // Platform:
 //   Windows 10+ (uses DPI awareness and Common Controls). Pure Win32; no CONSOLE.
-//
 // ============================================================================
 
+#ifndef UNICODE
 #define UNICODE
+#endif
+#ifndef _UNICODE
 #define _UNICODE
+#endif
+#ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
+#endif
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
 
 #include <windows.h>
 #include <windowsx.h>
@@ -60,6 +64,7 @@
 #include <set>
 #include <unordered_map>
 #include <unordered_set>
+#include <cmath>
 
 #pragma comment(lib, "Comctl32.lib")
 #pragma comment(lib, "Shell32.lib")
@@ -164,7 +169,8 @@ public:
         if (!f_) return;
         auto t = util::NowStampCompact();
         std::wstring w = L"[" + t + L"] " + s + L"\r\n";
-        f_.write(reinterpret_cast<const char*>(w.c_str()), (std::streamsize)w.size() * sizeof(wchar_t));
+        // Write wide characters as characters (not bytes)
+        f_.write(w.c_str(), static_cast<std::streamsize>(w.size()));
         f_.flush();
     }
 private:
@@ -188,12 +194,16 @@ template<> struct hash<Vec2i> {
 
 // ================================ RNG ========================================
 
+// Valid, deterministic default seed (replaces invalid 0xC01onyULL)
+static constexpr uint64_t kDefaultSeed = 0xC01DCAFEULL;
+
 class Rng {
 public:
-    explicit Rng(uint64_t seed) : eng_(seed) {}
-    int irange(int lo, int hi) { std::uniform_int_distribution<int> d(lo,hi); return d(eng_); }
-    bool chance(double p)      { std::bernoulli_distribution d(p); return d(eng_); }
-    double frand(double a=0.0, double b=1.0) { std::uniform_real_distribution<double> d(a,b); return d(eng_); }
+    Rng() : eng_(kDefaultSeed) {}
+    explicit Rng(uint64_t seed) : eng_(seed ? seed : kDefaultSeed) {}
+    int irange(int lo, int hi) { if (lo>hi) std::swap(lo,hi); std::uniform_int_distribution<int> d(lo,hi); return d(eng_); }
+    bool chance(double p)      { if (p<=0.0) return false; if (p>=1.0) return true; std::bernoulli_distribution d(p); return d(eng_); }
+    double frand(double a=0.0, double b=1.0) { if (a>b) std::swap(a,b); std::uniform_real_distribution<double> d(a,b); return d(eng_); }
 private:
     std::mt19937_64 eng_;
 };
@@ -375,7 +385,7 @@ static const wchar_t* kWndTitle = L"Colony Game";
 class Game {
 public:
     Game(HINSTANCE hInst, const GameOptions& opts)
-        : hInst_(hInst), opts_(opts), rng_(opts.seed ? opts.seed : 0xC01onyULL) {}
+        : hInst_(hInst), opts_(opts), rng_(opts.seed ? opts.seed : kDefaultSeed) {}
 
     int Run() {
         if (!CreateMainWindow()) return 3;
@@ -446,7 +456,10 @@ private:
         if (!hwnd_) return false;
 
         // HUD font
-        LOGFONTW lf{}; lf.lfHeight = -MulDiv(10, GetDeviceCaps(GetDC(hwnd_), LOGPIXELSY), 72);
+        LOGFONTW lf{};
+        HDC tmpdc = GetDC(hwnd_);
+        lf.lfHeight = -MulDiv(10, GetDeviceCaps(tmpdc, LOGPIXELSY), 72);
+        ReleaseDC(hwnd_, tmpdc);
         wcscpy_s(lf.lfFaceName, L"Segoe UI");
         font_ = CreateFontIndirectW(&lf);
         return true;
@@ -942,7 +955,7 @@ private:
             int bw = (int)banner_.size()*8+24; int bh=24;
             RECT b{ (clientW_-bw)/2, clientH_-bh-12, (clientW_+bw)/2, clientH_-12 };
             HBRUSH bb=CreateSolidBrush(RGB(30,30,35)); FillRect(back_.mem,&b,bb); DeleteObject(bb);
-            FrameRect(back_.mem,&b,(HBRUSH)GetStockObject(BLACK_BRUSH));
+            FrameRect(back_.mem, &b, (HBRUSH)GetStockObject(BLACK_BRUSH));
             HFONT of=(HFONT)SelectObject(back_.mem,font_);
             SetBkMode(back_.mem, TRANSPARENT); SetTextColor(back_.mem, RGB(255,255,255));
             RECT trc=b; trc.left+=12; trc.top+=4; DrawTextW(back_.mem, banner_.c_str(), -1, &trc, DT_LEFT|DT_VCENTER|DT_SINGLELINE);
@@ -1088,8 +1101,4 @@ int RunColonyGame(const GameOptions& opts) {
 //  7) Screenshot utility:
 //      - BitBlt backbuffer to a BMP in %LOCALAPPDATA%\MarsColonySim\Screenshots.
 //
-// Each of these can be implemented as plain functions/classes here, then
-// hooked into the existing update/render/input code above.
-//
 // ============================================================================
-
