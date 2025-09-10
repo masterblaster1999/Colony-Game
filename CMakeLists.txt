@@ -6,16 +6,10 @@
 # Goals:
 #   - Windows-only toolchain, tuned for MSVC (also works with Ninja + MSVC toolset).
 #   - Switchable frontends (Win32 native vs SDL) via -DFRONTEND=win32|sdl
-#   - Safe, low-friction source discovery (auto-discovers the launcher file).
+#   - Safe, low-friction source discovery. SDL-only sources are compiled ONLY for FRONTEND=sdl.
 #   - Strict warnings (opt-in), fast builds (Unity), stable runtime (fixed MSVC runtime knob).
 #   - Post-build: copies assets and dependent DLLs (e.g., SDL2.dll) next to the .exe
 #   - Future-proof toggles: LTO, ASAN (MSVC), PCH, GUI/Console subsystem.
-#
-# Notes:
-#   - This file intentionally avoids cross-platform logic; it errors out on non-Windows hosts.
-#   - It does NOT force any third-party dependency. If FRONTEND=sdl is chosen, SDL2 must be available.
-#   - It does not assume exact file names/paths for your launchers; it auto-detects common ones and
-#     also allows an override via -DLAUNCHER_FILE=...
 # ==================================================================================================
 
 cmake_minimum_required(VERSION 3.27)
@@ -117,7 +111,6 @@ if(MSVC)
   if(MSVC_STATIC_RUNTIME)
     set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
   else()
-    # Correct dynamic CRT genex: MD (Release) / MDd (Debug)
     set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>DLL")
   endif()
 
@@ -165,7 +158,7 @@ endforeach()
 # Source discovery (core engine)
 #   - Pulls all sources under ${SRC_DIR}
 #   - Excludes launchers by pattern
-#   - Root-level tools like SingleClick.cpp are intentionally excluded from core
+#   - SDL-only sources are identified below and added back ONLY for FRONTEND=sdl.
 # --------------------------------------------------------------------------------------------------
 file(GLOB_RECURSE CORE_SOURCES CONFIGURE_DEPENDS
   "${SRC_DIR}/*.c" "${SRC_DIR}/*.cpp")
@@ -180,9 +173,25 @@ foreach(_rx IN ITEMS
   ".*/Win.*Launcher.*\\.cpp$"
   ".*/Main\\.cpp$"
   ".*/main\\.cpp$"
+  # Also exclude the Win32 single-file launcher from the core:
+  ".*/colonygame\\.cpp$"
 )
   list(FILTER CORE_SOURCES EXCLUDE REGEX "${_rx}")
 endforeach()
+
+# ---- SDL-only translation units (compile ONLY for FRONTEND=sdl) --------------
+set(SDL_ONLY_SOURCES "")
+foreach(_cand IN ITEMS
+  "src/game/Game.cpp"
+)
+  if(EXISTS "${CMAKE_SOURCE_DIR}/${_cand}")
+    list(APPEND SDL_ONLY_SOURCES "${CMAKE_SOURCE_DIR}/${_cand}")
+  endif()
+endforeach()
+if(SDL_ONLY_SOURCES)
+  # remove them from the default core set; added back later only for FRONTEND=sdl
+  list(REMOVE_ITEM CORE_SOURCES ${SDL_ONLY_SOURCES})
+endif()
 
 # Create a static library for the core
 add_library(colony_core STATIC ${CORE_SOURCES} ${CORE_HEADERS})
@@ -285,7 +294,7 @@ set(_KNOWN_SDL_LAUNCHERS
 # Decide subsystem (GUI or Console)
 set(_WIN32_FLAG WIN32)
 if(SHOW_CONSOLE)
-  set(_WIN32_FLAG) # empty -> console subsystem
+  set(_WIN32_FLAG) # empty -> console subsystem (console window visible)
 endif()
 
 # Resolve launcher file
@@ -368,28 +377,83 @@ target_link_libraries(ColonyGame PRIVATE
   user32 gdi32 shell32 shlwapi comdlg32 comctl32 advapi32
   ole32 oleaut32 imm32 winmm version uuid)
 
-# SDL2 (if requested)
+# --------------------------------------------------------------------------------------------------
+# SDL2 integration (FRONTEND=sdl)
+#   - Robust: try Config (vcpkg/official) first, then legacy module.
+#   - If only module variables are available, synthesize imported targets for target-based linking.
+#   - Ensure core sees SDL headers when building SDL-only sources.
+#   - Add SDL-only sources back into core.
+# --------------------------------------------------------------------------------------------------
 if(FRONTEND STREQUAL "sdl")
-  # First try Config package (vcpkg / prebuilt), then module fallback
-  find_package(SDL2 CONFIG QUIET)
-  if(NOT SDL2_FOUND)
-    find_package(SDL2 QUIET)
+  # Add SDL-only files to core
+  if(SDL_ONLY_SOURCES)
+    target_sources(colony_core PRIVATE ${SDL_ONLY_SOURCES})
   endif()
+
+  set(_SDL2_FOUND_KIND "none")
+  find_package(SDL2 CONFIG QUIET)
+  if(SDL2_FOUND)
+    set(_SDL2_FOUND_KIND "config")
+  else()
+    # Try legacy module
+    find_package(SDL2 QUIET)
+    if(SDL2_FOUND)
+      set(_SDL2_FOUND_KIND "module")
+    endif()
+  endif()
+
   if(NOT SDL2_FOUND)
     message(FATAL_ERROR
       "FRONTEND=sdl selected but SDL2 was not found.\n"
       "Install SDL2 (e.g., via vcpkg) or set SDL2_DIR / CMAKE_PREFIX_PATH.")
   endif()
 
-  # Known targets from config packages: SDL2::SDL2 and SDL2::SDL2main
+  message(STATUS "SDL2 found via: ${_SDL2_FOUND_KIND}")
+
+  # If we have imported targets (Config packages), prefer them
+  set(_SDL_TARGET "")
+  if(TARGET SDL2::SDL2)
+    set(_SDL_TARGET SDL2::SDL2)
+  elseif(TARGET SDL2::SDL2-static)
+    set(_SDL_TARGET SDL2::SDL2-static)
+  endif()
+
+  if(_SDL_TARGET)
+    # Propagate headers to core (Game.cpp compiles there)
+    target_link_libraries(colony_core PUBLIC ${_SDL_TARGET})
+    target_link_libraries(ColonyGame PRIVATE ${_SDL_TARGET})
+  else()
+    # Legacy module: use SDL2_INCLUDE_DIRS/SDL2_LIBRARIES and synthesize imported targets.
+    if(SDL2_INCLUDE_DIRS)
+      target_include_directories(colony_core PUBLIC ${SDL2_INCLUDE_DIRS})
+    endif()
+    if(SDL2_LIBRARIES)
+      target_link_libraries(ColonyGame PRIVATE ${SDL2_LIBRARIES})
+    endif()
+    # Create an INTERFACE imported target for consistent downstream usage
+    if(NOT TARGET SDL2::SDL2)
+      add_library(SDL2::SDL2 INTERFACE IMPORTED)
+      if(SDL2_INCLUDE_DIRS)
+        set_target_properties(SDL2::SDL2 PROPERTIES
+          INTERFACE_INCLUDE_DIRECTORIES "${SDL2_INCLUDE_DIRS}")
+      endif()
+      if(SDL2_LIBRARIES)
+        set_target_properties(SDL2::SDL2 PROPERTIES
+          INTERFACE_LINK_LIBRARIES "${SDL2_LIBRARIES}")
+      endif()
+    endif()
+    target_link_libraries(colony_core PUBLIC SDL2::SDL2)
+  endif()
+
+  # SDL2main if available (helps on Windows for 'main' shim). Harmless if not present.
   if(TARGET SDL2::SDL2main)
     target_link_libraries(ColonyGame PRIVATE SDL2::SDL2main)
+  elseif(DEFINED SDL2MAIN_LIBRARY AND SDL2MAIN_LIBRARY)
+    target_link_libraries(ColonyGame PRIVATE "${SDL2MAIN_LIBRARY}")
   endif()
-  if(TARGET SDL2::SDL2)
-    target_link_libraries(ColonyGame PRIVATE SDL2::SDL2)
-  elseif(TARGET SDL2::SDL2-static)
-    target_link_libraries(ColonyGame PRIVATE SDL2::SDL2-static)
-  endif()
+
+  # Flag for code that wants to know we built the SDL path
+  target_compile_definitions(colony_core PUBLIC CG_USE_SDL=1)
 endif()
 
 # Unity for the executable (small benefit; core is where most value is)
@@ -448,8 +512,6 @@ foreach(_d IN LISTS _ASSET_DIRS)
   endif()
 endforeach()
 
-# If you prefer everything flat at root, change DESTINATIONs above to "." accordingly.
-
 # --------------------------------------------------------------------------------------------------
 # Summary (printed once at configure time)
 # --------------------------------------------------------------------------------------------------
@@ -467,6 +529,13 @@ message(STATUS "  LTO/IPO              : ${ENABLE_LTO}")
 message(STATUS "  ASAN                 : ${ENABLE_ASAN}")
 message(STATUS "  Source dir           : ${CMAKE_SOURCE_DIR}")
 message(STATUS "  Binary dir           : ${CMAKE_BINARY_DIR}")
+if(FRONTEND STREQUAL "sdl")
+  if(SDL2_FOUND)
+    message(STATUS "  SDL2                 : FOUND (${_SDL2_FOUND_KIND})")
+  else()
+    message(STATUS "  SDL2                 : NOT FOUND")
+  endif()
+endif()
 message(STATUS "===============================================================")
 message(STATUS "")
 
