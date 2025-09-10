@@ -168,8 +168,8 @@ foreach(_rx IN ITEMS
   ".*/Win.*Launcher.*\\.cpp$"
   ".*/Main\\.cpp$"
   ".*/main\\.cpp$"
-  # Also exclude the Win32 single-file launcher from the core:
   ".*/colonygame\\.cpp$"
+  ".*/win32_main\\.cpp$"        # <-- ensure the Win32 single-file launcher is NOT in the core
 )
   list(FILTER CORE_SOURCES EXCLUDE REGEX "${_rx}")
 endforeach()
@@ -217,6 +217,12 @@ target_compile_definitions(colony_core PUBLIC
   $<$<CONFIG:Debug>:CG_DEBUG=1>
   $<$<CONFIG:RelWithDebInfo>:CG_RELWITHDEBINFO=1>
 )
+
+# --- Windows multimedia timer dependency for core (safe even if not used) -----
+# This ensures projects that include timer calls from the core resolve symbols.
+if(WIN32)
+  target_link_libraries(colony_core PUBLIC winmm)
+endif()
 
 # --------------------------------------------------------------------------------------------------
 # Version header (auto-generated; no repo file required)
@@ -270,6 +276,10 @@ set(_KNOWN_WIN_LAUNCHERS
   "src/Launcher_Win32.cpp"
   "Launcher_Win32.cpp"
   "src/WinLauncher.cpp"
+  # --- Added: single-file Win32 launcher used by this project
+  "src/platform/win32_main.cpp"
+  "platform/win32_main.cpp"
+  "src/platform/win32/win32_main.cpp"
 )
 set(_KNOWN_SDL_LAUNCHERS
   "Launcher_SDL.cpp"
@@ -307,7 +317,7 @@ elseif(FRONTEND STREQUAL "win32")
     message(FATAL_ERROR
       "Could not find a Win32 launcher source.\n"
       "Looked for: ${_KNOWN_WIN_LAUNCHERS}\n"
-      "Override with -DLAUNCHER_FILE=path/to/WinLauncher.cpp")
+      "Override with -DLAUNCHER_FILE=path/to/win32_main.cpp")
   endif()
 elseif(FRONTEND STREQUAL "sdl")
   foreach(_cand IN LISTS _KNOWN_SDL_LAUNCHERS)
@@ -356,10 +366,11 @@ target_compile_definitions(ColonyGame PRIVATE
   $<$<BOOL:${SHOW_CONSOLE}>:CG_CONSOLE_APP=1>
 )
 
-# Win32 libs (common set; harmless if some are unused)
+# Win32 libs (explicit; complements any #pragma comment(lib, ...) in sources)
 target_link_libraries(ColonyGame PRIVATE
   user32 gdi32 shell32 shlwapi comdlg32 comctl32 advapi32
-  ole32 oleaut32 imm32 winmm version uuid)
+  ole32 oleaut32 imm32 winmm version uuid
+  dwmapi xinput9_1_0)
 
 # --------------------------------------------------------------------------------------------------
 # SDL2 integration (FRONTEND=sdl)
