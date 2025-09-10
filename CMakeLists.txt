@@ -328,7 +328,7 @@ endif()
 
 # Resource (.rc) auto-discovery (optional icon/manifest)
 set(_RES "")
-foreach(_rc IN LISTS
+foreach(_rc IN ITEMS
   "app.rc" "App.rc"
   "src/app.rc" "src/App.rc"
   "res/app.rc" "res/App.rc"
@@ -451,31 +451,60 @@ foreach(_d IN LISTS _ASSET_DIRS)
   endif()
 endforeach()
 
-# Post-build: copy dependent DLLs (e.g., SDL2.dll) next to the .exe
-# Requires CMake 3.21+ for TARGET_RUNTIME_DLLS generator expression.
+# --------------------------------------------------------------------------------------------------
+# Robust runtime DLL staging & copy (fixes empty-list failures)
+# --------------------------------------------------------------------------------------------------
+
+# Copy dependent DLLs (e.g., SDL2.dll) next to the .exe *if any exist*.
+# Guarded pattern avoids calling 'cmake -E copy_if_different' with no sources.
+set(_have_runtime_dlls $<BOOL:$<TARGET_RUNTIME_DLLS:ColonyGame>>)
+set(_copy_dlls_to_bindir
+    ${CMAKE_COMMAND} -E copy_if_different
+    $<TARGET_RUNTIME_DLLS:ColonyGame>
+    $<TARGET_FILE_DIR:ColonyGame>
+)
+
 add_custom_command(TARGET ColonyGame POST_BUILD
-  COMMAND "${CMAKE_COMMAND}" -E copy_if_different
-          $<TARGET_RUNTIME_DLLS:ColonyGame>
-          $<TARGET_FILE_DIR:ColonyGame>
+  COMMAND "$<${_have_runtime_dlls}:${_copy_dlls_to_bindir}>"
   COMMAND_EXPAND_LISTS
   VERBATIM)
 
 # --- Post-build staging to build/stage/<Config> --------------------------------
 # Creates a self-contained folder with the exe, runtime DLLs and assets.
-set(COLONY_STAGE_DIR "${CMAKE_BINARY_DIR}/stage")
+# Use a per-config stage directory variable with a generator expression.
+set(COLONY_STAGE_DIR "${CMAKE_BINARY_DIR}/stage/$<CONFIG>")
 
+# Always make stage dir and copy the main executable
 add_custom_command(TARGET ColonyGame POST_BUILD
-  COMMAND "${CMAKE_COMMAND}" -E make_directory
-          "${COLONY_STAGE_DIR}/$<CONFIG>"
-  COMMAND "${CMAKE_COMMAND}" -E copy_if_different
-          "$<TARGET_FILE:ColonyGame>"
-          "${COLONY_STAGE_DIR}/$<CONFIG>/"
-  COMMAND "${CMAKE_COMMAND}" -E copy_if_different
-          $<TARGET_RUNTIME_DLLS:ColonyGame>
-          "${COLONY_STAGE_DIR}/$<CONFIG>"
-  COMMAND_EXPAND_LISTS
-  COMMENT "Staging ColonyGame and runtime DLLs to ${COLONY_STAGE_DIR}/$<CONFIG>"
+  COMMAND "${CMAKE_COMMAND}" -E echo "Staging ColonyGame and runtime DLLs to: ${COLONY_STAGE_DIR}"
+  COMMAND "${CMAKE_COMMAND}" -E make_directory "${COLONY_STAGE_DIR}"
+  COMMAND "${CMAKE_COMMAND}" -E copy_if_different "$<TARGET_FILE:ColonyGame>" "${COLONY_STAGE_DIR}"
   VERBATIM)
+
+# Copy runtime DLLs into stage *if any exist*
+set(_copy_dlls_to_stage
+    ${CMAKE_COMMAND} -E copy_if_different
+    $<TARGET_RUNTIME_DLLS:ColonyGame>
+    ${COLONY_STAGE_DIR}
+)
+add_custom_command(TARGET ColonyGame POST_BUILD
+  COMMAND "$<${_have_runtime_dlls}:${_copy_dlls_to_stage}>"
+  COMMAND_EXPAND_LISTS
+  VERBATIM)
+
+# (Optional) Copy PDB into stage when present (MSVC)
+if(MSVC)
+  set(_have_pdb $<BOOL:$<TARGET_PDB_FILE:ColonyGame>>)
+  set(_copy_pdb_to_stage
+      ${CMAKE_COMMAND} -E copy_if_different
+      $<TARGET_PDB_FILE:ColonyGame>
+      ${COLONY_STAGE_DIR}
+  )
+  add_custom_command(TARGET ColonyGame POST_BUILD
+    COMMAND "$<${_have_pdb}:${_copy_pdb_to_stage}>"
+    COMMAND_EXPAND_LISTS
+    VERBATIM)
+endif()
 
 # Stage assets into build/stage/<Config>/<dir> if they exist
 foreach(_d IN LISTS _ASSET_DIRS)
@@ -483,7 +512,7 @@ foreach(_d IN LISTS _ASSET_DIRS)
     add_custom_command(TARGET ColonyGame POST_BUILD
       COMMAND "${CMAKE_COMMAND}" -E copy_directory
               "${CMAKE_SOURCE_DIR}/${_d}"
-              "${COLONY_STAGE_DIR}/$<CONFIG>/${_d}"
+              "${COLONY_STAGE_DIR}/${_d}"
       VERBATIM)
   endif()
 endforeach()
