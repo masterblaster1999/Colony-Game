@@ -21,11 +21,13 @@ struct SDL_Renderer;
 namespace sim {
 
 // ---------- small helpers ----------
-static inline int clampi(int v, int lo, int hi) { return v < lo ? lo : (v > hi ? hi : v); }
+static inline int   clampi(int v, int lo, int hi) { return v < lo ? lo : (v > hi ? hi : v); }
 static inline float clampf(float v, float lo, float hi) { return std::fmax(lo, std::fmin(hi, v)); }
 
 struct IVec2 { int x = 0, y = 0; };
 static inline int idx(int x, int y, int w) { return y * w + x; }
+
+constexpr uint16_t kOutsideRoom = 0xffff;
 
 // ---------- public enums/flags ----------
 enum CellFlags : uint16_t {
@@ -44,7 +46,7 @@ struct ColonistPresence {
 
 struct Params {
     // Gas dynamics (tunable, arbitrary units)
-    float mixCoef          = 0.20f; // dt-normalized local mixing coeff
+    float mixCoef          = 0.20f; // local mixing coefficient (treated as per-tick here)
     float doorPermeability = 0.25f; // when DoorOpen
     float leakPermeability = 0.5f;  // through Leak to exterior
     float sealedMixBoost   = 0.6f;  // extra uniform mixing inside a sealed room
@@ -59,7 +61,7 @@ struct Params {
 };
 
 struct Cell {
-    // Gas fractions (sum ~ 1.0 in “normalized” cells, but we simulate masses)
+    // Gas masses (not strictly normalized; we keep totals & masses for simplicity)
     float o2 = 0.21f;
     float co2 = 0.0004f;
     float n2 = 0.7896f;
@@ -70,7 +72,7 @@ struct Cell {
     float humidity = 0.3f;
 
     uint16_t flags = 0;
-    uint16_t roomId = 0xffff; // 0xffff == unassigned/outside
+    uint16_t roomId = kOutsideRoom; // 0xffff == unassigned/outside
 };
 
 class AtmosphereSim {
@@ -78,14 +80,19 @@ public:
     AtmosphereSim() = default;
 
     void Reset(int w, int h, uint64_t seed = 0) {
-        width_ = std::max(1, w);
+        width_  = std::max(1, w);
         height_ = std::max(1, h);
         grid_.assign(width_ * height_, Cell{});
-        rng_.seed(seed ? seed : std::random_device{}());
-        roomIdCounter_ = 0;
-        roomIds_.assign(width_ * height_, 0xffff);
+        next_.clear();
+        next_.resize(width_ * height_);
+        roomIds_.assign(width_ * height_, kOutsideRoom);
+        flux_.assign(width_ * height_ * 4, 0.0f);
         frames_ = 0;
-        // Make default outside = roomId=0xffff, interior will be discovered
+        dirtyRooms_ = true;
+
+        // Seed mt19937 robustly from 64-bit seed without narrowing warnings.
+        rng_.seed(narrowSeed(seed));
+
         rebuildRooms();
     }
 
@@ -99,7 +106,7 @@ public:
     void SetDoor(int x, int y, bool present, bool open) {
         if (!inBounds(x, y)) return;
         auto& c = grid_[idx(x, y, width_)];
-        c.flags = present ? (uint16_t)(c.flags | Door) : (uint16_t)(c.flags & ~Door);
+        c.flags = present ? static_cast<uint16_t>(c.flags | Door) : static_cast<uint16_t>(c.flags & ~Door);
         if (present) {
             if (open) c.flags |= DoorOpen; else c.flags &= ~DoorOpen;
         }
@@ -109,6 +116,7 @@ public:
         if (!inBounds(x, y)) return;
         auto& c = grid_[idx(x, y, width_)];
         if (leak) c.flags |= Leak; else c.flags &= ~Leak;
+        dirtyRooms_ = true; // topology to outside may have changed
     }
 
     // Colonists for this tick
@@ -124,30 +132,28 @@ public:
             if (!inBounds(cst.x, cst.y)) continue;
             auto& c = grid_[idx(cst.x, cst.y, width_)];
             float want = params_.o2ConsumptionBase * clampf(cst.activity, 0.1f, 3.0f) * dt;
-            float got = std::min(c.o2 * c.pressure, want);
+            float got  = std::min(c.o2 * c.pressure, want);
             if (got > 0) {
                 float frac = got / std::max(1e-6f, c.pressure);
-                c.o2 -= frac;
-                c.co2 += frac * params_.co2ReturnFactor;
+                c.o2  = std::max(0.0f, c.o2 - frac);
+                c.co2 = c.co2 + frac * params_.co2ReturnFactor;
             }
         }
 
         // Gas mixing & pressure
         // 2-pass: compute fluxes, then apply
         const int W = width_, H = height_;
-        flux_.assign(W * H * 4, 0.0f); // per cell, 4 neighbors: 0:+x,1:-x,2:+y,3:-y
+        flux_.assign(static_cast<size_t>(W) * static_cast<size_t>(H) * 4u, 0.0f); // per cell, 4 neighbors: 0:+x,1:-x,2:+y,3:-y
+
         auto permeabilityAt = [&](int x, int y, int nx, int ny) -> float {
-            // If either cell is solid with no open door → 0
             const auto& a = grid_[idx(x, y, W)];
             const auto& b = grid_[idx(nx, ny, W)];
+            // If either cell is solid with no open door → 0
             if ((a.flags & Solid) || (b.flags & Solid)) {
                 // Door tiles can be Solid+Door; allow when open
-                if ( ((a.flags & Door) && (a.flags & DoorOpen)) ||
-                     ((b.flags & Door) && (b.flags & DoorOpen)) ) {
-                    // ok
-                } else {
-                    return 0.0f;
-                }
+                const bool aOpen = (a.flags & Door) && (a.flags & DoorOpen);
+                const bool bOpen = (b.flags & Door) && (b.flags & DoorOpen);
+                if (!(aOpen || bOpen)) return 0.0f;
             }
             float base = 1.0f;
             if ((a.flags & Door) || (b.flags & Door)) base *= params_.doorPermeability;
@@ -160,13 +166,16 @@ public:
             for (int x = 0; x < W; ++x) {
                 const int id = idx(x, y, W);
                 const auto& c = grid_[id];
+                (void)c;
+
                 auto tryFlux = [&](int nx, int ny, int edgeIdx) {
                     if (!inBounds(nx, ny)) return;
                     const int nid = idx(nx, ny, W);
                     const auto& nb = grid_[nid];
                     float perm = permeabilityAt(x, y, nx, ny);
                     if (perm <= 0.0f) return;
-                    float dp = (c.pressure - nb.pressure);
+                    float dp = (grid_[id].pressure - nb.pressure);
+                    // Note: params_.mixCoef is treated as per-tick; multiply by dt if you choose a variable time step model.
                     float f = clampf(dp * params_.mixCoef * perm, -params_.maxFluxPerEdge, params_.maxFluxPerEdge);
                     flux_[id*4 + edgeIdx] = f; // positive: outflow
                 };
@@ -181,10 +190,11 @@ public:
         next_ = grid_;
         auto applyFlux = [&](int x, int y, int nx, int ny, int edgeIdx) {
             if (!inBounds(nx, ny)) return;
-            const int id = idx(x, y, W);
+            const int id  = idx(x, y, W);
             const int nid = idx(nx, ny, W);
             float f = flux_[id*4 + edgeIdx];
             if (f == 0.0f) return;
+
             // Move mass proportionally; split across gases by current fractions
             const auto& src = grid_[id];
             auto& dst = next_[id];
@@ -193,22 +203,22 @@ public:
             if (mass > 0.0f) {
                 // leaving id → nid if f>0; if f<0, we'll do the opposite when edge reversed
                 float total = std::max(1e-6f, src.o2 + src.co2 + src.n2 + src.smoke);
-                float o2m = (src.o2 / total) * mass;
-                float c2m = (src.co2 / total) * mass;
-                float n2m = (src.n2 / total) * mass;
-                float smm = (src.smoke / total) * mass;
+                float o2m = (src.o2 / total)   * mass;
+                float c2m = (src.co2 / total)  * mass;
+                float n2m = (src.n2 / total)   * mass;
+                float smm = (src.smoke / total)* mass;
 
-                dst.pressure -= mass;
-                ngb.pressure += mass;
+                dst.pressure = std::max(0.0f, dst.pressure - mass);
+                ngb.pressure = std::max(0.0f, ngb.pressure + mass);
 
-                dst.o2 = clampf(dst.o2 - o2m, 0.0f, 1e6f);
-                ngb.o2 += o2m;
-                dst.co2 = clampf(dst.co2 - c2m, 0.0f, 1e6f);
-                ngb.co2 += c2m;
-                dst.n2 = clampf(dst.n2 - n2m, 0.0f, 1e6f);
-                ngb.n2 += n2m;
+                dst.o2    = clampf(dst.o2    - o2m, 0.0f, 1e6f);
+                ngb.o2    = clampf(ngb.o2    + o2m, 0.0f, 1e6f);
+                dst.co2   = clampf(dst.co2   - c2m, 0.0f, 1e6f);
+                ngb.co2   = clampf(ngb.co2   + c2m, 0.0f, 1e6f);
+                dst.n2    = clampf(dst.n2    - n2m, 0.0f, 1e6f);
+                ngb.n2    = clampf(ngb.n2    + n2m, 0.0f, 1e6f);
                 dst.smoke = clampf(dst.smoke - smm, 0.0f, 1e6f);
-                ngb.smoke += smm;
+                ngb.smoke = clampf(ngb.smoke + smm, 0.0f, 1e6f);
             }
         };
 
@@ -224,12 +234,18 @@ public:
         // Sealed-room mixing boost: average toward room mean quickly
         mixRooms(next_);
 
+        // Final safety clamp (avoid negative pressures)
+        for (auto& c : next_) {
+            if (c.pressure < 0.0f) c.pressure = 0.0f;
+            // (Gases are already clamped during flux application)
+        }
+
         grid_.swap(next_);
         ++frames_;
     }
 
     // --- Public utilities ---
-    int Width() const  { return width_; }
+    int Width()  const { return width_; }
     int Height() const { return height_; }
     const Cell& At(int x, int y) const { return grid_[idx(x,y,width_)]; }
     void SetParams(const Params& p) { params_ = p; }
@@ -245,8 +261,8 @@ public:
                 // map O2 ratio to green channel
                 float total = std::max(1e-6f, c.o2 + c.co2 + c.n2 + c.smoke);
                 float o2ratio = clampf(c.o2/total, 0.0f, 0.35f) / 0.35f;
-                uint8_t g = (uint8_t)std::round(255.0f * o2ratio);
-                uint8_t r8 = (uint8_t)std::round(255.0f * (1.0f - o2ratio));
+                uint8_t g = static_cast<uint8_t>(std::round(255.0f * o2ratio));
+                uint8_t r8 = static_cast<uint8_t>(std::round(255.0f * (1.0f - o2ratio)));
                 SDL_Rect rc{ ox + x * cellSize, oy + y * cellSize, cellSize, cellSize };
                 SDL_SetRenderDrawColor(r, r8, g, 0, 160);
                 SDL_RenderFillRect(r, &rc);
@@ -256,16 +272,31 @@ public:
     }
 
 private:
-    bool inBounds(int x, int y) const { return (unsigned)x < (unsigned)width_ && (unsigned)y < (unsigned)height_; }
+    // Mix a 64-bit seed into the native mt19937 result_type deterministically (SplitMix64 fold).
+    static std::mt19937::result_type narrowSeed(uint64_t seed64) {
+        using R = std::mt19937::result_type; // usually 32-bit
+        if (seed64 == 0) {
+            return static_cast<R>(std::random_device{}());
+        }
+        // SplitMix64 one round, then XOR-fold to 32 bits
+        uint64_t z = seed64 + 0x9E3779B97F4A7C15ULL;
+        z = (z ^ (z >> 30)) * 0xBF58476D1CE4E5B9ULL;
+        z = (z ^ (z >> 27)) * 0x94D049BB133111EBULL;
+        z = z ^ (z >> 31);
+        return static_cast<R>(static_cast<uint32_t>(z) ^ static_cast<uint32_t>(z >> 32));
+    }
+
+    bool inBounds(int x, int y) const {
+        return static_cast<unsigned>(x) < static_cast<unsigned>(width_) &&
+               static_cast<unsigned>(y) < static_cast<unsigned>(height_);
+    }
 
     void rebuildRooms() {
-        std::fill(roomIds_.begin(), roomIds_.end(), 0xffff);
-        roomIdCounter_ = 0;
-        // Treat the outer boundary as "outside" (0xffff)
-        // Flood fill interior cells that are not Solid and not explicit Leak to make room ids.
+        std::fill(roomIds_.begin(), roomIds_.end(), kOutsideRoom);
+        // Flood fill interior cells that are not Solid to make room ids.
         uint16_t nextId = 0;
         std::vector<IVec2> stack;
-        auto permeable = [&](const Cell& c) {
+        auto permeable = [](const Cell& c) {
             if (c.flags & Solid) return false;
             // closed door still counts as interior surface, but not permeable to outside
             return true;
@@ -274,13 +305,13 @@ private:
         for (int y = 0; y < height_; ++y) {
             for (int x = 0; x < width_; ++x) {
                 int id = idx(x, y, width_);
-                if (roomIds_[id] != 0xffff) continue;
+                if (roomIds_[id] != kOutsideRoom) continue;
                 const auto& c = grid_[id];
                 if (!permeable(c)) continue;
 
                 // If on edge or marked Leak → treat as outside connected; skip room assignment
                 if (x==0 || y==0 || x==width_-1 || y==height_-1 || (c.flags & Leak)) {
-                    roomIds_[id] = 0xffff; // outside
+                    roomIds_[id] = kOutsideRoom; // outside
                     continue;
                 }
 
@@ -296,13 +327,13 @@ private:
                         int nx = p.x + dx[k], ny = p.y + dy[k];
                         if (!inBounds(nx, ny)) continue;
                         int nid = idx(nx, ny, width_);
-                        if (roomIds_[nid] != 0xffff) continue;
+                        if (roomIds_[nid] != kOutsideRoom) continue;
                         const auto& nc = grid_[nid];
                         if (!permeable(nc)) continue;
 
                         // If either side leaks to outside, don't include in a sealed room
                         if (nx==0 || ny==0 || nx==width_-1 || ny==height_-1 || (nc.flags & Leak)) {
-                            roomIds_[nid] = 0xffff; // outside
+                            roomIds_[nid] = kOutsideRoom; // outside
                             continue;
                         }
 
@@ -314,23 +345,19 @@ private:
             }
         }
         // write back room ids into cells for debugging
-        for (int i=0;i<(int)grid_.size();++i) grid_[i].roomId = roomIds_[i];
+        for (size_t i=0;i<grid_.size();++i) grid_[i].roomId = roomIds_[i];
+        roomIdCounter_ = nextId; // cache number of rooms we just discovered
         dirtyRooms_ = false;
     }
 
     void mixRooms(std::vector<Cell>& dst) {
         // For each room id, compute simple average and lerp toward it
         struct Acc { double o2=0, co2=0, n2=0, smoke=0, p=0; int count=0; };
-        if (roomIdCounter_ == 0 && !roomIds_.empty()) {
-            // recompute how many unique ids exist
-            uint16_t maxId = 0;
-            for (auto id : roomIds_) if (id != 0xffff) maxId = std::max(maxId, id);
-            roomIdCounter_ = maxId + 1;
-        }
         std::vector<Acc> accs(roomIdCounter_);
-        for (int i=0;i<(int)dst.size();++i) {
+
+        for (size_t i=0;i<dst.size();++i) {
             uint16_t r = roomIds_[i];
-            if (r == 0xffff) continue;
+            if (r == kOutsideRoom) continue;
             auto& a = accs[r];
             const auto& c = dst[i];
             a.o2 += c.o2; a.co2 += c.co2; a.n2 += c.n2; a.smoke += c.smoke; a.p += c.pressure; a.count++;
@@ -339,16 +366,16 @@ private:
             a.o2/=a.count; a.co2/=a.count; a.n2/=a.count; a.smoke/=a.count; a.p/=a.count;
         }
         const float k = params_.sealedMixBoost;
-        for (int i=0;i<(int)dst.size();++i) {
+        for (size_t i=0;i<dst.size();++i) {
             uint16_t r = roomIds_[i];
-            if (r == 0xffff) continue; // outside
+            if (r == kOutsideRoom) continue; // outside
             auto& c = dst[i];
             const auto& a = accs[r];
-            c.o2    = c.o2    + (float)((a.o2    - c.o2   ) * k);
-            c.co2   = c.co2   + (float)((a.co2   - c.co2  ) * k);
-            c.n2    = c.n2    + (float)((a.n2    - c.n2   ) * k);
-            c.smoke = c.smoke + (float)((a.smoke - c.smoke) * k);
-            c.pressure = c.pressure + (float)((a.p - c.pressure) * k);
+            c.o2     = c.o2     + static_cast<float>((a.o2    - c.o2   ) * k);
+            c.co2    = c.co2    + static_cast<float>((a.co2   - c.co2  ) * k);
+            c.n2     = c.n2     + static_cast<float>((a.n2    - c.n2   ) * k);
+            c.smoke  = c.smoke  + static_cast<float>((a.smoke - c.smoke) * k);
+            c.pressure = c.pressure + static_cast<float>((a.p   - c.pressure) * k);
         }
     }
 
