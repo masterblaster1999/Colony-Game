@@ -6,15 +6,21 @@
 // perf HUD + micro-profiler lanes + frame CRC32, hot-reloadable game.dll + PlatformAPI services,
 // magnifier overlay, smooth vs crisp scaling toggle.  No third-party libs. No external assets.
 
-#define WIN32_LEAN_AND_MEAN
+// ---- Windows SDK hygiene ----------------------------------------------------
+#ifndef WIN32_LEAN_AND_MEAN
+#  define WIN32_LEAN_AND_MEAN 1
+#endif
 #ifndef NOMINMAX
-#define NOMINMAX
+#  define NOMINMAX 1
 #endif
 
 #include <windows.h>
+#include <windowsx.h>   // GET_X_LPARAM / GET_Y_LPARAM / GET_WHEEL_DELTA_WPARAM
 #include <dwmapi.h>
 #include <xinput.h>
+#include <mmsystem.h>   // TIMECAPS, timeGetDevCaps, timeBeginPeriod, timeEndPeriod
 #include <shellapi.h>
+
 #include <stdint.h>
 #include <stdio.h>
 #include <math.h>
@@ -25,7 +31,13 @@
 #include <condition_variable>
 #include <string>
 #include <string.h>
-#include <emmintrin.h> // SSE2
+
+#if defined(_M_AMD64) || defined(_M_X64) || (defined(_M_IX86_FP) && _M_IX86_FP >= 2) || defined(__SSE2__)
+#  define COLONY_HAS_SSE2 1
+#  include <emmintrin.h> // SSE2
+#else
+#  define COLONY_HAS_SSE2 0
+#endif
 
 #pragma comment(lib, "user32.lib")
 #pragma comment(lib, "gdi32.lib")
@@ -33,6 +45,17 @@
 #pragma comment(lib, "xinput9_1_0.lib")
 #pragma comment(lib, "winmm.lib")
 #pragma comment(lib, "shell32.lib")
+
+// Fallbacks in case older headers/toolchains don't define these macros
+#ifndef GET_X_LPARAM
+#  define GET_X_LPARAM(lp) ((int)(short)LOWORD(lp))
+#endif
+#ifndef GET_Y_LPARAM
+#  define GET_Y_LPARAM(lp) ((int)(short)HIWORD(lp))
+#endif
+#ifndef GET_WHEEL_DELTA_WPARAM
+#  define GET_WHEEL_DELTA_WPARAM(wParam) ((short)HIWORD(wParam))
+#endif
 
 // --------------------------------------------------------
 // Utils
@@ -172,7 +195,7 @@ static const uint8_t kFont6x8[96][8] = {
     GLYPH6x8(0x82,0x44,0x28,0x10,0x28,0x44,0x82,0), // 'X'
     GLYPH6x8(0x82,0x44,0x28,0x10,0x10,0x10,0x10,0), // 'Y'
     GLYPH6x8(0xfe,0x04,0x08,0x30,0x40,0x80,0xfe,0), // 'Z'
-    // [ remains of 96 entries default to zero ]
+    // (remaining glyphs default to zero)
 };
 #undef GLYPH6x8
 
@@ -243,6 +266,7 @@ static void apply_dither_gamma(Backbuffer& bb, bool gamma){
 // --------------------------------------------------------
 // SIMD fills + compositing + SDF + soft shadows
 // --------------------------------------------------------
+#if COLONY_HAS_SSE2
 static void clear_solid_sse2(Backbuffer& bb, uint32_t c){
     __m128i v=_mm_set1_epi32((int)c);
     for(int y=0;y<bb.h;y++){
@@ -265,6 +289,19 @@ static void fill_rect_sse2(Backbuffer& bb,int x,int y,int w,int h,uint32_t c){
         for(int i=vecN;i<span;++i) row[i]=c;
     }
 }
+#else
+// Scalar fallbacks for toolchains without SSE2
+static void clear_solid_sse2(Backbuffer& bb, uint32_t c){
+    for(int y=0;y<bb.h;y++){
+        uint32_t* p=(uint32_t*)rowptr(bb,y);
+        for(int x=0;x<bb.w;x++) p[x]=c;
+    }
+}
+static void fill_rect_sse2(Backbuffer& bb,int x,int y,int w,int h,uint32_t c){
+    fill_rect_scalar(bb,x,y,w,h,c);
+}
+#endif
+
 static inline uint32_t alpha_over(uint32_t dst, uint32_t srcARGB){
     int a=(int)((srcARGB>>24)&0xFF); if(a<=0) return dst; int inv=255-a;
     int db=(dst>>16)&0xFF, dg=(dst>>8)&0xFF, dr=(dst)&0xFF;
@@ -445,6 +482,7 @@ struct WindowState{
     bool smoothScale=false; // HALFTONE when not integer scaling
     int baseW=1280, baseH=720; UINT dpi=96;
 } g_win;
+
 static void set_dpi_awareness(){
     HMODULE user=GetModuleHandleA("user32.dll");
     using SetDpiCtx=BOOL(WINAPI*)(HANDLE);
@@ -454,17 +492,17 @@ static void set_dpi_awareness(){
 }
 static void toggle_fullscreen(HWND hwnd){
     static WINDOWPLACEMENT prev={sizeof(prev)};
-    DWORD style=GetWindowLong(hwnd,GWL_STYLE);
+    DWORD style=(DWORD)GetWindowLongPtr(hwnd,GWL_STYLE);
     if(!g_win.borderless){
         MONITORINFO mi={sizeof(mi)}; GetWindowPlacement(hwnd,&prev);
         GetMonitorInfo(MonitorFromWindow(hwnd,MONITOR_DEFAULTTONEAREST),&mi);
-        SetWindowLong(hwnd,GWL_STYLE, style & ~WS_OVERLAPPEDWINDOW);
+        SetWindowLongPtr(hwnd,GWL_STYLE, style & ~WS_OVERLAPPEDWINDOW);
         SetWindowPos(hwnd,HWND_TOP, mi.rcMonitor.left,mi.rcMonitor.top,
             mi.rcMonitor.right-mi.rcMonitor.left, mi.rcMonitor.bottom-mi.rcMonitor.top,
             SWP_NOOWNERZORDER|SWP_FRAMECHANGED);
         g_win.borderless=true;
     }else{
-        SetWindowLong(hwnd,GWL_STYLE, style | WS_OVERLAPPEDWINDOW);
+        SetWindowLongPtr(hwnd,GWL_STYLE, style | WS_OVERLAPPEDWINDOW);
         SetWindowPlacement(hwnd,&prev);
         SetWindowPos(hwnd,nullptr,0,0,0,0, SWP_NOMOVE|SWP_NOSIZE|SWP_NOZORDER|SWP_NOOWNERZORDER|SWP_FRAMECHANGED);
         g_win.borderless=false;
@@ -514,6 +552,7 @@ static Backbuffer g_bb;
 static InputState g_in;
 static ThreadPool g_pool;
 static DirtyTracker g_dirty;
+static UINT g_timerPeriod = 0; // tracks the period actually begun, to correctly end it
 
 // --------------------------------------------------------
 // XInput
@@ -777,7 +816,12 @@ int APIENTRY wWinMain(HINSTANCE hInst,HINSTANCE,LPWSTR,int){
     int hw=(int)std::thread::hardware_concurrency(); g_pool.init( (hw>2)?(hw-1):1 );
     g_in.rawMouse=g_win.enableRawMouse; enable_raw_mouse(hwnd,g_in.rawMouse);
 
-    TIMECAPS tc; timeGetDevCaps(&tc,sizeof(tc)); timeBeginPeriod(1);
+    // ---- High-resolution timer period: request the minimum supported and track it
+    TIMECAPS tc{}; if(timeGetDevCaps(&tc,sizeof(tc))==TIMERR_NOERROR){
+        UINT desired = clampi(1, (int)tc.wPeriodMin, (int)tc.wPeriodMax);
+        if(timeBeginPeriod(desired)==TIMERR_NOERROR) g_timerPeriod = desired;
+    }
+
     BOOL dwmEnabled=FALSE; DwmIsCompositionEnabled(&dwmEnabled);
     LARGE_INTEGER freqLi; QueryPerformanceFrequency(&freqLi); const double invFreq=1.0/(double)freqLi.QuadPart;
     uint64_t tPrev=now_qpc(); double simTime=0.0; double acc=0.0;
@@ -787,7 +831,7 @@ int APIENTRY wWinMain(HINSTANCE hInst,HINSTANCE,LPWSTR,int){
         if(hot.api.bind_platform){
             PlatformAPI plat{}; plat.log_text=plat_log; plat.time_now_sec=plat_time;
             plat.screenshot_bmp = [](const char* p){ return save_bmp(p); };
-            plat.clipboard_copy_bitmap = [](){ return copy_bitmap_to_clipboard(g_win.hwnd); };
+            plat.clipboard_copy_bitmap = []()->bool{ return copy_bitmap_to_clipboard(g_win.hwnd); };
             plat.file_write_all=plat_write; plat.file_read_all=plat_read;
             hot.api.bind_platform(&plat,1);
         }
@@ -810,7 +854,7 @@ int APIENTRY wWinMain(HINSTANCE hInst,HINSTANCE,LPWSTR,int){
                 if(hot.api.bind_platform){
                     PlatformAPI plat{}; plat.log_text=plat_log; plat.time_now_sec=plat_time;
                     plat.screenshot_bmp = [](const char* p){ return save_bmp(p); };
-                    plat.clipboard_copy_bitmap = [](){ return copy_bitmap_to_clipboard(g_win.hwnd); };
+                    plat.clipboard_copy_bitmap = []()->bool{ return copy_bitmap_to_clipboard(g_win.hwnd); };
                     plat.file_write_all=plat_write; plat.file_read_all=plat_read;
                     hot.api.bind_platform(&plat,1);
                 }
@@ -911,6 +955,6 @@ int APIENTRY wWinMain(HINSTANCE hInst,HINSTANCE,LPWSTR,int){
     g_pool.shutdown();
     g_bb.free();
     unload_game(hot);
-    timeEndPeriod(1);
+    if(g_timerPeriod) timeEndPeriod(g_timerPeriod);
     return 0;
 }
