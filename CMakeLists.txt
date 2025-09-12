@@ -8,9 +8,23 @@
 #   - Strict warnings (opt-in), fast builds (Unity), stable runtime (fixed MSVC runtime knob).
 #   - Robust staging via CMake install() (OPTIONAL PDB) → build/stage/<cfg>
 #   - Future-proof toggles: LTO, ASAN (MSVC), PCH, GUI/Console subsystem, Release PDBs.
+#   - Works with CMake 3.16+; gracefully handles runtime DLLs on older CMake.
 # ==================================================================================================
 
-cmake_minimum_required(VERSION 3.27)
+# We need >= 3.16 for target_precompile_headers; runtime DLL install logic will
+# transparently downgrade for CMake < 3.21 (no RUNTIME_DEPENDENCIES there).
+cmake_minimum_required(VERSION 3.16)
+
+# --------------------------------------------------------------------------------------------------
+# Optional: auto-enable vcpkg toolchain before project() if available (nice for SDL2)
+# --------------------------------------------------------------------------------------------------
+if(NOT DEFINED CMAKE_TOOLCHAIN_FILE AND DEFINED ENV{VCPKG_ROOT})
+  if(EXISTS "$ENV{VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake")
+    set(CMAKE_TOOLCHAIN_FILE
+        "$ENV{VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake"
+        CACHE FILEPATH "vcpkg toolchain file" FORCE)
+  endif()
+endif()
 
 # --------------------------------------------------------------------------------------------------
 # Windows-only guard
@@ -87,13 +101,17 @@ if(MSVC)
   # /MP: parallel compile
   add_compile_options(/MP)
 
-  # Default to UTF-8 source/exec charsets
+  # Default to UTF-8 source/exec charsets & Unicode APIs
   add_compile_options(/utf-8)
+  add_compile_definitions(UNICODE _UNICODE)
 
   # Strongly conforming mode & consistent preprocessor
-  add_compile_options(/permissive- /Zc:__cplusplus /Zc:preprocessor)
+  add_compile_options(/permissive- /Zc:__cplusplus /Zc:preprocessor /Zc:throwingNew /Zc:inline)
 
-  # Avoid <windows.h> slow includes, avoid std::min/max macro collisions
+  # Quiet 3rd-party noise: treat <> headers as external and lower their warning level
+  add_compile_options(/external:anglebrackets /external:W0)
+
+  # Avoid <windows.h> bloat, avoid std::min/max macro collisions
   add_compile_definitions(NOMINMAX WIN32_LEAN_AND_MEAN)
 
   # Quiet some noisy CRT deprecations (safe, project-local)
@@ -101,6 +119,9 @@ if(MSVC)
 
   # Bigger obj for jumbo/templated code
   add_compile_options(/bigobj)
+
+  # Exceptions & RTTI (leave defaults if you prefer /EHsc and /GR)
+  add_compile_options(/EHsc)
 
   # Warning level
   add_compile_options(/W4)
@@ -119,6 +140,9 @@ if(MSVC)
   if(NOT DEFINED CMAKE_MSVC_DEBUG_INFORMATION_FORMAT)
     set(CMAKE_MSVC_DEBUG_INFORMATION_FORMAT "$<$<CONFIG:Debug,RelWithDebInfo>:ProgramDatabase>")
   endif()
+
+  # Linker hardening (no-op on older toolsets; harmless flags if unsupported)
+  add_link_options(/DYNAMICBASE /NXCOMPAT)
 endif()
 
 # C++ standard
@@ -478,11 +502,11 @@ endforeach()
 get_target_property(_exe_sources ColonyGame SOURCES)
 get_target_property(_core_sources colony_core SOURCES)
 if(_exe_sources OR _core_sources)
-  source_group(TREE "${CMAKE_SOURCE_DIR}" FILES ${_exe_sources} ${_core_sources} ${CORE_HEADERS})
+  source_group(TREE "${CMAKE_SOURCE_DIR}" FILES ${_exe_sources} ${_core_sources} ${CORE_HEADERS} "${_ver_out}")
 endif()
 
 # ==================================================================================================
-# >>> REPLACED the ad-hoc “Staging ColonyGame…” post-build block with robust CMake install() flow <<<
+# Robust staging via CMake install() with version-aware runtime dependency handling
 # ==================================================================================================
 
 # Default install prefix to build/stage (so "cmake --install" lands in build/stage/<config>)
@@ -490,31 +514,81 @@ set(CMAKE_INSTALL_PREFIX "${CMAKE_BINARY_DIR}/stage" CACHE PATH "Install prefix 
 
 include(GNUInstallDirs)
 
-# 1) Install the game EXE to the root of the config-specific staging dir
-install(TARGETS ColonyGame
-  RUNTIME DESTINATION .
-  COMPONENT ColonyRuntime
-  # 2) Also gather and copy runtime dependencies (e.g., SDL2.dll) next to the EXE
-  RUNTIME_DEPENDENCIES
-    # Skip Windows API shims and known system locations
-    PRE_EXCLUDE_REGEXES "api-ms-.*" "ext-ms-.*"
-    POST_EXCLUDE_REGEXES ".*[Ww]indows[\\/]System32[\\/].*"
-)
+# ---- Helper: version-aware runtime install (emulates RUNTIME_DEPENDENCIES on old CMake) ----------
+# Usage:
+#   cg_install_runtime_targets(TARGETS <t1;...> RUNTIME_DESTINATION <path>)
+# On CMake < 3.21, falls back to BundleUtilities::fixup_bundle().
+function(cg_install_runtime_targets)
+  set(options)
+  set(oneValueArgs RUNTIME_DESTINATION)
+  set(multiValueArgs TARGETS)
+  cmake_parse_arguments(CG "${options}" "${oneValueArgs}" "${multiValueArgs}" ${ARGN})
+  if(NOT CG_TARGETS)
+    message(FATAL_ERROR "cg_install_runtime_targets: pass TARGETS <t1;t2;...>")
+  endif()
+  if(NOT CG_RUNTIME_DESTINATION)
+    set(CG_RUNTIME_DESTINATION "${CMAKE_INSTALL_BINDIR}")
+  endif()
 
-# 3) Install the PDB **optionally** (no failure if absent)
+  if(CMAKE_VERSION VERSION_LESS 3.21)
+    # Old CMake: basic install + fix DLLs with BundleUtilities at install time
+    install(TARGETS ${CG_TARGETS}
+      RUNTIME DESTINATION ${CG_RUNTIME_DESTINATION}
+      LIBRARY DESTINATION ${CG_RUNTIME_DESTINATION}
+      ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
+    )
+    if(WIN32)
+      # Fixup DLLs into the chosen runtime destination ('.' or 'bin', etc.)
+      set(_RDEST "${CG_RUNTIME_DESTINATION}")
+      install(CODE
+"include(BundleUtilities)
+set(BU_CHMOD_BUNDLE_ITEMS ON)
+set(_prefix \"\$ENV{DESTDIR}\${CMAKE_INSTALL_PREFIX}\")
+# Compute install-time directory for executables
+set(_dir \"\${_prefix}/${_RDEST}\")
+if(\"${_RDEST}\" STREQUAL \".\")
+  set(_dir \"\${_prefix}\")
+endif()
+file(GLOB _exes \"\${_dir}/*.exe\")
+foreach(_exe IN LISTS _exes)
+  message(STATUS \"Fixing runtime DLLs for: \${_exe}\")
+  fixup_bundle(\"\${_exe}\" \"\" \"\${_dir}\")
+endforeach()")
+    endif()
+  else()
+    # Modern CMake: let CMake find/copy runtime DLLs for you
+    install(TARGETS ${CG_TARGETS}
+      RUNTIME_DEPENDENCIES
+        # Skip Windows "API set" shims and system32 DLLs
+        PRE_EXCLUDE_REGEXES "api-ms-" "ext-ms-"
+        POST_EXCLUDE_REGEXES ".*/[Ww]indows/[Ss]ystem32/.*\\.dll"
+      RUNTIME DESTINATION ${CG_RUNTIME_DESTINATION}
+      LIBRARY DESTINATION ${CG_RUNTIME_DESTINATION}
+      ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
+    )
+  endif()
+endfunction()
+
+# 1) Install the game EXE and its runtime dependencies next to it (stage root).
+cg_install_runtime_targets(TARGETS ColonyGame RUNTIME_DESTINATION .)
+
+# 2) Install the PDB **optionally** (no failure if absent)
 install(FILES "$<TARGET_PDB_FILE:ColonyGame>"
         DESTINATION .
         OPTIONAL
         COMPONENT ColonyRuntime)
 
-# 4) Install assets (if present) preserving subfolders
+# 3) Install assets (if present) preserving subfolders
 foreach(_d IN LISTS _ASSET_DIRS)
   if(EXISTS "${CMAKE_SOURCE_DIR}/${_d}")
     install(DIRECTORY "${_d}/" DESTINATION "${_d}" COMPONENT ColonyRuntime)
   endif()
 endforeach()
 
-# 5) (Optional) Install the MSVC runtime redistributables
+# 4) (Optional) Install the MSVC runtime redistributables (app-local)
+#    Also honor UCRT libs when available.
+set(CMAKE_INSTALL_SYSTEM_RUNTIME_DESTINATION .)
+set(CMAKE_INSTALL_UCRT_LIBRARIES TRUE)
 include(InstallRequiredSystemLibraries)
 if(CMAKE_INSTALL_SYSTEM_RUNTIME_LIBS)
   install(PROGRAMS ${CMAKE_INSTALL_SYSTEM_RUNTIME_LIBS}
@@ -522,8 +596,8 @@ if(CMAKE_INSTALL_SYSTEM_RUNTIME_LIBS)
           COMPONENT ColonyRuntime)
 endif()
 
-# 6) Create a convenience target that *stages* automatically as part of the normal build.
-#    It runs the CMake install step into build/stage/<config>, fixing the previous PDB copy errors.
+# 5) Create a convenience target that *stages* automatically as part of the normal build.
+#    It runs the CMake install step into build/stage/<config>.
 add_custom_target(stage_win ALL
   COMMAND "${CMAKE_COMMAND}" -E echo "Staging ColonyGame to: ${CMAKE_INSTALL_PREFIX}/$<CONFIG>"
   COMMAND "${CMAKE_COMMAND}" -DCMAKE_INSTALL_CONFIG_NAME=$<CONFIG> -P "${CMAKE_BINARY_DIR}/cmake_install.cmake"
@@ -531,7 +605,7 @@ add_custom_target(stage_win ALL
   VERBATIM
 )
 
-# 7) Zip packaging via CPack (optional but handy): produces ColonyGame-<ver>-<cfg>.zip from the staged tree.
+# 6) Zip packaging via CPack (optional but handy): produces ColonyGame-<ver>-<cfg>.zip from the staged tree.
 set(CPACK_PACKAGE_NAME "ColonyGame")
 set(CPACK_PACKAGE_VENDOR "Colony-Game")
 set(CPACK_PACKAGE_VERSION "${PROJECT_VERSION}")
