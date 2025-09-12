@@ -11,8 +11,6 @@
 #   - Works with CMake 3.16+; gracefully handles runtime DLLs on older CMake.
 # ==================================================================================================
 
-# We need >= 3.16 for target_precompile_headers; runtime DLL install logic will
-# transparently downgrade for CMake < 3.21 (no RUNTIME_DEPENDENCIES there).
 cmake_minimum_required(VERSION 3.16)
 
 # --------------------------------------------------------------------------------------------------
@@ -25,6 +23,12 @@ if(NOT DEFINED CMAKE_TOOLCHAIN_FILE AND DEFINED ENV{VCPKG_ROOT})
         CACHE FILEPATH "vcpkg toolchain file" FORCE)
   endif()
 endif()
+
+# Prefer config packages when available (SDL2, etc.)
+set(CMAKE_FIND_PACKAGE_PREFER_CONFIG ON)
+
+# Group targets into folders in Visual Studio
+set_property(GLOBAL PROPERTY USE_FOLDERS ON)
 
 # --------------------------------------------------------------------------------------------------
 # Windows-only guard
@@ -88,6 +92,9 @@ set(PCH_HEADER "" CACHE FILEPATH "Optional precompiled header (e.g., src/pch.h)"
 # Emit PDB in Release (helpful for crash triage)
 option(ENABLE_RELEASE_PDB "Emit Program Database (PDB) in Release" ON)
 
+# Optionally quiet MSVC C4505 (unused static/internal functions) on the launcher target
+option(SUPPRESS_MSVC_C4505 "Suppress MSVC warning C4505 on the launcher target" ON)
+
 # Where your core source lives (auto)
 set(SRC_DIR "src" CACHE PATH "Path to core source directory")
 
@@ -108,7 +115,7 @@ if(MSVC)
   # Strongly conforming mode & consistent preprocessor
   add_compile_options(/permissive- /Zc:__cplusplus /Zc:preprocessor /Zc:throwingNew /Zc:inline)
 
-  # Quiet 3rd-party noise: treat <> headers as external and lower their warning level
+  # Treat <> headers as external and lower their warning level
   add_compile_options(/external:anglebrackets /external:W0)
 
   # Avoid <windows.h> bloat, avoid std::min/max macro collisions
@@ -120,7 +127,7 @@ if(MSVC)
   # Bigger obj for jumbo/templated code
   add_compile_options(/bigobj)
 
-  # Exceptions & RTTI (leave defaults if you prefer /EHsc and /GR)
+  # Exceptions & RTTI
   add_compile_options(/EHsc)
 
   # Warning level
@@ -136,13 +143,16 @@ if(MSVC)
     set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>DLL")
   endif()
 
-  # Debug info format - fastlink for debug by default
+  # Debug info format - PDB for Debug/RelWithDebInfo
   if(NOT DEFINED CMAKE_MSVC_DEBUG_INFORMATION_FORMAT)
     set(CMAKE_MSVC_DEBUG_INFORMATION_FORMAT "$<$<CONFIG:Debug,RelWithDebInfo>:ProgramDatabase>")
   endif()
 
-  # Linker hardening (no-op on older toolsets; harmless flags if unsupported)
+  # Linker hardening (no-op on older toolsets; harmless if unsupported)
   add_link_options(/DYNAMICBASE /NXCOMPAT)
+
+  # Enable Control Flow Guard if toolset supports it
+  add_link_options(/guard:cf)
 endif()
 
 # C++ standard
@@ -196,7 +206,7 @@ foreach(_rx IN ITEMS
   ".*/Main\\.cpp$"
   ".*/main\\.cpp$"
   ".*/colonygame\\.cpp$"
-  ".*/win32_main\\.cpp$"        # <-- ensure the Win32 single-file launcher is NOT in the core
+  ".*/win32_main\\.cpp$"
 )
   list(FILTER CORE_SOURCES EXCLUDE REGEX "${_rx}")
 endforeach()
@@ -205,7 +215,7 @@ endforeach()
 set(SDL_ONLY_SOURCES "")
 foreach(_cand IN ITEMS
   "src/game/Game.cpp"
-  "src/ui/HudOverlays.cpp"        # <-- SDL overlays are SDL-only
+  "src/ui/HudOverlays.cpp"
 )
   if(EXISTS "${CMAKE_SOURCE_DIR}/${_cand}")
     list(APPEND SDL_ONLY_SOURCES "${CMAKE_SOURCE_DIR}/${_cand}")
@@ -221,10 +231,13 @@ list(FILTER CORE_SOURCES EXCLUDE REGEX ".*[\\/]render[\\/]d3d11_sprite_batch\\.c
 # Create a static library for the core
 add_library(colony_core STATIC ${CORE_SOURCES} ${CORE_HEADERS})
 target_include_directories(colony_core PUBLIC "${SRC_DIR}")
+target_compile_features(colony_core PUBLIC cxx_std_20)
 
 # Unity builds for the core (optional)
 if(ENABLE_UNITY)
   set_property(TARGET colony_core PROPERTY UNITY_BUILD ON)
+  # Optional: smaller jumbo batches can reduce peak RAM on CI
+  set_property(TARGET colony_core PROPERTY UNITY_BUILD_BATCH_SIZE 32)
 endif()
 
 # PCH (optional, autodetect pch.h if not explicitly provided)
@@ -306,7 +319,6 @@ set(_KNOWN_WIN_LAUNCHERS
   "src/Launcher_Win32.cpp"
   "Launcher_Win32.cpp"
   "src/WinLauncher.cpp"
-  # --- Added: single-file Win32 launcher used by this project
   "src/platform/win32_main.cpp"
   "platform/win32_main.cpp"
   "src/platform/win32/win32_main.cpp"
@@ -389,6 +401,7 @@ configure_file("${_ver_in}" "${_ver_out}" @ONLY)
 add_executable(ColonyGame ${_WIN32_FLAG} "${_LAUNCHER}" ${_RES})
 set_property(DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}" PROPERTY VS_STARTUP_PROJECT ColonyGame)
 target_link_libraries(ColonyGame PRIVATE colony_core)
+target_compile_features(ColonyGame PRIVATE cxx_std_20)
 
 # Helpful definitions for the launcher/plat layer
 target_compile_definitions(ColonyGame PRIVATE
@@ -405,12 +418,18 @@ target_link_libraries(ColonyGame PRIVATE
 # Unity for the executable (small benefit; core is where most value is)
 if(ENABLE_UNITY)
   set_property(TARGET ColonyGame PROPERTY UNITY_BUILD ON)
+  set_property(TARGET ColonyGame PROPERTY UNITY_BUILD_BATCH_SIZE 16)
 endif()
 
 # Emit PDBs in Release (optional but recommended)
 if(MSVC AND ENABLE_RELEASE_PDB)
   target_compile_options(ColonyGame PRIVATE "$<$<CONFIG:Release>:/Zi>")
   target_link_options(ColonyGame    PRIVATE "$<$<CONFIG:Release>:/DEBUG:FULL>")
+endif()
+
+# Optionally suppress MSVC C4505 (unreferenced function with internal linkage) on the launcher
+if(MSVC AND SUPPRESS_MSVC_C4505)
+  target_compile_options(ColonyGame PRIVATE /wd4505)
 endif()
 
 # --------------------------------------------------------------------------------------------------
@@ -517,7 +536,8 @@ include(GNUInstallDirs)
 # ---- Helper: version-aware runtime install (emulates RUNTIME_DEPENDENCIES on old CMake) ----------
 # Usage:
 #   cg_install_runtime_targets(TARGETS <t1;...> RUNTIME_DESTINATION <path>)
-# On CMake < 3.21, falls back to BundleUtilities::fixup_bundle().
+# On CMake < 3.21, we still use install(TARGETS) AND a post-install fix via BundleUtilities to
+# collect dependencies. Modern branch uses RUNTIME_DEPENDENCIES with strict excludes.
 function(cg_install_runtime_targets)
   set(options)
   set(oneValueArgs RUNTIME_DESTINATION)
@@ -531,24 +551,26 @@ function(cg_install_runtime_targets)
   endif()
 
   if(CMAKE_VERSION VERSION_LESS 3.21)
-    # Old CMake: basic install + fix DLLs with BundleUtilities at install time
+    # Old CMake: basic install + fix DLLs with BundleUtilities at install time.
+    # fixup_bundle() is resilient and will not choke on unresolved OS DLLs.
     install(TARGETS ${CG_TARGETS}
       RUNTIME DESTINATION ${CG_RUNTIME_DESTINATION}
       LIBRARY DESTINATION ${CG_RUNTIME_DESTINATION}
       ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
     )
     if(WIN32)
-      # Fixup DLLs into the chosen runtime destination ('.' or 'bin', etc.)
       set(_RDEST "${CG_RUNTIME_DESTINATION}")
       install(CODE
 "include(BundleUtilities)
 set(BU_CHMOD_BUNDLE_ITEMS ON)
+# Install root (respects DESTDIR)
 set(_prefix \"\$ENV{DESTDIR}\${CMAKE_INSTALL_PREFIX}\")
 # Compute install-time directory for executables
 set(_dir \"\${_prefix}/${_RDEST}\")
 if(\"${_RDEST}\" STREQUAL \".\")
   set(_dir \"\${_prefix}\")
 endif()
+# For each exe, bring in missing DLLs next to it.
 file(GLOB _exes \"\${_dir}/*.exe\")
 foreach(_exe IN LISTS _exes)
   message(STATUS \"Fixing runtime DLLs for: \${_exe}\")
@@ -556,12 +578,17 @@ foreach(_exe IN LISTS _exes)
 endforeach()")
     endif()
   else()
-    # Modern CMake: let CMake find/copy runtime DLLs for you
+    # Modern CMake: let CMake find/copy runtime DLLs for you, but exclude OS shims.
+    # NOTE: CMake lower-cases DLL names for PRE_EXCLUDE_REGEXES matching on Windows.
     install(TARGETS ${CG_TARGETS}
       RUNTIME_DEPENDENCIES
-        # Skip Windows "API set" shims and system32 DLLs
-        PRE_EXCLUDE_REGEXES "api-ms-" "ext-ms-"
-        POST_EXCLUDE_REGEXES ".*/[Ww]indows/[Ss]ystem32/.*\\.dll"
+        PRE_EXCLUDE_REGEXES
+          "^(api-ms-win-.*)$"
+          "^(ext-ms-.*)$"
+          "^hvsifiletrust\\.dll$"
+          "^ieshims\\.dll$"
+        POST_EXCLUDE_REGEXES
+          [[.*(\\|/)system32(\\|/).*\.dll]]
       RUNTIME DESTINATION ${CG_RUNTIME_DESTINATION}
       LIBRARY DESTINATION ${CG_RUNTIME_DESTINATION}
       ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
