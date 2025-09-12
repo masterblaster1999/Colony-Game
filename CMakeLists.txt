@@ -178,6 +178,7 @@ endforeach()
 set(SDL_ONLY_SOURCES "")
 foreach(_cand IN ITEMS
   "src/game/Game.cpp"
+  "src/ui/HudOverlays.cpp"        # <-- SDL overlays are SDL-only
 )
   if(EXISTS "${CMAKE_SOURCE_DIR}/${_cand}")
     list(APPEND SDL_ONLY_SOURCES "${CMAKE_SOURCE_DIR}/${_cand}")
@@ -186,6 +187,9 @@ endforeach()
 if(SDL_ONLY_SOURCES)
   list(REMOVE_ITEM CORE_SOURCES ${SDL_ONLY_SOURCES})
 endif()
+
+# Exclude unfinished / sketch files from the core build (path-separator agnostic)
+list(FILTER CORE_SOURCES EXCLUDE REGEX ".*[\\/]render[\\/]d3d11_sprite_batch\\.cpp$")
 
 # Create a static library for the core
 add_library(colony_core STATIC ${CORE_SOURCES} ${CORE_HEADERS})
