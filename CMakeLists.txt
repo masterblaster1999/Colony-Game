@@ -6,8 +6,8 @@
 #   - Switchable frontends (Win32 native vs SDL) via -DFRONTEND=win32|sdl
 #   - Safe, low-friction source discovery. SDL-only sources are compiled ONLY for FRONTEND=sdl.
 #   - Strict warnings (opt-in), fast builds (Unity), stable runtime (fixed MSVC runtime knob).
-#   - Post-build: copies assets and dependent DLLs next to the .exe and stages to build/stage/<cfg>.
-#   - Future-proof toggles: LTO, ASAN (MSVC), PCH, GUI/Console subsystem.
+#   - Robust staging via CMake install() (OPTIONAL PDB) → build/stage/<cfg>
+#   - Future-proof toggles: LTO, ASAN (MSVC), PCH, GUI/Console subsystem, Release PDBs.
 # ==================================================================================================
 
 cmake_minimum_required(VERSION 3.27)
@@ -70,6 +70,9 @@ option(ENABLE_ASAN "Enable AddressSanitizer on MSVC (Debug/Dev only)" OFF)
 
 # Precompiled headers (auto-detects 'pch.h' or you can point to a custom header)
 set(PCH_HEADER "" CACHE FILEPATH "Optional precompiled header (e.g., src/pch.h)")
+
+# Emit PDB in Release (helpful for crash triage)
+option(ENABLE_RELEASE_PDB "Emit Program Database (PDB) in Release" ON)
 
 # Where your core source lives (auto)
 set(SRC_DIR "src" CACHE PATH "Path to core source directory")
@@ -223,7 +226,6 @@ target_compile_definitions(colony_core PUBLIC
 )
 
 # --- Windows multimedia timer dependency for core (safe even if not used) -----
-# This ensures projects that include timer calls from the core resolve symbols.
 if(WIN32)
   target_link_libraries(colony_core PUBLIC winmm)
 endif()
@@ -376,6 +378,17 @@ target_link_libraries(ColonyGame PRIVATE
   ole32 oleaut32 imm32 winmm version uuid
   dwmapi xinput9_1_0)
 
+# Unity for the executable (small benefit; core is where most value is)
+if(ENABLE_UNITY)
+  set_property(TARGET ColonyGame PROPERTY UNITY_BUILD ON)
+endif()
+
+# Emit PDBs in Release (optional but recommended)
+if(MSVC AND ENABLE_RELEASE_PDB)
+  target_compile_options(ColonyGame PRIVATE "$<$<CONFIG:Release>:/Zi>")
+  target_link_options(ColonyGame    PRIVATE "$<$<CONFIG:Release>:/DEBUG:FULL>")
+endif()
+
 # --------------------------------------------------------------------------------------------------
 # SDL2 integration (FRONTEND=sdl)
 # --------------------------------------------------------------------------------------------------
@@ -443,18 +456,13 @@ if(FRONTEND STREQUAL "sdl")
   target_compile_definitions(colony_core PUBLIC CG_USE_SDL=1)
 endif()
 
-# Unity for the executable (small benefit; core is where most value is)
-if(ENABLE_UNITY)
-  set_property(TARGET ColonyGame PROPERTY UNITY_BUILD ON)
-endif()
-
 # --------------------------------------------------------------------------------------------------
 # Nice-to-haves for dev ergonomics
 # --------------------------------------------------------------------------------------------------
 # Working directory to the binary dir (VS debugger)
 set_property(TARGET ColonyGame PROPERTY VS_DEBUGGER_WORKING_DIRECTORY "$<TARGET_FILE_DIR:ColonyGame>")
 
-# Post-build: copy assets/resources (if present) next to the .exe
+# Post-build: copy assets/resources (if present) next to the .exe for local dev runs
 set(_ASSET_DIRS assets Assets data Data res resources)
 foreach(_d IN LISTS _ASSET_DIRS)
   if(EXISTS "${CMAKE_SOURCE_DIR}/${_d}")
@@ -466,72 +474,6 @@ foreach(_d IN LISTS _ASSET_DIRS)
   endif()
 endforeach()
 
-# --------------------------------------------------------------------------------------------------
-# Robust runtime DLL staging & copy (fixes empty-list failures)
-# --------------------------------------------------------------------------------------------------
-
-# Copy dependent DLLs (e.g., SDL2.dll) next to the .exe *if any exist*.
-# Guarded pattern avoids calling 'cmake -E copy_if_different' with no sources.
-set(_have_runtime_dlls $<BOOL:$<TARGET_RUNTIME_DLLS:ColonyGame>>)
-set(_copy_dlls_to_bindir
-    ${CMAKE_COMMAND} -E copy_if_different
-    $<TARGET_RUNTIME_DLLS:ColonyGame>
-    $<TARGET_FILE_DIR:ColonyGame>
-)
-
-add_custom_command(TARGET ColonyGame POST_BUILD
-  COMMAND "$<${_have_runtime_dlls}:${_copy_dlls_to_bindir}>"
-  COMMAND_EXPAND_LISTS
-  VERBATIM)
-
-# --- Post-build staging to build/stage/<Config> --------------------------------
-# Creates a self-contained folder with the exe, runtime DLLs and assets.
-# Use a per-config stage directory variable with a generator expression.
-set(COLONY_STAGE_DIR "${CMAKE_BINARY_DIR}/stage/$<CONFIG>")
-
-# Always make stage dir and copy the main executable
-add_custom_command(TARGET ColonyGame POST_BUILD
-  COMMAND "${CMAKE_COMMAND}" -E echo "Staging ColonyGame and runtime DLLs to: ${COLONY_STAGE_DIR}"
-  COMMAND "${CMAKE_COMMAND}" -E make_directory "${COLONY_STAGE_DIR}"
-  COMMAND "${CMAKE_COMMAND}" -E copy_if_different "$<TARGET_FILE:ColonyGame>" "${COLONY_STAGE_DIR}"
-  VERBATIM)
-
-# Copy runtime DLLs into stage *if any exist*
-set(_copy_dlls_to_stage
-    ${CMAKE_COMMAND} -E copy_if_different
-    $<TARGET_RUNTIME_DLLS:ColonyGame>
-    ${COLONY_STAGE_DIR}
-)
-add_custom_command(TARGET ColonyGame POST_BUILD
-  COMMAND "$<${_have_runtime_dlls}:${_copy_dlls_to_stage}>"
-  COMMAND_EXPAND_LISTS
-  VERBATIM)
-
-# (Optional) Copy PDB into stage when present (MSVC)
-if(MSVC)
-  set(_have_pdb $<BOOL:$<TARGET_PDB_FILE:ColonyGame>>)
-  set(_copy_pdb_to_stage
-      ${CMAKE_COMMAND} -E copy_if_different
-      $<TARGET_PDB_FILE:ColonyGame>
-      ${COLONY_STAGE_DIR}
-  )
-  add_custom_command(TARGET ColonyGame POST_BUILD
-    COMMAND "$<${_have_pdb}:${_copy_pdb_to_stage}>"
-    COMMAND_EXPAND_LISTS
-    VERBATIM)
-endif()
-
-# Stage assets into build/stage/<Config>/<dir> if they exist
-foreach(_d IN LISTS _ASSET_DIRS)
-  if(EXISTS "${CMAKE_SOURCE_DIR}/${_d}")
-    add_custom_command(TARGET ColonyGame POST_BUILD
-      COMMAND "${CMAKE_COMMAND}" -E copy_directory
-              "${CMAKE_SOURCE_DIR}/${_d}"
-              "${COLONY_STAGE_DIR}/${_d}"
-      VERBATIM)
-  endif()
-endforeach()
-
 # Group sources in IDE by directory tree
 get_target_property(_exe_sources ColonyGame SOURCES)
 get_target_property(_core_sources colony_core SOURCES)
@@ -539,22 +481,65 @@ if(_exe_sources OR _core_sources)
   source_group(TREE "${CMAKE_SOURCE_DIR}" FILES ${_exe_sources} ${_core_sources} ${CORE_HEADERS})
 endif()
 
-# --------------------------------------------------------------------------------------------------
-# Install / Package (optional; produces a portable folder with exe + assets)
-#   - 'cmake --install <build_dir> --config Release'
-#   - Generates: install root with ColonyGame.exe and copied assets
-# --------------------------------------------------------------------------------------------------
+# ==================================================================================================
+# >>> REPLACED the ad-hoc “Staging ColonyGame…” post-build block with robust CMake install() flow <<<
+# ==================================================================================================
+
+# Default install prefix to build/stage (so "cmake --install" lands in build/stage/<config>)
+set(CMAKE_INSTALL_PREFIX "${CMAKE_BINARY_DIR}/stage" CACHE PATH "Install prefix (staging root)" FORCE)
+
 include(GNUInstallDirs)
 
+# 1) Install the game EXE to the root of the config-specific staging dir
 install(TARGETS ColonyGame
   RUNTIME DESTINATION .
-  COMPONENT runtime)
+  COMPONENT ColonyRuntime
+  # 2) Also gather and copy runtime dependencies (e.g., SDL2.dll) next to the EXE
+  RUNTIME_DEPENDENCIES
+    # Skip Windows API shims and known system locations
+    PRE_EXCLUDE_REGEXES "api-ms-.*" "ext-ms-.*"
+    POST_EXCLUDE_REGEXES ".*[Ww]indows[\\/]System32[\\/].*"
+)
 
+# 3) Install the PDB **optionally** (no failure if absent)
+install(FILES "$<TARGET_PDB_FILE:ColonyGame>"
+        DESTINATION .
+        OPTIONAL
+        COMPONENT ColonyRuntime)
+
+# 4) Install assets (if present) preserving subfolders
 foreach(_d IN LISTS _ASSET_DIRS)
   if(EXISTS "${CMAKE_SOURCE_DIR}/${_d}")
-    install(DIRECTORY "${_d}/" DESTINATION "${_d}" COMPONENT runtime)
+    install(DIRECTORY "${_d}/" DESTINATION "${_d}" COMPONENT ColonyRuntime)
   endif()
 endforeach()
+
+# 5) (Optional) Install the MSVC runtime redistributables
+include(InstallRequiredSystemLibraries)
+if(CMAKE_INSTALL_SYSTEM_RUNTIME_LIBS)
+  install(PROGRAMS ${CMAKE_INSTALL_SYSTEM_RUNTIME_LIBS}
+          DESTINATION .
+          COMPONENT ColonyRuntime)
+endif()
+
+# 6) Create a convenience target that *stages* automatically as part of the normal build.
+#    It runs the CMake install step into build/stage/<config>, fixing the previous PDB copy errors.
+add_custom_target(stage_win ALL
+  COMMAND "${CMAKE_COMMAND}" -E echo "Staging ColonyGame to: ${CMAKE_INSTALL_PREFIX}/$<CONFIG>"
+  COMMAND "${CMAKE_COMMAND}" -DCMAKE_INSTALL_CONFIG_NAME=$<CONFIG> -P "${CMAKE_BINARY_DIR}/cmake_install.cmake"
+  DEPENDS ColonyGame
+  VERBATIM
+)
+
+# 7) Zip packaging via CPack (optional but handy): produces ColonyGame-<ver>-<cfg>.zip from the staged tree.
+set(CPACK_PACKAGE_NAME "ColonyGame")
+set(CPACK_PACKAGE_VENDOR "Colony-Game")
+set(CPACK_PACKAGE_VERSION "${PROJECT_VERSION}")
+set(CPACK_GENERATOR "ZIP")
+set(CPACK_PACKAGE_FILE_NAME "${CPACK_PACKAGE_NAME}-${PROJECT_VERSION}-$<CONFIG>")
+# Package from the staged output
+install(CODE "message(STATUS \"Staged at: ${CMAKE_INSTALL_PREFIX}/$<CONFIG>\")")
+include(CPack)
 
 # --------------------------------------------------------------------------------------------------
 # Summary (printed once at configure time)
@@ -571,8 +556,10 @@ message(STATUS "  Warnings as errors   : ${WARNINGS_AS_ERRORS}")
 message(STATUS "  Unity builds         : ${ENABLE_UNITY}")
 message(STATUS "  LTO/IPO              : ${ENABLE_LTO}")
 message(STATUS "  ASAN                 : ${ENABLE_ASAN}")
+message(STATUS "  Release PDB          : ${ENABLE_RELEASE_PDB}")
 message(STATUS "  Source dir           : ${CMAKE_SOURCE_DIR}")
 message(STATUS "  Binary dir           : ${CMAKE_BINARY_DIR}")
+message(STATUS "  Install prefix       : ${CMAKE_INSTALL_PREFIX}")
 if(FRONTEND STREQUAL "sdl")
   if(SDL2_FOUND)
     message(STATUS "  SDL2                 : FOUND (${_SDL2_FOUND_KIND})")
@@ -603,4 +590,8 @@ message(STATUS "")
 #
 #   - Treat warnings as errors:
 #       cmake -S . -B build -DWARNINGS_AS_ERRORS=ON
+#
+#   - Stage into build/stage/<cfg> automatically (enabled by default via 'stage_win' target),
+#     or explicitly:
+#       cmake --install build --config Release
 # --------------------------------------------------------------------------------------------------
