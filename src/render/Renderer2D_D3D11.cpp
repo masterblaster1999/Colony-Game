@@ -33,7 +33,9 @@
 #include <d3d11.h>
 #include <d3dcompiler.h>
 #include <dxgi1_6.h>
+#include <d2d1.h>
 #include <d2d1_1.h>
+#include <d2d1helper.h>
 #include <dwrite.h>
 #include <wincodec.h>
 #include <cstdint>
@@ -46,6 +48,7 @@
 #include <cmath>
 #include <cstdio>
 #include <cstdarg>
+#include <cstring>
 #include <algorithm>
 
 #pragma comment(lib, "d3d11.lib")
@@ -87,8 +90,9 @@ static inline float4x4 orthoLH(float l,float r,float b,float t,float zn=0.0f,flo
 }
 
 // Simple scope helper for HRESULT checks.
+// (Patched: avoid MSVC C5104 by not using 'L#x' wide-string stringification)
 #ifndef CG_ASSERT
-#define CG_ASSERT(x) do{ if(!(x)){ ::OutputDebugStringW(L"[cg] Assert failed: " L#x L"\n"); __debugbreak(); } }while(0)
+#define CG_ASSERT(x) do{ if(!(x)){ ::OutputDebugStringA("[cg] Assert failed: " #x "\n"); __debugbreak(); } }while(0)
 #endif
 
 static inline void dbgprintf(const char* fmt, ...){
@@ -191,13 +195,13 @@ private:
     ComPtr<ID3D11ShaderResourceView> m_sceneSRV;
 
     // States
-    ComPtr<ID3D11BlendState>       m_blendAlpha;   // non-premultiplied alpha
-    ComPtr<ID3D11BlendState>       m_blendOpaque;
+    ComPtr<ID3D11BlendState>        m_blendAlpha;   // non-premultiplied alpha
+    ComPtr<ID3D11BlendState>        m_blendOpaque;
     ComPtr<ID3D11DepthStencilState> m_depthDisabled;
-    ComPtr<ID3D11RasterizerState>  m_rasterSolid;
-    ComPtr<ID3D11RasterizerState>  m_rasterWire;
-    ComPtr<ID3D11SamplerState>     m_samLinear;
-    ComPtr<ID3D11SamplerState>     m_samPoint;
+    ComPtr<ID3D11RasterizerState>   m_rasterSolid;
+    ComPtr<ID3D11RasterizerState>   m_rasterWire;
+    ComPtr<ID3D11SamplerState>      m_samLinear;
+    ComPtr<ID3D11SamplerState>      m_samPoint;
 
     // Dynamic buffers
     ComPtr<ID3D11Buffer>           m_vb;
@@ -261,8 +265,9 @@ private:
             D3D11_QUERY_DESC d{}; d.Query = D3D11_QUERY_TIMESTAMP_DISJOINT; dev->CreateQuery(&d, &disjoint);
             d.Query = D3D11_QUERY_TIMESTAMP; dev->CreateQuery(&d, &qBegin); dev->CreateQuery(&d, &qEnd);
         }
-        void begin(ID3D11DeviceContext* ctx){ ctx->Begin(disjoint.Get()); ctx->End(qBegin.Get()); }
+        void begin(ID3D11DeviceContext* ctx){ if(disjoint) { ctx->Begin(disjoint.Get()); ctx->End(qBegin.Get()); } }
         void end(ID3D11DeviceContext* ctx){
+            if(!disjoint) return;
             ctx->End(qEnd.Get()); ctx->End(disjoint.Get());
             D3D11_QUERY_DATA_TIMESTAMP_DISJOINT dj{};
             while(ctx->GetData(disjoint.Get(), &dj, sizeof(dj), 0) != S_OK) {}
@@ -299,25 +304,18 @@ private:
 // Shader sources (HLSL, SM 5.0). Kept small and embedded for single-file build.
 // -------------------------------------------------------------------------------------------------
 
+// NOTE: Color now comes in as float4 (normalized) for simpler input layout & better VS perf.
 static const char* g_VS_SRC = R"(
 cbuffer cbProj : register(b0) {
     float4x4 uProj;
 };
-struct VSIn  { float2 pos: POSITION; float2 uv: TEXCOORD0; uint color: COLOR0; };
+struct VSIn  { float2 pos: POSITION; float2 uv: TEXCOORD0; float4 color: COLOR0; };
 struct VSOut { float4 pos: SV_POSITION; float2 uv: TEXCOORD0; float4 color: COLOR0; };
-float4 UnpackColor(uint c){
-    float4 k;
-    k.r = ((c>>24)&255)/255.0;
-    k.g = ((c>>16)&255)/255.0;
-    k.b = ((c>>8 )&255)/255.0;
-    k.a = ((c    )&255)/255.0;
-    return k;
-}
 VSOut main(VSIn i){
     VSOut o;
     o.pos = mul(float4(i.pos,0,1), uProj);
     o.uv  = i.uv;
-    o.color = UnpackColor(i.color);
+    o.color = i.color;
     return o;
 }
 )";
@@ -385,15 +383,15 @@ float4 main(float4 pos:SV_POSITION, float2 uv:TEXCOORD0) : SV_Target {
 // -------------------------------------------------------------------------------------------------
 // Helper: compile HLSL from in-memory source
 // -------------------------------------------------------------------------------------------------
-static HRESULT Renderer2D::CompileHLSL(const char* src, const char* entry, const char* profile, ID3DBlob** outBlob){
+HRESULT Renderer2D::CompileHLSL(const char* src, const char* entry, const char* profile, ID3DBlob** outBlob){
     UINT flags = D3DCOMPILE_ENABLE_STRICTNESS;
 #if defined(_DEBUG)
-    flags |= D3DCOMPILE_DEBUG | D3DCOMPILE_SKIP_OPTIMIZATION;
+    flags |= D3DCOMPILE_DEBUG | D3DCOMPILE_SKIP_OPTIMIZATION | D3DCOMPILE_WARNINGS_ARE_ERRORS;
 #else
     flags |= D3DCOMPILE_OPTIMIZATION_LEVEL3;
 #endif
     ComPtr<ID3DBlob> blob, err;
-    HRESULT hr = D3DCompile(src, strlen(src), nullptr, nullptr, nullptr, entry, profile, flags, 0, &blob, &err);
+    HRESULT hr = D3DCompile(src, (UINT)std::strlen(src), nullptr, nullptr, nullptr, entry, profile, flags, 0, &blob, &err);
     if(FAILED(hr)){
         if(err) OutputDebugStringA((const char*)err->GetBufferPointer());
         return hr;
@@ -485,10 +483,18 @@ bool Renderer2D::createDeviceAndSwap(const RendererDesc& d){
 #if defined(_DEBUG)
     flags |= D3D11_CREATE_DEVICE_DEBUG;
 #endif
-    D3D_FEATURE_LEVEL flOut;
+    D3D_FEATURE_LEVEL flOut{};
     const D3D_FEATURE_LEVEL req[] = { D3D_FEATURE_LEVEL_11_1, D3D_FEATURE_LEVEL_11_0 };
     HRESULT hr = D3D11CreateDevice(nullptr, D3D_DRIVER_TYPE_HARDWARE, nullptr, flags, req, _countof(req),
                                    D3D11_SDK_VERSION, &m_dev, &flOut, &m_ctx);
+#if defined(_DEBUG)
+    if(FAILED(hr)){
+        // Retry without debug layer if not installed
+        flags &= ~D3D11_CREATE_DEVICE_DEBUG;
+        hr = D3D11CreateDevice(nullptr, D3D_DRIVER_TYPE_HARDWARE, nullptr, flags, req, _countof(req),
+                               D3D11_SDK_VERSION, &m_dev, &flOut, &m_ctx);
+    }
+#endif
     if(FAILED(hr)) return false;
 
     ComPtr<IDXGIDevice> dxgiDev; m_dev.As(&dxgiDev);
@@ -496,8 +502,8 @@ bool Renderer2D::createDeviceAndSwap(const RendererDesc& d){
     ComPtr<IDXGIFactory2> fac; adp->GetParent(IID_PPV_ARGS(&fac));
 
     DXGI_SWAP_CHAIN_DESC1 scd{};
-    scd.Width = d.width; scd.Height = d.height;
-    scd.Format = DXGI_FORMAT_R8G8B8A8_UNORM; // create sRGB RTV for it
+    scd.Width  = d.width; scd.Height = d.height;
+    scd.Format = DXGI_FORMAT_B8G8R8A8_UNORM; // D2D interop prefers BGRA backbuffer
     scd.SampleDesc.Count = 1;
     scd.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT | DXGI_USAGE_SHADER_INPUT;
     scd.BufferCount = 2;
@@ -509,6 +515,9 @@ bool Renderer2D::createDeviceAndSwap(const RendererDesc& d){
     hr = fac->CreateSwapChainForHwnd(m_dev.Get(), d.hwnd, &scd, nullptr, nullptr, &m_swap);
     if(FAILED(hr)) return false;
 
+    // Disable the ALT+ENTER legacy full screen toggle
+    fac->MakeWindowAssociation(d.hwnd, DXGI_MWA_NO_ALT_ENTER);
+
     m_viewport = { 0.0f, 0.0f, float(d.width), float(d.height), 0.0f, 1.0f };
     return true;
 }
@@ -519,7 +528,7 @@ bool Renderer2D::createBackbufferTargets(){
     if(FAILED(hr)) return false;
 
     D3D11_RENDER_TARGET_VIEW_DESC rtd{};
-    rtd.Format = m_srgb ? DXGI_FORMAT_R8G8B8A8_UNORM_SRGB : DXGI_FORMAT_R8G8B8A8_UNORM;
+    rtd.Format = m_srgb ? DXGI_FORMAT_B8G8R8A8_UNORM_SRGB : DXGI_FORMAT_B8G8R8A8_UNORM;
     rtd.ViewDimension = D3D11_RTV_DIMENSION_TEXTURE2D;
     rtd.Texture2D.MipSlice = 0;
 
@@ -547,15 +556,15 @@ bool Renderer2D::createStatesAndShaders(){
     // Blend states (non-premultiplied alpha for sprite textures loaded via WIC)
     {
         D3D11_BLEND_DESC bd{};
-        auto& rt0 = bd.RenderTarget[0]; // NOTE: RenderTarget, not RenderTargets
+        auto& rt0 = bd.RenderTarget[0];
         rt0.RenderTargetWriteMask = D3D11_COLOR_WRITE_ENABLE_ALL;
-        rt0.BlendEnable = TRUE;
-        rt0.SrcBlend = D3D11_BLEND_SRC_ALPHA;
-        rt0.DestBlend = D3D11_BLEND_INV_SRC_ALPHA;
-        rt0.BlendOp = D3D11_BLEND_OP_ADD;
+        rt0.BlendEnable   = TRUE;
+        rt0.SrcBlend      = D3D11_BLEND_SRC_ALPHA;
+        rt0.DestBlend     = D3D11_BLEND_INV_SRC_ALPHA;
+        rt0.BlendOp       = D3D11_BLEND_OP_ADD;
         rt0.SrcBlendAlpha = D3D11_BLEND_ONE;
-        rt0.DestBlendAlpha = D3D11_BLEND_INV_SRC_ALPHA;
-        rt0.BlendOpAlpha = D3D11_BLEND_OP_ADD;
+        rt0.DestBlendAlpha= D3D11_BLEND_INV_SRC_ALPHA;
+        rt0.BlendOpAlpha  = D3D11_BLEND_OP_ADD;
         HRESULT hr = m_dev->CreateBlendState(&bd, &m_blendAlpha);
         if(FAILED(hr)) return false;
     }
@@ -568,8 +577,7 @@ bool Renderer2D::createStatesAndShaders(){
     }
 
     // Depth disabled
-    D3D11_DEPTH_STENCIL_DESC dd{};
-    dd.DepthEnable = FALSE; dd.StencilEnable = FALSE;
+    D3D11_DEPTH_STENCIL_DESC dd{}; dd.DepthEnable = FALSE; dd.StencilEnable = FALSE;
     if(FAILED(m_dev->CreateDepthStencilState(&dd, &m_depthDisabled))) return false;
 
     // Rasterizers
@@ -596,20 +604,18 @@ bool Renderer2D::createStatesAndShaders(){
     if(FAILED(m_dev->CreateVertexShader(vsb->GetBufferPointer(), vsb->GetBufferSize(), nullptr, &m_vs))) return false;
     if(FAILED(m_dev->CreatePixelShader(psb->GetBufferPointer(), psb->GetBufferSize(), nullptr, &m_psSprite))) return false;
 
-    // Input layout
+    // Input layout (matches VSIn: POSITION, TEXCOORD, COLOR as UNORM -> float4)
     D3D11_INPUT_ELEMENT_DESC ie[] = {
-        {"POSITION",0, DXGI_FORMAT_R32G32_FLOAT, 0, 0,  D3D11_INPUT_PER_VERTEX_DATA,0},
-        {"TEXCOORD",0, DXGI_FORMAT_R32G32_FLOAT, 0, 8,  D3D11_INPUT_PER_VERTEX_DATA,0},
-        {"COLOR",   0, DXGI_FORMAT_R8G8B8A8_UNORM,0,16, D3D11_INPUT_PER_VERTEX_DATA,0},
+        {"POSITION",0, DXGI_FORMAT_R32G32_FLOAT,       0, 0,  D3D11_INPUT_PER_VERTEX_DATA,0},
+        {"TEXCOORD",0, DXGI_FORMAT_R32G32_FLOAT,       0, 8,  D3D11_INPUT_PER_VERTEX_DATA,0},
+        {"COLOR",   0, DXGI_FORMAT_R8G8B8A8_UNORM,     0, 16, D3D11_INPUT_PER_VERTEX_DATA,0},
     };
     if(FAILED(m_dev->CreateInputLayout(ie, _countof(ie), vsb->GetBufferPointer(), vsb->GetBufferSize(), &m_il))) return false;
 
     // Constant buffer (proj)
-    D3D11_BUFFER_DESC cbd{};
-    cbd.ByteWidth = sizeof(float4x4);
+    D3D11_BUFFER_DESC cbd{}; cbd.ByteWidth = sizeof(float4x4);
     cbd.BindFlags = D3D11_BIND_CONSTANT_BUFFER;
-    cbd.Usage = D3D11_USAGE_DYNAMIC;
-    cbd.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
+    cbd.Usage = D3D11_USAGE_DYNAMIC; cbd.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
     if(FAILED(m_dev->CreateBuffer(&cbd, nullptr, &m_cbProj))) return false;
 
     // Post-process shaders and constants
@@ -661,7 +667,8 @@ bool Renderer2D::ensureDynamicBuffers(size_t vtxNeeded, size_t idxNeeded){
     bool ok = true;
     if(vtxNeeded > m_vbCapacity){
         m_vb.Reset();
-        m_vbCapacity = std::max<size_t>(vtxNeeded, 65536);
+        // grow to the next power-ish of two to reduce realloc frequency
+        m_vbCapacity = std::max<size_t>(vtxNeeded, std::max<size_t>(65536, m_vbCapacity ? m_vbCapacity*2 : 65536));
         D3D11_BUFFER_DESC bd{};
         bd.ByteWidth = UINT(m_vbCapacity * sizeof(Vertex));
         bd.BindFlags = D3D11_BIND_VERTEX_BUFFER;
@@ -670,7 +677,7 @@ bool Renderer2D::ensureDynamicBuffers(size_t vtxNeeded, size_t idxNeeded){
     }
     if(idxNeeded > m_ibCapacity){
         m_ib.Reset();
-        m_ibCapacity = std::max<size_t>(idxNeeded, 65536);
+        m_ibCapacity = std::max<size_t>(idxNeeded, std::max<size_t>(65536, m_ibCapacity ? m_ibCapacity*2 : 65536));
         D3D11_BUFFER_DESC bd{};
         bd.ByteWidth = UINT(m_ibCapacity * sizeof(uint32_t));
         bd.BindFlags = D3D11_BIND_INDEX_BUFFER;
@@ -798,7 +805,6 @@ void Renderer2D::endFrame(){
             ComPtr<ID2D1SolidColorBrush> brush;
             m_d2dCtx->CreateSolidColorBrush(D2D1::ColorF(r,g,b,a), &brush);
             D2D1_RECT_F rc = D2D1::RectF(it.x, it.y, 10000.0f, 10000.0f);
-            // ID2D1DeviceContext exposes DrawText (no 'W' suffix).
             m_d2dCtx->DrawText(it.text.c_str(), (UINT32)it.text.size(), m_textFormat.Get(), rc, brush.Get(),
                                D2D1_DRAW_TEXT_OPTIONS_CLIP, DWRITE_MEASURING_MODE_NATURAL);
         }
@@ -925,7 +931,7 @@ void Renderer2D::flushBatch(){
     m_ctx->DrawIndexed((UINT)m_frame.indices.size(), 0, 0);
 
     resetBatch();
-    // Re-bind current texture after reset to keep state coherent for next draws
+    // Re-bind white to have a defined texture for immediate subsequent primitive draws
     bindTexture(0);
 }
 
@@ -993,8 +999,8 @@ void Renderer2D::drawTileLayer(TextureId atlas, int tilesX, int tilesY, float ti
         for(int x=0; x<tilesX; ++x){
             uint32_t id = tileIndices[y*tilesX + x];
             if(id==0xFFFFFFFFu) continue; // empty
-            int tx = id % atlasCols;
-            int ty = id / atlasCols;
+            int tx = (int)(id % (uint32_t)atlasCols);
+            int ty = (int)(id / (uint32_t)atlasCols);
             float u0 = (tx + 0) / float(atlasCols);
             float v0 = (ty + 0) / float(atlasRows);
             float u1 = (tx + 1) / float(atlasCols);
@@ -1097,17 +1103,17 @@ bool Renderer2D::saveScreenshotPNG(const wchar_t* filePath){
 // [2] Flip-model and tearing
 // Flip-model (DXGI_SWAP_EFFECT_FLIP_*) is recommended for D3D11+ due to lower latency and better
 // DWM integration. When vsync=false and the OS/GPU support it, we enable DXGI_PRESENT_ALLOW_TEARING
-// to allow variable refresh rate and tear-free fast presents.
+// to allow variable refresh rate presents.
 //
 // [3] Performance tuning
 //  - Batching: This renderer batches sprites by "currently bound texture". Changing textures flushes.
 //    Pack small sprites into atlases to reduce texture switches.
-//  - Dynamic buffers: Uses MAP_WRITE_DISCARD to upload per-frame geometry. If scenes exceed 65k
-//    vertices often, increase the growth heuristic in ensureDynamicBuffers().
+//  - Dynamic buffers: Uses MAP_WRITE_DISCARD to upload per-frame geometry. Buffers grow geometrically
+//    to reduce reallocation churn; you can cap growth for memory-constrained targets.
 //  - Sampling: For pixel-perfect UI/tilemaps, call setPixelArtSampling(true) to switch to point
 //    filtering globally for the frame.
 //  - Scissoring: Add scissor rectangles per-widget via RSSetScissorRects and a scissor-enable
-//    rasterizer state.
+//    rasterizer state (not included to keep API minimal).
 //  - State objects: We pre-create a small set (opaque/alpha, solid/wire) to avoid runtime churn.
 //
 // [4] Text quality
