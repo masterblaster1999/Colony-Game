@@ -228,6 +228,9 @@ endif()
 # Exclude unfinished / sketch files from the core build (path-separator agnostic)
 list(FILTER CORE_SOURCES EXCLUDE REGEX ".*[\\/]render[\\/]d3d11_sprite_batch\\.cpp$")
 
+# EXCLUDE WinBootstrap module files from the core — they belong to the launcher/exe target
+list(FILTER CORE_SOURCES EXCLUDE REGEX ".*[\\/]platform[\\/]win[\\/](WinBootstrap|SingleInstance|CrashHandler)\\.cpp$")
+
 # Create a static library for the core
 add_library(colony_core STATIC ${CORE_SOURCES} ${CORE_HEADERS})
 target_include_directories(colony_core PUBLIC "${SRC_DIR}")
@@ -403,6 +406,15 @@ set_property(DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}" PROPERTY VS_STARTUP_PROJECT
 target_link_libraries(ColonyGame PRIVATE colony_core)
 target_compile_features(ColonyGame PRIVATE cxx_std_20)
 
+# >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
+# WinBootstrap integration (Windows-only sources + DbgHelp for minidumps)
+target_sources(ColonyGame PRIVATE
+  src/platform/win/WinBootstrap.cpp
+  src/platform/win/SingleInstance.cpp
+  src/platform/win/CrashHandler.cpp
+)
+# <<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<
+
 # Helpful definitions for the launcher/plat layer
 target_compile_definitions(ColonyGame PRIVATE
   CG_FRONTEND_${FRONTEND}=1
@@ -413,7 +425,8 @@ target_compile_definitions(ColonyGame PRIVATE
 target_link_libraries(ColonyGame PRIVATE
   user32 gdi32 shell32 shlwapi comdlg32 comctl32 advapi32
   ole32 oleaut32 imm32 winmm version uuid
-  dwmapi xinput9_1_0)
+  dwmapi xinput9_1_0
+  Dbghelp)  # <-- required by CrashHandler.cpp (MiniDumpWriteDump)
 
 # Unity for the executable (small benefit; core is where most value is)
 if(ENABLE_UNITY)
