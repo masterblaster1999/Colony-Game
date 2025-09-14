@@ -11,11 +11,15 @@
 
 namespace cg::pf {
 
+// Explicitly-typed helpers keep MSVC happy in Unity builds.
+static inline int dx(const Point& a, const Point& b) noexcept { return b.x - a.x; }
+static inline int dy(const Point& a, const Point& b) noexcept { return b.y - a.y; }
+
 // Keep Manhattan for 4-way movement (admissible & consistent for axis-aligned grids).
 static inline int manhattan(const Point& a, const Point& b) noexcept {
-    const int dx = std::abs(a.x - b.x);
-    const int dy = std::abs(a.y - b.y);
-    return dx + dy;
+    const int adx = std::abs(dx(a, b));
+    const int ady = std::abs(dy(a, b));
+    return adx + ady;
 }
 
 Result aStar(const GridView& g, Point start, Point goal,
@@ -42,7 +46,7 @@ Result aStar(const GridView& g, Point start, Point goal,
     std::vector<int> gCost(N, INF), fCost(N, INF), parent(N, -1);
     std::vector<uint8_t> closed(N, 0);
 
-    auto h = [&](int x, int y) noexcept { return manhattan(Point{x, y}, goal); };
+    auto h = [&](int x, int y) noexcept { return manhattan(Point{ x, y }, goal); };
 
     struct Node { int idx; int f; };
     struct Cmp  { bool operator()(const Node& a, const Node& b) const noexcept { return a.f > b.f; } };
