@@ -46,6 +46,9 @@
 // --- Dev Tools (single-header) ---
 #include "dev/DevTools.hpp"
 
+// --- Pathfinding module wrapper ---
+#include "ai/Pathfinding.hpp"
+
 // --------------------- Storyteller forward declarations -----------------------
 // (No header required; these match the implementation in Storyteller.cpp)
 namespace cg {
@@ -115,6 +118,9 @@ template<> struct hash<Vec2i> {
 
 // Shared 4-neighborhood directions (avoid duplication)
 static constexpr std::array<Vec2i,4> kCardinal{{ Vec2i{1,0}, Vec2i{-1,0}, Vec2i{0,1}, Vec2i{0,-1} }};
+
+// Distance helper (used by job selection)
+static int manhattan(Vec2i a, Vec2i b) { return std::abs(a.x-b.x) + std::abs(a.y-b.y); }
 
 // --------------------------------- RNG ---------------------------------------
 class Rng {
@@ -259,88 +265,31 @@ struct World {
     }
 };
 
-// --------------------------------- Pathfinding -------------------------------
-struct Node {
-    Vec2i pos;
-    int   g=0, f=0;
-    int   parent=-1;
-};
-
-static bool neighbors4(const World& w, const Vec2i& p, std::array<Vec2i,4>& out, int& count) {
-    count=0;
-    for (auto d : kCardinal) {
-        int nx = p.x + d.x, ny = p.y + d.y;
-        if (!w.inBounds(nx,ny)) continue;
-        if (!w.at(nx,ny).walkable) continue;
-        out[count++] = {nx,ny};
-    }
-    return count>0;
-}
-static int manhattan(Vec2i a, Vec2i b) { return std::abs(a.x-b.x) + std::abs(a.y-b.y); }
-
+// --------------------------------- Pathfinding (module wrapper) ---------------
 [[nodiscard]] static bool findPathAStar(const World& w, Vec2i start, Vec2i goal, std::deque<Vec2i>& out) {
     if (!w.inBounds(start.x,start.y) || !w.inBounds(goal.x,goal.y)) return false;
     if (!w.at(start.x,start.y).walkable || !w.at(goal.x,goal.y).walkable) return false;
 
-    struct PQItem { int idx; int f; bool operator<(const PQItem& o) const { return f > o.f; } };
-    std::vector<Node> nodes; nodes.reserve(w.W*w.H);
-    std::vector<int>  openIx(w.W*w.H, -1);
-    std::vector<int>  closedIx(w.W*w.H, -1);
+    cg::pf::GridView grid{
+        w.W, w.H,
+        [&](int x, int y) { return w.inBounds(x,y) && w.at(x,y).walkable; },
+        [&](int x, int y) { return int(w.at(x,y).cost); }
+    };
 
-    auto indexOf = [&](const Vec2i& p){ return p.y*w.W + p.x; };
+    std::vector<cg::pf::Point> path;
+    const auto res = cg::pf::aStar(grid,
+                                   {start.x, start.y},
+                                   {goal.x,  goal.y},
+                                   path,
+                                   /*maxExpandedNodes*/ -1);
+    if (res != cg::pf::Result::Found || path.empty()) return false;
 
-    Node s; s.pos=start; s.g=0; s.f=manhattan(start,goal); s.parent=-1;
-    nodes.push_back(s);
-    std::priority_queue<PQItem> open;
-    open.push(PQItem{0, s.f});
-    openIx[indexOf(start)] = 0;
-
-    std::array<Vec2i,4> neigh; int nc=0;
-
-    while(!open.empty()) {
-        int curIdx = open.top().idx; open.pop();
-        Node cur = nodes[curIdx];
-        Vec2i p = cur.pos;
-
-        if (p == goal) {
-            // reconstruct
-            std::vector<Vec2i> rev;
-            for (int i=curIdx; i!=-1; i = nodes[i].parent) rev.push_back(nodes[i].pos);
-            out.clear();
-            for (int i=int(rev.size())-1; i>=0; --i) out.push_back(rev[i]);
-            if (!out.empty()) out.pop_front(); // start tile is current position
-            return true;
-        }
-
-        closedIx[indexOf(p)] = curIdx;
-
-        neighbors4(w, p, neigh, nc);
-        for (int i=0;i<nc;++i) {
-            Vec2i np = neigh[i];
-            int nidx = indexOf(np);
-            if (closedIx[nidx] != -1) continue;
-
-            int stepCost = w.at(np.x,np.y).cost;
-            int tentative_g = cur.g + stepCost;
-
-            int openNodeIdx = openIx[nidx];
-            if (openNodeIdx == -1) {
-                Node n; n.pos=np; n.g=tentative_g; n.f=tentative_g + manhattan(np,goal); n.parent=curIdx;
-                openNodeIdx = int(nodes.size());
-                nodes.push_back(n);
-                open.push(PQItem{openNodeIdx, n.f});
-                openIx[nidx] = openNodeIdx;
-            } else {
-                if (tentative_g < nodes[openNodeIdx].g) {
-                    nodes[openNodeIdx].g = tentative_g;
-                    nodes[openNodeIdx].f = tentative_g + manhattan(np,goal);
-                    nodes[openNodeIdx].parent = curIdx;
-                    open.push(PQItem{openNodeIdx, nodes[openNodeIdx].f});
-                }
-            }
-        }
+    // Preserve previous behavior: skip the start tile (current position)
+    out.clear();
+    for (size_t i = 1; i < path.size(); ++i) {
+        out.push_back(Vec2i{ path[i].x, path[i].y });
     }
-    return false;
+    return true;
 }
 
 // ------------------------------ Economy / Colony -----------------------------
