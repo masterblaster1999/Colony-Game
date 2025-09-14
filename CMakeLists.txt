@@ -289,10 +289,9 @@ endif()
 list(FILTER CORE_SOURCES EXCLUDE REGEX ".*[\\/]render[\\/]d3d11_sprite_batch\\.cpp$")
 
 # >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
-# EXCLUDE Windows bootstrap files from the core — they compile only into the launcher/exe.
-# NOTE: This repo uses 'win32' in the path; accept both 'win' and 'win32' for flexibility.
-# (Patched fix retained.)
-list(FILTER CORE_SOURCES EXCLUDE REGEX ".*[\\\\/]platform[\\\\/]win(32)?[\\\\/](WinBootstrap|SingleInstance|CrashHandler)\\.cpp$")
+# EXCLUDE Windows bootstrap/crash sources from the core — they compile only into the launcher/exe.
+# Accept both 'platform/win(32)' and 'os/win(32)' layouts.
+list(FILTER CORE_SOURCES EXCLUDE REGEX ".*[\\\\/](os|platform)[\\\\/]win(32)?[\\\\/](WinBootstrap|SingleInstance|CrashHandler)\\.cpp$")
 # <<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<
 
 # Create a static library for the core
