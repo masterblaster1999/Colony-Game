@@ -35,7 +35,7 @@ inline int heuristic(const Point& a, const Point& b) noexcept {
     const int dx = std::abs(a.x - b.x);
     const int dy = std::abs(a.y - b.y);
     const int dmin = (dx < dy) ? dx : dy;
-    const int dmax = (dx < dy) ? dy : dx; // now used
+    [[maybe_unused]] const int dmax = (dx < dy) ? dy : dx; // silence potential unused-var warnings in some builds
     constexpr int STRAIGHT = 10; // cost for orthogonal step (scaled)
     constexpr int DIAG     = 14; // ≈ sqrt(2) * STRAIGHT
     // Scale back to unit=1 per orthogonal step to match typical grid costs.
