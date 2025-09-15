@@ -1,11 +1,9 @@
 #pragma once
 
-#include <vector>
-#include <queue>
 #include <functional>
-#include <cstdint>
+#include <vector>
 #include <limits>
-#include <algorithm>
+#include <cstddef>
 
 namespace cg::pf {
 
@@ -20,32 +18,23 @@ struct GridView {
 
     // Return whether a tile can be traversed.
     std::function<bool(int,int)> walkable;
+
     // Non-negative step cost for entering (x,y). Use >= 1 for “normal”.
     std::function<int(int,int)>  cost;
 
-    [[nodiscard]] bool inBounds(int x, int y) const noexcept {
-        return x >= 0 && y >= 0 && x < w && y < h;
-    }
-    [[nodiscard]] constexpr int index(int x, int y) const noexcept {
-        return y * w + x;
-    }
-    [[nodiscard]] Point fromIndex(int idx) const noexcept {
-        return { idx % w, idx / w };
-    }
+    [[nodiscard]] bool inBounds(int x, int y) const noexcept { return x >= 0 && y >= 0 && x < w && y < h; }
+    [[nodiscard]] constexpr int index(int x, int y) const noexcept { return y * w + x; }
+    [[nodiscard]] Point fromIndex(int idx) const noexcept { return { idx % w, idx / w }; }
 };
 
-enum class Result {
-    Found,
-    NoPath,
-    Aborted  // if maxExpandedNodes budget is hit
-};
+enum class Result { Found, NoPath, Aborted /* if maxExpandedNodes budget is hit */ };
 
 /// A* on a 4-neighbor grid. Writes the path to `outPath` (start..goal).
 /// If `maxExpandedNodes >= 0`, the search aborts after exceeding that budget.
 [[nodiscard]] Result aStar(const GridView& g,
-                           const Point start,
-                           const Point goal,
+                           Point start,
+                           Point goal,
                            std::vector<Point>& outPath,
-                           const int maxExpandedNodes = -1);
+                           int maxExpandedNodes = -1);
 
 } // namespace cg::pf
