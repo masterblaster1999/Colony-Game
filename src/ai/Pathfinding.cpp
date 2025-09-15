@@ -1,3 +1,4 @@
+// Pathfinding.cpp
 #include "Pathfinding.hpp"
 
 // Keep TU local safe against Windows pragma bleed in unity builds.
@@ -14,6 +15,7 @@
 #include <vector>
 #include <limits>
 #include <algorithm>
+#include <cstdint>
 
 namespace cg::pf {
 
@@ -37,10 +39,16 @@ Result aStar(const GridView& g,
     if (!g.walkable(start.x, start.y) || !g.walkable(goal.x, goal.y))
         return Result::NoPath;
 
+    if (start.x == goal.x && start.y == goal.y) {
+        out.push_back(start);
+        return Result::Found;
+    }
+
     const int N = g.w * g.h;
     if (N <= 0) return Result::NoPath;
 
-    constexpr int INF = std::numeric_limits<int>::max();
+    // Use function-style call to dodge potential macro collisions.
+    constexpr int INF = (std::numeric_limits<int>::max)();
 
     std::vector<int>     gCost(N, INF);
     std::vector<int>     fCost(N, INF);
@@ -82,8 +90,9 @@ Result aStar(const GridView& g,
         if (cur == goalIdx) {
             // Reconstruct path
             std::vector<Point> rev;
-            for (int p = cur; p != -1; p = parent[p])
+            for (int p = cur; p != -1; p = parent[p]) {
                 rev.push_back(g.fromIndex(p));
+            }
             out.assign(rev.rbegin(), rev.rend());
             return Result::Found;
         }
@@ -101,7 +110,7 @@ Result aStar(const GridView& g,
             if (closed[nIdx]) continue;
 
             // Ensure positive progress; avoid macro issues by using the 2-arg overload.
-            const int step = std::max(1, g.cost(nx, ny));
+            const int step = (std::max)(1, g.cost(nx, ny));
             const int tentative = gCost[cur] + step;
 
             if (tentative < gCost[nIdx]) {
