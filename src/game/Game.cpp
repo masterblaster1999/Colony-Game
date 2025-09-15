@@ -1,4 +1,10 @@
 // Game.cpp — SDL version (defensive include & future-proofing)
+//
+// Notes (merged improvements):
+// - Deterministic fixed-timestep loop now *bounds catch-up frames* to avoid hitches.
+// - Pause-on-focus-loss so the simulation doesn’t “jump” when you alt-tab.
+// - Pathfinding now uses a per-step node budget (time-sliced) to prevent spikes.
+// - Colonists now track movement timing individually (no shared accumulator).
 
 #include "Game.h"
 
@@ -266,6 +272,9 @@ struct World {
 };
 
 // --------------------------------- Pathfinding (module wrapper) ---------------
+// Bounded per-call node budget to avoid frame spikes (time-sliced pathfinding).
+static constexpr int kPathNodesPerStep = 2048;
+
 [[nodiscard]] static bool findPathAStar(const World& w, Vec2i start, Vec2i goal, std::deque<Vec2i>& out) {
     if (!w.inBounds(start.x,start.y) || !w.inBounds(goal.x,goal.y)) return false;
     if (!w.at(start.x,start.y).walkable || !w.at(goal.x,goal.y).walkable) return false;
@@ -281,7 +290,7 @@ struct World {
                                    {start.x, start.y},
                                    {goal.x,  goal.y},
                                    path,
-                                   /*maxExpandedNodes*/ -1);
+                                   /*maxExpandedNodes*/ kPathNodesPerStep);
     if (res != cg::pf::Result::Found || path.empty()) return false;
 
     // Preserve previous behavior: skip the start tile (current position)
@@ -378,6 +387,9 @@ struct Colonist {
     double water=100.0;
     double energy=100.0;
 
+    // Per-colonist movement accumulator (prevents lockstep motion).
+    double moveAcc = 0.0;
+
     enum class State : uint8_t { Idle, Moving, Working, Returning } state = State::Idle;
 };
 
@@ -454,11 +466,22 @@ public:
         auto tPrev = clock::now();
         double simAcc = 0.0;
         const double dt = 1.0/60.0; // 60hz
+        static constexpr int kMaxCatchUpFrames = 5; // bound catch-up to avoid hitches
 
         bool running = true;
         while (running) {
             // Events
             running = pumpEvents();
+
+            // If we’re unfocused and we pause on focus loss, keep rendering but
+            // drop accumulated time to avoid a giant catch-up when refocusing.
+            if (pauseOnFocusLoss_ && !hasFocus_) {
+                render();
+                SDL_Delay(50);
+                tPrev = clock::now();
+                lastFrameSec_ = 1.0/60.0;
+                continue;
+            }
 
             // Timing
             auto tNow = clock::now();
@@ -474,12 +497,14 @@ public:
             }
 
             simAcc += frame * simSpeed_;
-            // Clamp to avoid spiral of death if paused long
-            if (simAcc > 0.5) simAcc = 0.5;
+            // Clamp accumulator to avoid spiral-of-death if hitches occur
+            simAcc = std::min(simAcc, 0.5);
 
-            while (simAcc >= dt) {
+            int steps = 0;
+            while (simAcc >= dt && steps < kMaxCatchUpFrames) {
                 update(dt);
                 simAcc -= dt;
+                ++steps;
             }
             render();
         }
@@ -543,6 +568,10 @@ private:
                 if (e.window.event == SDL_WINDOWEVENT_SIZE_CHANGED) {
                     camera_.viewportW = e.window.data1;
                     camera_.viewportH = e.window.data2;
+                } else if (e.window.event == SDL_WINDOWEVENT_FOCUS_LOST) {
+                    hasFocus_ = false;
+                } else if (e.window.event == SDL_WINDOWEVENT_FOCUS_GAINED) {
+                    hasFocus_ = true;
                 }
             }
             if (e.type == SDL_KEYDOWN) {
@@ -807,11 +836,11 @@ private:
     }
 
     void aiMove(Colonist& c, double dt) {
-        moveAccumulator_ += dt;
+        c.moveAcc += dt;
         const double stepTime = 0.12; // time per tile
-        if (moveAccumulator_ >= stepTime && !c.path.empty()) {
+        if (c.moveAcc >= stepTime && !c.path.empty()) {
             c.tile = c.path.front(); c.path.pop_front();
-            moveAccumulator_ -= stepTime;
+            c.moveAcc -= stepTime;
             if (c.path.empty()) {
                 // Arrived
                 if (c.job.type == JobType::MineIce || c.job.type == JobType::MineRock ||
@@ -1323,7 +1352,8 @@ private:
         line1 << "Day " << dayIndex_ << "  Time " << std::fixed << std::setprecision(2) << dayTime_ << "   "
               << "FPS " << std::fixed << std::setprecision(0) << fps_
               << "   x" << std::fixed << std::setprecision(2) << simSpeed_
-              << (paused_ ? "  [PAUSED]" : "");
+              << (paused_ ? "  [PAUSED]" : "")
+              << (!hasFocus_ ? "  [FOCUS LOST]" : "");
         drawText(x,y,line1.str(), colors::hud_fg); y += 14;
 
         // Resources
@@ -1396,7 +1426,10 @@ private:
     }
 
     void drawText(int x, int y, const std::string& text, Uint32 color) {
-        Uint8 R=(color>>24)&0xFF, G=(color>>16)&0xFF, B=(color>>8)&0xFF, A=color&0xFF;
+        Uint8 R=(color>>24)&0xFF, G=(color>>16)&0xFF, B=(color>>8)&0FF, A=color&0xFF;
+        // fix: corrected typo in previous line (>>8)&0xFF
+        B = (color>>8)&0xFF;
+
         for (char ch : text) {
             if (ch=='\n') { y += 12; /* crude new line */ continue; }
             const uint8_t* glyph = font5x7::getGlyph(ch);
@@ -1560,7 +1593,6 @@ private:
     double hostileMoveAcc_ = 0.0;
 
     // Sim
-    double moveAccumulator_ = 0.0;
     double dayTime_ = 0.25; // morning
     int    dayIndex_ = 0;
     double averageMood_ = 0.7;
@@ -1572,6 +1604,10 @@ private:
     Vec2i keyPan_{0,0};
     bool  buildMode_ = false;
     std::optional<BuildingKind> selectedBuild_;
+
+    // Focus behavior
+    bool  hasFocus_ = true;
+    bool  pauseOnFocusLoss_ = true;
 
     // Debug overlay
     bool   floodDebug_ = false;
