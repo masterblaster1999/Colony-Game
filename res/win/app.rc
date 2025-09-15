@@ -1,0 +1,2 @@
+// res/win/app.rc
+1 RT_MANIFEST "res/win/app.manifest"
