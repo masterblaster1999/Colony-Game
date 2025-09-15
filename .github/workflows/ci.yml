@@ -1,0 +1,82 @@
+name: CI (Windows)
+
+on:
+  push:
+    branches: ['**']
+  pull_request:
+    branches: ['**']
+  workflow_dispatch:
+
+# Cancel redundant runs for the same ref (keeps the queue clean)
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  build-and-test-windows:
+    name: Build & Test (Windows)
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: pwsh
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0            # keeps tags available for versioning if needed
+          submodules: recursive     # harmless if you don't use submodules
+
+      - name: Set up MSVC (VS 2022) environment
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+
+      # Configure with the Visual Studio 2022 generator
+      - name: Configure (CMake)
+        run: >
+          cmake -S . -B build
+          -G "Visual Studio 17 2022"
+          -A x64
+          -DBUILD_TESTING=ON
+
+      - name: Build (Release)
+        run: cmake --build build --config Release --parallel
+
+      - name: Run tests (ctest)
+        run: ctest --test-dir build -C Release --output-on-failure
+
+      # Helpful listing for debugging what got produced
+      - name: List build outputs
+        if: always()
+        run: |
+          Write-Host "Artifacts under build\**\Release:"
+          Get-ChildItem -Recurse -File build\*\Release\* | Select-Object FullName, Length | Format-Table -AutoSize
+
+      # Upload common build outputs; will warn (not fail) if none are found
+      - name: Upload build artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-release-artifacts
+          path: |
+            build/**/Release/*.exe
+            build/**/Release/*.dll
+            build/**/Release/*.pdb
+            build/**/Release/*.lib
+            build/**/Release/*.zip
+          if-no-files-found: warn
+
+      # Upload CTest logs if present
+      - name: Upload test logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ctest-logs
+          path: |
+            build/Testing/**/*
+            build/**/*.log
+          if-no-files-found: warn
