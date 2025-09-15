@@ -4,18 +4,17 @@
 // Keep TU local safe against Windows pragma bleed in unity builds.
 #ifdef _WIN32
   #ifndef NOMINMAX
-  #define NOMINMAX
+    #define NOMINMAX
   #endif
   #ifndef WIN32_LEAN_AND_MEAN
-  #define WIN32_LEAN_AND_MEAN
+    #define WIN32_LEAN_AND_MEAN
   #endif
 #endif
 
 #include <queue>
-#include <vector>
-#include <limits>
 #include <algorithm>
-#include <cstdint>
+#include <utility>
+#include <limits>
 
 namespace cg::pf {
 
@@ -27,17 +26,15 @@ static inline constexpr int manhattan(const Point& a, const Point& b) noexcept {
 }
 
 Result aStar(const GridView& g,
-             const Point start,
-             const Point goal,
+             Point start,
+             Point goal,
              std::vector<Point>& out,
              const int maxExpandedNodes)
 {
     out.clear();
 
-    if (!g.inBounds(start.x, start.y) || !g.inBounds(goal.x, goal.y))
-        return Result::NoPath;
-    if (!g.walkable(start.x, start.y) || !g.walkable(goal.x, goal.y))
-        return Result::NoPath;
+    if (!g.inBounds(start.x, start.y) || !g.inBounds(goal.x, goal.y)) return Result::NoPath;
+    if (!g.walkable(start.x, start.y) || !g.walkable(goal.x, goal.y)) return Result::NoPath;
 
     if (start.x == goal.x && start.y == goal.y) {
         out.push_back(start);
@@ -47,13 +44,13 @@ Result aStar(const GridView& g,
     const int N = g.w * g.h;
     if (N <= 0) return Result::NoPath;
 
-    // Use function-style call to dodge potential macro collisions.
-    constexpr int INF = (std::numeric_limits<int>::max)();
+    // Use function-style call to dodge potential macro collisions (MSVC + Windows headers).
+    const int INF = (std::numeric_limits<int>::max)();
 
-    std::vector<int>     gCost(N, INF);
-    std::vector<int>     fCost(N, INF);
-    std::vector<int>     parent(N, -1);
-    std::vector<uint8_t> closed(N, 0);
+    std::vector<int> gCost(N, INF);
+    std::vector<int> fCost(N, INF);
+    std::vector<int> parent(N, -1);
+    std::vector<unsigned char> closed(N, 0);
 
     const int startIdx = g.index(start.x, start.y);
     const int goalIdx  = g.index(goal.x,  goal.y);
@@ -61,11 +58,7 @@ Result aStar(const GridView& g,
     auto h = [&](int x, int y) -> int { return manhattan({x, y}, goal); };
 
     struct Node { int idx; int f; };
-    struct Cmp {
-        bool operator()(const Node& a, const Node& b) const noexcept {
-            return a.f > b.f; // min-heap
-        }
-    };
+    struct Cmp  { bool operator()(const Node& a, const Node& b) const noexcept { return a.f > b.f; } };
 
     std::priority_queue<Node, std::vector<Node>, Cmp> open;
     open.push({ startIdx, h(start.x, start.y) });
@@ -83,7 +76,7 @@ Result aStar(const GridView& g,
         if (closed[cur]) continue;
         closed[cur] = 1;
 
-        // Optional per-tick budget
+        // Optional per-tick budget (lets the sim stay responsive under load)
         if (maxExpandedNodes >= 0 && ++expanded > maxExpandedNodes)
             return Result::Aborted;
 
@@ -103,21 +96,22 @@ Result aStar(const GridView& g,
 
         for (int i = 0; i < 4; ++i) {
             const int nx = nbrX[i], ny = nbrY[i];
-            if (!g.inBounds(nx, ny) || !g.walkable(nx, ny))
-                continue;
+            if (!g.inBounds(nx, ny) || !g.walkable(nx, ny)) continue;
 
             const int nIdx = g.index(nx, ny);
             if (closed[nIdx]) continue;
 
-            // Ensure positive progress; avoid macro issues by using the 2-arg overload.
-            const int step = (std::max)(1, g.cost(nx, ny));
+            // Ensure positive progress; avoid macro issues by using the 2-arg overload style.
+            const int step     = (std::max)(1, g.cost(nx, ny));
             const int tentative = gCost[cur] + step;
 
             if (tentative < gCost[nIdx]) {
                 parent[nIdx] = cur;
                 gCost[nIdx]  = tentative;
-                const int f  = tentative + h(nx, ny);
-                fCost[nIdx]  = f;
+
+                const int f = tentative + h(nx, ny);
+                fCost[nIdx] = f;
+
                 open.push({ nIdx, f });
             }
         }
