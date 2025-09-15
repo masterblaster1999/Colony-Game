@@ -1,7 +1,6 @@
-// Pathfinding.cpp
 #include "Pathfinding.hpp"
 
-// Keep TU local safe against Windows pragma bleed in unity builds.
+// Keep this TU robust in MSVC Unity builds on Windows.
 #ifdef _WIN32
   #ifndef NOMINMAX
     #define NOMINMAX
@@ -12,73 +11,68 @@
 #endif
 
 #include <queue>
-#include <algorithm>
-#include <utility>
+#include <vector>
 #include <limits>
+#include <algorithm>
+#include <cstdint>
 
-namespace cg::pf {
-
-// Manhattan heuristic (grid, 4-way)
-static inline constexpr int manhattan(const Point& a, const Point& b) noexcept {
-    const int dx = (a.x >= b.x) ? (a.x - b.x) : (b.x - a.x);
-    const int dy = (a.y >= b.y) ? (a.y - b.y) : (b.y - a.y);
-    return dx + dy;
+// Avoid any dx/dy confusion entirely: use a local integer abs + Manhattan.
+static inline int iabs(int v) noexcept { return v < 0 ? -v : v; }
+static inline int manhattan(const Point& a, const Point& b) noexcept {
+    return iabs(a.x - b.x) + iabs(a.y - b.y);
 }
 
-Result aStar(const GridView& g,
-             Point start,
-             Point goal,
-             std::vector<Point>& out,
-             const int maxExpandedNodes)
+PFResult aStar(const GridView& g,
+               Point start,
+               Point goal,
+               std::vector<Point>& out,
+               int maxExpandedNodes)
 {
     out.clear();
 
-    if (!g.inBounds(start.x, start.y) || !g.inBounds(goal.x, goal.y)) return Result::NoPath;
-    if (!g.walkable(start.x, start.y) || !g.walkable(goal.x, goal.y)) return Result::NoPath;
+    // Basic validation
+    if (g.w <= 0 || g.h <= 0)          return PFResult::NoPath;
+    if (!g.walkable || !g.cost)        return PFResult::NoPath;
+    if (!g.inBounds(start.x, start.y)) return PFResult::NoPath;
+    if (!g.inBounds(goal.x,  goal.y))  return PFResult::NoPath;
+    if (!g.walkable(start.x, start.y)) return PFResult::NoPath;
+    if (!g.walkable(goal.x,  goal.y))  return PFResult::NoPath;
 
     if (start.x == goal.x && start.y == goal.y) {
         out.push_back(start);
-        return Result::Found;
+        return PFResult::Found;
     }
 
     const int N = g.w * g.h;
-    if (N <= 0) return Result::NoPath;
+    // Function-style call avoids min/max macro interference from <windows.h>.
+    constexpr int INF = (std::numeric_limits<int>::max)();
 
-    // Use function-style call to dodge potential macro collisions (MSVC + Windows headers).
-    const int INF = (std::numeric_limits<int>::max)();
-
-    std::vector<int> gCost(N, INF);
-    std::vector<int> fCost(N, INF);
-    std::vector<int> parent(N, -1);
-    std::vector<unsigned char> closed(N, 0);
+    std::vector<int>     gCost(N, INF);
+    std::vector<int>     parent(N, -1);
+    std::vector<uint8_t> closed(N, 0);
 
     const int startIdx = g.index(start.x, start.y);
-    const int goalIdx  = g.index(goal.x,  goal.y);
+    const int goalIdx  = g.index(goal.x, goal.y);
 
     auto h = [&](int x, int y) -> int { return manhattan({x, y}, goal); };
 
     struct Node { int idx; int f; };
-    struct Cmp  { bool operator()(const Node& a, const Node& b) const noexcept { return a.f > b.f; } };
+    struct ByF  { bool operator()(const Node& a, const Node& b) const noexcept { return a.f > b.f; } };
+    std::priority_queue<Node, std::vector<Node>, ByF> open;
 
-    std::priority_queue<Node, std::vector<Node>, Cmp> open;
     open.push({ startIdx, h(start.x, start.y) });
-
     gCost[startIdx] = 0;
-    fCost[startIdx] = h(start.x, start.y);
 
     int expanded = 0;
 
     while (!open.empty()) {
-        const Node node = open.top();
-        open.pop();
-
+        const Node node = open.top(); open.pop();
         const int cur = node.idx;
         if (closed[cur]) continue;
         closed[cur] = 1;
 
-        // Optional per-tick budget (lets the sim stay responsive under load)
         if (maxExpandedNodes >= 0 && ++expanded > maxExpandedNodes)
-            return Result::Aborted;
+            return PFResult::Aborted;
 
         if (cur == goalIdx) {
             // Reconstruct path
@@ -87,7 +81,7 @@ Result aStar(const GridView& g,
                 rev.push_back(g.fromIndex(p));
             }
             out.assign(rev.rbegin(), rev.rend());
-            return Result::Found;
+            return PFResult::Found;
         }
 
         const Point p = g.fromIndex(cur);
@@ -101,23 +95,18 @@ Result aStar(const GridView& g,
             const int nIdx = g.index(nx, ny);
             if (closed[nIdx]) continue;
 
-            // Ensure positive progress; avoid macro issues by using the 2-arg overload style.
-            const int step     = (std::max)(1, g.cost(nx, ny));
-            const int tentative = gCost[cur] + step;
+            // Use function-call form to dodge min/max macro collisions.
+            const int stepCost  = (std::max)(1, g.cost(nx, ny));
+            const int tentative = gCost[cur] + stepCost;
 
             if (tentative < gCost[nIdx]) {
                 parent[nIdx] = cur;
                 gCost[nIdx]  = tentative;
-
-                const int f = tentative + h(nx, ny);
-                fCost[nIdx] = f;
-
+                const int f  = tentative + h(nx, ny);
                 open.push({ nIdx, f });
             }
         }
     }
 
-    return Result::NoPath;
+    return PFResult::NoPath;
 }
-
-} // namespace cg::pf
