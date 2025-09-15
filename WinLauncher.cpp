@@ -39,6 +39,11 @@
 #include <cwctype>        // towlower
 #include <memory>
 
+// --- Bootstrap headers (from platform/win) -----------------------------------
+#include "platform/win/WinBootstrapDpi.h"
+#include "platform/win/WinBootstrapPaths.h"
+// -----------------------------------------------------------------------------
+
 #pragma comment(lib, "Shlwapi.lib")
 #pragma comment(lib, "Shell32.lib")
 #pragma comment(lib, "Ole32.lib") // for CoTaskMemFree / SHGetKnownFolderPath
@@ -1049,9 +1054,15 @@ void AppendConditionalArgs(std::vector<std::wstring>& merged, const LauncherConf
 // -------------------------------------------------------------------------------------------------
 
 int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
+    // --- Bootstrap: DPI & Working Directory (very first!) ---
+    win::EnablePerMonitorDpiAwareness();
+    win::SetWorkingDirToExecutableDir();
+
     // Harden process a bit
     SetErrorMode(SEM_FAILCRITICALERRORS | SEM_NOGPFAULTERRORBOX);
     HeapSetInformation(nullptr, HeapEnableTerminationOnCorruption, nullptr, 0);
+
+    // Legacy fallback; harmless after bootstrap (and still useful if manifest is absent).
     SetDpiAwareness();
 
     // Identify as an application for taskbar grouping & notifications (default; cfg may override)
