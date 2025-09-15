@@ -10,6 +10,8 @@
 #   * Unity knobs (batch sizes + selective skip)
 #   * Bootstrap isolation (win/win32) — keeps platform bootstrap out of colony_core
 #   * Rich staging & packaging (includes frontend + git sha in the ZIP name)
+#   * Clean integration with EnableWinQoL (resources, installs, asset staging)
+#   * Optional code signing hook for Release artifacts
 # ==================================================================================================
 
 cmake_minimum_required(VERSION 3.16)
@@ -46,77 +48,56 @@ project(ColonyGame
   DESCRIPTION "Colony-Game (Windows)"
   LANGUAGES C CXX)
 
-# Export compile_commands.json (handy for IDEs and tooling)
+# Export compile_commands.json
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
-# Use modern policies (esp. runtime library handling)
-if(POLICY CMP0091)  # MSVC runtime library selection via CMAKE_MSVC_RUNTIME_LIBRARY
+# Modern policies
+if(POLICY CMP0091)
   cmake_policy(SET CMP0091 NEW)
 endif()
-if(POLICY CMP0141)  # MSVC debug info format control
+if(POLICY CMP0141)
   cmake_policy(SET CMP0141 NEW)
 endif()
 
 # --------------------------------------------------------------------------------------------------
-# Cache options (tweak as needed)
+# Cache options
 # --------------------------------------------------------------------------------------------------
 set(DEFAULT_BUILD "RelWithDebInfo")
 if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
   set(CMAKE_BUILD_TYPE "${DEFAULT_BUILD}" CACHE STRING "Build type" FORCE)
 endif()
 
-# Frontend selector: 'win32' (default) or 'sdl'
 set(FRONTEND "win32" CACHE STRING "Frontend to build: 'win32' or 'sdl'")
 set_property(CACHE FRONTEND PROPERTY STRINGS "win32" "sdl")
 
-# Build subsystem: GUI (no console) or Console (with console window)
 option(SHOW_CONSOLE "Build the executable as a console subsystem" OFF)
-
-# Min supported Windows version (controls _WIN32_WINNT/WINVER)
 set(CG_MIN_WINVER "0x0A00" CACHE STRING "Min Windows version (e.g. 0x0601=Win7, 0x0A00=Win10)")
-
-# MSVC runtime: static (/MT) or dynamic (/MD)
 option(MSVC_STATIC_RUNTIME "Link the MSVC runtime statically (/MT, /MTd)" OFF)
-
-# Warnings as errors (strict mode)
 option(WARNINGS_AS_ERRORS "Treat warnings as errors" OFF)
-
-# Unity builds (faster compiles for large code)
 option(ENABLE_UNITY "Enable Unity/Jumbo builds for faster compilation" ON)
 set(UNITY_BATCH_SIZE_CORE 32 CACHE STRING "Unity batch size for colony_core")
 set(UNITY_BATCH_SIZE_EXE  16 CACHE STRING "Unity batch size for ColonyGame")
-
-# Link-Time Optimization (LTO/IPO)
 option(ENABLE_LTO "Enable Interprocedural Optimization (LTO)" ON)
-
-# AddressSanitizer for MSVC (Debug only is recommended)
 option(ENABLE_ASAN "Enable AddressSanitizer on MSVC (Debug/Dev only)" OFF)
-
-# Precompiled headers (auto-detect core; optionally add for exe)
 set(PCH_HEADER "" CACHE FILEPATH "Optional PCH for the core (e.g., src/pch.h)")
 set(PCH_HEADER_EXE "" CACHE FILEPATH "Optional PCH for the executable (e.g., src/pch.h)")
-
-# Emit PDB in Release (helpful for crash triage)
 option(ENABLE_RELEASE_PDB "Emit Program Database (PDB) in Release" ON)
-
-# Optionally quiet MSVC C4505 (unused static/internal functions) on the launcher target
 option(SUPPRESS_MSVC_C4505 "Suppress MSVC warning C4505 on the launcher target" ON)
-
-# Optional static analysis and clang-tidy
 option(ENABLE_MSVC_ANALYZE "Enable MSVC /analyze (can be slow)" OFF)
 option(ENABLE_CLANG_TIDY "Enable clang-tidy if available" OFF)
-
-# Optional compiler launcher (sccache/ccache)
 option(ENABLE_COMPILER_CACHE "Use compiler cache (sccache/ccache) if detected in PATH" ON)
-
-# Where your core source lives (auto)
 set(SRC_DIR "src" CACHE PATH "Path to core source directory")
-
-# Optional explicit override for the launcher file
 set(LAUNCHER_FILE "" CACHE FILEPATH "Override: path to the launcher .cpp (Win32 or SDL)")
 
+# Optional code signing knobs (ignored if not configured)
+option(ENABLE_CODE_SIGNING "Sign Release binaries if signtool/cert are configured" OFF)
+set(SIGNTOOL_PATH "" CACHE FILEPATH "Path to signtool.exe (optional if in PATH)")
+set(SIGNING_CERT_PATH "" CACHE FILEPATH "Path to .pfx certificate file")
+set(SIGNING_CERT_PASSWORD "" CACHE STRING "Password for the code signing certificate (PFX)")
+set(SIGNING_TIMESTAMP_URL "http://timestamp.digicert.com" CACHE STRING "RFC3161 timestamp URL")
+
 # --------------------------------------------------------------------------------------------------
-# Compiler cache launcher (sccache/ccache) if available
+# Compiler cache launcher (sccache/ccache)
 # --------------------------------------------------------------------------------------------------
 if(ENABLE_COMPILER_CACHE)
   foreach(_c IN ITEMS sccache ccache)
@@ -134,46 +115,16 @@ endif()
 # MSVC toolchain tuning
 # --------------------------------------------------------------------------------------------------
 if(MSVC)
-  # /MP: parallel compile
-  add_compile_options(/MP)
-
-  # Default to UTF-8 source/exec charsets & Unicode APIs
-  add_compile_options(/utf-8)
-  add_compile_definitions(UNICODE _UNICODE)
-
-  # Min Windows version policy
-  add_compile_definitions(_WIN32_WINNT=${CG_MIN_WINVER} WINVER=${CG_MIN_WINVER})
-
-  # Strongly conforming mode & consistent preprocessor
-  add_compile_options(/permissive- /Zc:__cplusplus /Zc:preprocessor /Zc:throwingNew /Zc:inline)
-
-  # Treat <> headers as external and lower their warning level
+  add_compile_options(/MP /utf-8 /permissive- /Zc:__cplusplus /Zc:preprocessor /Zc:throwingNew /Zc:inline /bigobj)
+  add_compile_definitions(UNICODE _UNICODE NOMINMAX WIN32_LEAN_AND_MEAN _CRT_SECURE_NO_WARNINGS _WIN32_WINNT=${CG_MIN_WINVER} WINVER=${CG_MIN_WINVER})
   add_compile_options(/external:anglebrackets /external:W0)
-
-  # Avoid <windows.h> bloat, avoid std::min/max macro collisions
-  add_compile_definitions(NOMINMAX WIN32_LEAN_AND_MEAN)
-
-  # Quiet some noisy CRT deprecations (safe, project-local)
-  add_compile_definitions(_CRT_SECURE_NO_WARNINGS)
-
-  # Bigger obj for jumbo/templated code
-  add_compile_options(/bigobj)
-
-  # Exceptions & RTTI
-  add_compile_options(/EHsc)
-
-  # Warning level
-  add_compile_options(/W4)
+  add_compile_options(/EHsc /W4)
   if(WARNINGS_AS_ERRORS)
     add_compile_options(/WX)
   endif()
-
-  # Optional MSVC static analysis
   if(ENABLE_MSVC_ANALYZE)
     add_compile_options(/analyze)
   endif()
-
-  # clang-tidy (best-effort)
   if(ENABLE_CLANG_TIDY)
     find_program(CLANG_TIDY_EXE NAMES clang-tidy clang-tidy.exe)
     if(CLANG_TIDY_EXE)
@@ -183,31 +134,19 @@ if(MSVC)
       message(WARNING "ENABLE_CLANG_TIDY=ON but clang-tidy not found in PATH.")
     endif()
   endif()
-
-  # MSVC runtime library selection
   if(MSVC_STATIC_RUNTIME)
     set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
   else()
     set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>DLL")
   endif()
-
-  # Debug info format - PDB for Debug/RelWithDebInfo
   if(NOT DEFINED CMAKE_MSVC_DEBUG_INFORMATION_FORMAT)
     set(CMAKE_MSVC_DEBUG_INFORMATION_FORMAT "$<$<CONFIG:Debug,RelWithDebInfo>:ProgramDatabase>")
   endif()
-
-  # Linker hardening (no-op on older toolsets; harmless if unsupported)
-  add_link_options(/DYNAMICBASE /NXCOMPAT)
-
-  # Enable Control Flow Guard if toolset supports it
-  add_link_options(/guard:cf)
-
-  # Deterministic, optimized Release linking (+parallel link threads)
+  add_link_options(/DYNAMICBASE /NXCOMPAT /guard:cf)
   add_link_options("$<$<CONFIG:Release>:/INCREMENTAL:NO>")
   add_link_options("$<$<CONFIG:RelWithDebInfo>:/INCREMENTAL:NO>")
   add_link_options("$<$<CONFIG:Release>:/OPT:REF;/OPT:ICF;/Brepro>")
   add_link_options("$<$<CONFIG:RelWithDebInfo>:/OPT:REF;/OPT:ICF>")
-  # Parallelize link (use logical processors if unset)
   include(ProcessorCount)
   ProcessorCount(_cg_nproc)
   if(NOT _cg_nproc EQUAL 0)
@@ -215,12 +154,10 @@ if(MSVC)
   endif()
 endif()
 
-# C++ standard
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
-# Unity / IPO toggles
 if(ENABLE_LTO)
   include(CheckIPOSupported)
   check_ipo_supported(RESULT has_ipo OUTPUT ipo_msg)
@@ -232,13 +169,11 @@ if(ENABLE_LTO)
   endif()
 endif()
 
-# ASAN (MSVC supports /fsanitize=address in recent versions)
 if(MSVC AND ENABLE_ASAN)
   add_compile_options($<$<CONFIG:Debug>:/fsanitize=address>)
   add_link_options($<$<CONFIG:Debug>:/fsanitize=address>)
 endif()
 
-# Output folders (bin/{config}, lib/{config})
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
 set(CMAKE_LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
 set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/lib")
@@ -250,14 +185,11 @@ foreach(_cfg IN ITEMS Debug Release RelWithDebInfo MinSizeRel)
 endforeach()
 
 # --------------------------------------------------------------------------------------------------
-# Source discovery (core engine)
+# Core sources
 # --------------------------------------------------------------------------------------------------
-file(GLOB_RECURSE CORE_SOURCES CONFIGURE_DEPENDS
-  "${SRC_DIR}/*.c" "${SRC_DIR}/*.cpp")
-file(GLOB_RECURSE CORE_HEADERS CONFIGURE_DEPENDS
-  "${SRC_DIR}/*.h" "${SRC_DIR}/*.hpp")
+file(GLOB_RECURSE CORE_SOURCES CONFIGURE_DEPENDS "${SRC_DIR}/*.c" "${SRC_DIR}/*.cpp")
+file(GLOB_RECURSE CORE_HEADERS CONFIGURE_DEPENDS "${SRC_DIR}/*.h" "${SRC_DIR}/*.hpp")
 
-# Exclude anything that looks like a launcher from core (keeps core reusable)
 foreach(_rx IN ITEMS
   ".*/Launcher.*\\.cpp$"
   ".*/.*Launcher_.*\\.cpp$"
@@ -271,12 +203,8 @@ foreach(_rx IN ITEMS
   list(FILTER CORE_SOURCES EXCLUDE REGEX "${_rx}")
 endforeach()
 
-# ---- SDL-only translation units (compile ONLY for FRONTEND=sdl) --------------
 set(SDL_ONLY_SOURCES "")
-foreach(_cand IN ITEMS
-  "src/game/Game.cpp"
-  "src/ui/HudOverlays.cpp"
-)
+foreach(_cand IN ITEMS "src/game/Game.cpp" "src/ui/HudOverlays.cpp")
   if(EXISTS "${CMAKE_SOURCE_DIR}/${_cand}")
     list(APPEND SDL_ONLY_SOURCES "${CMAKE_SOURCE_DIR}/${_cand}")
   endif()
@@ -285,32 +213,20 @@ if(SDL_ONLY_SOURCES)
   list(REMOVE_ITEM CORE_SOURCES ${SDL_ONLY_SOURCES})
 endif()
 
-# Exclude unfinished / sketch files from the core build (path-separator agnostic)
 list(FILTER CORE_SOURCES EXCLUDE REGEX ".*[\\/]render[\\/]d3d11_sprite_batch\\.cpp$")
-
-# >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
-# EXCLUDE Windows bootstrap/crash sources from the core — they compile only into the launcher/exe.
-# Accept both 'platform/win(32)' and 'os/win(32)' layouts.
 list(FILTER CORE_SOURCES EXCLUDE REGEX ".*[\\\\/](os|platform)[\\\\/]win(32)?[\\\\/](WinBootstrap|SingleInstance|CrashHandler)\\.cpp$")
-# <<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<
 
-# Create a static library for the core
 add_library(colony_core STATIC ${CORE_SOURCES} ${CORE_HEADERS})
 target_include_directories(colony_core PUBLIC "${SRC_DIR}")
 target_compile_features(colony_core PUBLIC cxx_std_20)
 
-# Unity builds for the core (optional)
 if(ENABLE_UNITY)
   set_property(TARGET colony_core PROPERTY UNITY_BUILD ON)
   set_property(TARGET colony_core PROPERTY UNITY_BUILD_BATCH_SIZE ${UNITY_BATCH_SIZE_CORE})
 endif()
 
-# PCH (optional, autodetect pch.h if not explicitly provided)
 if(NOT PCH_HEADER)
-  foreach(_cand IN ITEMS
-    "${SRC_DIR}/pch.h"
-    "${SRC_DIR}/PCH.h"
-    "pch.h" "PCH.h")
+  foreach(_cand IN ITEMS "${SRC_DIR}/pch.h" "${SRC_DIR}/PCH.h" "pch.h" "PCH.h")
     if(EXISTS "${CMAKE_SOURCE_DIR}/${_cand}")
       set(PCH_HEADER "${_cand}")
       break()
@@ -321,19 +237,17 @@ if(PCH_HEADER AND EXISTS "${PCH_HEADER}")
   target_precompile_headers(colony_core PRIVATE "${PCH_HEADER}")
 endif()
 
-# Useful defines for the core (frontend selection will add more below)
 target_compile_definitions(colony_core PUBLIC
   $<$<CONFIG:Debug>:CG_DEBUG=1>
   $<$<CONFIG:RelWithDebInfo>:CG_RELWITHDEBINFO=1>
 )
 
-# --- Windows multimedia timer dependency for core (safe even if not used) -----
 if(WIN32)
   target_link_libraries(colony_core PUBLIC winmm)
 endif()
 
 # --------------------------------------------------------------------------------------------------
-# Version header (auto-generated; no repo file required)
+# Generated version header
 # --------------------------------------------------------------------------------------------------
 set(_ver_in  "${CMAKE_BINARY_DIR}/build_config.h.in")
 set(_ver_out "${CMAKE_BINARY_DIR}/generated/build_config.h")
@@ -350,68 +264,47 @@ file(WRITE "${_ver_in}" [=[
 #define CG_MIN_WINVER        "@CG_MIN_WINVER@"
 ]=])
 
-# try to get git sha (best-effort)
 set(CG_GIT_SHA "unknown")
 set(CG_GIT_IS_DIRTY 0)
 find_package(Git QUIET)
 if(Git_FOUND)
-  execute_process(
-    COMMAND "${GIT_EXECUTABLE}" rev-parse --short HEAD
-    WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
-    OUTPUT_VARIABLE CG_GIT_SHA
-    OUTPUT_STRIP_TRAILING_WHITESPACE
-    ERROR_QUIET)
-  execute_process(
-    COMMAND "${GIT_EXECUTABLE}" diff --quiet
-    WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
-    RESULT_VARIABLE GIT_DIFF_RESULT
-    ERROR_QUIET)
+  execute_process(COMMAND "${GIT_EXECUTABLE}" rev-parse --short HEAD
+                  WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+                  OUTPUT_VARIABLE CG_GIT_SHA
+                  OUTPUT_STRIP_TRAILING_WHITESPACE
+                  ERROR_QUIET)
+  execute_process(COMMAND "${GIT_EXECUTABLE}" diff --quiet
+                  WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+                  RESULT_VARIABLE GIT_DIFF_RESULT
+                  ERROR_QUIET)
   if(GIT_DIFF_RESULT EQUAL 1)
     set(CG_GIT_IS_DIRTY 1)
   endif()
 endif()
-
-# Timestamp for build metadata (UTC)
 string(TIMESTAMP CG_BUILD_TIMESTAMP "%Y-%m-%d %H:%M:%S UTC" UTC)
-
-# FRONTEND text goes in after we resolve the launcher; configure_file later.
 target_include_directories(colony_core PUBLIC "${CMAKE_BINARY_DIR}/generated")
 
 # --------------------------------------------------------------------------------------------------
 # Launcher discovery / frontend target
 # --------------------------------------------------------------------------------------------------
 set(_KNOWN_WIN_LAUNCHERS
-  "WinLauncher.cpp"
-  "colonygame.cpp"
-  "src/colonygame.cpp"
-  "src/platform/win32/WinLauncher.cpp"
-  "platform/win32/WinLauncher.cpp"
-  "src/Launcher_Win32.cpp"
-  "Launcher_Win32.cpp"
-  "src/WinLauncher.cpp"
-  "src/platform/win32_main.cpp"
-  "platform/win32_main.cpp"
-  "src/platform/win32/win32_main.cpp"
+  "WinLauncher.cpp" "colonygame.cpp" "src/colonygame.cpp"
+  "src/platform/win32/WinLauncher.cpp" "platform/win32/WinLauncher.cpp"
+  "src/Launcher_Win32.cpp" "Launcher_Win32.cpp" "src/WinLauncher.cpp"
+  "src/platform/win32_main.cpp" "platform/win32_main.cpp" "src/platform/win32/win32_main.cpp"
 )
 set(_KNOWN_SDL_LAUNCHERS
-  "Launcher_SDL.cpp"
-  "SDLLauncher.cpp"
-  "src/Launcher_SDL.cpp"
-  "src/platform/sdl/Launcher_SDL.cpp"
-  "platform/sdl/Launcher_SDL.cpp"
-  "src/SDLLauncher.cpp"
+  "Launcher_SDL.cpp" "SDLLauncher.cpp" "src/Launcher_SDL.cpp"
+  "src/platform/sdl/Launcher_SDL.cpp" "platform/sdl/Launcher_SDL.cpp" "src/SDLLauncher.cpp"
 )
 
-# Decide subsystem (GUI or Console)
 set(_WIN32_FLAG WIN32)
 if(SHOW_CONSOLE)
-  set(_WIN32_FLAG) # empty -> console subsystem (console window visible)
+  set(_WIN32_FLAG)
 endif()
 
-# Resolve launcher file
 set(_LAUNCHER "")
-set(CG_FRONTEND_STR "${FRONTEND}") # carries into header
-
+set(CG_FRONTEND_STR "${FRONTEND}")
 if(LAUNCHER_FILE)
   if(EXISTS "${LAUNCHER_FILE}")
     set(_LAUNCHER "${LAUNCHER_FILE}")
@@ -426,10 +319,7 @@ elseif(FRONTEND STREQUAL "win32")
     endif()
   endforeach()
   if(NOT _LAUNCHER)
-    message(FATAL_ERROR
-      "Could not find a Win32 launcher source.\n"
-      "Looked for: ${_KNOWN_WIN_LAUNCHERS}\n"
-      "Override with -DLAUNCHER_FILE=path/to/win32_main.cpp")
+    message(FATAL_ERROR "Could not find a Win32 launcher source. Override with -DLAUNCHER_FILE=...")
   endif()
 elseif(FRONTEND STREQUAL "sdl")
   foreach(_cand IN LISTS _KNOWN_SDL_LAUNCHERS)
@@ -439,29 +329,12 @@ elseif(FRONTEND STREQUAL "sdl")
     endif()
   endforeach()
   if(NOT _LAUNCHER)
-    message(FATAL_ERROR
-      "Could not find an SDL launcher source.\n"
-      "Looked for: ${_KNOWN_SDL_LAUNCHERS}\n"
-      "Override with -DLAUNCHER_FILE=path/to/Launcher_SDL.cpp")
+    message(FATAL_ERROR "Could not find an SDL launcher source. Override with -DLAUNCHER_FILE=...")
   endif()
 else()
-  message(FATAL_ERROR "FRONTEND must be 'win32' or 'sdl' (got: ${FRONTEND})")
+  message(FATAL_ERROR "FRONTEND must be 'win32' or 'sdl'")
 endif()
 
-# Resource (.rc) auto-discovery (optional icon/manifest)
-set(_RES "")
-foreach(_rc IN ITEMS
-  "app.rc" "App.rc"
-  "src/app.rc" "src/App.rc"
-  "res/app.rc" "res/App.rc"
-  "resources/app.rc" "resources/App.rc")
-  if(EXISTS "${CMAKE_SOURCE_DIR}/${_rc}")
-    set(_RES "${_rc}")
-    break()
-  endif()
-endforeach()
-
-# Configure version header now that FRONTEND is resolved
 set(CG_FRONTEND "${CG_FRONTEND_STR}")
 set(CG_MIN_WINVER_TXT "${CG_MIN_WINVER}")
 configure_file("${_ver_in}" "${_ver_out}" @ONLY)
@@ -469,17 +342,13 @@ configure_file("${_ver_in}" "${_ver_out}" @ONLY)
 # --------------------------------------------------------------------------------------------------
 # Executable
 # --------------------------------------------------------------------------------------------------
-add_executable(ColonyGame ${_WIN32_FLAG} "${_LAUNCHER}" ${_RES})
+add_executable(ColonyGame ${_WIN32_FLAG} "${_LAUNCHER}")
 set_property(DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}" PROPERTY VS_STARTUP_PROJECT ColonyGame)
 target_link_libraries(ColonyGame PRIVATE colony_core)
 target_compile_features(ColonyGame PRIVATE cxx_std_20)
 
-# Optional PCH for the executable
 if(NOT PCH_HEADER_EXE)
-  foreach(_cand IN ITEMS
-    "${SRC_DIR}/pch.h"
-    "${SRC_DIR}/PCH.h"
-    "pch.h" "PCH.h")
+  foreach(_cand IN ITEMS "${SRC_DIR}/pch.h" "${SRC_DIR}/PCH.h" "pch.h" "PCH.h")
     if(EXISTS "${CMAKE_SOURCE_DIR}/${_cand}")
       set(PCH_HEADER_EXE "${_cand}")
       break()
@@ -490,88 +359,70 @@ if(PCH_HEADER_EXE AND EXISTS "${PCH_HEADER_EXE}")
   target_precompile_headers(ColonyGame PRIVATE "${PCH_HEADER_EXE}")
 endif()
 
-# >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
-# WinBootstrap integration (Windows-only sources + DbgHelp for minidumps)
-# Robustly detect whether sources live under platform/win32 or platform/win, and add them if present.
-set(_WIN_PLAT_DIR "")
-foreach(_cand IN ITEMS
-  "src/platform/win32" "platform/win32" "src/platform/win" "platform/win")
-  if(EXISTS "${CMAKE_SOURCE_DIR}/${_cand}")
-    set(_WIN_PLAT_DIR "${_cand}")
-    break()
-  endif()
-endforeach()
-if(NOT _WIN_PLAT_DIR)
-  message(FATAL_ERROR "Could not find Windows platform sources (expected under src/platform/win32 or src/platform/win).")
-endif()
+# -------- EnableWinQoL (resources, bootstrap, installs, asset copy) ----------
+include(cmake/EnableWinQoL.cmake)
 
-set(_WIN_BOOTSTRAP_UNITS
-  "WinBootstrap.cpp"
-  "SingleInstance.cpp"
-  "CrashHandler.cpp"
-  "AppPaths.cpp"         # optional, included if present
+set(CG_APP_VERSION "${PROJECT_VERSION}.0")
+# Asset folders to mirror next to the exe
+set(_ASSET_DIRS assets Assets data Data res resources)
+
+set(_WQ_OPTS
+  COMPANY_NAME     "Colony-Game"
+  FILE_DESCRIPTION "Colony-Game"
+  ICON             "${CMAKE_SOURCE_DIR}/res/app.ico"
+  MANIFEST         "${CMAKE_SOURCE_DIR}/res/app.manifest"
+  WORKING_DIR      "$<TARGET_FILE_DIR:ColonyGame>"
+  ASSET_DIRS       ${_ASSET_DIRS}
+  SKIP_UNITY_FOR_BOOTSTRAP
+  SECURITY_HARDENING
+  FASTLINK_DEBUG
 )
-
-set(_WIN_BOOTSTRAP_SOURCES "")
-foreach(_unit IN LISTS _WIN_BOOTSTRAP_UNITS)
-  if(EXISTS "${CMAKE_SOURCE_DIR}/${_WIN_PLAT_DIR}/${_unit}")
-    list(APPEND _WIN_BOOTSTRAP_SOURCES "${_WIN_PLAT_DIR}/${_unit}")
-  endif()
-endforeach()
-
-if(_WIN_BOOTSTRAP_SOURCES)
-  target_sources(ColonyGame PRIVATE ${_WIN_BOOTSTRAP_SOURCES})
-
-  # Keep bootstrap files out of Unity batches for compiler sanity/clarity
-  if(ENABLE_UNITY)
-    set_source_files_properties(${_WIN_BOOTSTRAP_SOURCES} PROPERTIES SKIP_UNITY_BUILD_INCLUSION ON)
-  endif()
-
-  # Silence known benign MSVC warnings from Windows macro policy clashes (source-only)
-  if(MSVC)
-    foreach(_src IN LISTS _WIN_BOOTSTRAP_SOURCES)
-      # C4005: macro redefinition (e.g., WIN32_LEAN_AND_MEAN) inside legacy platform code
-      # C4535: calling _set_se_translator() requires /EHa (we stay on /EHsc)
-      set_source_files_properties(${_src} PROPERTIES COMPILE_OPTIONS "/wd4005;/wd4535")
-    endforeach()
-  endif()
+if(WARNINGS_AS_ERRORS)
+  list(APPEND _WQ_OPTS WARNINGS_AS_ERRORS)
 endif()
-# <<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<
+if(MSVC_STATIC_RUNTIME)
+  list(APPEND _WQ_OPTS USE_STATIC_RUNTIME)
+endif()
+if(ENABLE_LTO)
+  list(APPEND _WQ_OPTS LTO)
+endif()
+if(ENABLE_ASAN)
+  list(APPEND _WQ_OPTS ENABLE_ASAN)
+endif()
 
-# Helpful definitions for the launcher/plat layer
+enable_win_qol(ColonyGame "Colony-Game" "${CG_APP_VERSION}" ${_WQ_OPTS})
+
+# Helpful launcher defines
 target_compile_definitions(ColonyGame PRIVATE
   CG_FRONTEND_${FRONTEND}=1
   $<$<BOOL:${SHOW_CONSOLE}>:CG_CONSOLE_APP=1>
 )
 
-# Win32 libs (explicit; complements any #pragma comment(lib, ...) in sources)
+# Core Win32 libs (EnableWinQoL already links Dbghelp & Shell32)
 target_link_libraries(ColonyGame PRIVATE
-  user32 gdi32 shell32 shlwapi comdlg32 comctl32 advapi32
+  user32 gdi32 shlwapi comdlg32 comctl32 advapi32
   ole32 oleaut32 imm32 winmm version uuid
   dwmapi xinput9_1_0
-  Dbghelp)  # <-- required by CrashHandler.cpp (MiniDumpWriteDump)
+)
 
-# Unity for the executable (small benefit; core is where most value is)
 if(ENABLE_UNITY)
   set_property(TARGET ColonyGame PROPERTY UNITY_BUILD ON)
   set_property(TARGET ColonyGame PROPERTY UNITY_BUILD_BATCH_SIZE ${UNITY_BATCH_SIZE_EXE})
 endif()
 
-# Emit PDBs in Release (optional but recommended)
 if(MSVC AND ENABLE_RELEASE_PDB)
   target_compile_options(ColonyGame PRIVATE "$<$<CONFIG:Release>:/Zi>")
   target_link_options(ColonyGame    PRIVATE "$<$<CONFIG:Release>:/DEBUG:FULL>")
 endif()
 
-# Optionally suppress MSVC C4505 (unreferenced function with internal linkage) on the launcher
 if(MSVC AND SUPPRESS_MSVC_C4505)
   target_compile_options(ColonyGame PRIVATE /wd4505)
 endif()
 
-# Better VS debugging experience: ensure PATH has the EXE dir at runtime
 if(MSVC)
   set(_vs_env "PATH=%PATH%;$<TARGET_FILE_DIR:ColonyGame>")
   set_property(TARGET ColonyGame PROPERTY VS_DEBUGGER_ENVIRONMENT "${_vs_env}")
+  set_property(TARGET ColonyGame PROPERTY VS_DEBUGGER_WORKING_DIRECTORY "$<TARGET_FILE_DIR:ColonyGame>")
 endif()
 
 # --------------------------------------------------------------------------------------------------
@@ -594,11 +445,8 @@ if(FRONTEND STREQUAL "sdl")
   endif()
 
   if(NOT SDL2_FOUND)
-    message(FATAL_ERROR
-      "FRONTEND=sdl selected but SDL2 was not found.\n"
-      "Install SDL2 (e.g., via vcpkg) or set SDL2_DIR / CMAKE_PREFIX_PATH.")
+    message(FATAL_ERROR "FRONTEND=sdl selected but SDL2 was not found.")
   endif()
-
   message(STATUS "SDL2 found via: ${_SDL2_FOUND_KIND}")
 
   set(_SDL_TARGET "")
@@ -642,118 +490,31 @@ if(FRONTEND STREQUAL "sdl")
 endif()
 
 # --------------------------------------------------------------------------------------------------
-# Nice-to-haves for dev ergonomics
+# Source grouping
 # --------------------------------------------------------------------------------------------------
-# Working directory to the binary dir (VS debugger)
-set_property(TARGET ColonyGame PROPERTY VS_DEBUGGER_WORKING_DIRECTORY "$<TARGET_FILE_DIR:ColonyGame>")
-
-# Post-build: copy assets/resources (if present) next to the .exe for local dev runs
-set(_ASSET_DIRS assets Assets data Data res resources)
-foreach(_d IN LISTS _ASSET_DIRS)
-  if(EXISTS "${CMAKE_SOURCE_DIR}/${_d}")
-    add_custom_command(TARGET ColonyGame POST_BUILD
-      COMMAND "${CMAKE_COMMAND}" -E copy_directory
-              "${CMAKE_SOURCE_DIR}/${_d}"
-              "$<TARGET_FILE_DIR:ColonyGame>/${_d}"
-      VERBATIM)
-  endif()
-endforeach()
-
-# Group sources in IDE by directory tree
 get_target_property(_exe_sources ColonyGame SOURCES)
 get_target_property(_core_sources colony_core SOURCES)
 if(_exe_sources OR _core_sources)
   source_group(TREE "${CMAKE_SOURCE_DIR}" FILES ${_exe_sources} ${_core_sources} ${CORE_HEADERS})
 endif()
-# Group generated files explicitly
 source_group("Generated" FILES "${_ver_out}")
-
-# Ensure everyone sees the generated header
 target_include_directories(ColonyGame PRIVATE "${CMAKE_BINARY_DIR}/generated")
 
 # ==================================================================================================
-# Robust staging via CMake install() with version-aware runtime dependency handling
+# Staging & packaging (installs handled by EnableWinQoL for the executable)
 # ==================================================================================================
 
-# Default install prefix to build/stage (so "cmake --install" lands in build/stage/<config>)
 set(CMAKE_INSTALL_PREFIX "${CMAKE_BINARY_DIR}/stage" CACHE PATH "Install prefix (staging root)" FORCE)
-
 include(GNUInstallDirs)
 
-# ---- Helper: version-aware runtime install (emulates RUNTIME_DEPENDENCIES on old CMake) ----------
-# Usage:
-#   cg_install_runtime_targets(TARGETS <t1;...> RUNTIME_DESTINATION <path>)
-# On CMake < 3.21, we still use install(TARGETS) AND a post-install fix via BundleUtilities to
-# collect dependencies. Modern branch uses RUNTIME_DEPENDENCIES with strict excludes.
-function(cg_install_runtime_targets)
-  set(options)
-  set(oneValueArgs RUNTIME_DESTINATION)
-  set(multiValueArgs TARGETS)
-  cmake_parse_arguments(CG "${options}" "${oneValueArgs}" "${multiValueArgs}" ${ARGN})
-  if(NOT CG_TARGETS)
-    message(FATAL_ERROR "cg_install_runtime_targets: pass TARGETS <t1;t2;...>")
-  endif()
-  if(NOT CG_RUNTIME_DESTINATION)
-    set(CG_RUNTIME_DESTINATION "${CMAKE_INSTALL_BINDIR}")
-  endif()
-
-  if(CMAKE_VERSION VERSION_LESS 3.21)
-    install(TARGETS ${CG_TARGETS}
-      RUNTIME DESTINATION ${CG_RUNTIME_DESTINATION}
-      LIBRARY DESTINATION ${CG_RUNTIME_DESTINATION}
-      ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
-    )
-    if(WIN32)
-      set(_RDEST "${CG_RUNTIME_DESTINATION}")
-      install(CODE
-"include(BundleUtilities)
-set(BU_CHMOD_BUNDLE_ITEMS ON)
-set(_prefix \"\$ENV{DESTDIR}\${CMAKE_INSTALL_PREFIX}\")
-set(_dir \"\${_prefix}/${_RDEST}\")
-if(\"${_RDEST}\" STREQUAL \".\")
-  set(_dir \"\${_prefix}\")
-endif()
-file(GLOB _exes \"\${_dir}/*.exe\")
-foreach(_exe IN LISTS _exes)
-  message(STATUS \"Fixing runtime DLLs for: \${_exe}\")
-  fixup_bundle(\"\${_exe}\" \"\" \"\${_dir}\")
-endforeach()")
-    endif()
-  else()
-    install(TARGETS ${CG_TARGETS}
-      RUNTIME_DEPENDENCIES
-        PRE_EXCLUDE_REGEXES
-          "^(api-ms-win-.*)$"
-          "^(ext-ms-.*)$"
-          "^hvsifiletrust\\.dll$"
-          "^ieshims\\.dll$"
-        POST_EXCLUDE_REGEXES
-          [[.*(\\|/)system32(\\|/).*\.dll]]
-      RUNTIME DESTINATION ${CG_RUNTIME_DESTINATION}
-      LIBRARY DESTINATION ${CG_RUNTIME_DESTINATION}
-      ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
-    )
-  endif()
-endfunction()
-
-# 1) Install the game EXE and its runtime dependencies next to it (stage root).
-cg_install_runtime_targets(TARGETS ColonyGame RUNTIME_DESTINATION .)
-
-# 2) Install the PDB **optionally** (no failure if absent)
-install(FILES "$<TARGET_PDB_FILE:ColonyGame>"
-        DESTINATION .
-        OPTIONAL
-        COMPONENT ColonyRuntime)
-
-# 3) Install assets (if present) preserving subfolders
+# Install assets (EnableWinQoL copies post-build too; this covers install prefix)
 foreach(_d IN LISTS _ASSET_DIRS)
   if(EXISTS "${CMAKE_SOURCE_DIR}/${_d}")
     install(DIRECTORY "${_d}/" DESTINATION "${_d}" COMPONENT ColonyRuntime)
   endif()
 endforeach()
 
-# 4) (Optional) Install the MSVC runtime redistributables (app-local)
-#    Also honor UCRT libs when available.
+# Optional: install redists (UCRT/MSVC) app-local
 set(CMAKE_INSTALL_SYSTEM_RUNTIME_DESTINATION .)
 set(CMAKE_INSTALL_UCRT_LIBRARIES TRUE)
 include(InstallRequiredSystemLibraries)
@@ -763,7 +524,25 @@ if(CMAKE_INSTALL_SYSTEM_RUNTIME_LIBS)
           COMPONENT ColonyRuntime)
 endif()
 
-# 5) Create a convenience target that *stages* automatically as part of the normal build.
+# Optional: sign the installed executable (Release only; requires signtool + pfx)
+if(ENABLE_CODE_SIGNING AND CMAKE_BUILD_TYPE MATCHES "Release")
+  if(NOT SIGNTOOL_PATH)
+    find_program(SIGNTOOL_PATH NAMES signtool signtool.exe)
+  endif()
+  if(SIGNTOOL_PATH AND EXISTS "${SIGNING_CERT_PATH}")
+    # Sign after install (so staged exe is signed)
+    install(CODE
+"execute_process(COMMAND \"${SIGNTOOL_PATH}\"
+    sign /fd SHA256 /tr \"${SIGNING_TIMESTAMP_URL}\" /td SHA256
+    /f \"${SIGNING_CERT_PATH}\" /p \"${SIGNING_CERT_PASSWORD}\"
+    \"\$ENV{DESTDIR}\${CMAKE_INSTALL_PREFIX}/$<CONFIG>/ColonyGame.exe\")
+ message(STATUS \"Signed: \${CMAKE_INSTALL_PREFIX}/$<CONFIG>/ColonyGame.exe\")")
+  else()
+    message(WARNING "ENABLE_CODE_SIGNING=ON but signtool or cert not configured; skipping.")
+  endif()
+endif()
+
+# Stage target
 add_custom_target(stage_win ALL
   COMMAND "${CMAKE_COMMAND}" -E echo "Staging ColonyGame to: ${CMAKE_INSTALL_PREFIX}/$<CONFIG>"
   COMMAND "${CMAKE_COMMAND}" -DCMAKE_INSTALL_CONFIG_NAME=$<CONFIG> -P "${CMAKE_BINARY_DIR}/cmake_install.cmake"
@@ -771,18 +550,17 @@ add_custom_target(stage_win ALL
   VERBATIM
 )
 
-# 6) Zip packaging via CPack: produce ColonyGame-<ver>-<frontend>-<sha>-<cfg>.zip from the staged tree.
+# Zip packaging
 set(CPACK_PACKAGE_NAME "ColonyGame")
 set(CPACK_PACKAGE_VENDOR "Colony-Game")
 set(CPACK_PACKAGE_VERSION "${PROJECT_VERSION}")
 set(CPACK_GENERATOR "ZIP")
-# include frontend + git sha in artifact name for quick triage
 set(CPACK_PACKAGE_FILE_NAME "${CPACK_PACKAGE_NAME}-${PROJECT_VERSION}-${CG_FRONTEND}-${CG_GIT_SHA}-$<CONFIG>")
 install(CODE "message(STATUS \"Staged at: ${CMAKE_INSTALL_PREFIX}/$<CONFIG>\")")
 include(CPack)
 
 # --------------------------------------------------------------------------------------------------
-# Summary (printed once at configure time)
+# Summary
 # --------------------------------------------------------------------------------------------------
 message(STATUS "")
 message(STATUS "================ Colony-Game: Configure Summary ================")
