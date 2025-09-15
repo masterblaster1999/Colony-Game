@@ -42,10 +42,10 @@ enum class Result {
 
 /// A* on a 4-neighbor grid. Writes the path to `outPath` (start..goal).
 /// If `maxExpandedNodes >= 0`, the search aborts after exceeding that budget.
-Result aStar(const GridView& g,
-             Point start,
-             Point goal,
-             std::vector<Point>& outPath,
-             int maxExpandedNodes = -1);
+[[nodiscard]] Result aStar(const GridView& g,
+                           const Point start,
+                           const Point goal,
+                           std::vector<Point>& outPath,
+                           const int maxExpandedNodes = -1);
 
 } // namespace cg::pf
