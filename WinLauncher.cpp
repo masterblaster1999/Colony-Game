@@ -36,11 +36,25 @@
 #include <cstdio>
 #include <cstdarg>
 #include <cwchar>
+#include <cwctype>        // towlower
 #include <memory>
 
 #pragma comment(lib, "Shlwapi.lib")
 #pragma comment(lib, "Shell32.lib")
+#pragma comment(lib, "Ole32.lib") // for CoTaskMemFree / SHGetKnownFolderPath
 
+// --- Back-compat shims for older SDKs ------------------------------------------------------------
+#ifndef LOAD_LIBRARY_SEARCH_SYSTEM32
+#define LOAD_LIBRARY_SEARCH_SYSTEM32   0x00000800
+#endif
+#ifndef LOAD_LIBRARY_SEARCH_APPLICATION_DIR
+#define LOAD_LIBRARY_SEARCH_APPLICATION_DIR 0x00000200
+#endif
+
+// If your SDK is older and doesn't define PER_MONITOR_AWARE_V2, provide a best-effort value.
+#ifndef DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2
+#define DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2 ((HANDLE)-4)
+#endif
 // ----------------------------------------------------------------------------------------------
 // Prefer the discrete GPU on hybrid systems (NVIDIA/AMD).
 extern "C" {
@@ -158,15 +172,16 @@ void SecureDllSearchOrder() {
 }
 
 void SetDpiAwareness() {
-    HMODULE user32 = GetModuleHandleW(L"user32");
+    // Use HANDLE-based prototype to avoid SDK-type dependency on DPI_AWARENESS_CONTEXT.
+    HMODULE user32 = GetModuleHandleW(L"user32.dll");
     if (user32) {
-        using Fn = BOOL (WINAPI*)(DPI_AWARENESS_CONTEXT);
+        using Fn = BOOL (WINAPI*)(HANDLE);
         if (auto p = reinterpret_cast<Fn>(GetProcAddress(user32, "SetProcessDpiAwarenessContext"))) {
             p(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
             return;
         }
     }
-    SetProcessDPIAware(); // fallback
+    SetProcessDPIAware(); // fallback on very old systems
 }
 
 std::wstring GetModuleDir() {
@@ -1039,7 +1054,7 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
     HeapSetInformation(nullptr, HeapEnableTerminationOnCorruption, nullptr, 0);
     SetDpiAwareness();
 
-    // Identify as an application for taskbar grouping & notifications
+    // Identify as an application for taskbar grouping & notifications (default; cfg may override)
     SetCurrentProcessExplicitAppUserModelID(L"ColonyGame.Launcher");
 
     gModuleDir = GetModuleDir();
@@ -1051,6 +1066,11 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
     // Load config (optional)
     LauncherConfig cfg{};
     ReadLauncherConfig(gModuleDir, cfg);
+
+    // If config provided a custom AUMID, apply it now.
+    if (!cfg.appUserModelID.empty()) {
+        SetCurrentProcessExplicitAppUserModelID(cfg.appUserModelID.c_str());
+    }
 
     // Configure logs root if requested
     if (cfg.portable) {
