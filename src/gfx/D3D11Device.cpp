@@ -3,6 +3,9 @@
 #include <cstdio>
 #include <cstdarg>
 #include <algorithm>
+#include <string>
+#include <cstring>
+#include <cwchar>
 
 #include <wincodec.h> // WIC for screenshots
 #pragma comment(lib, "windowscodecs.lib")
@@ -275,7 +278,7 @@ void D3D11Device::EnableDebugBreaks(bool breakOnError, bool breakOnCorruption) {
 
 void D3D11Device::SetDebugName(ID3D11DeviceChild* obj, const char* name) {
     if (!obj || !name) return;
-    obj->SetPrivateData(WKPDID_D3DDebugObjectName, UINT(strlen(name)), name);
+    obj->SetPrivateData(WKPDID_D3DDebugObjectName, static_cast<UINT>(std::strlen(name)), name);
 }
 
 bool D3D11Device::SaveBackbufferPNG(const std::wstring& path) {
@@ -382,7 +385,10 @@ bool D3D11Device::pickAdapter_(ComPtr<IDXGIAdapter1>& outAdapter) {
         ComPtr<IDXGIOutput> out;
         if (SUCCEEDED(outAdapter->EnumOutputs(0, &out)) && out) {
             DXGI_OUTPUT_DESC od{}; if (SUCCEEDED(out->GetDesc(&od))) {
-                wcsncpy_s(caps_.outputName, od.DeviceName, _TRUNCATE);
+                // FIX: correct wcsncpy_s signature (provide destination size)
+                wcsncpy_s(caps_.outputName,
+                          sizeof(caps_.outputName)/sizeof(caps_.outputName[0]),
+                          od.DeviceName, _TRUNCATE);
             }
         }
     }
@@ -532,7 +538,11 @@ bool D3D11Device::updateSwapchainColorSpace_() {
 
 void D3D11Device::handleDeviceLost_(const char* where, HRESULT hr) {
     char buf[160];
+#if defined(_MSC_VER)
+    _snprintf_s(buf, sizeof(buf), _TRUNCATE, "Device lost at %s (hr=0x%08X)", where, hr);
+#else
     std::snprintf(buf, sizeof(buf), "Device lost at %s (hr=0x%08X)", where, hr);
+#endif
     log_(buf);
 
     if (notify_) notify_->OnDeviceLost();
@@ -552,17 +562,34 @@ void D3D11Device::handleDeviceLost_(const char* where, HRESULT hr) {
     if (notify_) notify_->OnDeviceRestored(device_.Get(), context_.Get());
 }
 
+// ------------------------ Logging (patched) ------------------------
+
 void D3D11Device::log_(const char* s) {
-    if (log_) { log_(std::string(s)); }
+    if (logFn_) logFn_(s ? s : "");
 #ifdef _DEBUG
-    OutputDebugStringA(s); OutputDebugStringA("\n");
+    OutputDebugStringA(s ? s : "");
+    OutputDebugStringA("\n");
+#endif
+}
+
+void D3D11Device::log_(const std::string& s) {
+    if (logFn_) logFn_(s.c_str());
+#ifdef _DEBUG
+    OutputDebugStringA(s.c_str());
+    OutputDebugStringA("\n");
 #endif
 }
 
 void D3D11Device::logf_(const char* fmt, ...) {
-    char b[512];
-    va_list ap; va_start(ap, fmt);
+    if (!fmt) return;
+    char b[1024];
+    va_list ap; 
+    va_start(ap, fmt);
+#if defined(_MSC_VER)
+    _vsnprintf_s(b, sizeof(b), _TRUNCATE, fmt, ap);
+#else
     vsnprintf(b, sizeof(b), fmt, ap);
+#endif
     va_end(ap);
     log_(b);
 }
