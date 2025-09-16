@@ -10,9 +10,15 @@
 #  endif
 #endif
 
+#include <vector>
+#include <limits>
+#include <cstdint>
+#include <algorithm>
 #include <array>
 #include <cassert>
 #include <utility>
+
+#include "IndexedPriorityQueue.h"
 
 // Avoid any dx/dy confusion entirely: use a local integer abs + Manhattan.
 static inline int iabs(int v) noexcept { return v < 0 ? -v : v; }
@@ -49,18 +55,19 @@ PFResult aStar(const GridView& g, Point start, Point goal,
 
     auto h = [&](int x, int y) -> int { return manhattan({x, y}, goal); };
 
-    struct Node { int idx; int f; };
-    struct ByF  { bool operator()(const Node& a, const Node& b) const noexcept { return a.f > b.f; } };
+    // --- Replaced std::priority_queue with an indexed min-heap that supports decrease-key ---
+    IndexedPriorityQueue open(static_cast<std::size_t>(N));
 
-    std::priority_queue<Node, std::vector<Node>, ByF> open;
-    open.push({ startIdx, h(start.x, start.y) });
+    // Push start with a tiny tie-break on g to prefer straight-ish continuations
     gCost[startIdx] = 0;
+    {
+        const float key = static_cast<float>(h(start.x, start.y)) + 1e-4f * static_cast<float>(gCost[startIdx]);
+        open.push_or_decrease(startIdx, key);
+    }
 
     int expanded = 0;
     while (!open.empty()) {
-        const Node node = open.top();
-        open.pop();
-        const int cur = node.idx;
+        const int cur = open.pop_min();
         if (closed[cur]) continue;
         closed[cur] = 1;
 
@@ -89,11 +96,14 @@ PFResult aStar(const GridView& g, Point start, Point goal,
             // Use function-call form to dodge min/max macro collisions.
             const int stepCost = (std::max)(1, g.cost(nx, ny));
             const int tentative = gCost[cur] + stepCost;
+
             if (tentative < gCost[nIdx]) {
                 parent[nIdx] = cur;
-                gCost[nIdx] = tentative;
+                gCost[nIdx]  = tentative;
+
                 const int f = tentative + h(nx, ny);
-                open.push({ nIdx, f });
+                const float key = static_cast<float>(f) + 1e-4f * static_cast<float>(tentative);
+                open.push_or_decrease(nIdx, key);
             }
         }
     }
