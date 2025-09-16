@@ -1,5 +1,4 @@
-#define NOMINMAX
-#include <windows.h>
+#include "platform/win/WinHeaders.hpp"
 #include <dbghelp.h>
 #include <filesystem>
 #include <string>
