@@ -14,6 +14,9 @@
 //  • Single-instance guard tries to bring the existing game window to foreground.
 //  • Prevents the system/display from sleeping while the game is running (configurable).
 //  • Discrete GPU hints (NVIDIA/AMD), safer DLL search, DPI awareness.
+//  • NEW: Optional asset discovery (e.g., "res" folder) -> sets CG_ASSET_DIR; can be required.
+//  • NEW: Header-optional bootstrap: will use your platform/win/* headers if present,
+//         otherwise falls back to local implementations (no repo churn).
 //
 // Notes:
 //  • This file is Windows-only. No Linux/macOS paths are touched.
@@ -40,13 +43,24 @@
 #include <memory>
 
 // --- Bootstrap headers (from platform/win) -----------------------------------
-#include "platform/win/WinBootstrapDpi.h"
-#include "platform/win/WinBootstrapPaths.h"
+// If your repo already has these, we'll use them; otherwise we provide fallbacks below.
+#if defined(__has_include)
+  #if __has_include("platform/win/WinBootstrapDpi.h")
+    #include "platform/win/WinBootstrapDpi.h"
+    #define HAVE_WINBOOTSTRAP_DPI 1
+  #endif
+  #if __has_include("platform/win/WinBootstrapPaths.h")
+    #include "platform/win/WinBootstrapPaths.h"
+    #define HAVE_WINBOOTSTRAP_PATHS 1
+  #endif
+#endif
 // -----------------------------------------------------------------------------
 
 #pragma comment(lib, "Shlwapi.lib")
 #pragma comment(lib, "Shell32.lib")
-#pragma comment(lib, "Ole32.lib") // for CoTaskMemFree / SHGetKnownFolderPath
+#pragma comment(lib, "Ole32.lib")     // CoTaskMemFree / SHGetKnownFolderPath
+#pragma comment(lib, "Advapi32.lib")  // Registry for VC++ redist detection
+#pragma comment(lib, "User32.lib")    // Window bring-to-front helpers
 
 // --- Back-compat shims for older SDKs ------------------------------------------------------------
 #ifndef LOAD_LIBRARY_SEARCH_SYSTEM32
@@ -67,6 +81,37 @@ __declspec(dllexport) DWORD NvOptimusEnablement = 0x00000001;
 __declspec(dllexport) int   AmdPowerXpressRequestHighPerformance = 1;
 }
 // ----------------------------------------------------------------------------------------------
+
+// --- Optional local fallbacks for your bootstrap helpers ----------------------------------------
+#ifndef HAVE_WINBOOTSTRAP_DPI
+namespace win {
+    inline void EnablePerMonitorDpiAwareness() {
+        HMODULE user32 = GetModuleHandleW(L"user32.dll");
+        if (user32) {
+            using Fn = BOOL (WINAPI*)(HANDLE);
+            if (auto p = reinterpret_cast<Fn>(GetProcAddress(user32, "SetProcessDpiAwarenessContext"))) {
+                p(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
+                return;
+            }
+        }
+        SetProcessDPIAware(); // fallback
+    }
+}
+#endif
+
+#ifndef HAVE_WINBOOTSTRAP_PATHS
+namespace win {
+    inline void SetWorkingDirToExecutableDir() {
+        wchar_t path[MAX_PATH];
+        DWORD n = GetModuleFileNameW(nullptr, path, MAX_PATH);
+        if (n && n < MAX_PATH) {
+            PathRemoveFileSpecW(path);
+            SetCurrentDirectoryW(path);
+        }
+    }
+}
+#endif
+// ------------------------------------------------------------------------------------------------
 
 namespace {
 
@@ -321,6 +366,10 @@ struct LauncherConfig {
     // Saves directory (optional QoL)
     bool ensureSavesDir    = false;
     std::wstring savesDir  = L"$(SavedGames)\\ColonyGame";
+
+    // Assets (optional)
+    bool requireAssets     = false;            // if true, fail if assets can't be located
+    std::wstring assetsDir = L"res";           // can be "res" or an absolute/relative override
 };
 
 bool ReadLauncherConfig(const std::wstring& moduleDir, LauncherConfig& cfg) {
@@ -392,6 +441,10 @@ bool ReadLauncherConfig(const std::wstring& moduleDir, LauncherConfig& cfg) {
             cfg.ensureSavesDir = ParseBool(val, cfg.ensureSavesDir);
         } else if (lkey == L"saves_dir") {
             cfg.savesDir = val;
+        } else if (lkey == L"require_assets") {
+            cfg.requireAssets = ParseBool(val, cfg.requireAssets);
+        } else if (lkey == L"assets_dir" || lkey == L"asset_dir") {
+            cfg.assetsDir = val;
         }
     }
     return true;
@@ -471,6 +524,88 @@ std::wstring FindGameExe(const std::wstring& moduleDir, std::wstring configuredT
         FindClose(h);
     }
     return L"";
+}
+
+// -------------------------------------------------------------------------------------------------
+// Asset discovery (optional): find "<assetsDir>" near the game and set CG_ASSET_DIR env.
+// -------------------------------------------------------------------------------------------------
+
+std::wstring FindAssetsDir(const std::wstring& moduleDir,
+                           const std::wstring& exeDir,
+                           const std::wstring& workingDir,
+                           const std::wstring& cfgAssets) {
+    // 1) Explicit override (can be relative to moduleDir)
+    if (!cfgAssets.empty()) {
+        std::wstring p = cfgAssets;
+        if (PathIsRelativeW(p.c_str())) p = moduleDir + L"\\" + p;
+        if (Exists(p)) return p;
+        // If override was a bare name like "res", try common roots
+        if (PathIsRelativeW(cfgAssets.c_str())) {
+            std::wstring c1 = exeDir + L"\\" + cfgAssets;
+            if (Exists(c1)) return c1;
+            std::wstring c2 = moduleDir + L"\\" + cfgAssets;
+            if (Exists(c2)) return c2;
+            std::wstring c3 = workingDir + L"\\" + cfgAssets;
+            if (Exists(c3)) return c3;
+        }
+    }
+
+    // 2) Common discovery: exeDir, moduleDir, parents of exeDir
+    const std::wstring name = L"res"; // default conventional name
+    std::vector<std::wstring> candidates = {
+        exeDir + L"\\" + name,
+        moduleDir + L"\\" + name,
+        workingDir + L"\\" + name
+    };
+
+    // parent levels
+    std::wstring p = exeDir;
+    for (int i = 0; i < 3; ++i) {
+        size_t cut = p.find_last_of(L"\\/");
+        if (cut == std::wstring::npos) break;
+        p = p.substr(0, cut);
+        candidates.push_back(p + L"\\" + name);
+    }
+
+    for (const auto& c : candidates) {
+        if (Exists(c)) return c;
+    }
+    return L"";
+}
+
+bool EnsureAssetsIfRequested(const LauncherConfig& cfg,
+                             const std::wstring& moduleDir,
+                             const std::wstring& exeDir,
+                             const std::wstring& workingDir) {
+    // Respect user override via environment if already set externally.
+    wchar_t buf[MAX_PATH];
+    DWORD got = GetEnvironmentVariableW(L"CG_ASSET_DIR", buf, MAX_PATH);
+    if (got && got < MAX_PATH && Exists(buf)) {
+        Log(L"CG_ASSET_DIR already set -> %s", buf);
+        return true;
+    }
+
+    std::wstring assets = FindAssetsDir(moduleDir, exeDir, workingDir, cfg.assetsDir);
+    if (!assets.empty()) {
+        SetEnvironmentVariableW(L"CG_ASSET_DIR", assets.c_str());
+        Log(L"Assets directory detected -> %s (CG_ASSET_DIR)", assets.c_str());
+        return true;
+    }
+
+    Log(L"Assets directory not found (cfg.requireAssets=%d).", cfg.requireAssets ? 1 : 0);
+    if (cfg.requireAssets) {
+        std::wstring msg =
+            L"Could not locate the game's assets directory (e.g., a 'res' folder).\n\n"
+            L"Tried relative to:\n"
+            L"  • Game EXE: " + exeDir + L"\n"
+            L"  • Launcher : " + moduleDir + L"\n"
+            L"  • Working  : " + workingDir + L"\n\n"
+            L"You can:\n"
+            L"  • Set 'assets_dir=' in launcher.ini (absolute or relative), or\n"
+            L"  • Define CG_ASSET_DIR as an environment variable.\n";
+        FailBox(L"Assets Missing", msg);
+    }
+    return false;
 }
 
 // -------------------------------------------------------------------------------------------------
@@ -1175,6 +1310,9 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
     // Provide a couple of useful env vars by default
     SetEnvironmentVariableW(L"COLONY_LAUNCHER_DIR", gModuleDir.c_str());
     SetEnvironmentVariableW(L"COLONY_GAME_DIR", exeDir.c_str());
+
+    // Optional: assets discovery (sets CG_ASSET_DIR). If required and not found -> FailBox.
+    EnsureAssetsIfRequested(cfg, gModuleDir, exeDir, workingDir);
 
     // Build the final argument tail (file args + user args)
     int argc = 0;
