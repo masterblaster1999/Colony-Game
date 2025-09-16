@@ -157,7 +157,14 @@ public:
     bool SaveBackbufferPNG(const std::wstring& path);
 
     void SetNotify(IDeviceNotify* n) { notify_ = n; }
-    void SetLog(std::function<void(const std::string&)> fn) { log_ = std::move(fn); }
+
+    // --- Logging setup (two overloads for compatibility) ---------------------
+    // Preferred: pass a sink that accepts const char* (no allocations).
+    void SetLog(std::function<void(const char*)> fn) { logFn_ = std::move(fn); }
+    // Compatibility: if caller has std::string, we adapt it.
+    void SetLog(std::function<void(const std::string&)> fn) {
+        logFn_ = [fn = std::move(fn)](const char* s){ fn(std::string(s ? s : "")); };
+    }
 
 private:
     // creation
@@ -178,6 +185,7 @@ private:
 
     // logging
     void log_(const char* s);
+    void log_(const std::string& s); // NEW: accept std::string directly
     void logf_(const char* fmt, ...);
 
 private:
@@ -221,7 +229,9 @@ private:
     DXGI_COLOR_SPACE_TYPE colorSpace_ = DXGI_COLOR_SPACE_RGB_FULL_G22_NONE_P709;
 
     IDeviceNotify* notify_ = nullptr;
-    std::function<void(const std::string&)> log_;
+
+    // NOTE: renamed from 'log_' (which is now the method) to avoid collision
+    std::function<void(const char*)> logFn_;
 };
 
 } // namespace gfx
