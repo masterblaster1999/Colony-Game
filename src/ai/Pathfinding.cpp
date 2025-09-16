@@ -1,7 +1,7 @@
-#include "Pathfinding.hpp"
+// Pathfinding.cpp — Windows-focused, self-contained TU for MSVC (Unity-build friendly)
 
-// Keep this TU robust in MSVC Unity builds on Windows (min/max macros, etc.)
 #ifdef _WIN32
+// Keep this TU robust in MSVC Unity builds on Windows (min/max macros, etc.)
 #  ifndef NOMINMAX
 #    define NOMINMAX
 #  endif
@@ -9,6 +9,8 @@
 #    define WIN32_LEAN_AND_MEAN
 #  endif
 #endif
+
+#include "Pathfinding.hpp"
 
 // STL includes used in the definitions below.
 #include <vector>
@@ -19,11 +21,12 @@
 #include <array>
 #include <cassert>
 #include <utility>
+#include <cstddef>
+#include <cstdlib>  // std::abs(int)
 
 #include "IndexedPriorityQueue.h"
 
-// MSVC C4430/C2143 came from missing return/param types.
-// Give the helper an explicit return type and noexcept.
+// Explicit return type & noexcept to avoid MSVC C4430/C2143 on helpers.
 // Manhattan distance (works well for 4-connected grids)
 static int heuristic(const Point& a, const Point& b) noexcept {
     return std::abs(a.x - b.x) + std::abs(a.y - b.y);
@@ -58,13 +61,14 @@ PFResult aStar(const GridView& g, Point start, Point goal,
 
     auto h = [&](int x, int y) -> int { return heuristic(Point{x, y}, goal); };
 
-    // --- Replaced std::priority_queue with an indexed min-heap that supports decrease-key ---
+    // --- Use an indexed min-heap that supports decrease-key ---
     IndexedPriorityQueue open(static_cast<std::size_t>(N));
 
     // Push start with a tiny tie-break on g to prefer straight-ish continuations
     gCost[startIdx] = 0;
     {
-        const float key = static_cast<float>(h(start.x, start.y)) + 1e-4f * static_cast<float>(gCost[startIdx]);
+        const float key = static_cast<float>(h(start.x, start.y))
+                        + 1e-4f * static_cast<float>(gCost[startIdx]);
         open.push_or_decrease(startIdx, key);
     }
 
@@ -80,7 +84,9 @@ PFResult aStar(const GridView& g, Point start, Point goal,
         if (cur == goalIdx) {
             // Reconstruct path
             std::vector<Point> rev;
-            for (int p = cur; p != -1; p = parent[p]) rev.push_back(g.fromIndex(p));
+            for (int p = cur; p != -1; p = parent[p]) {
+                rev.push_back(g.fromIndex(p));
+            }
             out.assign(rev.rbegin(), rev.rend());
             return PFResult::Found;
         }
@@ -94,21 +100,24 @@ PFResult aStar(const GridView& g, Point start, Point goal,
             if (!g.inBounds(nx, ny) || !g.walkable(nx, ny)) continue;
 
             const int nIdx = g.index(nx, ny);
+            if (nIdx < 0 || nIdx >= N) continue; // defensive, in case index() changes
             if (closed[nIdx]) continue;
 
             // Use function-call form to dodge min/max macro collisions.
-            const int stepCost = (std::max)(1, g.cost(nx, ny));
+            const int stepCost  = (std::max)(1, g.cost(nx, ny));
             const int tentative = gCost[cur] + stepCost;
 
             if (tentative < gCost[nIdx]) {
                 parent[nIdx] = cur;
                 gCost[nIdx]  = tentative;
 
-                const int f = tentative + h(nx, ny);
-                const float key = static_cast<float>(f) + 1e-4f * static_cast<float>(tentative);
+                const int f    = tentative + h(nx, ny);
+                const float key = static_cast<float>(f)
+                                + 1e-4f * static_cast<float>(tentative);
                 open.push_or_decrease(nIdx, key);
             }
         }
     }
+
     return PFResult::NoPath;
 }
