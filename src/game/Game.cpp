@@ -45,6 +45,7 @@
 #include <chrono>     // used by the main loop timing
 #include <functional> // for Storyteller bindings
 #include <cctype>     // tolower for resource mapping
+#include <filesystem> // Windows save path helpers return std::filesystem::path
 
 // Built-in tiny bitmap font (5x7) for HUD text (no SDL_ttf needed)
 #include "Font5x7.h"
@@ -54,6 +55,10 @@
 
 // --- Pathfinding module wrapper ---
 #include "ai/Pathfinding.hpp"
+
+// --- Windows atomic save helpers (mini patch #3) ---
+#include "io/AtomicFile.h"
+#include "platform/win/WinPaths.h"
 
 // --------------------- Storyteller forward declarations -----------------------
 // (No header required; these match the implementation in Storyteller.cpp)
@@ -1068,11 +1073,10 @@ private:
     }
 
     // ------------------------------ Save/Load ---------------------------------
+    // (Mini patch #3 applied: Windows-native path + atomic write + .bak rollback)
     void saveGame() {
-        std::string file = opts_.saveDir + "/" + opts_.profile + ".save";
-        std::ofstream out(file, std::ios::out | std::ios::trunc);
-        if (!out) { bannerMessage("Save failed: cannot open file"); return; }
-
+        // Build the text payload exactly as before
+        std::ostringstream out;
         out << "MCS_SAVE v1\n";
         out << "seed " << opts_.seed << "\n";
         out << "world " << world_.W << " " << world_.H << "\n";
@@ -1093,16 +1097,37 @@ private:
         for (auto& c : colonists_) {
             out << c.id << " " << c.tile.x << " " << c.tile.y << "\n";
         }
-        // Storyteller serialization (queue, cooldowns, budget, etc.)
+        // Storyteller serialization
         cg::Storyteller_Save(out);
 
+        // Resolve %LOCALAPPDATA%\ColonyGame\Saves\<profile>
+        const auto dir  = cg::winpaths::ensure_profile_dir(opts_.profile);
+        const auto file = dir / (opts_.profile + std::string(".save"));
+
+        // Atomic replace with backup
+        std::string err;
+        if (!cg::io::write_atomic(file, out.str(), &err, /*make_backup*/true)) {
+            bannerMessage(std::string("Save failed: ") + err);
+            return;
+        }
         bannerMessage("Game saved");
     }
 
     void loadGame() {
-        std::string file = opts_.saveDir + "/" + opts_.profile + ".save";
-        std::ifstream in(file);
-        if (!in) { bannerMessage("Load failed: no save"); return; }
+        const auto dir   = cg::winpaths::ensure_profile_dir(opts_.profile);
+        const auto file  = dir / (opts_.profile + std::string(".save"));
+        auto fileB = file;
+        fileB += ".bak"; // "<name>.save.bak"
+
+        std::string bytes, err;
+        if (!cg::io::read_all(file, bytes, &err)) {
+            // try backup
+            if (!cg::io::read_all(fileB, bytes, &err)) {
+                bannerMessage("Load failed: no save");
+                return;
+            }
+        }
+        std::istringstream in(bytes);
 
         std::string tag;
         std::string header; in >> header;
