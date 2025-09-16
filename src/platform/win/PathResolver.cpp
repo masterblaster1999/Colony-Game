@@ -1,6 +1,5 @@
 #include "PathResolver.h"
-#define WIN32_LEAN_AND_MEAN
-#include <Windows.h>
+#include "platform/win/WinHeaders.hpp"
 #include <filesystem>
 #include <array>
 #include <string>
