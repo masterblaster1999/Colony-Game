@@ -10,7 +10,9 @@
 #  endif
 #endif
 
+// STL includes used in the definitions below.
 #include <vector>
+#include <cmath>
 #include <limits>
 #include <cstdint>
 #include <algorithm>
@@ -20,10 +22,11 @@
 
 #include "IndexedPriorityQueue.h"
 
-// Avoid any dx/dy confusion entirely: use a local integer abs + Manhattan.
-static inline int iabs(int v) noexcept { return v < 0 ? -v : v; }
-static inline int manhattan(const Point& a, const Point& b) noexcept {
-    return iabs(a.x - b.x) + iabs(a.y - b.y);
+// MSVC C4430/C2143 came from missing return/param types.
+// Give the helper an explicit return type and noexcept.
+// Manhattan distance (works well for 4-connected grids)
+static int heuristic(const Point& a, const Point& b) noexcept {
+    return std::abs(a.x - b.x) + std::abs(a.y - b.y);
 }
 
 PFResult aStar(const GridView& g, Point start, Point goal,
@@ -53,7 +56,7 @@ PFResult aStar(const GridView& g, Point start, Point goal,
     const int startIdx = g.index(start.x, start.y);
     const int goalIdx  = g.index(goal.x, goal.y);
 
-    auto h = [&](int x, int y) -> int { return manhattan({x, y}, goal); };
+    auto h = [&](int x, int y) -> int { return heuristic(Point{x, y}, goal); };
 
     // --- Replaced std::priority_queue with an indexed min-heap that supports decrease-key ---
     IndexedPriorityQueue open(static_cast<std::size_t>(N));
