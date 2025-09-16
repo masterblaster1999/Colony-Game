@@ -466,6 +466,7 @@ public:
         auto tPrev = clock::now();
         double simAcc = 0.0;
         const double dt = 1.0/60.0; // 60hz
+        constexpr double MAX_FRAME_SEC = 0.25; // avoid giant jumps after stalls
         static constexpr int kMaxCatchUpFrames = 5; // bound catch-up to avoid hitches
 
         bool running = true;
@@ -484,11 +485,11 @@ public:
             }
 
             // Timing
-            auto tNow = clock::now();
-            double frame = std::chrono::duration<double>(tNow - tPrev).count();
+            const auto tNow = clock::now();
+            const double frameSec = std::chrono::duration<double>(tNow - tPrev).count(); // seconds
             tPrev = tNow;
-            lastFrameSec_ = frame;                   // for devtools dt & banner fade
-            fpsCounter(frame);
+            lastFrameSec_ = frameSec;               // for devtools dt & banner fade
+            fpsCounter(frameSec);
 
             if (paused_) {
                 // Still render to show overlay & FPS
@@ -496,7 +497,8 @@ public:
                 continue;
             }
 
-            simAcc += frame * simSpeed_;
+            // Clamp frame to avoid spirals of death on slow frames
+            simAcc += std::min(frameSec, MAX_FRAME_SEC) * simSpeed_;
             // Clamp accumulator to avoid spiral-of-death if hitches occur
             simAcc = std::min(simAcc, 0.5);
 
@@ -1426,9 +1428,7 @@ private:
     }
 
     void drawText(int x, int y, const std::string& text, Uint32 color) {
-        Uint8 R=(color>>24)&0xFF, G=(color>>16)&0xFF, B=(color>>8)&0FF, A=color&0xFF;
-        // fix: corrected typo in previous line (>>8)&0xFF
-        B = (color>>8)&0xFF;
+        Uint8 R=(color>>24)&0xFF, G=(color>>16)&0xFF, B=(color>>8)&0xFF, A=color&0xFF;
 
         for (char ch : text) {
             if (ch=='\n') { y += 12; /* crude new line */ continue; }
