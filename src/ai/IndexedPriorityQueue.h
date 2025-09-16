@@ -1,111 +1,119 @@
-#include "Pathfinding.hpp"
-
-// Keep this TU robust in MSVC Unity builds on Windows (min/max macros, etc.)
-#ifdef _WIN32
-#  ifndef NOMINMAX
-#    define NOMINMAX
-#  endif
-#  ifndef WIN32_LEAN_AND_MEAN
-#    define WIN32_LEAN_AND_MEAN
-#  endif
-#endif
-
+#pragma once
 #include <vector>
 #include <limits>
-#include <cstdint>
+#include <cstddef>
 #include <algorithm>
-#include <array>
-#include <cassert>
-#include <utility>
 
-#include "IndexedPriorityQueue.h"
+// A minimal indexable min-heap keyed by float priorities.
+// - Nodes are addressed by integer indices [0..N).
+// - Supports O(log n) push-or-decrease and pop_min.
+// - No dynamic allocation per operation; only vectors (cache friendly).
+class IndexedPriorityQueue {
+public:
+    using Index = int;
+    using Key   = float;
 
-// Avoid any dx/dy confusion entirely: use a local integer abs + Manhattan.
-static inline int iabs(int v) noexcept { return v < 0 ? -v : v; }
-static inline int manhattan(const Point& a, const Point& b) noexcept {
-    return iabs(a.x - b.x) + iabs(a.y - b.y);
-}
-
-PFResult aStar(const GridView& g, Point start, Point goal,
-               std::vector<Point>& out, int maxExpandedNodes) {
-    out.clear();
-
-    // Basic validation
-    if (g.w <= 0 || g.h <= 0) return PFResult::NoPath;
-    if (!g.walkable || !g.cost) return PFResult::NoPath;
-    if (!g.inBounds(start.x, start.y)) return PFResult::NoPath;
-    if (!g.inBounds(goal.x, goal.y)) return PFResult::NoPath;
-    if (!g.walkable(start.x, start.y)) return PFResult::NoPath;
-    if (!g.walkable(goal.x, goal.y)) return PFResult::NoPath;
-    if (start.x == goal.x && start.y == goal.y) {
-        out.push_back(start);
-        return PFResult::Found;
+    explicit IndexedPriorityQueue(std::size_t capacity = 0) {
+        reset(capacity);
     }
 
-    const int N = g.w * g.h;
-    // Function-style call avoids min/max macro interference from <Windows.h>.
-    constexpr int INF = (std::numeric_limits<int>::max)();
+    void reset(std::size_t capacity) {
+        heap_.clear();
+        heap_.shrink_to_fit();
+        heap_.reserve(capacity);
 
-    std::vector<int>     gCost(N, INF);
-    std::vector<int>     parent(N, -1);
-    std::vector<uint8_t> closed(N, 0);
-
-    const int startIdx = g.index(start.x, start.y);
-    const int goalIdx  = g.index(goal.x, goal.y);
-
-    auto h = [&](int x, int y) -> int { return manhattan({x, y}, goal); };
-
-    // --- Replaced std::priority_queue with an indexed min-heap that supports decrease-key ---
-    IndexedPriorityQueue open(static_cast<std::size_t>(N));
-
-    // Push start with a tiny tie-break on g to prefer straight-ish continuations
-    gCost[startIdx] = 0;
-    {
-        const float key = static_cast<float>(h(start.x, start.y)) + 1e-4f * static_cast<float>(gCost[startIdx]);
-        open.push_or_decrease(startIdx, key);
+        pos_.assign(capacity, kNotInHeap);
+        key_.assign(capacity, kInf);
     }
 
-    int expanded = 0;
-    while (!open.empty()) {
-        const int cur = open.pop_min();
-        if (closed[cur]) continue;
-        closed[cur] = 1;
+    bool empty() const noexcept { return heap_.empty(); }
+    std::size_t size() const noexcept { return heap_.size(); }
 
-        if (maxExpandedNodes >= 0 && ++expanded > maxExpandedNodes)
-            return PFResult::Aborted;
-
-        if (cur == goalIdx) {
-            // Reconstruct path
-            std::vector<Point> rev;
-            for (int p = cur; p != -1; p = parent[p]) rev.push_back(g.fromIndex(p));
-            out.assign(rev.rbegin(), rev.rend());
-            return PFResult::Found;
-        }
-
-        const Point p = g.fromIndex(cur);
-        const int nbrX[4] = { p.x + 1, p.x - 1, p.x,     p.x     };
-        const int nbrY[4] = { p.y,     p.y,     p.y + 1, p.y - 1 };
-
-        for (int i = 0; i < 4; ++i) {
-            const int nx = nbrX[i], ny = nbrY[i];
-            if (!g.inBounds(nx, ny) || !g.walkable(nx, ny)) continue;
-
-            const int nIdx = g.index(nx, ny);
-            if (closed[nIdx]) continue;
-
-            // Use function-call form to dodge min/max macro collisions.
-            const int stepCost = (std::max)(1, g.cost(nx, ny));
-            const int tentative = gCost[cur] + stepCost;
-
-            if (tentative < gCost[nIdx]) {
-                parent[nIdx] = cur;
-                gCost[nIdx]  = tentative;
-
-                const int f = tentative + h(nx, ny);
-                const float key = static_cast<float>(f) + 1e-4f * static_cast<float>(tentative);
-                open.push_or_decrease(nIdx, key);
-            }
+    // Ensure we can address index 'i'
+    void ensure(Index i) {
+        const std::size_t need = static_cast<std::size_t>(i) + 1;
+        if (need > pos_.size()) {
+            pos_.resize(need, kNotInHeap);
+            key_.resize(need, kInf);
         }
     }
-    return PFResult::NoPath;
-}
+
+    // Insert if new; if already present and 'k' is lower, decrease the key.
+    // Returns true if the heap was modified (inserted or decreased).
+    bool push_or_decrease(Index i, Key k) {
+        ensure(i);
+        if (pos_[i] == kNotInHeap) {
+            key_[i] = k;
+            heap_.push_back(i);
+            pos_[i] = static_cast<Index>(heap_.size() - 1);
+            sift_up(pos_[i]);
+            return true;
+        }
+        if (k < key_[i]) {
+            key_[i] = k;
+            sift_up(pos_[i]);
+            return true;
+        }
+        return false;
+    }
+
+    // Pop the index with the lowest key.
+    Index pop_min() {
+        const Index minIdx = heap_.front();
+        const Index last = heap_.back();
+        heap_.pop_back();
+        pos_[minIdx] = kNotInHeap;
+
+        if (!heap_.empty()) {
+            heap_.front() = last;
+            pos_[last] = 0;
+            sift_down(0);
+        }
+        return minIdx;
+    }
+
+    bool contains(Index i) const {
+        return i >= 0 && static_cast<std::size_t>(i) < pos_.size() && pos_[i] != kNotInHeap;
+    }
+
+    Key key(Index i) const {
+        return key_.at(static_cast<std::size_t>(i));
+    }
+
+private:
+    static constexpr Index kNotInHeap = -1;
+    static constexpr Key   kInf       = std::numeric_limits<Key>::infinity();
+
+    // heap_ stores node indices; pos_[i] = position of i in heap_ (or -1); key_[i] = priority
+    std::vector<Index> heap_;
+    std::vector<Index> pos_;
+    std::vector<Key>   key_;
+
+    void sift_up(std::size_t i) {
+        while (i > 0) {
+            std::size_t p = (i - 1) / 2;
+            if (key_[heap_[i]] < key_[heap_[p]]) {
+                std::swap(heap_[i], heap_[p]);
+                pos_[heap_[i]] = static_cast<Index>(i);
+                pos_[heap_[p]] = static_cast<Index>(p);
+                i = p;
+            } else break;
+        }
+    }
+
+    void sift_down(std::size_t i) {
+        const std::size_t n = heap_.size();
+        for (;;) {
+            const std::size_t l = 2 * i + 1;
+            const std::size_t r = l + 1;
+            std::size_t s = i;
+            if (l < n && key_[heap_[l]] < key_[heap_[s]]) s = l;
+            if (r < n && key_[heap_[r]] < key_[heap_[s]]) s = r;
+            if (s == i) break;
+            std::swap(heap_[i], heap_[s]);
+            pos_[heap_[i]] = static_cast<Index>(i);
+            pos_[heap_[s]] = static_cast<Index>(s);
+            i = s;
+        }
+    }
+};
