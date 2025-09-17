@@ -1,64 +1,57 @@
-#define WIN32_LEAN_AND_MEAN
-#include "platform/win/CrashHandler.h"
-#include "core/Log.h"
+#pragma once
+#define NOMINMAX
 #include <windows.h>
-#include <dbghelp.h>
+#include <DbgHelp.h>
+#include <filesystem>
 #include <string>
-#include <sstream>
-#include <iomanip>
 
-#pragma comment(lib, "dbghelp.lib")
+#pragma comment(lib, "Dbghelp.lib")
 
-namespace cg {
+namespace colony::win {
 
-static std::filesystem::path g_dumpDir;
+inline std::wstring g_dumpDir;
 
-static std::wstring WNowStamp() {
-    SYSTEMTIME st{};
-    GetLocalTime(&st);
+inline void create_dirs(const std::wstring& path) {
+    std::error_code ec; std::filesystem::create_directories(path, ec);
+}
+
+inline std::wstring timestamp() {
+    SYSTEMTIME st; ::GetLocalTime(&st);
     wchar_t buf[64];
-    swprintf_s(buf, L"%04u%02u%02u_%02u%02u%02u",
-               st.wYear, st.wMonth, st.wDay, st.wHour, st.wMinute, st.wSecond);
+    swprintf(buf, 64, L"%04u-%02u-%02u_%02u-%02u-%02u", st.wYear, st.wMonth, st.wDay,
+             st.wHour, st.wMinute, st.wSecond);
     return buf;
 }
 
-static LONG WINAPI TopLevelFilter(EXCEPTION_POINTERS* ep) {
-    std::error_code ec;
-    std::filesystem::create_directories(g_dumpDir, ec);
+inline bool write_minidump(EXCEPTION_POINTERS* ep) {
+    if (g_dumpDir.empty()) return false;
+    create_dirs(g_dumpDir);
+    std::wstring path = g_dumpDir + L"\\crash_" + timestamp() + L".dmp";
 
-    std::wstring fname = L"crash_" + WNowStamp() + L".dmp";
-    auto full = g_dumpDir / fname;
+    HANDLE hFile = ::CreateFileW(path.c_str(), GENERIC_WRITE, FILE_SHARE_READ, nullptr,
+                                 CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (hFile == INVALID_HANDLE_VALUE) return false;
 
-    HANDLE hFile = CreateFileW(full.c_str(), GENERIC_WRITE, FILE_SHARE_READ, nullptr,
-                               CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
-    if (hFile != INVALID_HANDLE_VALUE) {
-        MINIDUMP_EXCEPTION_INFORMATION mei{};
-        mei.ThreadId = GetCurrentThreadId();
-        mei.ExceptionPointers = ep;
-        mei.ClientPointers = FALSE;
+    MINIDUMP_EXCEPTION_INFORMATION mei{};
+    mei.ThreadId = ::GetCurrentThreadId();
+    mei.ExceptionPointers = ep;
+    mei.ClientPointers = FALSE;
 
-        MiniDumpWriteDump(GetCurrentProcess(), GetCurrentProcessId(), hFile,
-                          MiniDumpNormal, &mei, nullptr, nullptr);
-        CloseHandle(hFile);
-
-        cg::Log::Error("Crash dump written to: " + std::string(full.string()));
-    } else {
-        cg::Log::Error("Failed to create crash dump file.");
-    }
-
-    MessageBoxW(nullptr,
-        L"Colony-Game encountered a fatal error.\n"
-        L"A crash report (.dmp) was saved in the 'crashdumps' folder next to the .exe.",
-        L"Colony-Game", MB_ICONERROR | MB_OK);
-
-    return EXCEPTION_EXECUTE_HANDLER;
+    BOOL ok = ::MiniDumpWriteDump(::GetCurrentProcess(), ::GetCurrentProcessId(), hFile,
+                                  MiniDumpWithDataSegs | MiniDumpWithHandleData | MiniDumpScanMemory,
+                                  ep ? &mei : nullptr, nullptr, nullptr);
+    ::CloseHandle(hFile);
+    return ok == TRUE;
 }
 
-void InstallCrashHandler(const std::filesystem::path& dumpDir) {
+inline LONG WINAPI unhandled(EXCEPTION_POINTERS* ep) {
+    write_minidump(ep);
+    return EXCEPTION_EXECUTE_HANDLER; // terminate after dump
+}
+
+inline void install_crash_handler(const std::wstring& dumpDir) {
     g_dumpDir = dumpDir;
-    SetErrorMode(SEM_FAILCRITICALERRORS);
-    SetUnhandledExceptionFilter(TopLevelFilter);
-    cg::Log::Info("Crash handler installed.");
+    ::SetUnhandledExceptionFilter(&unhandled);
 }
 
-} // namespace cg
+} // namespace colony::win
