@@ -12,6 +12,7 @@
 #   * Rich staging & packaging (includes frontend + git sha in the ZIP name)
 #   * Clean integration with EnableWinQoL (resources, installs, asset staging)
 #   * Optional code signing hook for Release artifacts
+#   * (PATCH) Separate WinLauncher bootstrapper exe that spawns the game exe
 # ==================================================================================================
 
 cmake_minimum_required(VERSION 3.16)
@@ -87,7 +88,11 @@ option(ENABLE_MSVC_ANALYZE "Enable MSVC /analyze (can be slow)" OFF)
 option(ENABLE_CLANG_TIDY "Enable clang-tidy if available" OFF)
 option(ENABLE_COMPILER_CACHE "Use compiler cache (sccache/ccache) if detected in PATH" ON)
 set(SRC_DIR "src" CACHE PATH "Path to core source directory")
-set(LAUNCHER_FILE "" CACHE FILEPATH "Override: path to the launcher .cpp (Win32 or SDL)")
+
+# (PATCH) Split: game entry vs. bootstrapper
+set(LAUNCHER_FILE "" CACHE FILEPATH "Override: path to the GAME ENTRY .cpp (win32_main/SDL main)")
+set(BOOTSTRAP_FILE "" CACHE FILEPATH "Override: path to the bootstrapper .cpp (WinLauncher.cpp)")
+option(BUILD_BOOTSTRAPPER "Build a separate Windows bootstrap exe (WinLauncher) that launches ColonyGame.exe" ON)
 
 # Optional code signing knobs (ignored if not configured)
 option(ENABLE_CODE_SIGNING "Sign Release binaries if signtool/cert are configured" OFF)
@@ -281,17 +286,22 @@ string(TIMESTAMP CG_BUILD_TIMESTAMP "%Y-%m-%d %H:%M:%S UTC" UTC)
 target_include_directories(colony_core PUBLIC "${CMAKE_BINARY_DIR}/generated")
 
 # --------------------------------------------------------------------------------------------------
-# Launcher discovery / frontend target
+# Entry discovery (GAME ENTRY vs. BOOTSTRAPPER)
 # --------------------------------------------------------------------------------------------------
-set(_KNOWN_WIN_LAUNCHERS
-  "WinLauncher.cpp" "colonygame.cpp" "src/colonygame.cpp"
-  "src/platform/win32/WinLauncher.cpp" "platform/win32/WinLauncher.cpp"
-  "src/Launcher_Win32.cpp" "Launcher_Win32.cpp" "src/WinLauncher.cpp"
+# Known game entry points (do NOT include WinLauncher.cpp here)
+set(_KNOWN_WIN_GAME_ENTRIES
   "src/platform/win32_main.cpp" "platform/win32_main.cpp" "src/platform/win32/win32_main.cpp"
+  "colonygame.cpp" "src/colonygame.cpp" "src/platform/win32/colonygame.cpp"
+  "src/Launcher_Win32.cpp" "Launcher_Win32.cpp"
 )
 set(_KNOWN_SDL_LAUNCHERS
   "Launcher_SDL.cpp" "SDLLauncher.cpp" "src/Launcher_SDL.cpp"
   "src/platform/sdl/Launcher_SDL.cpp" "platform/sdl/Launcher_SDL.cpp" "src/SDLLauncher.cpp"
+)
+# Known bootstrap sources
+set(_KNOWN_WIN_BOOTSTRAPPERS
+  "WinLauncher.cpp" "src/WinLauncher.cpp"
+  "src/platform/win32/WinLauncher.cpp" "platform/win32/WinLauncher.cpp"
 )
 
 set(_WIN32_FLAG WIN32)
@@ -299,36 +309,69 @@ if(SHOW_CONSOLE)
   set(_WIN32_FLAG)
 endif()
 
-set(_LAUNCHER "")
+# Resolve GAME ENTRY
+set(_GAME_ENTRY "")
 set(CG_FRONTEND_STR "${FRONTEND}")
+
+# Back-compat: if user passed -DLAUNCHER_FILE=... and it points to WinLauncher.cpp, treat it as BOOTSTRAP_FILE.
 if(LAUNCHER_FILE)
   if(EXISTS "${LAUNCHER_FILE}")
-    set(_LAUNCHER "${LAUNCHER_FILE}")
+    if(LAUNCHER_FILE MATCHES ".*[Ww]in[Ll]auncher.*\\.cpp$")
+      if(NOT BOOTSTRAP_FILE)
+        set(BOOTSTRAP_FILE "${LAUNCHER_FILE}")
+      endif()
+    else()
+      set(_GAME_ENTRY "${LAUNCHER_FILE}")
+    endif()
   else()
     message(FATAL_ERROR "LAUNCHER_FILE does not exist: ${LAUNCHER_FILE}")
   endif()
-elseif(FRONTEND STREQUAL "win32")
-  foreach(_cand IN LISTS _KNOWN_WIN_LAUNCHERS)
-    if(EXISTS "${CMAKE_SOURCE_DIR}/${_cand}")
-      set(_LAUNCHER "${_cand}")
-      break()
+endif()
+
+if(NOT _GAME_ENTRY)
+  if(FRONTEND STREQUAL "win32")
+    foreach(_cand IN LISTS _KNOWN_WIN_GAME_ENTRIES)
+      if(EXISTS "${CMAKE_SOURCE_DIR}/${_cand}")
+        set(_GAME_ENTRY "${_cand}")
+        break()
+      endif()
+    endforeach()
+    if(NOT _GAME_ENTRY)
+      message(FATAL_ERROR "Could not find a Win32 game entry source (e.g., win32_main.cpp). Override with -DLAUNCHER_FILE=...")
     endif()
-  endforeach()
-  if(NOT _LAUNCHER)
-    message(FATAL_ERROR "Could not find a Win32 launcher source. Override with -DLAUNCHER_FILE=...")
-  endif()
-elseif(FRONTEND STREQUAL "sdl")
-  foreach(_cand IN LISTS _KNOWN_SDL_LAUNCHERS)
-    if(EXISTS "${CMAKE_SOURCE_DIR}/${_cand}")
-      set(_LAUNCHER "${_cand}")
-      break()
+  elseif(FRONTEND STREQUAL "sdl")
+    foreach(_cand IN LISTS _KNOWN_SDL_LAUNCHERS)
+      if(EXISTS "${CMAKE_SOURCE_DIR}/${_cand}")
+        set(_GAME_ENTRY "${_cand}")
+        break()
+      endif()
+    endforeach()
+    if(NOT _GAME_ENTRY)
+      message(FATAL_ERROR "Could not find an SDL game entry source. Override with -DLAUNCHER_FILE=...")
     endif()
-  endforeach()
-  if(NOT _LAUNCHER)
-    message(FATAL_ERROR "Could not find an SDL launcher source. Override with -DLAUNCHER_FILE=...")
+  else()
+    message(FATAL_ERROR "FRONTEND must be 'win32' or 'sdl'")
   endif()
-else()
-  message(FATAL_ERROR "FRONTEND must be 'win32' or 'sdl'")
+endif()
+
+# Resolve BOOTSTRAPPER (WinLauncher.cpp)
+set(_BOOTSTRAP "")
+if(BUILD_BOOTSTRAPPER)
+  if(BOOTSTRAP_FILE)
+    if(EXISTS "${BOOTSTRAP_FILE}")
+      set(_BOOTSTRAP "${BOOTSTRAP_FILE}")
+    else()
+      message(FATAL_ERROR "BOOTSTRAP_FILE does not exist: ${BOOTSTRAP_FILE}")
+    endif()
+  endif()
+  if(NOT _BOOTSTRAP)
+    foreach(_cand IN LISTS _KNOWN_WIN_BOOTSTRAPPERS)
+      if(EXISTS "${CMAKE_SOURCE_DIR}/${_cand}")
+        set(_BOOTSTRAP "${_cand}")
+        break()
+      endif()
+    endforeach()
+  endif()
 endif()
 
 set(CG_FRONTEND "${CG_FRONTEND_STR}")
@@ -336,13 +379,13 @@ set(CG_MIN_WINVER_TXT "${CG_MIN_WINVER}")
 configure_file("${_ver_in}" "${_ver_out}" @ONLY)
 
 # --------------------------------------------------------------------------------------------------
-# Executable
+# Game executable (real game entry)
 # --------------------------------------------------------------------------------------------------
-add_executable(ColonyGame ${_WIN32_FLAG} "${_LAUNCHER}")
-set_property(DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}" PROPERTY VS_STARTUP_PROJECT ColonyGame)
+add_executable(ColonyGame ${_WIN32_FLAG} "${_GAME_ENTRY}")
 target_link_libraries(ColonyGame PRIVATE colony_core)
 target_compile_features(ColonyGame PRIVATE cxx_std_20)
 
+# PCH for game exe
 if(NOT PCH_HEADER_EXE)
   foreach(_cand IN ITEMS "${SRC_DIR}/pch.h" "${SRC_DIR}/PCH.h" "pch.h" "PCH.h")
     if(EXISTS "${CMAKE_SOURCE_DIR}/${_cand}")
@@ -388,16 +431,16 @@ endif()
 
 enable_win_qol(ColonyGame "Colony-Game" "${CG_APP_VERSION}" ${_WQ_OPTS})
 
-# Helpful launcher defines
+# Helpful defines for the game
 target_compile_definitions(ColonyGame PRIVATE
   CG_FRONTEND_${FRONTEND}=1
   $<$<BOOL:${SHOW_CONSOLE}>:CG_CONSOLE_APP=1>
 )
 
-# Core Win32 libs (EnableWinQoL already links Dbghelp & Shell32)
-# (Merged patch) Ensure Dbghelp is linked explicitly alongside Shlwapi.
+# Core Win32 libs (EnableWinQoL may link Shell32; we link explicitly to be safe)
+# (Merged patch) Ensure Dbghelp & Shell32 are linked explicitly alongside Shlwapi.
 target_link_libraries(ColonyGame PRIVATE
-  user32 gdi32 shlwapi Dbghelp comdlg32 comctl32 advapi32
+  user32 gdi32 shlwapi Dbghelp shell32 comdlg32 comctl32 advapi32
   ole32 oleaut32 imm32 winmm version uuid
   dwmapi xinput9_1_0
 )
@@ -416,10 +459,47 @@ if(MSVC AND SUPPRESS_MSVC_C4505)
   target_compile_options(ColonyGame PRIVATE /wd4505)
 endif()
 
+# --------------------------------------------------------------------------------------------------
+# Bootstrapper executable (PATCH: WinLauncher that spawns ColonyGame.exe)
+# --------------------------------------------------------------------------------------------------
+if(BUILD_BOOTSTRAPPER AND _BOOTSTRAP)
+  add_executable(WinLauncher WIN32 "${_BOOTSTRAP}")
+  set_property(TARGET WinLauncher PROPERTY FOLDER "Bootstrap")
+  target_compile_features(WinLauncher PRIVATE cxx_std_20)
+  # UNICODE and lean headers already set globally; keep explicit links needed by the launcher
+  target_link_libraries(WinLauncher PRIVATE Shell32 Ole32 User32)
+
+  # Give the launcher the same QoL (icons, manifest, asset copy into the same out dir)
+  # It shares the same output dir as ColonyGame by our global RUNTIME_OUTPUT_DIRECTORY.
+  enable_win_qol(WinLauncher "Colony-Game Launcher" "${CG_APP_VERSION}" ${_WQ_OPTS})
+
+  if(MSVC AND ENABLE_RELEASE_PDB)
+    target_compile_options(WinLauncher PRIVATE "$<$<CONFIG:Release>:/Zi>")
+    target_link_options(WinLauncher    PRIVATE "$<$<CONFIG:Release>:/DEBUG:FULL>")
+  endif()
+
+  if(MSVC AND SUPPRESS_MSVC_C4505)
+    target_compile_options(WinLauncher PRIVATE /wd4505)
+  endif()
+endif()
+
+# Visual Studio debugger settings and startup project
 if(MSVC)
+  # Ensure PATH includes the binary dir at debug-time
   set(_vs_env "PATH=%PATH%;$<TARGET_FILE_DIR:ColonyGame>")
   set_property(TARGET ColonyGame PROPERTY VS_DEBUGGER_ENVIRONMENT "${_vs_env}")
   set_property(TARGET ColonyGame PROPERTY VS_DEBUGGER_WORKING_DIRECTORY "$<TARGET_FILE_DIR:ColonyGame>")
+  if(TARGET WinLauncher)
+    set_property(TARGET WinLauncher PROPERTY VS_DEBUGGER_ENVIRONMENT "${_vs_env}")
+    set_property(TARGET WinLauncher PROPERTY VS_DEBUGGER_WORKING_DIRECTORY "$<TARGET_FILE_DIR:WinLauncher>")
+  endif()
+endif()
+
+# Choose startup project (prefer launcher if built)
+if(TARGET WinLauncher)
+  set_property(DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}" PROPERTY VS_STARTUP_PROJECT WinLauncher)
+else()
+  set_property(DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}" PROPERTY VS_STARTUP_PROJECT ColonyGame)
 endif()
 
 # --------------------------------------------------------------------------------------------------
@@ -491,11 +571,17 @@ endif()
 # --------------------------------------------------------------------------------------------------
 get_target_property(_exe_sources ColonyGame SOURCES)
 get_target_property(_core_sources colony_core SOURCES)
-if(_exe_sources OR _core_sources)
-  source_group(TREE "${CMAKE_SOURCE_DIR}" FILES ${_exe_sources} ${_core_sources} ${CORE_HEADERS})
+if(TARGET WinLauncher)
+  get_target_property(_launcher_sources WinLauncher SOURCES)
+endif()
+if(_exe_sources OR _core_sources OR _launcher_sources)
+  source_group(TREE "${CMAKE_SOURCE_DIR}" FILES ${_exe_sources} ${_core_sources} ${_launcher_sources} ${CORE_HEADERS})
 endif()
 source_group("Generated" FILES "${_ver_out}")
 target_include_directories(ColonyGame PRIVATE "${CMAKE_BINARY_DIR}/generated")
+if(TARGET WinLauncher)
+  target_include_directories(WinLauncher PRIVATE "${CMAKE_BINARY_DIR}/generated")
+endif()
 
 # --------------------------------------------------------------------------------------------------
 # (Merged patch) Enforce MSVC runtime choice on all targets post-definition
@@ -553,29 +639,43 @@ if(CMAKE_INSTALL_SYSTEM_RUNTIME_LIBS)
           COMPONENT ColonyRuntime)
 endif()
 
-# Optional: sign the installed executable (Release only; requires signtool + pfx)
+# Optional: sign the installed executables (Release only; requires signtool + pfx)
 if(ENABLE_CODE_SIGNING AND CMAKE_BUILD_TYPE MATCHES "Release")
   if(NOT SIGNTOOL_PATH)
     find_program(SIGNTOOL_PATH NAMES signtool signtool.exe)
   endif()
   if(SIGNTOOL_PATH AND EXISTS "${SIGNING_CERT_PATH}")
-    # Sign after install (so staged exe is signed)
+    # Sign ColonyGame.exe
     install(CODE
 "execute_process(COMMAND \"${SIGNTOOL_PATH}\"
     sign /fd SHA256 /tr \"${SIGNING_TIMESTAMP_URL}\" /td SHA256
     /f \"${SIGNING_CERT_PATH}\" /p \"${SIGNING_CERT_PASSWORD}\"
     \"\$ENV{DESTDIR}\${CMAKE_INSTALL_PREFIX}/$<CONFIG>/ColonyGame.exe\")
  message(STATUS \"Signed: \${CMAKE_INSTALL_PREFIX}/$<CONFIG>/ColonyGame.exe\")")
+    # Sign WinLauncher.exe if present
+    if(TARGET WinLauncher)
+      install(CODE
+"execute_process(COMMAND \"${SIGNTOOL_PATH}\"
+    sign /fd SHA256 /tr \"${SIGNING_TIMESTAMP_URL}\" /td SHA256
+    /f \"${SIGNING_CERT_PATH}\" /p \"${SIGNING_CERT_PASSWORD}\"
+    \"\$ENV{DESTDIR}\${CMAKE_INSTALL_PREFIX}/$<CONFIG>/WinLauncher.exe\")
+ message(STATUS \"Signed: \${CMAKE_INSTALL_PREFIX}/$<CONFIG>/WinLauncher.exe\")")
+    endif()
   else()
     message(WARNING "ENABLE_CODE_SIGNING=ON but signtool or cert not configured; skipping.")
   endif()
 endif()
 
 # Stage target
+if(TARGET WinLauncher)
+  set(_stage_deps ColonyGame WinLauncher)
+else()
+  set(_stage_deps ColonyGame)
+endif()
 add_custom_target(stage_win ALL
   COMMAND "${CMAKE_COMMAND}" -E echo "Staging ColonyGame to: ${CMAKE_INSTALL_PREFIX}/$<CONFIG>"
   COMMAND "${CMAKE_COMMAND}" -DCMAKE_INSTALL_CONFIG_NAME=$<CONFIG> -P "${CMAKE_BINARY_DIR}/cmake_install.cmake"
-  DEPENDS ColonyGame
+  DEPENDS ${_stage_deps}
   VERBATIM
 )
 
@@ -596,7 +696,12 @@ message(STATUS "================ Colony-Game: Configure Summary ================
 message(STATUS "  Generator            : ${CMAKE_GENERATOR}")
 message(STATUS "  Build type           : ${CMAKE_BUILD_TYPE}")
 message(STATUS "  Frontend             : ${FRONTEND}")
-message(STATUS "  Launcher             : ${_LAUNCHER}")
+message(STATUS "  Game entry           : ${_GAME_ENTRY}")
+if(TARGET WinLauncher)
+  message(STATUS "  Bootstrapper         : ${_BOOTSTRAP}")
+else()
+  message(STATUS "  Bootstrapper         : (disabled or not found)")
+endif()
 message(STATUS "  Show console         : ${SHOW_CONSOLE}")
 message(STATUS "  Min WinVer           : ${CG_MIN_WINVER}")
 message(STATUS "  MSVC static runtime  : ${MSVC_STATIC_RUNTIME}")
@@ -629,14 +734,18 @@ message(STATUS "")
 #       cmake -S . -B build -G "Visual Studio 17 2022"
 #       cmake --build build --config RelWithDebInfo
 #
-#   - Show console window:
+#   - Show console window (affects the game exe):
 #       cmake -S . -B build -DFRONTEND=win32 -DSHOW_CONSOLE=ON
 #
 #   - Build SDL frontend (requires SDL2 in path or via vcpkg):
 #       cmake -S . -B build -DFRONTEND=sdl
 #
-#   - Pick a specific launcher file:
-#       cmake -S . -B build -DLAUNCHER_FILE=WinLauncher.cpp
+#   - Pick a specific GAME ENTRY file (e.g., win32_main.cpp):
+#       cmake -S . -B build -DLAUNCHER_FILE=src/platform/win32/win32_main.cpp
+#
+#   - Override the BOOTSTRAPPER source (WinLauncher.cpp) or disable it:
+#       cmake -S . -B build -DBOOTSTRAP_FILE=WinLauncher.cpp
+#       cmake -S . -B build -DBUILD_BOOTSTRAPPER=OFF
 #
 #   - Static MSVC runtime (/MT):
 #       cmake -S . -B build -DMSVC_STATIC_RUNTIME=ON
