@@ -22,12 +22,6 @@
 #  pragma warning(pop)
 #endif
 
-// ---- Bring types into scope regardless of whether they live in :: or ::ai ----
-// If ai is already defined in the header, this just re-opens it (harmless).
-namespace ai {}
-// Make Point, GridView, PFResult, and any unscoped enumerators like Found/NoPath visible
-using namespace ai;
-
 // STL includes used in the definitions below.
 #include <vector>
 #include <cmath>
@@ -67,7 +61,7 @@ std::vector<Point> aStar(const GridView& g, Point start, Point goal) {
     std::vector<Point> path;
     const int defaultLimit = -1;  // unlimited expansion
     const PFResult res = aStar(g, start, goal, path, defaultLimit);
-    if (res == Found) {
+    if (res == PFResult::Found) {
         return path;
     }
     return {}; // NoPath or Aborted -> empty vector
@@ -82,15 +76,15 @@ PFResult aStar(const GridView& g, Point start, Point goal,
     out.clear();
 
     // Basic validation
-    if (g.w <= 0 || g.h <= 0) return NoPath;
-    if (!g.walkable || !g.cost) return NoPath;
-    if (!g.inBounds(start.x, start.y)) return NoPath;
-    if (!g.inBounds(goal.x, goal.y)) return NoPath;
-    if (!g.walkable(start.x, start.y)) return NoPath;
-    if (!g.walkable(goal.x, goal.y)) return NoPath;
+    if (g.w <= 0 || g.h <= 0) return PFResult::NoPath;
+    if (!g.walkable || !g.cost) return PFResult::NoPath;
+    if (!g.inBounds(start.x, start.y)) return PFResult::NoPath;
+    if (!g.inBounds(goal.x, goal.y)) return PFResult::NoPath;
+    if (!g.walkable(start.x, start.y)) return PFResult::NoPath;
+    if (!g.walkable(goal.x, goal.y)) return PFResult::NoPath;
     if (start.x == goal.x && start.y == goal.y) {
         out.push_back(start);
-        return Found;
+        return PFResult::Found;
     }
 
     const int N = g.w * g.h;
@@ -140,13 +134,13 @@ PFResult aStar(const GridView& g, Point start, Point goal,
                 rev.push_back(g.fromIndex(p));
             }
             out.assign(rev.rbegin(), rev.rend());
-            return Found;
+            return PFResult::Found;
         }
 
         closed[cur] = 1;
 
         if (maxExpandedNodes >= 0 && ++expanded > maxExpandedNodes)
-            return Aborted;
+            return PFResult::Aborted;
 
         const Point p = g.fromIndex(cur);
         const int nbrX[4] = { p.x + 1, p.x - 1, p.x,     p.x     };
@@ -175,5 +169,5 @@ PFResult aStar(const GridView& g, Point start, Point goal,
         }
     }
 
-    return NoPath;
+    return PFResult::NoPath;
 }
