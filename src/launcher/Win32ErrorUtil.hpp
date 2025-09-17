@@ -1,13 +1,15 @@
 #pragma once
 //
-// WinError.h — rich Windows error utilities (header-only)
+// Win32ErrorUtil.hpp — rich Windows error utilities (header-only)
 // Windows-only. Requires C++17+.
 //
 
 #ifndef _WIN32
-#error "WinError.h is Windows-only."
+#error "Win32ErrorUtil.hpp is Windows-only."
 #endif
 
+// Keep these in the header but guard them to avoid C4005 redefinitions.
+// They may also be supplied by your build system.
 #ifndef NOMINMAX
 #define NOMINMAX
 #endif
@@ -15,8 +17,9 @@
 #define WIN32_LEAN_AND_MEAN
 #endif
 
-#include <windows.h>
+#include <Windows.h>
 #include <winternl.h> // for NTSTATUS typedef (no linking needed)
+
 #include <string>
 #include <string_view>
 #include <vector>
@@ -28,6 +31,7 @@
 #include <cstdint>
 #include <cwchar>
 #include <cstdio>
+#include <ctime>
 
 namespace colony::winerr {
 
@@ -50,17 +54,19 @@ inline std::wstring TrimTrailingWs(std::wstring s) {
 
 inline std::wstring WidenFromUtf8(std::string_view utf8) {
     if (utf8.empty()) return {};
-    int need = ::MultiByteToWideChar(CP_UTF8, 0, utf8.data(), (int)utf8.size(), nullptr, 0);
+    const int need = ::MultiByteToWideChar(CP_UTF8, 0, utf8.data(), static_cast<int>(utf8.size()), nullptr, 0);
+    if (need <= 0) return {};
     std::wstring out(need, L'\0');
-    ::MultiByteToWideChar(CP_UTF8, 0, utf8.data(), (int)utf8.size(), out.data(), need);
+    ::MultiByteToWideChar(CP_UTF8, 0, utf8.data(), static_cast<int>(utf8.size()), out.data(), need);
     return out;
 }
 
 inline std::string NarrowToUtf8(std::wstring_view w) {
     if (w.empty()) return {};
-    int need = ::WideCharToMultiByte(CP_UTF8, 0, w.data(), (int)w.size(), nullptr, 0, nullptr, nullptr);
+    const int need = ::WideCharToMultiByte(CP_UTF8, 0, w.data(), static_cast<int>(w.size()), nullptr, 0, nullptr, nullptr);
+    if (need <= 0) return {};
     std::string out(need, '\0');
-    ::WideCharToMultiByte(CP_UTF8, 0, w.data(), (int)w.size(), out.data(), need, nullptr, nullptr);
+    ::WideCharToMultiByte(CP_UTF8, 0, w.data(), static_cast<int>(w.size()), out.data(), need, nullptr, nullptr);
     return out;
 }
 
@@ -170,8 +176,8 @@ inline const wchar_t* HResultFacilityName(uint16_t fac) {
     }
 }
 
-inline constexpr uint16_t HrFacility(HRESULT hr) { return uint16_t((uint32_t(hr) >> 16) & 0x1FFFu); }
-inline constexpr uint16_t HrCode(HRESULT hr)     { return uint16_t(uint32_t(hr) & 0xFFFFu); }
+inline constexpr uint16_t HrFacility(HRESULT hr) { return static_cast<uint16_t>((static_cast<uint32_t>(hr) >> 16) & 0x1FFFu); }
+inline constexpr uint16_t HrCode(HRESULT hr)     { return static_cast<uint16_t>(static_cast<uint32_t>(hr) & 0xFFFFu); }
 inline constexpr bool     HrFailed(HRESULT hr)   { return hr < 0; }
 
 // ========== Message formatting (system + common modules) ==========
@@ -181,8 +187,8 @@ namespace detail {
 inline std::wstring FormatMessageImpl(DWORD code, DWORD flags, HMODULE mod, DWORD langId) {
     LastErrorPreserver guard;
     LPWSTR buf = nullptr;
-    DWORD fmFlags = flags | FORMAT_MESSAGE_ALLOCATE_BUFFER | FORMAT_MESSAGE_IGNORE_INSERTS;
-    DWORD len = ::FormatMessageW(fmFlags, mod, code, langId, reinterpret_cast<LPWSTR>(&buf), 0, nullptr);
+    const DWORD fmFlags = flags | FORMAT_MESSAGE_ALLOCATE_BUFFER | FORMAT_MESSAGE_IGNORE_INSERTS;
+    const DWORD len = ::FormatMessageW(fmFlags, mod, code, langId, reinterpret_cast<LPWSTR>(&buf), 0, nullptr);
     std::wstring out;
     if (len && buf) {
         out.assign(buf, len);
@@ -239,8 +245,9 @@ inline std::wstring FormatFromKnownModules(DWORD code) {
     });
 
     for (HMODULE h : modules) {
-        auto msg = FormatMessageImpl(code, FORMAT_MESSAGE_FROM_HMODULE, h, 0);
-        if (!msg.empty()) return msg;
+        if (auto msg = FormatMessageImpl(code, FORMAT_MESSAGE_FROM_HMODULE, h, 0); !msg.empty()) {
+            return msg;
+        }
     }
     return {};
 }
@@ -267,29 +274,24 @@ inline std::wstring WinErrToString(DWORD err = ::GetLastError()) {
 inline std::wstring HResultToString(HRESULT hr) {
     // If the HRESULT wraps a Win32 code, try that first.
     if (HrFacility(hr) == 7 /* FACILITY_WIN32 */) {
-        DWORD w32 = DWORD(HrCode(hr));
+        const DWORD w32 = static_cast<DWORD>(HrCode(hr));
         auto s = WinErrToString(w32);
         if (!s.empty() && s != L"Unknown error") return s;
     }
     // Try system/module message tables for HRESULT itself.
-    {
-        auto s = detail::FormatFromSystem((DWORD)hr);
-        if (!s.empty()) return s;
-    }
-    {
-        auto s = detail::FormatFromKnownModules((DWORD)hr);
-        if (!s.empty()) return s;
-    }
+    if (auto s = detail::FormatFromSystem(static_cast<DWORD>(hr)); !s.empty()) return s;
+    if (auto s = detail::FormatFromKnownModules(static_cast<DWORD>(hr)); !s.empty()) return s;
+
     std::wstringstream ss;
-    ss << L"0x" << std::hex << std::uppercase << (uint32_t)hr << std::dec
+    ss << L"0x" << std::hex << std::uppercase << static_cast<uint32_t>(hr) << std::dec
        << L" (facility " << HrFacility(hr) << L", code " << HrCode(hr) << L")";
     return ss.str();
 }
 
 inline std::wstring NtStatusToString(NTSTATUS st) {
     // Try message tables first.
-    if (auto s = detail::FormatFromSystem((DWORD)st); !s.empty()) return s;
-    if (auto s = detail::FormatFromKnownModules((DWORD)st); !s.empty()) return s;
+    if (auto s = detail::FormatFromSystem(static_cast<DWORD>(st)); !s.empty()) return s;
+    if (auto s = detail::FormatFromKnownModules(static_cast<DWORD>(st)); !s.empty()) return s;
 
     // Try conversion to Win32 via ntdll and look that up.
     DWORD w32 = detail::NtStatusToWin32(st);
@@ -297,12 +299,12 @@ inline std::wstring NtStatusToString(NTSTATUS st) {
         auto s = WinErrToString(w32);
         if (!s.empty()) {
             std::wstringstream ss;
-            ss << s << L" (derived from NTSTATUS 0x" << std::hex << std::uppercase << (uint32_t)st << L")";
+            ss << s << L" (derived from NTSTATUS 0x" << std::hex << std::uppercase << static_cast<uint32_t>(st) << L")";
             return ss.str();
         }
     }
     std::wstringstream ss;
-    ss << L"NTSTATUS 0x" << std::hex << std::uppercase << (uint32_t)st;
+    ss << L"NTSTATUS 0x" << std::hex << std::uppercase << static_cast<uint32_t>(st);
     return ss.str();
 }
 
@@ -321,19 +323,19 @@ inline SourceLocation MakeSourceLocation(const char* file, const char* func, int
 enum class Domain : uint8_t { Win32, HResult, NtStatus, Custom };
 
 struct Error {
-    Domain      domain = Domain::Custom;
-    uint32_t    code   = 0;     // raw code (DWORD / HRESULT / NTSTATUS)
-    std::wstring message;       // human-readable text (decoded if possible)
-    std::wstring name;          // e.g., ERROR_ACCESS_DENIED or FACILITY name, etc.
-    std::wstring suggestion;    // helpful hint when we have one
+    Domain       domain = Domain::Custom;
+    uint32_t     code   = 0;     // raw code (DWORD / HRESULT / NTSTATUS)
+    std::wstring message;        // human-readable text (decoded if possible)
+    std::wstring name;           // e.g., ERROR_ACCESS_DENIED or FACILITY name, etc.
+    std::wstring suggestion;     // helpful hint when we have one
     SourceLocation where;
-    DWORD       pid = ::GetCurrentProcessId();
-    DWORD       tid = ::GetCurrentThreadId();
-    std::wstring when = NowTimestamp();
-    std::wstring context;       // optional user-provided context ("Opening save file")
+    DWORD         pid = ::GetCurrentProcessId();
+    DWORD         tid = ::GetCurrentThreadId();
+    std::wstring  when = NowTimestamp();
+    std::wstring  context;       // optional user-provided context ("Opening save file")
 
     static Error FromLastError(const SourceLocation& loc, std::wstring_view context = {}) {
-        DWORD e = ::GetLastError();
+        const DWORD e = ::GetLastError();
         Error out;
         out.domain = Domain::Win32;
         out.code = e;
@@ -365,12 +367,12 @@ struct Error {
 
         // Provide a name/facility summary:
         std::wstringstream n;
-        n << L"HRESULT 0x" << std::hex << std::uppercase << (uint32_t)hr
+        n << L"HRESULT 0x" << std::hex << std::uppercase << static_cast<uint32_t>(hr)
           << L" (" << HResultFacilityName(HrFacility(hr)) << L")";
         out.name = n.str();
 
         // Simple suggestions for a few common HRESULT patterns:
-        if (HrFacility(hr) == 7 /*WIN32*/) out.suggestion = Win32Suggestion(DWORD(HrCode(hr)));
+        if (HrFacility(hr) == 7 /*WIN32*/) out.suggestion = Win32Suggestion(static_cast<DWORD>(HrCode(hr)));
 
         out.where = loc;
         out.context.assign(context.begin(), context.end());
@@ -384,7 +386,7 @@ struct Error {
         out.message = NtStatusToString(st);
         {
             std::wstringstream n;
-            n << L"NTSTATUS 0x" << std::hex << std::uppercase << (uint32_t)st;
+            n << L"NTSTATUS 0x" << std::hex << std::uppercase << static_cast<uint32_t>(st);
             out.name = n.str();
         }
         out.where = loc;
@@ -397,10 +399,10 @@ struct Error {
         std::wstringstream ss;
         ss << L"[Error] " << DomainName() << L" ";
         switch (domain) {
-            case Domain::Win32:  ss << L"(code " << code << L")"; break;
+            case Domain::Win32:   ss << L"(code " << code << L")"; break;
             case Domain::HResult: ss << L"(hr 0x" << std::hex << std::uppercase << code << std::dec << L")"; break;
-            case Domain::NtStatus: ss << L"(ntstatus 0x" << std::hex << std::uppercase << code << std::dec << L")"; break;
-            default: ss << L"(code " << code << L")"; break;
+            case Domain::NtStatus:ss << L"(ntstatus 0x" << std::hex << std::uppercase << code << std::dec << L")"; break;
+            default:              ss << L"(code " << code << L")"; break;
         }
         if (!name.empty()) ss << L" " << name;
         ss << L": " << (message.empty() ? L"(no message)" : message);
@@ -421,10 +423,10 @@ struct Error {
 
     const wchar_t* DomainName() const {
         switch (domain) {
-            case Domain::Win32:  return L"Win32";
+            case Domain::Win32:   return L"Win32";
             case Domain::HResult: return L"HRESULT";
-            case Domain::NtStatus: return L"NTSTATUS";
-            default: return L"Custom";
+            case Domain::NtStatus:return L"NTSTATUS";
+            default:              return L"Custom";
         }
     }
 };
@@ -476,9 +478,30 @@ inline std::wstring SimpleNtStatusToString(NTSTATUS st) {
 
 } // namespace colony::winerr
 
+// ======================================================================
+// Back-compat helpers in the original `launcher` namespace
+// (wrapping the richer colony::winerr utilities)
+//
+// These mirror the functions from your patch so call-sites that used
+// launcher::Utf8ToWide / WideToUtf8 / DescribeLastError continue to work.
+// ======================================================================
+namespace launcher {
+    inline std::wstring Utf8ToWide(std::string_view s) {
+        return ::colony::winerr::WidenFromUtf8(s);
+    }
+    inline std::string WideToUtf8(std::wstring_view ws) {
+        return ::colony::winerr::NarrowToUtf8(ws);
+    }
+    inline std::string DescribeLastError(DWORD code = ::GetLastError()) {
+        const std::wstring w = ::colony::winerr::WinErrToString(code);
+        if (w.empty()) return std::string("Win32 error ") + std::to_string(code);
+        return ::colony::winerr::NarrowToUtf8(w);
+    }
+} // namespace launcher
+
 /* ============================ Usage examples ============================
 
-#include "WinError.h"
+#include "src/launcher/Win32ErrorUtil.hpp"
 using namespace colony::winerr;
 
 // 1) Quick: preserve old call-site behavior
