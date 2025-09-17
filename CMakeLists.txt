@@ -125,20 +125,16 @@ if(MSVC)
   if(ENABLE_MSVC_ANALYZE)
     add_compile_options(/analyze)
   endif()
-  if(ENABLE_CLANG_TIDY)
-    find_program(CLANG_TIDY_EXE NAMES clang-tidy clang-tidy.exe)
-    if(CLANG_TIDY_EXE)
-      set(CMAKE_CXX_CLANG_TIDY "${CLANG_TIDY_EXE}")
-      message(STATUS "clang-tidy enabled: ${CLANG_TIDY_EXE}")
-    else()
-      message(WARNING "ENABLE_CLANG_TIDY=ON but clang-tidy not found in PATH.")
-    endif()
-  endif()
+  # ---------- Static runtime default (merged patch) ----------
   if(MSVC_STATIC_RUNTIME)
+    # /MT for Release, /MTd for Debug
     set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
   else()
+    # /MD for Release, /MDd for Debug
     set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>DLL")
   endif()
+  # ----------------------------------------------------------
+
   if(NOT DEFINED CMAKE_MSVC_DEBUG_INFORMATION_FORMAT)
     set(CMAKE_MSVC_DEBUG_INFORMATION_FORMAT "$<$<CONFIG:Debug,RelWithDebInfo>:ProgramDatabase>")
   endif()
@@ -399,8 +395,9 @@ target_compile_definitions(ColonyGame PRIVATE
 )
 
 # Core Win32 libs (EnableWinQoL already links Dbghelp & Shell32)
+# (Merged patch) Ensure Dbghelp is linked explicitly alongside Shlwapi.
 target_link_libraries(ColonyGame PRIVATE
-  user32 gdi32 shlwapi comdlg32 comctl32 advapi32
+  user32 gdi32 shlwapi Dbghelp comdlg32 comctl32 advapi32
   ole32 oleaut32 imm32 winmm version uuid
   dwmapi xinput9_1_0
 )
@@ -499,6 +496,38 @@ if(_exe_sources OR _core_sources)
 endif()
 source_group("Generated" FILES "${_ver_out}")
 target_include_directories(ColonyGame PRIVATE "${CMAKE_BINARY_DIR}/generated")
+
+# --------------------------------------------------------------------------------------------------
+# (Merged patch) Enforce MSVC runtime choice on all targets post-definition
+# --------------------------------------------------------------------------------------------------
+if(MSVC)
+  function(_cg_collect_targets dir out_var)
+    get_property(_tgts DIRECTORY "${dir}" PROPERTY BUILDSYSTEM_TARGETS)
+    get_property(_subs DIRECTORY "${dir}" PROPERTY SUBDIRECTORIES)
+    foreach(sd IN LISTS _subs)
+      _cg_collect_targets("${sd}" _sub_tgts)
+      list(APPEND _tgts ${_sub_tgts})
+    endforeach()
+    set(${out_var} "${_tgts}" PARENT_SCOPE)
+  endfunction()
+
+  _cg_collect_targets("${CMAKE_CURRENT_BINARY_DIR}" _ALL_TGTS)
+
+  foreach(_t IN LISTS _ALL_TGTS)
+    # Only meaningful for real build targets
+    get_target_property(_type ${_t} TYPE)
+    if(_type STREQUAL "EXECUTABLE" OR _type STREQUAL "STATIC_LIBRARY" OR
+       _type STREQUAL "SHARED_LIBRARY" OR _type STREQUAL "MODULE_LIBRARY")
+      if(MSVC_STATIC_RUNTIME)
+        # /MT or /MTd
+        set_property(TARGET ${_t} PROPERTY MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+      else()
+        # /MD or /MDd
+        set_property(TARGET ${_t} PROPERTY MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>DLL")
+      endif()
+    endif()
+  endforeach()
+endif()
 
 # ==================================================================================================
 # Staging & packaging (installs handled by EnableWinQoL for the executable)
@@ -619,3 +648,4 @@ message(STATUS "")
 #     or explicitly:
 #       cmake --install build --config Release
 # --------------------------------------------------------------------------------------------------
+
