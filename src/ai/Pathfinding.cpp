@@ -49,6 +49,15 @@ static inline int heuristic(const Point& a, const Point& b) noexcept {
     return std::abs(a.x - b.x) + std::abs(a.y - b.y);
 }
 
+// Stable, deterministic priority: primary = f, secondary = g (tie-breaker).
+// We pack into a 64-bit integer to avoid any floating point.
+// Assumes non-negative f and g (true for standard A* with non-negative costs).
+static inline std::uint64_t packKey(int f, int g) noexcept {
+    const std::uint64_t F = static_cast<std::uint32_t>(f < 0 ? 0 : f);
+    const std::uint64_t G = static_cast<std::uint32_t>(g < 0 ? 0 : g);
+    return (F << 32) | G;
+}
+
 // -----------------------------------------------------------------------------
 // Bridging overload (classic return type, no trailing-return syntax).
 // Some older call sites (per your CI logs) expect `aStar(g, s, t)` returning
@@ -88,9 +97,9 @@ PFResult aStar(const GridView& g, Point start, Point goal,
     // Function-style call avoids min/max macro interference from <Windows.h>.
     constexpr int INF = (std::numeric_limits<int>::max)();
 
-    std::vector<int>     gCost(N, INF);
-    std::vector<int>     parent(N, -1);
-    std::vector<uint8_t> closed(N, 0);
+    std::vector<int>              gCost(N, INF);
+    std::vector<int>              parent(N, -1);
+    std::vector<std::uint8_t>     closed(N, 0);
 
     const int startIdx = g.index(start.x, start.y);
     const int goalIdx  = g.index(goal.x, goal.y);
@@ -102,11 +111,11 @@ PFResult aStar(const GridView& g, Point start, Point goal,
     // --- Use an indexed min-heap that supports decrease-key ---
     IndexedPriorityQueue open(static_cast<std::size_t>(N));
 
-    // Push start with a tiny tie-break on g to prefer straight-ish continuations
+    // Push start with deterministic composite integer key (f, g)
     gCost[startIdx] = 0;
     {
-        const float key = static_cast<float>(h(start.x, start.y))
-                        + 1e-4f * static_cast<float>(gCost[startIdx]);
+        const int h0 = h(start.x, start.y);
+        const std::uint64_t key = packKey(/*f=*/h0, /*g=*/gCost[startIdx]);
         open.push_or_decrease(startIdx, key);
     }
 
@@ -159,9 +168,8 @@ PFResult aStar(const GridView& g, Point start, Point goal,
                 parent[nIdx] = cur;
                 gCost[nIdx]  = tentative;
 
-                const int f     = tentative + h(nx, ny);
-                const float key = static_cast<float>(f)
-                                + 1e-4f * static_cast<float>(tentative);
+                const int f = tentative + h(nx, ny);
+                const std::uint64_t key = packKey(/*f=*/f, /*g=*/tentative);
                 open.push_or_decrease(nIdx, key);
             }
         }
