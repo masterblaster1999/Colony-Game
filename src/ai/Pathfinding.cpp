@@ -1,7 +1,7 @@
-// src/ai/Pathfinding.cpp
-// Windows-focused, self-contained TU (Unity-build friendly, resilient to angle-bracket stripping)
+// Pathfinding.cpp — Windows-focused, self-contained TU for MSVC (Unity-build friendly)
 
 #ifdef _WIN32
+// Keep this TU robust in MSVC Unity builds on Windows (min/max macros, etc.)
 #  ifndef NOMINMAX
 #    define NOMINMAX
 #  endif
@@ -10,204 +10,162 @@
 #  endif
 #endif
 
-// Project header that declares GridView, Point, PFResult, etc.
-#include "Pathfinding.hpp"
-
-// Standard library headers — included with quotes so CI filters that remove `<...>`
-// can't corrupt them. MSVC will still find the standard headers on the include path.
-#include "vector"
-#include "queue"
-#include "algorithm"
-#include "cstdint"
-#include "cstddef"   // size_t
-#include "cstdlib"   // std::abs(int)
-#include "cmath"     // std::abs overloads
-#include "climits"   // INT_MAX
-
-// -----------------------------------------------------------------------------
-// Template shielding: never write raw `<T>` in this file. These macros expand to
-// real angle brackets only *after* preprocessing, so a naive text stripper can't
-// damage the source.
-// -----------------------------------------------------------------------------
-#ifndef CG_LT_GT_DEFINED
-#  define CG_LT_GT_DEFINED
-#  define LT <
-#  define GT >
-#  define VEC(T)            std::vector LT T GT
-#  define PRIQUEUE(T, C, L) std::priority_queue LT T, C, L GT
+// Suppress two benign warnings originating from Pathfinding.hpp in MSVC builds.
+// (If you prefer, fix them in the header by marking 'dmax' and 'emptyOpen' as [[maybe_unused]].)
+#if defined(_MSC_VER)
+#  pragma warning(push)
+#  pragma warning(disable : 4189) // local variable initialized but not referenced
+#  pragma warning(disable : 4100) // unreferenced formal parameter
 #endif
+#include "Pathfinding.hpp"
+#if defined(_MSC_VER)
+#  pragma warning(pop)
+#endif
+
+// ---- Bring types into scope regardless of whether they live in :: or ::ai ----
+// If ai is already defined in the header, this just re-opens it (harmless).
+namespace ai {}
+// Make Point, GridView, PFResult, and any unscoped enumerators like Found/NoPath visible
+using namespace ai;
+
+// STL includes used in the definitions below.
+#include <vector>
+#include <cmath>
+#include <limits>
+#include <cstdint>
+#include <algorithm>
+#include <cstddef> // size_t
+#include <cstdlib> // std::abs(int)
+
+#include "IndexedPriorityQueue.h"
 
 // -----------------------------------------------------------------------------
 // Helpers
 // -----------------------------------------------------------------------------
 
-// Manhattan heuristic for a 4-connected grid.
-// Use raw ints so we don't depend on `Point` being visible at this exact spot
-// in Unity/Jumbo builds (prevents C4430/C2143 cascades around 'Point').
-static inline int heuristic(int ax, int ay, int bx, int by) noexcept {
-    return std::abs(ax - bx) + std::abs(ay - by);
+// Manhattan heuristic that matches 4-connected grids.
+// Kept as an int for fast integer math inside the main loop.
+static inline int heuristic(const Point& a, const Point& b) noexcept {
+    return std::abs(a.x - b.x) + std::abs(a.y - b.y);
+}
+
+// -----------------------------------------------------------------------------
+// Bridging overload (classic return type, no trailing-return syntax).
+// Some older call sites (per your CI logs) expect `aStar(g, s, t)` returning
+// `std::vector<Point>`.  We forward to the primary PFResult-based API.
+// -----------------------------------------------------------------------------
+std::vector<Point> aStar(const GridView& g, Point start, Point goal) {
+    std::vector<Point> path;
+    const int defaultLimit = -1;  // unlimited expansion
+    const PFResult res = aStar(g, start, goal, path, defaultLimit);
+    if (res == Found) {
+        return path;
+    }
+    return {}; // NoPath or Aborted -> empty vector
 }
 
 // -----------------------------------------------------------------------------
 // Primary A* Implementation (preferred API)
-//   PFResult is assumed to be an *unscoped* enum with enumerators:
-//   Found, NoPath, Aborted  (matches your error log where PFResult::Found failed).
 // -----------------------------------------------------------------------------
 PFResult aStar(const GridView& g, Point start, Point goal,
-               VEC(Point)& out, int maxExpandedNodes)
+               std::vector<Point>& out, int maxExpandedNodes)
 {
     out.clear();
 
-    // Basic validation (avoid depending on transitive includes)
+    // Basic validation
     if (g.w <= 0 || g.h <= 0) return NoPath;
-
-    // If your GridView exposes function pointers or std::function for walkable/cost,
-    // this catches null; if they are methods, these lines still compile and are harmless.
     if (!g.walkable || !g.cost) return NoPath;
-
-    const int W = g.w;
-    const int H = g.h;
-
-    auto inBounds = [&](int x, int y) noexcept -> bool {
-        return (x >= 0 && y >= 0 && x LT W && y LT H);
-    };
-
-    if (!inBounds(start.x, start.y)) return NoPath;
-    if (!inBounds(goal.x,  goal.y))  return NoPath;
+    if (!g.inBounds(start.x, start.y)) return NoPath;
+    if (!g.inBounds(goal.x, goal.y)) return NoPath;
     if (!g.walkable(start.x, start.y)) return NoPath;
-    if (!g.walkable(goal.x,  goal.y))  return NoPath;
-
+    if (!g.walkable(goal.x, goal.y)) return NoPath;
     if (start.x == goal.x && start.y == goal.y) {
         out.push_back(start);
         return Found;
     }
 
-    const int N = W * H;
-    // Use function-call form to dodge Windows min/max macro collisions.
-    const int INF = (std::min)(INT_MAX / 4, 0x3f3f3f3f);
+    const int N = g.w * g.h;
+    // Function-style call avoids min/max macro interference from <Windows.h>.
+    constexpr int INF = (std::numeric_limits<int>::max)();
 
-    // Per-node state
-    VEC(int)     gCost(N, INF);
-    VEC(int)     parent(N, -1);
-    VEC(uint8_t) closed(N, 0);
-    VEC(int)     bestF(N, INF); // best known f-score for lazy PQ updates
+    std::vector<int>     gCost(N, INF);
+    std::vector<int>     parent(N, -1);
+    std::vector<uint8_t> closed(N, 0);
 
-    auto toIndex = [&](int x, int y) noexcept -> int { return y * W + x; };
+    const int startIdx = g.index(start.x, start.y);
+    const int goalIdx  = g.index(goal.x, goal.y);
 
-    const int startIdx = toIndex(start.x, start.y);
-    const int goalIdx  = toIndex(goal.x,  goal.y);
-
-    // Min-heap node
-    struct Node { int f; int tie; int idx; };
-
-    // Lower f first; on ties, prefer lower g (straighter/shorter so far).
-    struct Greater {
-        bool operator()(const Node& a, const Node& b) const noexcept {
-            if (a.f != b.f)   return a.f > b.f;
-            return a.tie > b.tie;
-        }
+    const auto h = [&](int x, int y) noexcept {
+        return heuristic(Point{ x, y }, goal);
     };
 
-    PRIQUEUE(Node, VEC(Node), Greater) open;
+    // --- Use an indexed min-heap that supports decrease-key ---
+    IndexedPriorityQueue open(static_cast<std::size_t>(N));
 
-    // Seed
-    gCost[static_cast<size_t>(startIdx)] = 0;
+    // Push start with a tiny tie-break on g to prefer straight-ish continuations
+    gCost[startIdx] = 0;
     {
-        const int h0 = heuristic(start.x, start.y, goal.x, goal.y);
-        bestF[static_cast<size_t>(startIdx)] = h0;
-        open.push(Node{ h0, 0, startIdx });
+        const float key = static_cast<float>(h(start.x, start.y))
+                        + 1e-4f * static_cast<float>(gCost[startIdx]);
+        open.push_or_decrease(startIdx, key);
     }
 
     int expanded = 0;
 
     while (!open.empty()) {
-        // Lazy-pop: discard stale entries
-        const Node top = open.top();
-        open.pop();
+        const int cur = open.pop_min();
+        if (closed[cur]) continue;
 
-        const int curF = top.f;
-        const int cur  = top.idx;
-
-        if (closed[static_cast<size_t>(cur)]) continue;
-        if (curF > bestF[static_cast<size_t>(cur)]) continue;
-
-        // Goal?
+        // If we just popped the goal, we're done. Check this BEFORE counting aborts.
         if (cur == goalIdx) {
-            // Reconstruct into `out` (forward order) without raw `<...>` usage.
-            const int roughLen = (std::max)(0, heuristic(start.x, start.y, goal.x, goal.y) + 8);
-            out.reserve(static_cast<size_t>((std::min)(roughLen, N)));
+            // Reconstruct path
+            std::vector<Point> rev;
 
-            // Collect reversed indices first to avoid a second VEC(Point).
-            VEC(int) revIdx;
-            revIdx.reserve(static_cast<size_t>((std::min)(roughLen, N)));
-            for (int p = cur; p != -1; p = parent[static_cast<size_t>(p)]) {
-                revIdx.push_back(p);
-            }
+            // Reserve a rough, safe lower bound to reduce reallocs.
+            // Path length is at least Manhattan distance; obstacles can increase it,
+            // but reserve() is only a hint.
+            const int roughLen = (std::max)(0, heuristic(start, goal) + 8);
+            rev.reserve(static_cast<std::size_t>((std::min)(roughLen, N)));
 
-            for (int i = static_cast<int>(revIdx.size()) - 1; i >= 0; --i) {
-                const int p  = revIdx[static_cast<size_t>(i)];
-                const int px = p % W;
-                const int py = p / W;
-                out.push_back(Point{ px, py });
+            for (int p = cur; p != -1; p = parent[p]) {
+                rev.push_back(g.fromIndex(p));
             }
+            out.assign(rev.rbegin(), rev.rend());
             return Found;
         }
 
-        closed[static_cast<size_t>(cur)] = 1;
+        closed[cur] = 1;
 
         if (maxExpandedNodes >= 0 && ++expanded > maxExpandedNodes)
             return Aborted;
 
-        // Current cell
-        const int cx = cur % W;
-        const int cy = cur / W;
+        const Point p = g.fromIndex(cur);
+        const int nbrX[4] = { p.x + 1, p.x - 1, p.x,     p.x     };
+        const int nbrY[4] = { p.y,     p.y,     p.y + 1, p.y - 1 };
 
-        // 4-neighborhood (no diagonals)
-        const int nbrX[4] = { cx + 1, cx - 1, cx,     cx     };
-        const int nbrY[4] = { cy,     cy,     cy + 1, cy - 1 };
+        for (int i = 0; i < 4; ++i) {
+            const int nx = nbrX[i], ny = nbrY[i];
+            if (!g.inBounds(nx, ny) || !g.walkable(nx, ny)) continue;
 
-        for (int k = 0; k < 4; ++k) {
-            const int nx = nbrX[k], ny = nbrY[k];
-            if (!inBounds(nx, ny))   continue;
-            if (!g.walkable(nx, ny)) continue;
+            const int nIdx = g.index(nx, ny);
+            if (nIdx < 0 || nIdx >= N) continue; // defensive, in case index() changes
+            if (closed[nIdx]) continue;
 
-            const int nIdx = toIndex(nx, ny);
-            if (closed[static_cast<size_t>(nIdx)]) continue;
-
-            // Function-call form to dodge min/max macro collisions.
+            // Use function-call form to dodge min/max macro collisions.
             const int stepCost  = (std::max)(1, g.cost(nx, ny));
-            const int tentative = gCost[static_cast<size_t>(cur)] + stepCost;
+            const int tentative = gCost[cur] + stepCost;
 
-            if (tentative < gCost[static_cast<size_t>(nIdx)]) {
-                parent[static_cast<size_t>(nIdx)] = cur;
-                gCost[static_cast<size_t>(nIdx)]  = tentative;
+            if (tentative < gCost[nIdx]) {
+                parent[nIdx] = cur;
+                gCost[nIdx]  = tentative;
 
-                const int f   = tentative + heuristic(nx, ny, goal.x, goal.y);
-                const int tie = tentative; // prefer lower g on ties
-
-                if (f < bestF[static_cast<size_t>(nIdx)]) {
-                    bestF[static_cast<size_t>(nIdx)] = f;
-                    open.push(Node{ f, tie, nIdx });
-                }
+                const int f     = tentative + h(nx, ny);
+                const float key = static_cast<float>(f)
+                                + 1e-4f * static_cast<float>(tentative);
+                open.push_or_decrease(nIdx, key);
             }
         }
     }
 
     return NoPath;
 }
-
-// -----------------------------------------------------------------------------
-// Bridging overload: some call sites expect `aStar(g, s, t) -> std::vector<Point>`
-// (Keep raw `<...>` out of the source via VEC macro.)
-// -----------------------------------------------------------------------------
-VEC(Point) aStar(const GridView& g, Point start, Point goal) {
-    VEC(Point) path;
-    (void)aStar(g, start, goal, path, -1); // -1 → unlimited expansions
-    return path;
-}
-
-// If you want to avoid macro leakage outside this TU, you can uncomment:
-// #undef PRIQUEUE
-// #undef VEC
-// #undef GT
-// #undef LT
