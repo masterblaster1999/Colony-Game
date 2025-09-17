@@ -3,15 +3,17 @@
 #include <limits>
 #include <cstddef>
 #include <algorithm>
+#include <cstdint>
 
-// A minimal indexable min-heap keyed by float priorities.
+// A minimal indexable min-heap keyed by 64-bit integer priorities.
 // - Nodes are addressed by integer indices [0..N).
 // - Supports O(log n) push-or-decrease and pop_min.
 // - No dynamic allocation per operation; only vectors (cache friendly).
+// - Integer keys provide deterministic ordering across Windows/MSVC builds.
 class IndexedPriorityQueue {
 public:
     using Index = int;
-    using Key   = float;
+    using Key   = std::uint64_t;
 
     explicit IndexedPriorityQueue(std::size_t capacity = 0) {
         reset(capacity);
@@ -82,7 +84,7 @@ public:
 
 private:
     static constexpr Index kNotInHeap = -1;
-    static constexpr Key   kInf       = std::numeric_limits<Key>::infinity();
+    static constexpr Key   kInf       = std::numeric_limits<Key>::max();
 
     // heap_ stores node indices; pos_[i] = position of i in heap_ (or -1); key_[i] = priority
     std::vector<Index> heap_;
