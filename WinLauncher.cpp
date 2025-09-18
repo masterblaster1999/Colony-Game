@@ -2,10 +2,18 @@
 // Build: Windows only. Requires C++17 (std::filesystem).
 // This file replaces the previous WinLauncher.cpp and absorbs SingleClick duties.
 
+#ifndef UNICODE
 #define UNICODE
+#endif
+#ifndef _UNICODE
 #define _UNICODE
+#endif
+#ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
+#endif
+#ifndef NOMINMAX
 #define NOMINMAX
+#endif
 
 #include <windows.h>
 #include <shellapi.h>    // CommandLineToArgvW
@@ -129,7 +137,6 @@ static void MsgBox(const std::wstring& title, const std::wstring& text) {
     MessageBoxW(nullptr, text.c_str(), title.c_str(), MB_OK | MB_ICONERROR | MB_SETFOREGROUND);
 }
 
-// Verify assets exist (lightweight sanity check)
 static bool VerifyResources(const fs::path& root) {
     auto res = root / L"res";
     std::error_code ec;
