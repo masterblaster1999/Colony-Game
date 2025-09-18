@@ -1,4 +1,4 @@
-<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<?xml version="1.0" encoding="utf-8" standalone="yes"?>
 <assembly xmlns="urn:schemas-microsoft-com:asm.v1" manifestVersion="1.0">
   <trustInfo xmlns="urn:schemas-microsoft-com:asm.v3">
     <security>
@@ -8,11 +8,13 @@
     </security>
   </trustInfo>
 
-  <!-- Opt-in to Per-Monitor-V2 DPI awareness on Windows 10+ -->
-  <asmv3:application xmlns:asmv3="urn:schemas-microsoft-com:asm.v3">
-    <asmv3:windowsSettings>
-      <dpiAwareness xmlns="http://schemas.microsoft.com/SMI/2016/WindowsSettings">PerMonitorV2, DPIUnaware</dpiAwareness>
-      <longPathAware xmlns="http://schemas.microsoft.com/SMI/2016/WindowsSettings">true</longPathAware>
-    </asmv3:windowsSettings>
-  </asmv3:application>
+  <!-- High DPI: Per-Monitor V2 on modern Windows, system-aware fallback -->
+  <application xmlns:ws2="http://schemas.microsoft.com/SMI/2016/WindowsSettings"
+               xmlns:ws="http://schemas.microsoft.com/SMI/2005/WindowsSettings">
+    <ws:dpiAware>true/pm</ws:dpiAware>
+    <ws2:dpiAwareness>PerMonitorV2</ws2:dpiAwareness>
+
+    <!-- Long paths (Win10 1607+ with OS policy enabled) -->
+    <ws2:longPathAware>true</ws2:longPathAware>
+  </application>
 </assembly>
