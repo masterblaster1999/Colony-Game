@@ -30,6 +30,10 @@
 # Requires: MSVC on Windows.
 # Safe on older CMake versions (guards included).
 #
+# NOTE: For .rc content we intentionally emit **forward slashes** by using
+#       `file(TO_CMAKE_PATH ...)` to avoid backslash escape sequences such as
+#       \a, \b, \t being interpreted by rc.exe in string literals.
+#
 # ------------------------------------------------------------------------------
 
 include_guard(GLOBAL)
@@ -77,14 +81,16 @@ endfunction()
 function(_winqol_generate_version_rc out_rc app_name app_version exe_name icon_path manifest_path company filedesc)
   string(REPLACE "." "," _v_commas "${app_version}")
   if (icon_path)
-    file(TO_NATIVE_PATH "${icon_path}" _icon_win)
+    # Use forward slashes in .rc string literals to avoid escape sequences.
+    file(TO_CMAKE_PATH "${icon_path}" _icon_win)
     set(_icon_line "IDI_APPICON ICON \"${_icon_win}\"\n")
   else()
     set(_icon_line "")
   endif()
 
   if (manifest_path)
-    file(TO_NATIVE_PATH "${manifest_path}" _man_win)
+    # Use forward slashes in .rc string literals to avoid escape sequences.
+    file(TO_CMAKE_PATH "${manifest_path}" _man_win)
     # 1 = CREATEPROCESS_MANIFEST_RESOURCE_ID; RT_MANIFEST ensures correct embedding
     set(_manifest_line "CREATEPROCESS_MANIFEST_RESOURCE_ID RT_MANIFEST \"${_man_win}\"\n")
   else()
@@ -344,14 +350,16 @@ function(enable_win_qol target app_name app_version)
     # Also ensure the manifest is compiled (in case their version.rc doesn't include it)
     # We generate a tiny RC that only embeds the manifest, to avoid double VS_VERSION_INFO.
     set(_man_embed_rc "${_gen_dir}/embed_manifest_only.rc")
-    file(TO_NATIVE_PATH "${_manifest_in}" _man_native)
+    # Use forward slashes in .rc string literals to avoid escape sequences.
+    file(TO_CMAKE_PATH "${_manifest_in}" _man_native)
     set(_rc_small "CREATEPROCESS_MANIFEST_RESOURCE_ID RT_MANIFEST \"${_man_native}\"\n")
     _winqol_write_if_different("${_man_embed_rc}" "${_rc_small}")
     target_sources(${target} PRIVATE "${_man_embed_rc}")
     if (WQ_ICON AND EXISTS "${WQ_ICON}")
       # Let the main version.rc own the icon if it does; otherwise add a tiny icon rc.
       set(_icon_rc "${_gen_dir}/embed_icon_only.rc")
-      file(TO_NATIVE_PATH "${WQ_ICON}" _icon_native)
+      # Use forward slashes in .rc string literals to avoid escape sequences.
+      file(TO_CMAKE_PATH "${WQ_ICON}" _icon_native)
       set(_rc_icon "IDI_APPICON ICON \"${_icon_native}\"\n")
       _winqol_write_if_different("${_icon_rc}" "${_rc_icon}")
       target_sources(${target} PRIVATE "${_icon_rc}")
