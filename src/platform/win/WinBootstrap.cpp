@@ -3,9 +3,17 @@
 #include "SingleInstance.h"
 #include "CrashHandler.h"
 
-#include <windows.h>
+#include <Windows.h>
+#include <shellscalingapi.h>   // DPI_AWARENESS_CONTEXT & SetProcessDpiAwarenessContext
+#pragma comment(lib, "Shcore.lib")
+
 #include <filesystem>
 #include <string>
+#include <string_view>
+
+// For UTF-8 / wide conversions and safe char8_t + char mixes:
+#include "src/platform/win/WinStrings.hpp"
+#include "src/launcher/Win32ErrorUtil.hpp"
 
 namespace fs = std::filesystem;
 
@@ -17,8 +25,9 @@ __declspec(dllexport) int  AmdPowerXpressRequestHighPerformance = 1;
 
 namespace {
 
+// Use SDK-provided DPI_AWARENESS_CONTEXT values (no redeclaration).
 void SetDpiAwareness() {
-    // Try modern per‑monitor v2. If unavailable, fall back.
+    // Try modern per‑monitor v2. If available, prefer it.
     HMODULE user32 = ::GetModuleHandleW(L"user32.dll");
     if (user32) {
         using SetCtx = BOOL (WINAPI*)(DPI_AWARENESS_CONTEXT);
