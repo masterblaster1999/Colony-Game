@@ -1,7 +1,11 @@
+#ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
+#endif
+#ifndef NOMINMAX
 #define NOMINMAX
+#endif
 #include "WinBootstrap.h"
-#include <windows.h>
+#include <Windows.h>
 #include <DbgHelp.h>
 #include <filesystem>
 #include <fstream>
@@ -12,9 +16,8 @@
 
 #pragma comment(lib, "Dbghelp.lib")
 
-#ifndef DPI_AWARENESS_CONTEXT
-using DPI_AWARENESS_CONTEXT = HANDLE;
-#endif
+// Do NOT redefine DPI_AWARENESS_CONTEXT; it's a typedef provided by the Windows SDK.
+// Only provide the PER_MONITOR_AWARE_V2 constant if the SDK is missing it.
 #ifndef DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2
 #define DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2 ((DPI_AWARENESS_CONTEXT)-4)
 #endif
@@ -197,7 +200,8 @@ void Preflight(const Options& opt)
     // Prepare logging + (optional) crash dumps
     const auto logsDir = ensure_dir(g_root / L"logs");
     log_open(logsDir / "launcher.log");
-    log_info("Bootstrap start. Root: " + g_root.u8string());
+    // Avoid char8_t concatenation: use std::string + path.string()
+    log_info(std::string("Bootstrap start. Root: ") + g_root.string());
 
     if (opt.writeCrashDumps) install_crash_filter(logsDir);
 
@@ -213,7 +217,7 @@ void Preflight(const Options& opt)
         log_err("Assets folder '" + std::string(opt.assetDirName.begin(), opt.assetDirName.end()) +
                 "' not found; continuing with exe dir.");
     } else {
-        log_info("Assets folder present: " + (g_root / opt.assetDirName).u8string());
+        log_info(std::string("Assets folder present: ") + (g_root / opt.assetDirName).string());
     }
 }
 
