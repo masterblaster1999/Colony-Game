@@ -1,0 +1,7 @@
+#ifndef RT_MANIFEST
+#define RT_MANIFEST 24
+#endif
+
+// Embed the application manifest using a forward-slash path.
+// For EXEs, resource ID 1 is conventional; for DLLs it is 2.
+1 RT_MANIFEST "@APP_MANIFEST_CMAKE@"
