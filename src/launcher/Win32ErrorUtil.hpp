@@ -9,7 +9,12 @@
 #ifndef NOMINMAX
 #  define NOMINMAX
 #endif
-#include <Windows.h>
+
+// Bring in the exact Win32 headers we depend on.
+#include <Windows.h>        // core Win32
+#include <winnls.h>         // CP_UTF8, MultiByteToWideChar, WideCharToMultiByte
+#include <winerror.h>       // HRESULT/SUCCEEDED/ERROR_*
+#include <errhandlingapi.h> // FormatMessageW
 
 #include <string>
 #include <string_view>
@@ -19,9 +24,9 @@ namespace winerr {
 // ---------- UTF-8 <-> UTF-16 helpers ----------
 inline std::wstring Utf8ToWide(std::string_view u8) {
     if (u8.empty()) return {};
-    int n = ::MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS,
-                                  u8.data(), static_cast<int>(u8.size()),
-                                  nullptr, 0);
+    const int n = ::MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS,
+                                        u8.data(), static_cast<int>(u8.size()),
+                                        nullptr, 0);
     if (n <= 0) return {};
     std::wstring w(static_cast<size_t>(n), L'\0');
     ::MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS,
@@ -32,9 +37,9 @@ inline std::wstring Utf8ToWide(std::string_view u8) {
 
 inline std::string WideToUtf8(std::wstring_view w) {
     if (w.empty()) return {};
-    int n = ::WideCharToMultiByte(CP_UTF8, 0,
-                                  w.data(), static_cast<int>(w.size()),
-                                  nullptr, 0, nullptr, nullptr);
+    const int n = ::WideCharToMultiByte(CP_UTF8, 0,
+                                        w.data(), static_cast<int>(w.size()),
+                                        nullptr, 0, nullptr, nullptr);
     if (n <= 0) return {};
     std::string s(static_cast<size_t>(n), '\0');
     ::WideCharToMultiByte(CP_UTF8, 0,
@@ -79,7 +84,7 @@ inline const wchar_t* ErrorName(DWORD e) noexcept {
 
 inline std::wstring FormatMessageW32(DWORD code) {
     LPWSTR buf = nullptr;
-    DWORD n = ::FormatMessageW(
+    const DWORD n = ::FormatMessageW(
         FORMAT_MESSAGE_ALLOCATE_BUFFER | FORMAT_MESSAGE_FROM_SYSTEM | FORMAT_MESSAGE_IGNORE_INSERTS,
         nullptr, code, MAKELANGID(LANG_NEUTRAL, SUBLANG_DEFAULT),
         reinterpret_cast<LPWSTR>(&buf), 0, nullptr);
@@ -92,7 +97,6 @@ inline std::wstring FormatMessageW32(DWORD code) {
         out = L"(unknown error)";
     }
 
-    // Trim trailing CR/LF and spaces that FM can add.
     while (!out.empty() && (out.back() == L'\r' || out.back() == L'\n' || out.back() == L' ' || out.back() == L'\t'))
         out.pop_back();
     return out;
