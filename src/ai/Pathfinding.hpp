@@ -1,6 +1,7 @@
 #pragma once
 
 #include <vector>
+#include "ai/PathTypes.hpp"
 #include <queue>
 #include <limits>
 #include <functional>
