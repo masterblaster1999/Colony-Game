@@ -1,4 +1,5 @@
-// Pathfinding.cpp — Windows/MSVC Unity-build friendly, matches header layout
+// src/ai/Pathfinding.cpp
+// Windows/MSVC Unity-build friendly, matches header layout
 
 #ifdef _WIN32
   #ifndef NOMINMAX
@@ -11,7 +12,7 @@
 
 #if defined(_MSC_VER)
   #pragma warning(push)
-  #pragma warning(disable : 4100 4189) // quiet benign "unused param/var" from header if any
+  #pragma warning(disable : 4100 4189) // quiet benign "unused param/var" if any
 #endif
 #include "Pathfinding.hpp"   // must come first so we see the correct types/scopes
 #if defined(_MSC_VER)
@@ -36,7 +37,7 @@ namespace {
         }
     };
 
-    inline int manhattan(const ai::Point& a, const ai::Point& b) noexcept {
+    inline int manhattan(const Point& a, const Point& b) noexcept {
         return std::abs(a.x - b.x) + std::abs(a.y - b.y);
     }
 
@@ -46,16 +47,6 @@ namespace {
         return (F << 32) | G;
     }
 } // namespace
-
-namespace ai {
-
-// Bridging overload for legacy call sites that expect a vector return.
-std::vector<Point> aStar(const GridView& g, Point start, Point goal) {
-    std::vector<Point> out;
-    const PFResult r = aStar(g, start, goal, out, /*maxExpandedNodes=*/-1);
-    if (r == PFResult::Found) return out;
-    return {};
-}
 
 PFResult aStar(const GridView& g, Point start, Point goal,
                std::vector<Point>& out, int maxExpandedNodes)
@@ -149,5 +140,3 @@ PFResult aStar(const GridView& g, Point start, Point goal,
 
     return PFResult::NoPath;
 }
-
-} // namespace ai
