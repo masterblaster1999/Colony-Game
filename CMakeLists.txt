@@ -13,6 +13,7 @@
 #   * Clean integration with EnableWinQoL (resources, installs, asset staging)
 #   * Optional code signing hook for Release artifacts
 #   * (PATCH) Separate WinLauncher bootstrapper exe that spawns the game exe
+#   * (PATCH) Robust manifest embedding via forward-slash paths to avoid RC2135
 # ==================================================================================================
 
 cmake_minimum_required(VERSION 3.16)
@@ -399,17 +400,22 @@ if(PCH_HEADER_EXE AND EXISTS "${PCH_HEADER_EXE}")
 endif()
 
 # -------- EnableWinQoL (resources, bootstrap, installs, asset copy) ----------
+# (We will embed the app manifest ourselves to avoid RC2135 backslash-escape issues.)
 include(cmake/EnableWinQoL.cmake)
 
 set(CG_APP_VERSION "${PROJECT_VERSION}.0")
 # Asset folders to mirror next to the exe
 set(_ASSET_DIRS assets Assets data Data res resources)
 
+# (PATCH) sanitize manifest path for RC via forward slashes
+set(CG_APP_MANIFEST "${CMAKE_SOURCE_DIR}/res/app.manifest")
+file(TO_CMAKE_PATH "${CG_APP_MANIFEST}" CG_APP_MANIFEST_CMAKE) # -> forward slashes
+
+# Keep QoL options but omit MANIFEST; we will embed it explicitly per-target.
 set(_WQ_OPTS
   COMPANY_NAME     "Colony-Game"
   FILE_DESCRIPTION "Colony-Game"
   ICON             "${CMAKE_SOURCE_DIR}/res/app.ico"
-  MANIFEST         "${CMAKE_SOURCE_DIR}/res/app.manifest"
   WORKING_DIR      "$<TARGET_FILE_DIR:ColonyGame>"
   ASSET_DIRS       ${_ASSET_DIRS}
   SKIP_UNITY_FOR_BOOTSTRAP
@@ -469,7 +475,7 @@ if(BUILD_BOOTSTRAPPER AND _BOOTSTRAP)
   # UNICODE and lean headers already set globally; keep explicit links needed by the launcher
   target_link_libraries(WinLauncher PRIVATE Shell32 Ole32 User32)
 
-  # Give the launcher the same QoL (icons, manifest, asset copy into the same out dir)
+  # Give the launcher the same QoL (icons, asset copy into the same out dir)
   # It shares the same output dir as ColonyGame by our global RUNTIME_OUTPUT_DIRECTORY.
   enable_win_qol(WinLauncher "Colony-Game Launcher" "${CG_APP_VERSION}" ${_WQ_OPTS})
 
@@ -564,6 +570,18 @@ if(FRONTEND STREQUAL "sdl")
   endif()
 
   target_compile_definitions(colony_core PUBLIC CG_USE_SDL=1)
+endif()
+
+# --------------------------------------------------------------------------------------------------
+# Explicit manifest embedding (patch)
+# --------------------------------------------------------------------------------------------------
+# Bring in the helper that generates a per-target RC with a forward-slash manifest path.
+include(cmake/win/EmbedManifest.cmake)
+
+# Embed the sanitized manifest into each Windows target (avoid RC backslash-escapes).
+cg_embed_manifest(ColonyGame "${CG_APP_MANIFEST_CMAKE}")
+if(TARGET WinLauncher)
+  cg_embed_manifest(WinLauncher "${CG_APP_MANIFEST_CMAKE}")
 endif()
 
 # --------------------------------------------------------------------------------------------------
@@ -757,4 +775,3 @@ message(STATUS "")
 #     or explicitly:
 #       cmake --install build --config Release
 # --------------------------------------------------------------------------------------------------
-
