@@ -1,4 +1,4 @@
-// WinLauncher.cpp  — Unicode-safe, single-instance Windows bootstrapper
+// WinLauncher.cpp  — Unicode-safe, single-instance Windows bootstrapper with crash dumps
 // Build: Windows only. Requires C++17 (std::filesystem).
 // This file replaces the previous WinLauncher.cpp and absorbs SingleClick duties.
 
@@ -16,9 +16,10 @@
 #endif
 
 #include <windows.h>
-#include <shellapi.h>    // CommandLineToArgvW
-#include <shlobj.h>      // SHGetKnownFolderPath
-#include <objbase.h>     // CoTaskMemFree
+#include <shellapi.h>      // CommandLineToArgvW
+#include <shlobj.h>        // SHGetKnownFolderPath
+#include <knownfolders.h>  // FOLDERID_LocalAppData
+#include <objbase.h>       // CoTaskMemFree
 #include <string>
 #include <vector>
 #include <fstream>
@@ -26,6 +27,13 @@
 #include <filesystem>
 #include <chrono>
 #include <iomanip>
+#include <ctime>
+#include <cwctype>
+
+#pragma comment(lib, "Shell32.lib")
+#pragma comment(lib, "Ole32.lib")
+
+#include "platform/win/CrashHandler.hpp"  // cg::win::CrashHandler
 
 namespace fs = std::filesystem;
 
@@ -53,11 +61,20 @@ static fs::path ExeDir() {
     return p.empty() ? fs::path() : p.parent_path();
 }
 
-static void EnsureWorkingDirectoryIsExeDir() {
-    auto dir = ExeDir();
-    if (!dir.empty()) {
-        SetCurrentDirectoryW(dir.wstring().c_str());   // keep assets (res/) relative and reliable
+// Trim leading/trailing Unicode whitespace.
+static std::wstring Trim(const std::wstring& s) {
+    size_t b = 0, e = s.size();
+    while (b < e && iswspace(static_cast<unsigned>(s[b]))) ++b;
+    while (e > b && iswspace(static_cast<unsigned>(s[e - 1]))) --e;
+    return s.substr(b, e - b);
+}
+
+// Remove surrounding quotes if present.
+static std::wstring Unquote(const std::wstring& s) {
+    if (s.size() >= 2 && s.front() == L'"' && s.back() == L'"') {
+        return s.substr(1, s.size() - 2);
     }
+    return s;
 }
 
 // Build a proper Windows command line from argv[1..] following CommandLineToArgvW rules.
@@ -65,7 +82,7 @@ static std::wstring QuoteArg(const std::wstring& arg) {
     if (arg.empty()) return L"\"\"";
     bool needQuotes = false;
     for (wchar_t c : arg) {
-        if (iswspace(c) || c == L'"') { needQuotes = true; break; }
+        if (iswspace(static_cast<unsigned>(c)) || c == L'"') { needQuotes = true; break; }
     }
     if (!needQuotes) return arg;
 
@@ -112,7 +129,8 @@ static fs::path LogsDir() {
         out = fs::path(path) / L"ColonyGame" / L"logs";
         CoTaskMemFree(path);
     }
-    try { fs::create_directories(out); } catch (...) {}
+    std::error_code ec;
+    fs::create_directories(out, ec);
     return out;
 }
 
@@ -120,16 +138,22 @@ static std::wofstream OpenLogFile() {
     auto now = std::chrono::system_clock::now();
     std::time_t t = std::chrono::system_clock::to_time_t(now);
     std::tm tm{};
+#if defined(_MSC_VER)
     localtime_s(&tm, &t);
+#else
+    tm = *std::localtime(&t);
+#endif
 
     std::wstringstream name;
     name << std::put_time(&tm, L"%Y%m%d-%H%M%S") << L".log";
     auto path = LogsDir() / name.str();
 
     std::wofstream f(path, std::ios::out | std::ios::trunc);
-    // Optional: BOM for readability in Notepad
-    const unsigned char bom[] = {0xFF, 0xFE};
-    f.write(reinterpret_cast<const wchar_t*>(bom), 1);
+    if (f) {
+        // Proper UTF-16LE BOM for Notepad readability.
+        const wchar_t bom = 0xFEFF;
+        f.put(bom);
+    }
     return f;
 }
 
@@ -144,18 +168,22 @@ static bool VerifyResources(const fs::path& root) {
 }
 
 // Find the child game EXE next to the launcher.
-// Try common names; optionally let launcher.cfg override.
+// Try common names; optionally let res/launcher.cfg override.
 static fs::path ResolveGameExe(const fs::path& baseDir) {
-    // Optional override via config file: res/launcher.cfg (first non-empty line is exe name)
+    // Optional override via config file: res/launcher.cfg (first non-empty line is exe name or path)
     std::error_code ec;
     auto cfg = baseDir / L"res" / L"launcher.cfg";
     if (fs::exists(cfg, ec)) {
         std::wifstream fin(cfg);
-        std::wstring name;
-        if (fin && std::getline(fin, name)) {
-            for (auto& c : name) if (c == L'\r' || c == L'\n') c = L'\0';
-            fs::path cand = baseDir / name;
-            if (fs::exists(cand, ec)) return cand;
+        std::wstring line;
+        while (fin && std::getline(fin, line)) {
+            line = Trim(Unquote(line));
+            if (!line.empty()) {
+                fs::path cand(line);
+                if (cand.is_relative()) cand = baseDir / cand;
+                if (fs::exists(cand, ec)) return cand;
+                break; // First non-empty line is authoritative; if missing, fall through to defaults.
+            }
         }
     }
     // Fall back to common names
@@ -181,12 +209,13 @@ public:
 
 // ---------- Entry point ----------
 int APIENTRY wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
-    SetErrorMode(SEM_FAILCRITICALERRORS | SEM_NOOPENFILEERRORBOX); // cleaner UX on missing DLLs, etc.
+    // 1) Install crash handler ASAP (also normalizes CWD to the EXE folder).
+    cg::win::CrashHandler::Install(L"ColonyGame", /*fixWorkingDir=*/true, /*showMessageBox=*/true);
 
-    EnsureWorkingDirectoryIsExeDir(); // CWD always = EXE dir (reliable assets).  // docs: SetCurrentDirectoryW
-    // (reliability ref: GetModuleFileNameW + SetCurrentDirectoryW pattern)       // docs cited in write-up
+    // 2) Hide noisy OS error UI for a smoother user experience.
+    SetErrorMode(SEM_FAILCRITICALERRORS | SEM_NOOPENFILEERRORBOX | SEM_NOGPFAULTERRORBOX);
 
-    // Single instance
+    // 3) Single instance
     SingleInstanceGuard guard;
     if (!guard.acquire(L"Global\\ColonyGame_Singleton_1E2D13F1_B96C_471B_82F5_829B0FF5D4AF")) {
         MsgBox(L"Colony Game", L"Another instance is already running.");
@@ -194,13 +223,13 @@ int APIENTRY wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
     }
 
     auto log = OpenLogFile();
-    log << L"[Launcher] started in: " << ExeDir().wstring() << L"\n";
+    if (log) log << L"[Launcher] started in: " << ExeDir().wstring() << L"\n";
 
     if (!VerifyResources(ExeDir())) {
         MsgBox(L"Colony Game",
                L"Missing or invalid 'res' folder next to the executable.\n"
                L"Make sure the game is installed correctly.");
-        log << L"[Launcher] res/ check failed\n";
+        if (log) log << L"[Launcher] res/ check failed\n";
         return 1;
     }
 
@@ -211,7 +240,7 @@ int APIENTRY wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
                L"Could not find the game executable next to the launcher.\n"
                L"Looked for 'ColonyGame.exe', 'Colony-Game.exe', or 'Game.exe'.\n"
                L"You can override via 'res/launcher.cfg'.");
-        log << L"[Launcher] no child EXE found\n";
+        if (log) log << L"[Launcher] no child EXE found\n";
         return 1;
     }
 
@@ -221,19 +250,26 @@ int APIENTRY wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
     std::wstring tail = BuildCmdLineTail(argc, argv);
     if (argv) LocalFree(argv);
 
-    STARTUPINFOW si{}; si.cb = sizeof(si);
+    STARTUPINFOW si{};
+    si.cb = sizeof(si);
     PROCESS_INFORMATION pi{};
-    std::wstring cmdline = tail; // mutable buffer for CreateProcessW
+    std::vector<wchar_t> cmdBuf; // mutable buffer for CreateProcessW
+    LPWSTR cmdLinePtr = nullptr;
+    if (!tail.empty()) {
+        cmdBuf.assign(tail.begin(), tail.end());
+        cmdBuf.push_back(L'\0');
+        cmdLinePtr = cmdBuf.data();
+    }
 
-    log << L"[Launcher] launching: " << gameExe.wstring() << L"  args: " << tail << L"\n";
+    if (log) log << L"[Launcher] launching: " << gameExe.wstring() << L"  args: " << tail << L"\n";
 
     BOOL ok = CreateProcessW(
-        gameExe.wstring().c_str(), // lpApplicationName (do not quote paths)
-        cmdline.empty() ? nullptr : cmdline.data(), // lpCommandLine (only args, properly quoted)
+        gameExe.wstring().c_str(),     // lpApplicationName (do not quote paths)
+        cmdLinePtr,                    // lpCommandLine (only args, properly quoted; must be mutable or null)
         nullptr, nullptr, FALSE,
         CREATE_UNICODE_ENVIRONMENT,
         nullptr,
-        ExeDir().wstring().c_str(), // ensure correct CWD for assets
+        ExeDir().wstring().c_str(),    // ensure correct CWD for assets (also set by CrashHandler)
         &si, &pi);
 
     if (!ok) {
@@ -241,13 +277,13 @@ int APIENTRY wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
         std::wstring msg = L"Failed to start game process.\n\n" +
                            std::wstring(L"Error ") + std::to_wstring(err) + L": " + LastErrorMessage(err);
         MsgBox(L"Colony Game", msg);
-        log << L"[Launcher] CreateProcessW failed: " << err << L" : " << LastErrorMessage(err) << L"\n";
+        if (log) log << L"[Launcher] CreateProcessW failed: " << err << L" : " << LastErrorMessage(err) << L"\n";
         return 2;
     }
 
     // Clean up quickly; let the game own the lifetime
     CloseHandle(pi.hThread);
     CloseHandle(pi.hProcess);
-    log << L"[Launcher] success; exiting.\n";
+    if (log) log << L"[Launcher] success; exiting.\n";
     return 0;
 }
