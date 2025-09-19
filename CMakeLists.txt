@@ -13,7 +13,8 @@
 #   * Clean integration with EnableWinQoL (resources, installs, asset staging)
 #   * Optional code signing hook for Release artifacts
 #   * (PATCH) Separate WinLauncher bootstrapper exe that spawns the game exe
-#   * (PATCH) Robust manifest embedding via forward-slash paths to avoid RC2135
+#   * (PATCH) Robust manifest embedding via forward-slash paths to avoid RC path issues
+#   * (PICKED STRATEGY) Single explicit manifest via RC + disable linker's auto-embed (/MANIFEST:NO)
 # ==================================================================================================
 
 cmake_minimum_required(VERSION 3.16)
@@ -400,7 +401,7 @@ if(PCH_HEADER_EXE AND EXISTS "${PCH_HEADER_EXE}")
 endif()
 
 # -------- EnableWinQoL (resources, bootstrap, installs, asset copy) ----------
-# (We will embed the app manifest ourselves to avoid RC2135 backslash-escape issues.)
+# (We will embed the app manifest ourselves to avoid any duplication.)
 include(cmake/EnableWinQoL.cmake)
 
 set(CG_APP_VERSION "${PROJECT_VERSION}.0")
@@ -444,7 +445,6 @@ target_compile_definitions(ColonyGame PRIVATE
 )
 
 # Core Win32 libs (EnableWinQoL may link Shell32; we link explicitly to be safe)
-# (Merged patch) Ensure Dbghelp & Shell32 are linked explicitly alongside Shlwapi.
 target_link_libraries(ColonyGame PRIVATE
   user32 gdi32 shlwapi Dbghelp shell32 comdlg32 comctl32 advapi32
   ole32 oleaut32 imm32 winmm version uuid
@@ -472,11 +472,8 @@ if(BUILD_BOOTSTRAPPER AND _BOOTSTRAP)
   add_executable(WinLauncher WIN32 "${_BOOTSTRAP}")
   set_property(TARGET WinLauncher PROPERTY FOLDER "Bootstrap")
   target_compile_features(WinLauncher PRIVATE cxx_std_20)
-  # UNICODE and lean headers already set globally; keep explicit links needed by the launcher
   target_link_libraries(WinLauncher PRIVATE Shell32 Ole32 User32)
 
-  # Give the launcher the same QoL (icons, asset copy into the same out dir)
-  # It shares the same output dir as ColonyGame by our global RUNTIME_OUTPUT_DIRECTORY.
   enable_win_qol(WinLauncher "Colony-Game Launcher" "${CG_APP_VERSION}" ${_WQ_OPTS})
 
   if(MSVC AND ENABLE_RELEASE_PDB)
@@ -491,7 +488,6 @@ endif()
 
 # Visual Studio debugger settings and startup project
 if(MSVC)
-  # Ensure PATH includes the binary dir at debug-time
   set(_vs_env "PATH=%PATH%;$<TARGET_FILE_DIR:ColonyGame>")
   set_property(TARGET ColonyGame PROPERTY VS_DEBUGGER_ENVIRONMENT "${_vs_env}")
   set_property(TARGET ColonyGame PROPERTY VS_DEBUGGER_WORKING_DIRECTORY "$<TARGET_FILE_DIR:ColonyGame>")
@@ -573,12 +569,13 @@ if(FRONTEND STREQUAL "sdl")
 endif()
 
 # --------------------------------------------------------------------------------------------------
-# Explicit manifest embedding (patch)
+# Explicit manifest embedding (picked strategy)
 # --------------------------------------------------------------------------------------------------
-# Bring in the helper that generates a per-target RC with a forward-slash manifest path.
+# Bring in the helper that generates a per-target RC with a forward-slash manifest path,
+# and disables the linker's auto-embed (/MANIFEST:NO) to guarantee a single manifest.
 include(cmake/win/EmbedManifest.cmake)
 
-# Embed the sanitized manifest into each Windows target (avoid RC backslash-escapes).
+# Embed the sanitized manifest into each Windows target (avoid any duplication).
 cg_embed_manifest(ColonyGame "${CG_APP_MANIFEST_CMAKE}")
 if(TARGET WinLauncher)
   cg_embed_manifest(WinLauncher "${CG_APP_MANIFEST_CMAKE}")
