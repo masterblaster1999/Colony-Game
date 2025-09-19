@@ -56,7 +56,7 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
 # Modern policies
 if(POLICY CMP0091)
-  cmake_policy(SET CMP0091 NEW)
+  cmake_policy(SET CMP0091 NEW) # MSVC runtime selection via MSVC_RUNTIME_LIBRARY. (CMake >= 3.15)
 endif()
 if(POLICY CMP0141)
   cmake_policy(SET CMP0141 NEW)
@@ -217,7 +217,8 @@ if(SDL_ONLY_SOURCES)
 endif()
 
 list(FILTER CORE_SOURCES EXCLUDE REGEX ".*[\\/]render[\\/]d3d11_sprite_batch\\.cpp$")
-list(FILTER CORE_SOURCES EXCLUDE REGEX ".*[\\\\/](os|platform)[\\\\/]win(32)?[\\\\/](WinBootstrap|SingleInstance|CrashHandler)\\.cpp$")
+# (PATCH) also exclude SingleClick.cpp and similar bootstrap bits from the core library
+list(FILTER CORE_SOURCES EXCLUDE REGEX ".*[\\\\/](os|platform)[\\\\/]win(32)?[\\\\/](WinBootstrap|SingleInstance|CrashHandler|SingleClick)\\.cpp$")
 
 add_library(colony_core STATIC ${CORE_SOURCES} ${CORE_HEADERS})
 target_include_directories(colony_core PUBLIC "${SRC_DIR}")
@@ -310,6 +311,8 @@ set(_KNOWN_SDL_LAUNCHERS
 set(_KNOWN_WIN_BOOTSTRAPPERS
   "WinLauncher.cpp" "src/WinLauncher.cpp"
   "src/platform/win32/WinLauncher.cpp" "platform/win32/WinLauncher.cpp"
+  # (ADDED for this repo layout)
+  "platform/win/WinLauncher.cpp" "src/platform/win/WinLauncher.cpp"
 )
 
 set(_WIN32_FLAG WIN32)
@@ -765,7 +768,7 @@ message(STATUS "")
 #       cmake -S . -B build -DLAUNCHER_FILE=src/platform/win32/win32_main.cpp
 #
 #   - Override the BOOTSTRAPPER source (WinLauncher.cpp) or disable it:
-#       cmake -S . -B build -DBOOTSTRAP_FILE=WinLauncher.cpp
+#       cmake -S . -B build -DBOOTSTRAP_FILE=platform/win/WinLauncher.cpp
 #       cmake -S . -B build -DBUILD_BOOTSTRAPPER=OFF
 #
 #   - Static MSVC runtime (/MT):
