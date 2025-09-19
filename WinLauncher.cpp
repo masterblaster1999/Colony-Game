@@ -38,6 +38,8 @@
 namespace fs = std::filesystem;
 
 // ---------- Utilities ----------
+
+// Format the last Win32 error into a readable string.
 static std::wstring LastErrorMessage(DWORD err = GetLastError()) {
     LPWSTR msg = nullptr;
     DWORD len = FormatMessageW(
@@ -49,11 +51,70 @@ static std::wstring LastErrorMessage(DWORD err = GetLastError()) {
     return out;
 }
 
+// LONG-PATH FIX: robustly get our own module path with a growable buffer.
+// GetModuleFileNameW returns the number of characters written (excl. NUL).
+// If the buffer is too small it returns the buffer size and sets ERROR_INSUFFICIENT_BUFFER.
+// We loop and grow until it fits.
+static std::wstring GetModulePathW() {
+    // Start reasonably; grow as needed.
+    std::wstring buf(512, L'\0');
+
+    for (;;) {
+        DWORD n = GetModuleFileNameW(nullptr, buf.data(), static_cast<DWORD>(buf.size()));
+        if (n == 0) {
+            // Hard failure; propagate a useful message to the user later.
+            std::wstring emsg = L"GetModuleFileNameW failed: " + LastErrorMessage();
+            MessageBoxW(nullptr, emsg.c_str(), L"Colony Game", MB_OK | MB_ICONERROR | MB_SETFOREGROUND);
+            return std::wstring();
+        }
+
+        // Success if we clearly fit inside the buffer.
+        if (n < buf.size() - 1) {  // leave room for NUL
+            buf.resize(n);
+            return buf;
+        }
+
+        // Borderline or truncated: grow and try again.
+        if (buf.size() >= 32768) { // NT path limit (~32K)
+            MessageBoxW(nullptr, L"Executable path exceeds ~32K characters.", L"Colony Game",
+                        MB_OK | MB_ICONERROR | MB_SETFOREGROUND);
+            return std::wstring();
+        }
+        buf.resize(buf.size() * 2);
+    }
+}
+
+// Convert an absolute path to an extended-length path (\\?\ or \\?\UNC\...) if needed.
+// We only add the prefix when the string is long enough to risk MAX_PATH issues
+// and we avoid duplicating the prefix if it is already present.
+static std::wstring ToExtendedIfNeeded(const std::wstring& absPath) {
+    auto has_prefix = [](const std::wstring& s, const wchar_t* pre) {
+        return s.rfind(pre, 0) == 0;
+    };
+
+    if (absPath.empty() ||
+        has_prefix(absPath, LR"(\\?\)") ||
+        has_prefix(absPath, LR"(\\.\)")) {
+        return absPath;
+    }
+
+    // Add extended prefix only when near or beyond MAX_PATH.
+    if (absPath.size() >= MAX_PATH) {
+        // Drive-letter path?  e.g. "C:\foo\bar"
+        if (absPath.size() >= 2 && absPath[1] == L':') {
+            return LR"(\\?\)" + absPath;
+        }
+        // UNC path? e.g. "\\server\share\dir"
+        if (has_prefix(absPath, LR"(\\)")) {
+            return LR"(\\?\UNC\)" + absPath.substr(2);
+        }
+    }
+    return absPath;
+}
+
 static fs::path ExePath() {
-    wchar_t buf[MAX_PATH];
-    DWORD n = GetModuleFileNameW(nullptr, buf, MAX_PATH); // path to this launcher
-    if (n == 0 || n == MAX_PATH) return {};
-    return fs::path(buf);
+    std::wstring p = GetModulePathW(); // LONG-PATH FIX: dynamic retrieval
+    return p.empty() ? fs::path() : fs::path(p);
 }
 
 static fs::path ExeDir() {
@@ -208,6 +269,7 @@ public:
 };
 
 // ---------- Entry point ----------
+// LONG-PATH FIXES applied in ExePath() and before CreateProcessW() below.
 int APIENTRY wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
     // 1) Install crash handler ASAP (also normalizes CWD to the EXE folder).
     cg::win::CrashHandler::Install(L"ColonyGame", /*fixWorkingDir=*/true, /*showMessageBox=*/true);
@@ -222,10 +284,11 @@ int APIENTRY wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
         return 0;
     }
 
+    auto exeDir = ExeDir();
     auto log = OpenLogFile();
-    if (log) log << L"[Launcher] started in: " << ExeDir().wstring() << L"\n";
+    if (log) log << L"[Launcher] started in: " << exeDir.wstring() << L"\n";
 
-    if (!VerifyResources(ExeDir())) {
+    if (!VerifyResources(exeDir)) {
         MsgBox(L"Colony Game",
                L"Missing or invalid 'res' folder next to the executable.\n"
                L"Make sure the game is installed correctly.");
@@ -234,7 +297,7 @@ int APIENTRY wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
     }
 
     // Resolve child game EXE
-    auto gameExe = ResolveGameExe(ExeDir());
+    auto gameExe = ResolveGameExe(exeDir);
     if (gameExe.empty()) {
         MsgBox(L"Colony Game",
                L"Could not find the game executable next to the launcher.\n"
@@ -261,15 +324,21 @@ int APIENTRY wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
         cmdLinePtr = cmdBuf.data();
     }
 
-    if (log) log << L"[Launcher] launching: " << gameExe.wstring() << L"  args: " << tail << L"\n";
+    // LONG-PATH FIX: use extended-length prefixes for CreateProcessW only when necessary.
+    const std::wstring gameExeStr = gameExe.wstring();
+    const std::wstring cwdStr     = exeDir.wstring();
+    const std::wstring appName    = ToExtendedIfNeeded(gameExeStr);
+    const std::wstring workDir    = ToExtendedIfNeeded(cwdStr);
+
+    if (log) log << L"[Launcher] launching: " << gameExeStr << L"  args: " << tail << L"\n";
 
     BOOL ok = CreateProcessW(
-        gameExe.wstring().c_str(),     // lpApplicationName (do not quote paths)
+        appName.c_str(),               // lpApplicationName (absolute path; do not quote)
         cmdLinePtr,                    // lpCommandLine (only args, properly quoted; must be mutable or null)
         nullptr, nullptr, FALSE,
         CREATE_UNICODE_ENVIRONMENT,
         nullptr,
-        ExeDir().wstring().c_str(),    // ensure correct CWD for assets (also set by CrashHandler)
+        workDir.c_str(),               // ensure correct CWD for assets (also set by CrashHandler)
         &si, &pi);
 
     if (!ok) {
