@@ -1,17 +1,16 @@
 #pragma once
 // Windows-only crash handler + bootstrap for Colony-Game.
 // Header-only: include from WinLauncher.cpp and call cg::win::CrashHandler::Install(L"ColonyGame");
-// Requires MSVC or any compiler that supports <windows.h> and DbgHelp.
+// Requires MSVC or any compiler that supports Win32 + DbgHelp.
 
 #if !defined(_WIN32)
 #error "CrashHandler.hpp is Windows-only"
 #endif
 
-#ifndef NOMINMAX
-#define NOMINMAX
-#endif
+// Use centralized Win32 include configuration and long-path helpers.
+#include "WinSDK.hpp"      // wraps <windows.h>, WIN32_LEAN_AND_MEAN, NOMINMAX, etc.
+#include "WinPaths.hpp"    // GetModulePathW(), ToExtendedIfNeeded()
 
-#include <windows.h>
 #include <dbghelp.h>
 #include <filesystem>
 #include <string>
@@ -20,6 +19,9 @@
 #include <iomanip>
 #include <chrono>
 #include <fstream>
+#include <exception>
+#include <locale>
+#include <cstdlib>
 
 #pragma comment(lib, "Dbghelp.lib")
 
@@ -39,7 +41,8 @@ public:
         // Optional: Ensure CWD is the EXE folder to avoid "launch errors" due to relative paths.
         if (fixWorkingDir) {
             if (auto dir = executableDir(); !dir.empty()) {
-                ::SetCurrentDirectoryW(dir.c_str());
+                const std::wstring dirW = cg::win::ToExtendedIfNeeded(dir.wstring());
+                ::SetCurrentDirectoryW(dirW.c_str());
             }
         }
     }
@@ -49,10 +52,13 @@ public:
         try {
             auto logDir = ensureDir(L"logs");
             auto log = logDir / L"last-std-exception.txt";
-            std::wofstream f(log, std::ios::out | std::ios::trunc);
+
+            // Use extended-length path for robust file I/O on deep/Unicode paths.
+            const std::filesystem::path logExt = std::filesystem::path(cg::win::ToExtendedIfNeeded(log.wstring()));
+            std::wofstream f(logExt, std::ios::out | std::ios::trunc);
             f.imbue(std::locale("C"));
             f << L"std::exception.what(): ";
-            // Write as wide chars best-effort:
+            // Write as wide chars best-effort (byte-wise widening):
             std::wstring wmsg; wmsg.reserve(256);
             for (const auto ch : std::string(e.what())) wmsg.push_back(static_cast<unsigned char>(ch));
             f << wmsg << L"\n";
@@ -73,18 +79,20 @@ private:
     static inline std::wstring s_appName = L"App";
     static inline bool s_showMessageBox = true;
 
+    // Long-path safe: use the shared helper that grows the buffer for GetModuleFileNameW.
     static std::filesystem::path executableDir() {
-        wchar_t buf[MAX_PATH];
-        DWORD n = ::GetModuleFileNameW(nullptr, buf, MAX_PATH);
-        if (n == 0 || n == MAX_PATH) { return {}; }
-        return std::filesystem::path(buf).parent_path();
+        std::wstring exe = cg::win::GetModulePathW();
+        return exe.empty() ? std::filesystem::path() : std::filesystem::path(exe).parent_path();
     }
 
+    // Create directories using an extended-length path to avoid MAX_PATH issues on systems
+    // without the OS wide long-path policy enabled.
     static std::filesystem::path ensureDir(const wchar_t* name) {
         auto base = executableDir();
-        auto dir = base / name;
+        auto dir  = base / name;
         std::error_code ec;
-        std::filesystem::create_directories(dir, ec);
+        const std::filesystem::path dirExt = std::filesystem::path(cg::win::ToExtendedIfNeeded(dir.wstring()));
+        std::filesystem::create_directories(dirExt, ec);
         return dir;
     }
 
@@ -112,8 +120,10 @@ private:
         std::scoped_lock lk(s_mtx);
         outPath = nextDumpPath();
 
+        // LONG-PATH: use extended-length prefix for the file path if needed.
+        const std::wstring dumpTarget = cg::win::ToExtendedIfNeeded(outPath.wstring());
         HANDLE hFile = ::CreateFileW(
-            outPath.c_str(), GENERIC_WRITE, FILE_SHARE_READ, nullptr,
+            dumpTarget.c_str(), GENERIC_WRITE, FILE_SHARE_READ, nullptr,
             CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
         if (hFile == INVALID_HANDLE_VALUE) {
             return false;
@@ -146,7 +156,7 @@ private:
 
     static LONG WINAPI TopLevelFilter(EXCEPTION_POINTERS* info) {
         std::filesystem::path dumpPath;
-        bool ok = writeMiniDump(info, dumpPath);
+        const bool ok = writeMiniDump(info, dumpPath);
 
         if (s_showMessageBox) {
             std::wstringstream msg;
