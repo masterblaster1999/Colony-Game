@@ -4,15 +4,19 @@
 #ifndef NOMINMAX
 #define NOMINMAX
 #endif
+
 #include "WinBootstrap.h"
+
 #include <Windows.h>
 #include <DbgHelp.h>
+#include <stringapiset.h> // WideCharToMultiByte / MultiByteToWideChar
 #include <filesystem>
 #include <fstream>
 #include <mutex>
 #include <chrono>
 #include <ctime>
 #include <string>
+#include <cstdio> // FILE, freopen_s
 
 #pragma comment(lib, "Dbghelp.lib")
 
@@ -29,6 +33,19 @@ namespace {
     std::mutex g_logMu;
     std::filesystem::path g_root;
     std::filesystem::path g_dumpDir;
+
+    // --- UTF helpers (Windows-only) ---
+    // Convert UTF-16 (wstring) to UTF-8 (string) using the Win32 API.
+    // See: WideCharToMultiByte (CP_UTF8). 
+    std::string to_utf8(const std::wstring& ws)
+    {
+        if (ws.empty()) return {};
+        int len = ::WideCharToMultiByte(CP_UTF8, 0, ws.c_str(), -1, nullptr, 0, nullptr, nullptr);
+        if (len <= 0) return {};
+        std::string out(static_cast<size_t>(len - 1), '\0');
+        (void)::WideCharToMultiByte(CP_UTF8, 0, ws.c_str(), -1, out.data(), len, nullptr, nullptr);
+        return out;
+    }
 
     // --- Small utilities ---
     std::wstring exe_path_w()
@@ -155,7 +172,7 @@ namespace {
 
         if (ok) {
             MessageBoxW(nullptr,
-                (L"A crash dump was written to:\n" + filePath.wstring()).c_str(),
+                (std::wstring(L"A crash dump was written to:\n") + filePath.wstring()).c_str(),
                 L"Colony-Game Crash", MB_OK | MB_ICONERROR);
         }
         return EXCEPTION_EXECUTE_HANDLER;
@@ -200,8 +217,8 @@ void Preflight(const Options& opt)
     // Prepare logging + (optional) crash dumps
     const auto logsDir = ensure_dir(g_root / L"logs");
     log_open(logsDir / "launcher.log");
-    // Avoid char8_t concatenation: use std::string + path.string()
-    log_info(std::string("Bootstrap start. Root: ") + g_root.string());
+    // Use explicit UTF-8 conversion when logging wide paths.
+    log_info(std::string("Bootstrap start. Root: ") + to_utf8(g_root.wstring()));
 
     if (opt.writeCrashDumps) install_crash_filter(logsDir);
 
@@ -214,10 +231,11 @@ void Preflight(const Options& opt)
 
     // Sanity ping about assets
     if (!dir_has_assets(g_root, opt.assetDirName)) {
-        log_err("Assets folder '" + std::string(opt.assetDirName.begin(), opt.assetDirName.end()) +
+        log_err("Assets folder '" + to_utf8(opt.assetDirName) +
                 "' not found; continuing with exe dir.");
     } else {
-        log_info(std::string("Assets folder present: ") + (g_root / opt.assetDirName).string());
+        log_info(std::string("Assets folder present: ") +
+                 to_utf8((g_root / opt.assetDirName).wstring()));
     }
 }
 
