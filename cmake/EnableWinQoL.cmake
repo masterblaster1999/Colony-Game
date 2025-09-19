@@ -12,6 +12,9 @@
 #   PCH                 path/to/pch.h         (requires CMake >= 3.16)
 #   WORKING_DIR         VS debugger working dir; default: $<TARGET_FILE_DIR:target>
 #   ASSET_DIRS          list of asset directories to copy next to the exe after build
+#                       NOTE: The top-level 'res' directory is copied ONCE per output base
+#                             directory in a race-free manner; if 'res' appears in ASSET_DIRS
+#                             it will be filtered out to avoid duplicate copies.
 #   LINK_LIBS           extra Windows libs to link (Dbghelp & Shell32 are added automatically)
 #   EXTRA_DEFINES       extra compile definitions
 #
@@ -138,7 +141,54 @@ END
   _winqol_write_if_different("${out_rc}" "${_rc}")
 endfunction()
 
-# Copy a directory to the target output folder (post-build)
+# ------------------------------------------------------------------------------
+# NEW: Copy the top-level 'res' directory ONCE per runtime output base dir.
+# All Windows EXECUTABLE targets can depend on this; the copy won't run concurrently.
+# Uses RUNTIME_OUTPUT_DIRECTORY as the base when set; otherwise falls back to
+# <build>/bin. Copies into "<base>/$<CONFIG>/res" for multi-config generators.
+# ------------------------------------------------------------------------------
+function(_winqol_setup_res_copy_once target)
+  if (NOT WIN32)
+    return()
+  endif()
+
+  # Limit to executables to avoid surprising DLL-only projects.
+  get_target_property(_tgt_type "${target}" TYPE)
+  if (NOT _tgt_type STREQUAL "EXECUTABLE")
+    return()
+  endif()
+
+  # If the project doesn't have a 'res' dir, do nothing.
+  if (NOT EXISTS "${CMAKE_SOURCE_DIR}/res")
+    return()
+  endif()
+
+  # Determine the base runtime output directory (e.g. <build>/bin)
+  get_target_property(_out_base "${target}" RUNTIME_OUTPUT_DIRECTORY)  # may be unset or a genex
+  if (NOT _out_base)
+    set(_out_base "${CMAKE_BINARY_DIR}/bin")
+  endif()
+
+  # Create a unique custom target per output base dir.
+  # We still copy to "<base>/$<CONFIG>/res" so multi-config works.
+  string(MD5 _out_hash "${_out_base}")
+  set(_copy_tgt "winqol_copy_res_${_out_hash}")
+
+  if (NOT TARGET "${_copy_tgt}")
+    add_custom_target("${_copy_tgt}"
+      COMMAND "${CMAKE_COMMAND}" -E make_directory "${_out_base}/$<CONFIG>/res"
+      COMMAND "${CMAKE_COMMAND}" -E copy_directory
+              "${CMAKE_SOURCE_DIR}/res" "${_out_base}/$<CONFIG>/res"
+      COMMENT "[EnableWinQoL] Copying assets 'res' to ${_out_base}/$<CONFIG>/res"
+      VERBATIM
+    )
+  endif()
+
+  # Ensure this target builds only after the 'res' assets are staged.
+  add_dependencies("${target}" "${_copy_tgt}")
+endfunction()
+
+# Copy a directory to the target output folder (post-build) — generic helper
 function(_winqol_copy_dir_post_build target src_dir)
   if (NOT IS_DIRECTORY "${src_dir}")
     message(WARNING "[EnableWinQoL] ASSET_DIR '${src_dir}' does not exist; skipping.")
@@ -398,9 +448,32 @@ function(enable_win_qol target app_name app_version)
     endif()
   endif()
 
-  # ---------------- Asset staging after build ----------------
+  # ---------------- Asset staging ----------------
+  # First, set up the one-time 'res' copy for executables (if res/ exists).
+  _winqol_setup_res_copy_once(${target})
+
+  # Then, copy any additional asset directories per-target, but filter out 'res'
+  # to avoid duplicating the one-time copy above.
   if (WQ_ASSET_DIRS)
+    # Compute absolute path to the project's top-level res.
+    get_filename_component(_res_abs "${CMAKE_SOURCE_DIR}/res" ABSOLUTE)
+    string(TOLOWER "${_res_abs}" _res_abs_l)
+
+    set(_asset_dirs_filtered "")
     foreach(_ad IN LISTS WQ_ASSET_DIRS)
+      # Normalize to absolute for comparison; relative paths are resolved from source dir.
+      get_filename_component(_ad_abs "${_ad}" ABSOLUTE BASE_DIR "${CMAKE_SOURCE_DIR}")
+      string(TOLOWER "${_ad_abs}" _ad_abs_l)
+
+      # Skip duplicates of 'res' (relative 'res', './res', or absolute match).
+      if (_ad STREQUAL "res" OR _ad STREQUAL "./res" OR _ad_abs_l STREQUAL _res_abs_l)
+        # filtered out
+      else()
+        list(APPEND _asset_dirs_filtered "${_ad}")
+      endif()
+    endforeach()
+
+    foreach(_ad IN LISTS _asset_dirs_filtered)
       _winqol_copy_dir_post_build(${target} "${_ad}")
     endforeach()
   endif()
