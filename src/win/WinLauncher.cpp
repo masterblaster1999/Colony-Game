@@ -61,6 +61,10 @@
 #include <algorithm>
 #include <cstdint>
 #include <cwchar>
+#include <cwctype>      // iswspace
+#include <cstdlib>      // _set_abort_behavior, _wgetenv
+#include <crtdbg.h>     // _set_invalid_parameter_handler
+#include <eh.h>         // _set_purecall_handler
 #include <csignal>
 
 #pragma comment(lib, "Dbghelp.lib")
@@ -69,6 +73,11 @@
 #pragma comment(lib, "Shcore.lib")
 #pragma comment(lib, "Advapi32.lib")
 #pragma comment(lib, "User32.lib")
+
+// Fallback for older SDKs that may not define this constant at compile time.
+#ifndef DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2
+#define DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2 ((DPI_AWARENESS_CONTEXT)-4)
+#endif
 
 namespace fs = std::filesystem;
 
@@ -337,10 +346,10 @@ static void EnableDPI() {
         auto p = reinterpret_cast<SetDpiCtxFn>(GetProcAddress(hUser, "SetProcessDpiAwarenessContext"));
         if (p && p(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2)) return;
     }
-    // SHCore fallback
+    // SHCore fallback (Win 8.1+)
     if (SUCCEEDED(SetProcessDpiAwareness(PROCESS_PER_MONITOR_DPI_AWARE))) return;
 
-    // Legacy
+    // Legacy (Vista/7)
     SetProcessDPIAware();
 }
 
@@ -350,15 +359,20 @@ static void EnableDPI() {
 
 class SingleInstance {
     HANDLE h_ = nullptr;
+    bool owner_ = false;
 public:
     explicit SingleInstance(const std::wstring& name) {
         h_ = CreateMutexW(nullptr, TRUE, name.c_str());
+        owner_ = (h_ != nullptr) && (GetLastError() != ERROR_ALREADY_EXISTS);
     }
     bool acquired() const {
-        return h_ && GetLastError() != ERROR_ALREADY_EXISTS;
+        return owner_;
     }
     ~SingleInstance() {
-        if (h_) { ReleaseMutex(h_); CloseHandle(h_); }
+        if (h_) {
+            if (owner_) ReleaseMutex(h_);
+            CloseHandle(h_);
+        }
     }
 };
 
@@ -368,9 +382,9 @@ static BOOL CALLBACK EnumWindowsProc(HWND hwnd, LPARAM lParam) {
     DWORD pid = 0;
     GetWindowThreadProcessId(hwnd, &pid);
     if (pid == searchPid && IsWindowVisible(hwnd) && GetWindow(hwnd, GW_OWNER) == nullptr) {
-        // Try to restore and bring to front
+        // Try to restore and bring to front (subject to focus rules)
         ShowWindow(hwnd, SW_RESTORE);
-        // Bypass foreground lock timeout
+        // Bypass foreground lock timeout by temporarily attaching input queues
         DWORD fgThread = GetWindowThreadProcessId(GetForegroundWindow(), nullptr);
         DWORD winThread = GetWindowThreadProcessId(hwnd, nullptr);
         AttachThreadInput(winThread, fgThread, TRUE);
@@ -567,7 +581,7 @@ static bool LaunchChild(const fs::path& childExe,
     fs::path workdir = childExe.parent_path();
     std::wstring wd = workdir.wstring();
     std::wstring mutableCmd = cmd; // CreateProcess may modify this buffer
-    if (log) *log << L"[" << NowStampDateTime(false) << L"] Starting: " << mutableCmd << L"\n";
+    if (log && *log) { *log << L"[" << NowStampDateTime(false) << L"] Starting: " << mutableCmd << L"\n"; }
 
     BOOL ok = CreateProcessW(
         nullptr, mutableCmd.data(), nullptr, nullptr, FALSE,
@@ -575,8 +589,8 @@ static bool LaunchChild(const fs::path& childExe,
         nullptr, wd.c_str(), &si, &pi);
 
     if (!ok) {
-        if (log) *log << L"[" << NowStampDateTime(false) << L"] CreateProcess failed: "
-                      << FormatLastError(GetLastError()) << L"\n";
+        if (log && *log) { *log << L"[" << NowStampDateTime(false) << L"] CreateProcess failed: "
+                                << FormatLastError(GetLastError()) << L"\n"; }
         return false;
     }
 
@@ -667,9 +681,8 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR /*lpCmdLine*/, int) {
     fs::path dumpDir  = dataRoot / L"crashdumps";
     EnsureDir(logDir);
     EnsureDir(dumpDir);
-    // Rotate dumps too (keep last 10)
-    KeepMostRecentFiles(dumpDir, L"crash_", L".dmp", 10);
-    KeepMostRecentFiles(dumpDir, L"launcher_crash_", L".dmp", 10);
+    // Rotate dumps too (keep last 10 of any name)
+    KeepMostRecentFiles(dumpDir, L"", L".dmp", 10);
 
     Logger logger(logDir);
     logger.line(L"ModuleDir = " + ModuleDir());
@@ -703,7 +716,7 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR /*lpCmdLine*/, int) {
     std::wstring mutexName = L"Global\\ColonyGameLauncher_" + Hex64(Hash64(mutexNameSeed));
     SingleInstance inst(mutexName);
     if (!opt.noSingleInstance && !inst.acquired()) {
-        // Try to bring the existing game to front
+        // Try to bring the existing game to front (subject to OS focus policies)
         for (DWORD pid : FindProcessIdsByExeName(BaseName(gameExe.wstring()))) {
             BringProcessWindowsToFront(pid);
         }
