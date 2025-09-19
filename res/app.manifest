@@ -1,34 +1,43 @@
 <?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <assembly xmlns="urn:schemas-microsoft-com:asm.v1" manifestVersion="1.0">
-  <assemblyIdentity version="1.0.0.0" processorArchitecture="*" name="ColonyGame" type="win32"/>
-  <description>Colony-Game</description>
-
-  <!-- UAC -->
   <trustInfo xmlns="urn:schemas-microsoft-com:asm.v3">
     <security>
       <requestedPrivileges>
+        <!-- No UAC prompt; run with user token -->
         <requestedExecutionLevel level="asInvoker" uiAccess="false"/>
       </requestedPrivileges>
     </security>
   </trustInfo>
 
-  <!-- DPI awareness -->
-  <ms_windowsSettings xmlns="http://schemas.microsoft.com/SMI/2005/WindowsSettings">
-    <dpiAware>true/pm</dpiAware>
-  </ms_windowsSettings>
-
-  <!-- Windows 10+ compatibility (Win10 GUID; optionally add Win8.1, Win7 if you target them) -->
+  <!-- OS compatibility (Windows 10 + Windows 11 share the same GUID) -->
   <compatibility xmlns="urn:schemas-microsoft-com:compatibility.v1">
     <application>
       <!-- Windows 10/11 -->
       <supportedOS Id="{8e0f7a12-bfb3-4fe8-b9a5-48fd50a15a9a}"/>
+      <!-- (Optional backwards compat tags) -->
+      <supportedOS Id="{1f676c76-80e1-4239-95bb-83d0f6d0da78}"/>  <!-- Windows 8.1 -->
+      <supportedOS Id="{4a2f28e3-53b9-4441-ba9c-d69d4a4a6e38}"/>  <!-- Windows 8 -->
+      <supportedOS Id="{35138b9a-5d96-4fbd-8e2d-a2440225f93a}"/>  <!-- Windows 7 -->
     </application>
   </compatibility>
 
-  <!-- Long path support -->
+  <!-- Modern Windows process settings -->
   <application xmlns="urn:schemas-microsoft-com:asm.v3">
-    <windowsSettings>
-      <longPathAware>true</longPathAware>
+    <windowsSettings
+        xmlns:ws2="http://schemas.microsoft.com/SMI/2016/WindowsSettings"
+        xmlns:ws3="http://schemas.microsoft.com/SMI/2019/WindowsSettings"
+        xmlns:ws4="http://schemas.microsoft.com/SMI/2020/WindowsSettings">
+
+      <!-- Opt into long paths (remove MAX_PATH limits where supported) -->
+      <ws2:longPathAware>true</ws2:longPathAware>
+
+      <!-- Best DPI experience on multi‑monitor rigs -->
+      <ws3:dpiAwareness>PerMonitorV2</ws3:dpiAwareness>
+      <!-- Fallback for older versions -->
+      <dpiAware xmlns="http://schemas.microsoft.com/SMI/2005/WindowsSettings">true/pm</dpiAware>
+
+      <!-- Lower heap fragmentation on modern Windows -->
+      <ws4:heapType>SegmentHeap</ws4:heapType>
     </windowsSettings>
   </application>
 </assembly>
