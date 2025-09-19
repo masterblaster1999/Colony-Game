@@ -1,5 +1,23 @@
 // WinLauncher.cpp — Unicode-safe, single-instance Windows bootstrapper (Windows-only)
 
+// If your repo already provides tidy Windows includes or helpers,
+// we'll use them when available—but everything below has safe fallbacks.
+#if __has_include("platform/win/WinSDK.hpp")
+#  include "platform/win/WinSDK.hpp"
+#endif
+#if __has_include("platform/win/CrashHandler.hpp")
+#  include "platform/win/CrashHandler.hpp"
+#  define CG_HAVE_CRASH_HANDLER 1
+#endif
+#if __has_include("src/launcher/Win32ErrorUtil.hpp")
+#  include "src/launcher/Win32ErrorUtil.hpp"
+#  define CG_HAVE_ERROR_UTIL 1
+#endif
+#if __has_include("platform/win/utf.hpp")
+#  include "platform/win/utf.hpp"
+#  define CG_HAVE_UTF_HELPERS 1
+#endif
+
 #ifndef UNICODE
 #  define UNICODE
 #endif
@@ -29,9 +47,26 @@
 namespace fs = std::filesystem;
 
 // ---------- Utilities ----------
-static std::wstring LastErrorMessage(DWORD err = GetLastError()) {
+
+// Optional bridge to your central Win32 error->string utility if present.
+static std::wstring ErrorMessageW(DWORD err = GetLastError()) {
+#if defined(CG_HAVE_ERROR_UTIL)
+    using launcher::win32_error_to_string;
+    try {
+        const std::string s = win32_error_to_string(err);
+    #if defined(CG_HAVE_UTF_HELPERS)
+        return utf::to_utf16(s);
+    #else
+        // Fallback best-effort widening (ASCII-safe)
+        return std::wstring(s.begin(), s.end());
+    #endif
+    } catch (...) {
+        // fall through to LastErrorMessage
+    }
+#endif
+    // Local fallback: format the message from the system
     LPWSTR msg = nullptr;
-    DWORD len = FormatMessageW(
+    const DWORD len = FormatMessageW(
         FORMAT_MESSAGE_ALLOCATE_BUFFER | FORMAT_MESSAGE_FROM_SYSTEM | FORMAT_MESSAGE_IGNORE_INSERTS,
         nullptr, err, MAKELANGID(LANG_NEUTRAL, SUBLANG_DEFAULT),
         (LPWSTR)&msg, 0, nullptr);
@@ -56,6 +91,48 @@ static fs::path ExeDir() {
 static void EnsureWorkingDirectoryIsExeDir() {
     auto dir = ExeDir();
     if (!dir.empty()) SetCurrentDirectoryW(dir.c_str());
+}
+
+// Harden the DLL search path against hijacking and side-by-side surprises.
+// Uses availability checks so it works on older Windows too.
+static void SecureDllSearchPath() {
+    HMODULE k32 = GetModuleHandleW(L"kernel32.dll");
+    if (!k32) return;
+
+    using PFN_SetDefaultDllDirectories = BOOL (WINAPI*)(DWORD);
+    using PFN_AddDllDirectory         = DLL_DIRECTORY_COOKIE (WINAPI*)(PCWSTR);
+    using PFN_SetDllDirectoryW        = BOOL (WINAPI*)(LPCWSTR);
+
+    auto pSetDefault = reinterpret_cast<PFN_SetDefaultDllDirectories>(
+        GetProcAddress(k32, "SetDefaultDllDirectories"));
+    auto pAddDir = reinterpret_cast<PFN_AddDllDirectory>(
+        GetProcAddress(k32, "AddDllDirectory"));
+    auto pSetDir = reinterpret_cast<PFN_SetDllDirectoryW>(
+        GetProcAddress(k32, "SetDllDirectoryW"));
+
+    // Remove current directory from the implicit search order (security best practice).
+    if (pSetDir) {
+        // Passing L"" removes CWD from the default DLL search order.
+        // See: SetDllDirectory docs.
+        pSetDir(L"");
+    }
+
+    // Constrain default search to safe locations; also allow per-process user dirs.
+#ifdef LOAD_LIBRARY_SEARCH_DEFAULT_DIRS
+    const DWORD kSafeFlags = LOAD_LIBRARY_SEARCH_DEFAULT_DIRS; // == APP_DIR | SYSTEM32 | USER_DIRS
+#else
+    const DWORD kSafeFlags = 0x00001000 /*APP_DIR*/ | 0x00000800 /*SYSTEM32*/ | 0x00000400 /*USER_DIRS*/;
+#endif
+    if (pSetDefault) {
+        pSetDefault(kSafeFlags);
+    }
+
+    // Whitelist our own exe directory for dependency resolution.
+    if (pAddDir) {
+        const fs::path d = ExeDir();
+        if (!d.empty())
+            pAddDir(d.c_str());
+    }
 }
 
 static std::wstring QuoteArg(const std::wstring& arg) {
@@ -155,9 +232,19 @@ public:
 
 // ---------- Entry point ----------
 int APIENTRY wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
+#if defined(CG_HAVE_CRASH_HANDLER)
+    // Early install so even bootstrap issues produce a minidump next to the exe.
+    cg::win::CrashHandler::Install(L"ColonyGame");
+#endif
+
+    // Avoid legacy error UI popping dialogs during bootstrap.
     SetErrorMode(SEM_FAILCRITICALERRORS | SEM_NOOPENFILEERRORBOX);
 
+    // Keep existing behavior: work relative to the exe (for res/ etc.).
     EnsureWorkingDirectoryIsExeDir();
+
+    // Security: lock down DLL search order & whitelist our exe folder.
+    SecureDllSearchPath();
 
     SingleInstanceGuard guard;
     if (!guard.acquire(L"Global\\ColonyGame_Singleton_1E2D13F1_B96C_471B_82F5_829B0FF5D4AF")) {
@@ -209,9 +296,9 @@ int APIENTRY wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
     if (!ok) {
         DWORD err = GetLastError();
         std::wstring msg = L"Failed to start game process.\n\nError " +
-                           std::to_wstring(err) + L": " + LastErrorMessage(err);
+                           std::to_wstring(err) + L": " + ErrorMessageW(err);
         MsgBox(L"Colony Game", msg);
-        log << L"[Launcher] CreateProcessW failed: " << err << L" : " << LastErrorMessage(err) << L"\n";
+        log << L"[Launcher] CreateProcessW failed: " << err << L" : " << ErrorMessageW(err) << L"\n";
         return 2;
     }
 
