@@ -1,5 +1,9 @@
-<?xml version="1.0" encoding="utf-8" standalone="yes"?>
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <assembly xmlns="urn:schemas-microsoft-com:asm.v1" manifestVersion="1.0">
+  <assemblyIdentity version="1.0.0.0" processorArchitecture="*" name="ColonyGame" type="win32"/>
+  <description>Colony-Game</description>
+
+  <!-- UAC -->
   <trustInfo xmlns="urn:schemas-microsoft-com:asm.v3">
     <security>
       <requestedPrivileges>
@@ -8,13 +12,23 @@
     </security>
   </trustInfo>
 
-  <!-- High DPI: Per-Monitor V2 on modern Windows, system-aware fallback -->
-  <application xmlns:ws2="http://schemas.microsoft.com/SMI/2016/WindowsSettings"
-               xmlns:ws="http://schemas.microsoft.com/SMI/2005/WindowsSettings">
-    <ws:dpiAware>true/pm</ws:dpiAware>
-    <ws2:dpiAwareness>PerMonitorV2</ws2:dpiAwareness>
+  <!-- DPI awareness -->
+  <ms_windowsSettings xmlns="http://schemas.microsoft.com/SMI/2005/WindowsSettings">
+    <dpiAware>true/pm</dpiAware>
+  </ms_windowsSettings>
 
-    <!-- Long paths (Win10 1607+ with OS policy enabled) -->
-    <ws2:longPathAware>true</ws2:longPathAware>
+  <!-- Windows 10+ compatibility (Win10 GUID; optionally add Win8.1, Win7 if you target them) -->
+  <compatibility xmlns="urn:schemas-microsoft-com:compatibility.v1">
+    <application>
+      <!-- Windows 10/11 -->
+      <supportedOS Id="{8e0f7a12-bfb3-4fe8-b9a5-48fd50a15a9a}"/>
+    </application>
+  </compatibility>
+
+  <!-- Long path support -->
+  <application xmlns="urn:schemas-microsoft-com:asm.v3">
+    <windowsSettings>
+      <longPathAware>true</longPathAware>
+    </windowsSettings>
   </application>
 </assembly>
