@@ -293,8 +293,14 @@ target_include_directories(colony_core PUBLIC "${CMAKE_BINARY_DIR}/generated")
 # Known game entry points (do NOT include WinLauncher.cpp here)
 set(_KNOWN_WIN_GAME_ENTRIES
   "src/platform/win32_main.cpp" "platform/win32_main.cpp" "src/platform/win32/win32_main.cpp"
+  # (ADDED for this repo layout)
+  "platform/win/win32_main.cpp" "src/platform/win/win32_main.cpp"
   "colonygame.cpp" "src/colonygame.cpp" "src/platform/win32/colonygame.cpp"
+  # (ADDED for this repo layout)
+  "platform/win/colonygame.cpp" "src/platform/win/colonygame.cpp"
   "src/Launcher_Win32.cpp" "Launcher_Win32.cpp"
+  # (ADDED for this repo layout)
+  "platform/win/Launcher_Win32.cpp" "src/platform/win/Launcher_Win32.cpp"
 )
 set(_KNOWN_SDL_LAUNCHERS
   "Launcher_SDL.cpp" "SDLLauncher.cpp" "src/Launcher_SDL.cpp"
