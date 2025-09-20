@@ -484,8 +484,13 @@ if(BUILD_BOOTSTRAPPER AND _BOOTSTRAP)
   target_compile_features(WinLauncher PRIVATE cxx_std_20)
   target_link_libraries(WinLauncher PRIVATE Shell32 Ole32 User32)
 
-  # (MERGED) include the project's src/ for the header
-  target_include_directories(WinLauncher PRIVATE "${CMAKE_SOURCE_DIR}/src")
+  # (MERGED) include the project's src/ for the header AND project root for platform/win/*
+  target_include_directories(WinLauncher PRIVATE "${CMAKE_SOURCE_DIR}/src" "${CMAKE_SOURCE_DIR}")
+
+  # (NEW) build the PathUtilWin helper used by WinLauncher.cpp
+  if(EXISTS "${CMAKE_SOURCE_DIR}/platform/win/PathUtilWin.cpp")
+    target_sources(WinLauncher PRIVATE "${CMAKE_SOURCE_DIR}/platform/win/PathUtilWin.cpp")
+  endif()
 
   enable_win_qol(WinLauncher "Colony-Game Launcher" "${CG_APP_VERSION}" ${_WQ_OPTS})
 
@@ -496,6 +501,33 @@ if(BUILD_BOOTSTRAPPER AND _BOOTSTRAP)
 
   if(MSVC AND SUPPRESS_MSVC_C4505)
     target_compile_options(WinLauncher PRIVATE /wd4505)
+  endif()
+endif()
+
+# --------------------------------------------------------------------------------------------------
+# Ensure res/ ships next to the EXE automatically (explicit, per-target POST_BUILD copy)
+# This runs even if EnableWinQoL is disabled or customized.
+# Uses generator expressions so it works for multi-config builds (VS). If you upgrade to CMake 3.26+,
+# you may switch 'copy_directory' to 'copy_directory_if_different'.
+# --------------------------------------------------------------------------------------------------
+if(EXISTS "${CMAKE_SOURCE_DIR}/res")
+  # Copy for the game executable
+  if(TARGET ColonyGame)
+    add_custom_command(TARGET ColonyGame POST_BUILD
+      COMMAND "${CMAKE_COMMAND}" -E make_directory "$<TARGET_FILE_DIR:ColonyGame>/res"
+      COMMAND "${CMAKE_COMMAND}" -E copy_directory
+              "${CMAKE_SOURCE_DIR}/res" "$<TARGET_FILE_DIR:ColonyGame>/res"
+      COMMENT "Copying res/ next to $<TARGET_FILE_NAME:ColonyGame>"
+      VERBATIM)
+  endif()
+  # Copy for the launcher (if built)
+  if(TARGET WinLauncher)
+    add_custom_command(TARGET WinLauncher POST_BUILD
+      COMMAND "${CMAKE_COMMAND}" -E make_directory "$<TARGET_FILE_DIR:WinLauncher>/res"
+      COMMAND "${CMAKE_COMMAND}" -E copy_directory
+              "${CMAKE_SOURCE_DIR}/res" "$<TARGET_FILE_DIR:WinLauncher>/res"
+      COMMENT "Copying res/ next to $<TARGET_FILE_NAME:WinLauncher>"
+      VERBATIM)
   endif()
 endif()
 
@@ -785,4 +817,3 @@ message(STATUS "")
 #     or explicitly:
 #       cmake --install build --config Release
 # --------------------------------------------------------------------------------------------------
-
