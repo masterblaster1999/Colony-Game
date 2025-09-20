@@ -478,10 +478,14 @@ endif()
 # Bootstrapper executable (PATCH: WinLauncher that spawns ColonyGame.exe)
 # --------------------------------------------------------------------------------------------------
 if(BUILD_BOOTSTRAPPER AND _BOOTSTRAP)
-  add_executable(WinLauncher WIN32 "${_BOOTSTRAP}")
+  # (MERGED) add the tiny config helper to the bootstrapper target
+  add_executable(WinLauncher WIN32 "${_BOOTSTRAP}" "${CMAKE_SOURCE_DIR}/src/launcher/LauncherConfig.cpp")
   set_property(TARGET WinLauncher PROPERTY FOLDER "Bootstrap")
   target_compile_features(WinLauncher PRIVATE cxx_std_20)
   target_link_libraries(WinLauncher PRIVATE Shell32 Ole32 User32)
+
+  # (MERGED) include the project's src/ for the header
+  target_include_directories(WinLauncher PRIVATE "${CMAKE_SOURCE_DIR}/src")
 
   enable_win_qol(WinLauncher "Colony-Game Launcher" "${CG_APP_VERSION}" ${_WQ_OPTS})
 
@@ -781,3 +785,4 @@ message(STATUS "")
 #     or explicitly:
 #       cmake --install build --config Release
 # --------------------------------------------------------------------------------------------------
+
