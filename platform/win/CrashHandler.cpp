@@ -1,57 +1,60 @@
-#pragma once
-#define NOMINMAX
+// CrashHandler.cpp
+#define WIN32_LEAN_AND_MEAN
 #include <windows.h>
-#include <DbgHelp.h>
+#include <dbghelp.h>
 #include <filesystem>
 #include <string>
+#include <chrono>
+#include <iomanip>
+#include <sstream>
 
 #pragma comment(lib, "Dbghelp.lib")
 
-namespace colony::win {
+namespace fs = std::filesystem;
 
-inline std::wstring g_dumpDir;
+static fs::path g_dumpDir;
 
-inline void create_dirs(const std::wstring& path) {
-    std::error_code ec; std::filesystem::create_directories(path, ec);
-}
+static LONG WINAPI TopLevelFilter(EXCEPTION_POINTERS* pEx) {
+    // timestamp
+    auto now = std::chrono::system_clock::now();
+    std::time_t tt = std::chrono::system_clock::to_time_t(now);
+    std::tm tm{};
+    localtime_s(&tm, &tt);
+    std::wstringstream name;
+    name << L"crash-" << (1900 + tm.tm_year)
+         << L"-" << std::setw(2) << std::setfill(L'0') << (tm.tm_mon + 1)
+         << L"-" << std::setw(2) << tm.tm_mday
+         << L"_" << std::setw(2) << tm.tm_hour
+         << L"-" << std::setw(2) << tm.tm_min
+         << L"-" << std::setw(2) << tm.tm_sec
+         << L".dmp";
 
-inline std::wstring timestamp() {
-    SYSTEMTIME st; ::GetLocalTime(&st);
-    wchar_t buf[64];
-    swprintf(buf, 64, L"%04u-%02u-%02u_%02u-%02u-%02u", st.wYear, st.wMonth, st.wDay,
-             st.wHour, st.wMinute, st.wSecond);
-    return buf;
-}
+    fs::path outPath = g_dumpDir / name.str();
 
-inline bool write_minidump(EXCEPTION_POINTERS* ep) {
-    if (g_dumpDir.empty()) return false;
-    create_dirs(g_dumpDir);
-    std::wstring path = g_dumpDir + L"\\crash_" + timestamp() + L".dmp";
-
-    HANDLE hFile = ::CreateFileW(path.c_str(), GENERIC_WRITE, FILE_SHARE_READ, nullptr,
-                                 CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
-    if (hFile == INVALID_HANDLE_VALUE) return false;
+    HANDLE hFile = CreateFileW(outPath.c_str(), GENERIC_WRITE, FILE_SHARE_READ, nullptr,
+                               CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (hFile == INVALID_HANDLE_VALUE) return EXCEPTION_CONTINUE_SEARCH;
 
     MINIDUMP_EXCEPTION_INFORMATION mei{};
-    mei.ThreadId = ::GetCurrentThreadId();
-    mei.ExceptionPointers = ep;
+    mei.ThreadId = GetCurrentThreadId();
+    mei.ExceptionPointers = pEx;
     mei.ClientPointers = FALSE;
 
-    BOOL ok = ::MiniDumpWriteDump(::GetCurrentProcess(), ::GetCurrentProcessId(), hFile,
-                                  MiniDumpWithDataSegs | MiniDumpWithHandleData | MiniDumpScanMemory,
-                                  ep ? &mei : nullptr, nullptr, nullptr);
-    ::CloseHandle(hFile);
-    return ok == TRUE;
+    // A balanced minidump type that keeps dumps small but useful:
+    MINIDUMP_TYPE type = (MINIDUMP_TYPE)(
+        MiniDumpWithThreadInfo |
+        MiniDumpWithIndirectlyReferencedMemory |
+        MiniDumpScanMemory
+    );
+
+    MiniDumpWriteDump(GetCurrentProcess(), GetCurrentProcessId(), hFile, type, &mei, nullptr, nullptr);
+    CloseHandle(hFile);
+    return EXCEPTION_EXECUTE_HANDLER;
 }
 
-inline LONG WINAPI unhandled(EXCEPTION_POINTERS* ep) {
-    write_minidump(ep);
-    return EXCEPTION_EXECUTE_HANDLER; // terminate after dump
+namespace app::crash {
+    void install_minidump_handler(const fs::path& dumpDir) {
+        g_dumpDir = dumpDir;
+        SetUnhandledExceptionFilter(TopLevelFilter); // hooks unhandled exceptions
+    }
 }
-
-inline void install_crash_handler(const std::wstring& dumpDir) {
-    g_dumpDir = dumpDir;
-    ::SetUnhandledExceptionFilter(&unhandled);
-}
-
-} // namespace colony::win
