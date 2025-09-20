@@ -32,6 +32,7 @@
 #include <shlobj_core.h>
 #include <shlwapi.h>
 #include <objbase.h>
+#include <Xinput.h> // XInput types/constants (we dynamically load the DLLs; no link lib required)
 
 #include <cstdint>
 #include <cstdio>
@@ -386,6 +387,48 @@ static bool WasRestartedByWer() {
         LocalFree(argv);
     }
     return restarted;
+}
+
+//======================================================================================
+// XInput Dynamic Loader (no link dependency) + helpers
+//======================================================================================
+typedef DWORD (WINAPI *PFN_XInputGetState)(DWORD, XINPUT_STATE*);
+typedef DWORD (WINAPI *PFN_XInputSetState)(DWORD, XINPUT_VIBRATION*);
+
+static HMODULE            g_xiDLL            = nullptr;
+static PFN_XInputGetState g_XInputGetState   = nullptr;
+static PFN_XInputSetState g_XInputSetState   = nullptr;
+
+static void LoadXInput()
+{
+    if (g_XInputGetState) return;
+    const wchar_t* dlls[] = { L"xinput1_4.dll", L"xinput9_1_0.dll", L"xinput1_3.dll" };
+    for (auto* name : dlls) {
+        g_xiDLL = LoadLibraryW(name);
+        if (!g_xiDLL) continue;
+        g_XInputGetState = reinterpret_cast<PFN_XInputGetState>(GetProcAddress(g_xiDLL, "XInputGetState"));
+        g_XInputSetState = reinterpret_cast<PFN_XInputSetState>(GetProcAddress(g_xiDLL, "XInputSetState"));
+        if (g_XInputGetState && g_XInputSetState) break;
+        FreeLibrary(g_xiDLL); g_xiDLL = nullptr;
+    }
+}
+
+static void UnloadXInput()
+{
+    g_XInputGetState = nullptr;
+    g_XInputSetState = nullptr;
+    if (g_xiDLL) { FreeLibrary(g_xiDLL); g_xiDLL = nullptr; }
+}
+
+// Normalize thumb value with proper dead-zone handling.
+static float NormalizeThumb(SHORT v, SHORT deadzone)
+{
+    int iv = (int)v;
+    int sign = (iv < 0) ? -1 : 1;
+    int mag  = (iv < 0) ? -iv : iv;
+    if (mag <= deadzone) return 0.0f;
+    const float out = float(mag - deadzone) / float(32767 - deadzone);
+    return sign * (out > 1.0f ? 1.0f : out);
 }
 
 //======================================================================================
@@ -751,6 +794,9 @@ public:
         ShowWindow(hwnd_, SW_SHOW);
         UpdateWindow(hwnd_);
 
+        // Initialize XInput (dynamic loader + first-pad discovery)
+        InitGamepad();
+
         Timer timer;
         MSG msg{};
         while (running_) {
@@ -762,6 +808,10 @@ public:
             if (!running_) break;
 
             double dt = timer.Tick();
+
+            // Poll controller once per frame (affects camera pan/zoom and actions)
+            PollGamepad(dt);
+
             if (!paused_) {
                 simAcc_ += dt * simSpeed_;
                 if (simAcc_ > 0.5) simAcc_ = 0.5;
@@ -886,6 +936,104 @@ private:
         return DefWindowProcW(h, m, w, l);
     }
 
+    // ------------------ Gamepad (XInput) ------------------
+    void InitGamepad()
+    {
+        LoadXInput();
+        if (!g_XInputGetState) { padConnected_ = false; return; }
+        for (DWORD i = 0; i < 4; ++i) {
+            XINPUT_STATE st{};
+            if (g_XInputGetState(i, &st) == ERROR_SUCCESS) {
+                padIndex_ = i; padConnected_ = true; padPrev_ = st; break;
+            }
+        }
+    }
+    void SetRumble(float seconds, WORD left = 30000, WORD right = 0)
+    {
+        if (!padConnected_ || !g_XInputSetState) return;
+        XINPUT_VIBRATION vib{ left, right };
+        g_XInputSetState(padIndex_, &vib);
+        rumbleUntil_ = seconds;
+    }
+    bool WasPressed(const XINPUT_STATE& now, WORD buttonMask)
+    {
+        const WORD was = padPrev_.Gamepad.wButtons & buttonMask;
+        const WORD is  = now.Gamepad.wButtons & buttonMask;
+        return !was && is;
+    }
+    void PollGamepad(double dt)
+    {
+        if (!g_XInputGetState) return;
+
+        XINPUT_STATE st{};
+        if (g_XInputGetState(padIndex_, &st) != ERROR_SUCCESS) {
+            padConnected_ = false;
+            for (DWORD i = 0; i < 4; ++i) {
+                if (g_XInputGetState(i, &st) == ERROR_SUCCESS) { padIndex_ = i; padConnected_ = true; break; }
+            }
+            if (!padConnected_) return;
+        }
+
+        // Left stick pan (with dead-zone); Y inverted for screen space
+        const float lx = NormalizeThumb(st.Gamepad.sThumbLX, XINPUT_GAMEPAD_LEFT_THUMB_DEADZONE);
+        const float ly = NormalizeThumb(st.Gamepad.sThumbLY, XINPUT_GAMEPAD_LEFT_THUMB_DEADZONE);
+        padPanX_ = lx;
+        padPanY_ = -ly;
+
+        // Triggers zoom
+        const bool lt = st.Gamepad.bLeftTrigger  > XINPUT_GAMEPAD_TRIGGER_THRESHOLD;
+        const bool rt = st.Gamepad.bRightTrigger > XINPUT_GAMEPAD_TRIGGER_THRESHOLD;
+        if (lt || rt) {
+            double z = zoom_;
+            if (rt) z = util::clamp(z * (1.0 + 0.75 * dt), 0.5, 2.5);
+            if (lt) z = util::clamp(z * (1.0 - 0.75 * dt), 0.5, 2.5);
+            zoom_ = z;
+        }
+
+        // A place (if in build mode), B cancel, X bulldoze, Y spawn colonist
+        if (WasPressed(st, XINPUT_GAMEPAD_A) && buildMode_ && selected_.has_value()) {
+            Vec2i t = MouseToTile(lastMouse_);
+            if (TryQueueBuild(*selected_, t)) {
+                SetRumble(0.15f, 25000, 0);
+                buildMode_ = false; selected_.reset();
+            } else {
+                SetRumble(0.10f, 12000, 0);
+            }
+        }
+        if (WasPressed(st, XINPUT_GAMEPAD_B) && buildMode_) {
+            buildMode_ = false; selected_.reset();
+        }
+        if (WasPressed(st, XINPUT_GAMEPAD_X)) {
+            auto t = MouseToTile(lastMouse_);
+            Bulldoze(t);
+            SetRumble(0.08f, 18000, 0);
+        }
+        if (WasPressed(st, XINPUT_GAMEPAD_Y)) {
+            SpawnColonist();
+            SetRumble(0.08f, 20000, 0);
+        }
+
+        // LB/RB quick-select
+        if (WasPressed(st, XINPUT_GAMEPAD_LEFT_SHOULDER))  { selected_ = BuildingKind::Solar;  buildMode_ = true; }
+        if (WasPressed(st, XINPUT_GAMEPAD_RIGHT_SHOULDER)) { selected_ = BuildingKind::Habitat;buildMode_ = true; }
+
+        // DPad adjust sim speed; Start pause
+        if (WasPressed(st, XINPUT_GAMEPAD_DPAD_UP))   simSpeed_ = util::clamp(simSpeed_ * 1.25, 0.25, 8.0);
+        if (WasPressed(st, XINPUT_GAMEPAD_DPAD_DOWN)) simSpeed_ = util::clamp(simSpeed_ / 1.25, 0.25, 8.0);
+        if (WasPressed(st, XINPUT_GAMEPAD_START))     paused_ = !paused_;
+
+        // Rumble timeout
+        if (rumbleUntil_ > 0.0) {
+            rumbleUntil_ -= dt;
+            if (rumbleUntil_ <= 0.0 && g_XInputSetState) {
+                XINPUT_VIBRATION vib{ 0, 0 };
+                g_XInputSetState(padIndex_, &vib);
+            }
+        }
+
+        padPrev_ = st;
+    }
+
     // ------------------ World / Sim init ------------------
     void InitWorld() {
         tileSize_ = 24;
@@ -963,10 +1111,13 @@ private:
 
     // ------------------ Update loop ------------------
     void Update(double dt) {
-        // Camera pan
+        // Camera pan (keyboard)
         const double pan=300.0;
         camera_.x += keyPan_.x * pan * dt;
         camera_.y += keyPan_.y * pan * dt;
+        // Camera pan (gamepad analog)
+        camera_.x += padPanX_ * pan * dt;
+        camera_.y += padPanY_ * pan * dt;
 
         // Day/night
         dayTime_ += dt*0.02;
@@ -1316,6 +1467,14 @@ private:
     bool buildMode_=false; std::optional<BuildingKind> selected_;
     POINT lastMouse_{};
 
+    // Gamepad state
+    bool   padConnected_ = false;
+    DWORD  padIndex_     = 0;
+    XINPUT_STATE padPrev_{};
+    double rumbleUntil_  = 0.0;
+    double padPanX_      = 0.0;
+    double padPanY_      = 0.0;
+
     // Banner
     std::wstring banner_; double bannerTime_=0.0;
 };
@@ -1341,7 +1500,7 @@ int APIENTRY wWinMain(HINSTANCE hInst, HINSTANCE, LPWSTR, int) {
     SetProcessDPIAware();
 
     // ARR: register restart and recovery very early, before heavy init.
-    InstallWindowsARR(); // WER restarts only if we've run >= 60 seconds. :contentReference[oaicite:1]{index=1}
+    InstallWindowsARR(); // WER restarts only if we've run >= 60 seconds.
 
     AppPaths paths = ComputePaths();
 
@@ -1386,8 +1545,10 @@ int APIENTRY wWinMain(HINSTANCE hInst, HINSTANCE, LPWSTR, int) {
     GameApp app(hInst, paths, eff);
     int rc = app.Run();
 
+    // Clean up XInput loader
+    UnloadXInput();
+
     g_log.Line(util::Format(L"Exit code: %d", rc));
     CoUninitialize();
     return rc;
 }
-
