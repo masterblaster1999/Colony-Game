@@ -1,7 +1,6 @@
+// CrashHandler.h
 #pragma once
 #include <filesystem>
-
-namespace cg {
-    // Creates crashdumps in `dumpDir` on unhandled exceptions.
-    void InstallCrashHandler(const std::filesystem::path& dumpDir);
+namespace app::crash {
+    void install_minidump_handler(const std::filesystem::path& dumpDir);
 }
