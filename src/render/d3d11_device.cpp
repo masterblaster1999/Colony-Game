@@ -1,14 +1,26 @@
 // src/render/d3d11_device.cpp
 #include "d3d11_device.h"
-#include <dxgi.h>
+
+#define WIN32_LEAN_AND_MEAN
+#include <windows.h>
+#include <d3d11.h>
+#include <dxgi1_2.h>
+#include <dxgi1_5.h>
+#include <wrl/client.h>
 #include <cstdio>
+#include <iterator>
 
 #ifndef DXGI_PRESENT_ALLOW_TEARING
 #define DXGI_PRESENT_ALLOW_TEARING 0x00000200u
 #endif
 
+using Microsoft::WRL::ComPtr;
+
 namespace render {
 
+//--------------------------------------------------------------------------------------------------
+// Local debug print
+//--------------------------------------------------------------------------------------------------
 static void debug_print(const char* msg)
 {
 #if defined(_DEBUG)
@@ -18,12 +30,16 @@ static void debug_print(const char* msg)
 #endif
 }
 
+//--------------------------------------------------------------------------------------------------
+// Initialize: device + immediate context + swap chain + backbuffer RTV
+//--------------------------------------------------------------------------------------------------
 bool D3D11Device::initialize(HWND hwnd, uint32_t width, uint32_t height, bool request_debug_layer)
 {
     m_hwnd = hwnd;
     m_width = width;
     m_height = height;
     m_debugLayerEnabled = false;
+    m_tearingSupported = false;
 
     // Attempt hardware + debug (if requested), fall back as needed.
     UINT flags = 0;
@@ -54,7 +70,8 @@ bool D3D11Device::initialize(HWND hwnd, uint32_t width, uint32_t height, bool re
         return false;
     }
 
-    query_tearing_support();
+    // Query OS support for tearing (DXGI 1.5+) before creating the swap chain.
+    query_tearing_support(); // uses IDXGIFactory5::CheckFeatureSupport. See docs. 
 
     if (!create_swapchain_and_targets(width, height)) {
         shutdown();
@@ -64,6 +81,9 @@ bool D3D11Device::initialize(HWND hwnd, uint32_t width, uint32_t height, bool re
     return true;
 }
 
+//--------------------------------------------------------------------------------------------------
+// Shutdown all GPU objects owned by this wrapper
+//--------------------------------------------------------------------------------------------------
 void D3D11Device::shutdown()
 {
     destroy_targets();
@@ -72,13 +92,20 @@ void D3D11Device::shutdown()
     m_device.Reset();
     m_hwnd = nullptr;
     m_width = m_height = 0;
+    m_debugLayerEnabled = false;
+    m_tearingSupported = false;
+    m_featureLevel = static_cast<D3D_FEATURE_LEVEL>(0);
 }
 
+//--------------------------------------------------------------------------------------------------
+// Resize swap chain (safe with minimized windows). Recreate RTV & viewport.
+//--------------------------------------------------------------------------------------------------
 bool D3D11Device::resize(uint32_t width, uint32_t height)
 {
     if (!m_swapchain) return false;
+
     if (width == 0 || height == 0) {
-        // Minimized: just drop RTV so OMSetRenderTargets won't bind stale pointers
+        // Minimized: just drop RTV so OMSetRenderTargets won't bind stale pointers.
         destroy_targets();
         m_width = width;
         m_height = height;
@@ -87,9 +114,10 @@ bool D3D11Device::resize(uint32_t width, uint32_t height)
 
     destroy_targets();
 
-    UINT flags = m_tearingSupported ? DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING : 0;
-    HRESULT hr = m_swapchain->ResizeBuffers(0, width, height, DXGI_FORMAT_UNKNOWN, flags);
-    if (FAILED(hr)) {
+    const UINT flags = m_tearingSupported ? DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING : 0;
+    const HRESULT hrResize = m_swapchain->ResizeBuffers(
+        0, width, height, DXGI_FORMAT_UNKNOWN, flags);
+    if (FAILED(hrResize)) {
         debug_print("[D3D11] ResizeBuffers failed.\n");
         return false;
     }
@@ -99,7 +127,9 @@ bool D3D11Device::resize(uint32_t width, uint32_t height)
 
     // Recreate backbuffer RTV & viewport
     ComPtr<ID3D11Texture2D> backBuffer;
-    hr = m_swapchain->GetBuffer(0, __uuidof(ID3D11Texture2D), reinterpret_cast<void**>(backBuffer.GetAddressOf()));
+    HRESULT hr = m_swapchain->GetBuffer(
+        0, __uuidof(ID3D11Texture2D),
+        reinterpret_cast<void**>(backBuffer.GetAddressOf()));
     if (FAILED(hr)) {
         debug_print("[D3D11] GetBuffer(0) failed after resize.\n");
         return false;
@@ -124,12 +154,16 @@ bool D3D11Device::resize(uint32_t width, uint32_t height)
     return true;
 }
 
+//--------------------------------------------------------------------------------------------------
+// Begin frame: bind RTV, set viewport, clear
+//--------------------------------------------------------------------------------------------------
 void D3D11Device::begin_frame(const float clear_color[4])
 {
     if (!m_context || !m_rtv) return;
 
     ID3D11RenderTargetView* rtvs[] = { m_rtv.Get() };
     m_context->OMSetRenderTargets(1, rtvs, nullptr);
+
     D3D11_VIEWPORT vp{};
     vp.TopLeftX = 0.0f;
     vp.TopLeftY = 0.0f;
@@ -142,11 +176,28 @@ void D3D11Device::begin_frame(const float clear_color[4])
     m_context->ClearRenderTargetView(m_rtv.Get(), clear_color);
 }
 
+//--------------------------------------------------------------------------------------------------
+// Present: vsync toggle + tearing flag when allowed; detect device-lost and attempt recovery
+//--------------------------------------------------------------------------------------------------
 bool D3D11Device::present(bool vsync)
 {
     if (!m_swapchain) return false;
-    UINT flags = (!vsync && m_tearingSupported) ? DXGI_PRESENT_ALLOW_TEARING : 0u;
-    HRESULT hr = m_swapchain->Present(vsync ? 1u : 0u, flags);
+
+    const UINT flags = (!vsync && m_tearingSupported) ? DXGI_PRESENT_ALLOW_TEARING : 0u;
+    const UINT syncInterval = vsync ? 1u : 0u; // tearing allowed only with syncInterval == 0
+
+    HRESULT hr = m_swapchain->Present(syncInterval, flags);
+
+    if (hr == DXGI_ERROR_DEVICE_REMOVED || hr == DXGI_ERROR_DEVICE_RESET) {
+        debug_print("[D3D11] Device lost on Present; attempting to recreate device and swap chain...\n");
+        const HWND hwnd = m_hwnd;
+        const uint32_t w = m_width ? m_width : 1;
+        const uint32_t h = m_height ? m_height : 1;
+        const bool debugEnabled = m_debugLayerEnabled;
+        shutdown();
+        return initialize(hwnd, w, h, debugEnabled);
+    }
+
     if (FAILED(hr)) {
         debug_print("[D3D11] Present failed.\n");
         return false;
@@ -154,12 +205,15 @@ bool D3D11Device::present(bool vsync)
     return true;
 }
 
+//--------------------------------------------------------------------------------------------------
+// Try to create a D3D11 device/context with given driver type & flags
+//--------------------------------------------------------------------------------------------------
 bool D3D11Device::try_create_device(D3D_DRIVER_TYPE driverType, UINT flags)
 {
     static const D3D_FEATURE_LEVEL fls[] = {
-#if defined(D3D_FEATURE_LEVEL_11_1)
+    #if defined(D3D_FEATURE_LEVEL_11_1)
         D3D_FEATURE_LEVEL_11_1,
-#endif
+    #endif
         D3D_FEATURE_LEVEL_11_0,
         D3D_FEATURE_LEVEL_10_1,
         D3D_FEATURE_LEVEL_10_0
@@ -197,6 +251,9 @@ bool D3D11Device::try_create_device(D3D_DRIVER_TYPE driverType, UINT flags)
     return true;
 }
 
+//--------------------------------------------------------------------------------------------------
+// Create flip-model swap chain + RTV and set initial viewport
+//--------------------------------------------------------------------------------------------------
 bool D3D11Device::create_swapchain_and_targets(uint32_t width, uint32_t height)
 {
     // Get factory from device
@@ -226,7 +283,7 @@ bool D3D11Device::create_swapchain_and_targets(uint32_t width, uint32_t height)
     scd.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT;
     scd.BufferCount = 2; // double-buffer
     scd.Scaling = DXGI_SCALING_STRETCH;
-    scd.SwapEffect = DXGI_SWAP_EFFECT_FLIP_DISCARD;
+    scd.SwapEffect = DXGI_SWAP_EFFECT_FLIP_DISCARD; // modern flip model
     scd.AlphaMode = DXGI_ALPHA_MODE_IGNORE;
     scd.Flags = m_tearingSupported ? DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING : 0;
 
@@ -244,7 +301,7 @@ bool D3D11Device::create_swapchain_and_targets(uint32_t width, uint32_t height)
         return false;
     }
 
-    // Disable DXGI's default Alt+Enter; app will manage windowing explicitly if desired
+    // Disable DXGI's default Alt+Enter; app will manage windowing explicitly if desired.
     factory2->MakeWindowAssociation(m_hwnd, DXGI_MWA_NO_ALT_ENTER);
 
     m_swapchain = std::move(swap);
@@ -270,6 +327,9 @@ bool D3D11Device::create_swapchain_and_targets(uint32_t width, uint32_t height)
     return true;
 }
 
+//--------------------------------------------------------------------------------------------------
+// Release RTV and unbind from the output-merger
+//--------------------------------------------------------------------------------------------------
 void D3D11Device::destroy_targets()
 {
     if (m_context) {
@@ -279,12 +339,16 @@ void D3D11Device::destroy_targets()
     m_rtv.Reset();
 }
 
+//--------------------------------------------------------------------------------------------------
+// Tearing support query (DXGI 1.5). Safe to call even if not available.
+//--------------------------------------------------------------------------------------------------
 bool D3D11Device::query_tearing_support()
 {
     m_tearingSupported = false;
 
     ComPtr<IDXGIFactory1> factory1;
-    if (FAILED(CreateDXGIFactory1(__uuidof(IDXGIFactory1), reinterpret_cast<void**>(factory1.GetAddressOf())))) {
+    if (FAILED(CreateDXGIFactory1(__uuidof(IDXGIFactory1),
+                                  reinterpret_cast<void**>(factory1.GetAddressOf())))) {
         return false;
     }
 
@@ -293,7 +357,7 @@ bool D3D11Device::query_tearing_support()
         BOOL allowTearing = FALSE;
         if (SUCCEEDED(factory5->CheckFeatureSupport(DXGI_FEATURE_PRESENT_ALLOW_TEARING,
                                                     &allowTearing, sizeof(allowTearing)))) {
-            m_tearingSupported = allowTearing == TRUE;
+            m_tearingSupported = (allowTearing == TRUE);
         }
     }
     return m_tearingSupported;
