@@ -1,18 +1,18 @@
 // WinLauncher.cpp — Unicode‑safe, single‑instance Windows bootstrapper
 // Build: Windows only, C++17 (std::filesystem)
-
+//
 // Key behaviors:
-//  1) Forces CWD = EXE directory, so relative assets (res/) load reliably.
+//  1) Forces CWD = EXE directory (via winpath::ensure_cwd_exe_dir), so relative assets (res/) load reliably.
 //  2) Rebuilds the child's command-line with correct Windows quoting rules.
 //  3) Launches the real game EXE via CreateProcessW with lpApplicationName set.
 //  4) Enforces single-instance via a named mutex.
 //  5) Verifies a sibling res/ directory exists; logs diagnostics to %LOCALAPPDATA%.
-// References: CreateProcessW / quoting, CommandLineToArgvW, known folders, mutexes.
-//   - https://learn.microsoft.com/windows/win32/api/processthreadsapi/nf-processthreadsapi-createprocessw
-//   - https://learn.microsoft.com/windows/win32/api/processenv/nf-processenv-getcommandlinew
-//   - https://learn.microsoft.com/windows/win32/api/shellapi/nf-shellapi-commandlinetoargvw
-//   - https://learn.microsoft.com/windows/win32/api/synchapi/nf-synchapi-createmutexexa
-//   - https://learn.microsoft.com/windows/win32/api/shlobj_core/nf-shlobj_core-shgetknownfolderpath
+//
+// References:
+//  - CreateProcessW: https://learn.microsoft.com/windows/win32/api/processthreadsapi/nf-processthreadsapi-createprocessw
+//  - GetCommandLineW: https://learn.microsoft.com/windows/win32/api/processenv/nf-processenv-getcommandlinew
+//  - CommandLineToArgvW: https://learn.microsoft.com/windows/win32/api/shellapi/nf-shellapi-commandlinetoargvw
+//  - Known folders (used inside PathUtilWin.cpp): https://learn.microsoft.com/windows/win32/api/shlobj_core/nf-shlobj_core-shgetknownfolderpath
 
 #ifndef UNICODE
 #define UNICODE
@@ -29,14 +29,17 @@
 
 #include <windows.h>
 #include <shellapi.h>       // CommandLineToArgvW
-#include <shlobj_core.h>    // SHGetKnownFolderPath
-#include <knownfolders.h>   // FOLDERID_LocalAppData
 #include <string>
 #include <fstream>
 #include <sstream>
 #include <filesystem>
 #include <chrono>
 #include <iomanip>
+#include <cwctype>          // iswspace
+#include <ctime>            // localtime_s
+
+// NEW: centralize Windows path/CWD logic in one place.
+#include "platform/win/PathUtilWin.h"
 
 namespace fs = std::filesystem;
 
@@ -53,27 +56,8 @@ static std::wstring LastErrorMessage(DWORD err = GetLastError()) {
     return out;
 }
 
-static fs::path ExePath() {
-    wchar_t buf[MAX_PATH];
-    DWORD n = GetModuleFileNameW(nullptr, buf, MAX_PATH); // path to this launcher
-    if (n == 0 || n == MAX_PATH) return {};
-    return fs::path(buf);
-}
-
-static fs::path ExeDir() {
-    auto p = ExePath();
-    return p.empty() ? fs::path() : p.parent_path();
-}
-
-static void EnsureWorkingDirectoryIsExeDir() {
-    auto dir = ExeDir();
-    if (!dir.empty()) {
-        SetCurrentDirectoryW(dir.wstring().c_str()); // keep assets (res/) relative and reliable
-    }
-}
-
 // Build a proper Windows command line from argv[1..] using Windows quoting rules so the
-// child process parses them the same way CommandLineToArgvW would. See docs above.
+// child process parses them the same way CommandLineToArgvW would.
 static std::wstring QuoteArg(const std::wstring& arg) {
     if (arg.empty()) return L"\"\"";
 
@@ -123,12 +107,7 @@ static std::wstring BuildCmdLineTail(int argc, wchar_t** argv) {
 
 // Simple file logger under %LOCALAPPDATA%\ColonyGame\logs
 static fs::path LogsDir() {
-    PWSTR path = nullptr;
-    fs::path out;
-    if (SUCCEEDED(SHGetKnownFolderPath(FOLDERID_LocalAppData, KF_FLAG_CREATE, nullptr, &path))) {
-        out = fs::path(path) / L"ColonyGame" / L"logs";
-        CoTaskMemFree(path);
-    }
+    fs::path out = winpath::writable_data_dir() / L"logs";
     std::error_code ec;
     fs::create_directories(out, ec);
     return out;
@@ -148,9 +127,9 @@ static void MsgBox(const std::wstring& title, const std::wstring& text) {
     MessageBoxW(nullptr, text.c_str(), title.c_str(), MB_OK | MB_ICONERROR | MB_SETFOREGROUND);
 }
 
-static bool VerifyResources(const fs::path& root) {
-    auto res = root / L"res";
+static bool VerifyResources() {
     std::error_code ec;
+    const auto res = winpath::resource_dir();
     return fs::exists(res, ec) && fs::is_directory(res, ec);
 }
 
@@ -158,7 +137,7 @@ static bool VerifyResources(const fs::path& root) {
 // Optional override via res/launcher.cfg: first non-empty line is the EXE filename.
 static fs::path ResolveGameExe(const fs::path& baseDir) {
     std::error_code ec;
-    auto cfg = baseDir / L"res" / L"launcher.cfg";
+    auto cfg = winpath::resource_dir() / L"launcher.cfg";
     if (fs::exists(cfg, ec)) {
         std::wifstream fin(cfg);
         std::wstring name;
@@ -192,8 +171,10 @@ public:
 
 // ---------- Entry point ----------
 int APIENTRY wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
+    // Ensure asset-relative paths work from any launch context (Explorer, VS, cmd).
+    winpath::ensure_cwd_exe_dir(); // <-- patch applied: call once at the very top
+
     SetErrorMode(SEM_FAILCRITICALERRORS | SEM_NOOPENFILEERRORBOX); // cleaner UX on missing DLLs, etc.
-    EnsureWorkingDirectoryIsExeDir(); // CWD always = EXE dir (reliable assets).
 
     SingleInstanceGuard guard;
     if (!guard.acquire(L"Global\\ColonyGame_Singleton_1E2D13F1_B96C_471B_82F5_829B0FF5D4AF")) {
@@ -201,10 +182,11 @@ int APIENTRY wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
         return 0;
     }
 
+    auto exeDir = winpath::exe_dir();
     auto log = OpenLogFile();
-    log << L"[Launcher] started in: " << ExeDir().wstring() << L"\n";
+    log << L"[Launcher] started in: " << exeDir.wstring() << L"\n";
 
-    if (!VerifyResources(ExeDir())) {
+    if (!VerifyResources()) {
         MsgBox(L"Colony Game",
                L"Missing or invalid 'res' folder next to the executable.\n"
                L"Make sure the game is installed correctly.");
@@ -213,7 +195,7 @@ int APIENTRY wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
     }
 
     // Resolve child game EXE
-    auto gameExe = ResolveGameExe(ExeDir());
+    auto gameExe = ResolveGameExe(exeDir);
     if (gameExe.empty()) {
         MsgBox(L"Colony Game",
                L"Could not find the game executable next to the launcher.\n"
@@ -225,7 +207,7 @@ int APIENTRY wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
 
     // Build arguments *without* embedding exe path (pass exe via lpApplicationName).
     int argc = 0;
-    LPWSTR* argv = CommandLineToArgvW(GetCommandLineW(), &argc);
+    LPWSTR* argv = CommandLineToArgvW(GetCommandLineW(), &argc); // see docs
     std::wstring tail = BuildCmdLineTail(argc, argv);
     if (argv) LocalFree(argv);
 
@@ -236,12 +218,12 @@ int APIENTRY wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
     log << L"[Launcher] launching: " << gameExe.wstring() << L" args: " << tail << L"\n";
 
     BOOL ok = CreateProcessW(
-        gameExe.wstring().c_str(),              // lpApplicationName (do not quote paths here)
-        cmdline.empty() ? nullptr : cmdline.data(), // lpCommandLine (only args, properly quoted)
+        gameExe.wstring().c_str(),                    // lpApplicationName (do not quote paths here)
+        cmdline.empty() ? nullptr : cmdline.data(),   // lpCommandLine (only args, properly quoted)
         nullptr, nullptr, FALSE,
         CREATE_UNICODE_ENVIRONMENT,
         nullptr,
-        ExeDir().wstring().c_str(),             // ensure correct CWD for assets
+        exeDir.wstring().c_str(),                     // ensure correct CWD for assets
         &si, &pi);
 
     if (!ok) {
