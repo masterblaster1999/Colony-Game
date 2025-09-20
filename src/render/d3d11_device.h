@@ -1,4 +1,3 @@
-// src/render/d3d11_device.h
 #pragma once
 #ifndef NOMINMAX
 #define NOMINMAX
@@ -36,6 +35,9 @@ struct D3D11Device
     bool                    is_valid() const { return m_device && m_context && m_swapchain && m_rtv; }
     bool                    tearing_supported() const { return m_tearingSupported; }
 
+    // Optional: lets the caller block without busy-spinning between frames.
+    HANDLE                  frame_latency_handle() const { return m_frameLatencyWaitable; }
+
 private:
     bool try_create_device(D3D_DRIVER_TYPE driverType, UINT flags);
     bool create_swapchain_and_targets(uint32_t width, uint32_t height);
@@ -50,6 +52,9 @@ private:
     ComPtr<ID3D11DeviceContext>     m_context;
     ComPtr<IDXGISwapChain1>         m_swapchain;
     ComPtr<ID3D11RenderTargetView>  m_rtv;
+
+    // Waitable swap-chain handle (valid while the swap chain lives; do not CloseHandle)
+    HANDLE                  m_frameLatencyWaitable = nullptr;
 
     D3D_FEATURE_LEVEL       m_featureLevel = D3D_FEATURE_LEVEL_11_0;
     bool                    m_tearingSupported = false;
