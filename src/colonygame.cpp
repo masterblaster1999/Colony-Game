@@ -432,6 +432,35 @@ static float NormalizeThumb(SHORT v, SHORT deadzone)
 }
 
 //======================================================================================
+// DPI: Enable Per‑Monitor v2 + helpers (graceful fallback for older systems)
+//======================================================================================
+
+// Fallback definitions for older SDKs where these are not present at compile-time.
+#ifndef DPI_AWARENESS_CONTEXT
+DECLARE_HANDLE(DPI_AWARENESS_CONTEXT);
+#endif
+#ifndef DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2
+#define DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2 ((DPI_AWARENESS_CONTEXT)-4)
+#endif
+
+static void EnablePerMonitorDpiV2()
+{
+    // Prefer Per‑Monitor v2 (Windows 10+) via SetProcessDpiAwarenessContext; fall back to SetProcessDPIAware.
+    HMODULE user32 = GetModuleHandleW(L"user32.dll");
+    if (user32) {
+        using SetProcCtxFn = BOOL (WINAPI*)(DPI_AWARENESS_CONTEXT);
+        auto pSet = reinterpret_cast<SetProcCtxFn>(GetProcAddress(user32, "SetProcessDpiAwarenessContext"));
+        if (pSet) {
+            if (pSet(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2)) {
+                return; // success
+            }
+        }
+    }
+    // Oldest fallback — at least avoid bitmap stretching.
+    SetProcessDPIAware();
+}
+
+//======================================================================================
 // CLI parsing
 //======================================================================================
 struct LaunchOptions {
@@ -861,8 +890,16 @@ private:
             CW_USEDEFAULT, CW_USEDEFAULT, W, H, nullptr, nullptr, hInst_, this);
         if (!hwnd_) return false;
 
-        // Create font for HUD
-        LOGFONTW lf{}; lf.lfHeight = -MulDiv(10, GetDeviceCaps(GetDC(hwnd_), LOGPIXELSY), 72);
+        // DPI-aware font for HUD using the window's current DPI
+        UINT dpi = 0;
+        HMODULE user32 = GetModuleHandleW(L"user32.dll");
+        if (user32) {
+            using GetDpiForWindowFn = UINT (WINAPI*)(HWND);
+            auto pGet = reinterpret_cast<GetDpiForWindowFn>(GetProcAddress(user32, "GetDpiForWindow"));
+            if (pGet) dpi = pGet(hwnd_); // Win10+ API
+        }
+        dpi_ = (dpi != 0) ? dpi : 96;
+        LOGFONTW lf{}; lf.lfHeight = -MulDiv(10, (int)dpi_, 96);
         wcscpy_s(lf.lfFaceName, L"Segoe UI");
         font_ = CreateFontIndirectW(&lf);
 
@@ -871,6 +908,24 @@ private:
 
     LRESULT WndProc(HWND h, UINT m, WPARAM w, LPARAM l) {
         switch (m) {
+        case WM_DPICHANGED: {
+            // Use the suggested rectangle (MS guidance) to reposition/resize at the new DPI. :contentReference[oaicite:1]{index=1}
+            const RECT* suggested = reinterpret_cast<const RECT*>(l);
+            SetWindowPos(h, nullptr,
+                         suggested->left, suggested->top,
+                         suggested->right - suggested->left,
+                         suggested->bottom - suggested->top,
+                         SWP_NOZORDER | SWP_NOACTIVATE);
+
+            // Update cached DPI and rebuild HUD font at the new DPI.
+            UINT dpiX = LOWORD(w); UINT dpiY = HIWORD(w);
+            dpi_ = (dpiY != 0) ? dpiY : dpi_;
+            if (font_) { DeleteObject(font_); font_ = nullptr; }
+            LOGFONTW lf{}; lf.lfHeight = -MulDiv(10, (int)dpi_, 96);
+            wcscpy_s(lf.lfFaceName, L"Segoe UI");
+            font_ = CreateFontIndirectW(&lf);
+            return 0;
+        }
         case WM_SIZE: {
             clientW_ = LOWORD(l); clientH_ = HIWORD(l);
             HDC hdc = GetDC(h);
@@ -1433,6 +1488,7 @@ private:
     BackBuffer back_;
     HFONT font_ = nullptr;
     int clientW_=1280, clientH_=720;
+    UINT dpi_ = 96;
 
     // Camera
     struct { double x=0,y=0; } camera_;
@@ -1497,10 +1553,12 @@ static int ValidateMain(const AppPaths& paths, const LaunchOptions& cli, const C
 
 int APIENTRY wWinMain(HINSTANCE hInst, HINSTANCE, LPWSTR, int) {
     CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE);
-    SetProcessDPIAware();
+
+    // Prefer Per‑Monitor v2 DPI awareness (fallback handled internally).
+    EnablePerMonitorDpiV2(); // See Microsoft DPI guidance. :contentReference[oaicite:2]{index=2}
 
     // ARR: register restart and recovery very early, before heavy init.
-    InstallWindowsARR(); // WER restarts only if we've run >= 60 seconds.
+    InstallWindowsARR();
 
     AppPaths paths = ComputePaths();
 
