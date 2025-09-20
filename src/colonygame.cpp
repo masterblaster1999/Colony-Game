@@ -329,6 +329,66 @@ static Config LoadConfig(const std::wstring& file, bool createIfMissing, const C
 }
 
 //======================================================================================
+// Windows Application Recovery & Restart (ARR)
+// Register early so WER can call our recovery callback on crash/hang and restart us.
+// Docs: RegisterApplicationRestart, RegisterApplicationRecoveryCallback, ApplicationRecoveryInProgress/Finished.
+//======================================================================================
+static DWORD WINAPI Colony_RecoveryCallback(PVOID /*ctx*/) {
+    DWORD cancel = 0;
+    ApplicationRecoveryInProgress(&cancel); // ping WER; returns cancel!=0 if user cancelled recovery
+    if (cancel) {
+        ApplicationRecoveryFinished(FALSE);
+        return 0;
+    }
+
+    // Write a tiny recovery marker/autosave into a stable, per-user location:
+    // %LOCALAPPDATA%\MarsColonySim\Recovery\autosave.json
+    std::wstring base = util::KnownFolderPath(FOLDERID_LocalAppData);
+    if (base.empty()) base = util::ExeDir();
+    std::wstring dir  = util::JoinPath(util::JoinPath(base, kAppName), L"Recovery");
+    util::EnsureDir(dir);
+    std::wstring file = util::JoinPath(dir, L"autosave.json");
+
+    const std::wstring jsonW = L"{\"recovered\":true,\"reason\":\"WER\",\"version\":1}\n";
+    const std::string  bytes = util::Narrow(jsonW);
+
+    HANDLE h = CreateFileW(file.c_str(),
+                           GENERIC_WRITE, FILE_SHARE_READ,
+                           nullptr, CREATE_ALWAYS,
+                           FILE_ATTRIBUTE_NORMAL | FILE_FLAG_WRITE_THROUGH,
+                           nullptr);
+    if (h != INVALID_HANDLE_VALUE) {
+        DWORD w = 0; (void)WriteFile(h, bytes.data(), (DWORD)bytes.size(), &w, nullptr);
+        FlushFileBuffers(h);
+        CloseHandle(h);
+    }
+
+    ApplicationRecoveryFinished(TRUE); // signal success
+    return 0;
+}
+
+static void InstallWindowsARR() {
+    // Request OS to restart us after crash/hang/update with a recognizable flag.
+    // Register before failure; WER restarts only if we've run ≥ 60 seconds.
+    RegisterApplicationRestart(L"--restarted", 0);
+    // Register recovery callback; ping interval 60s (we ping immediately in the callback).
+    RegisterApplicationRecoveryCallback(&Colony_RecoveryCallback, nullptr, 60 * 1000, 0);
+}
+
+static bool WasRestartedByWer() {
+    int argc = 0;
+    LPWSTR* argv = CommandLineToArgvW(GetCommandLineW(), &argc);
+    bool restarted = false;
+    if (argv) {
+        for (int i = 1; i < argc; ++i) {
+            if (wcscmp(argv[i], L"--restarted") == 0) { restarted = true; break; }
+        }
+        LocalFree(argv);
+    }
+    return restarted;
+}
+
+//======================================================================================
 // CLI parsing
 //======================================================================================
 struct LaunchOptions {
@@ -1280,12 +1340,20 @@ int APIENTRY wWinMain(HINSTANCE hInst, HINSTANCE, LPWSTR, int) {
     CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE);
     SetProcessDPIAware();
 
+    // ARR: register restart and recovery very early, before heavy init.
+    InstallWindowsARR(); // WER restarts only if we've run >= 60 seconds. :contentReference[oaicite:1]{index=1}
+
     AppPaths paths = ComputePaths();
 
     // Log file
     std::wstring logFile = util::JoinPath(paths.logsDir, L"ColonyGame-" + util::NowStampCompact() + L".log");
     g_log.Open(logFile);
     g_log.Line(L"colonygame.exe starting …");
+
+    // Note if this instance was restarted by WER.
+    if (WasRestartedByWer()) {
+        g_log.Line(L"[ARR] Restarted after crash/hang; will attempt to load recovery if present.");
+    }
 
     // Parse CLI
     int argc=0; wchar_t** argv = CommandLineToArgvW(GetCommandLineW(), &argc);
@@ -1322,3 +1390,4 @@ int APIENTRY wWinMain(HINSTANCE hInst, HINSTANCE, LPWSTR, int) {
     CoUninitialize();
     return rc;
 }
+
