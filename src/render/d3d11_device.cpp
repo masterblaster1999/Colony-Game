@@ -1,325 +1,181 @@
-// src/render/d3d11_device.cpp
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
 #include "d3d11_device.h"
 
-#define WIN32_LEAN_AND_MEAN
-#include <windows.h>
-#include <d3d11.h>
-#include <dxgi1_2.h>
-#include <dxgi1_5.h>
-#include <wrl/client.h>
+#include <cassert>
 #include <cstdio>
-#include <iterator>
 
-#ifndef DXGI_PRESENT_ALLOW_TEARING
-#define DXGI_PRESENT_ALLOW_TEARING 0x00000200u
-#endif
-
-using Microsoft::WRL::ComPtr;
+#pragma comment(lib, "d3d11.lib")
+#pragma comment(lib, "dxgi.lib")
 
 namespace render {
 
-//--------------------------------------------------------------------------------------------------
-// Local debug print
-//--------------------------------------------------------------------------------------------------
-static void debug_print(const char* msg)
+// Helper: small debug print without depending on external logger
+static void dbg_print(const char* fmt, ...)
 {
 #if defined(_DEBUG)
-    OutputDebugStringA(msg);
-#else
-    (void)msg;
+    char buf[1024];
+    va_list args; va_start(args, fmt);
+    vsnprintf(buf, sizeof(buf), fmt, args);
+    va_end(args);
+    OutputDebugStringA(buf);
 #endif
 }
 
-//--------------------------------------------------------------------------------------------------
-// Initialize: device + immediate context + swap chain + backbuffer RTV
-//--------------------------------------------------------------------------------------------------
-bool D3D11Device::initialize(HWND hwnd, uint32_t width, uint32_t height, bool request_debug_layer)
-{
-    m_hwnd = hwnd;
-    m_width = width;
-    m_height = height;
-    m_debugLayerEnabled = false;
-    m_tearingSupported = false;
+// --- Private helpers ---------------------------------------------------------
 
-    // Attempt hardware + debug (if requested), fall back as needed.
-    UINT flags = 0;
-#if defined(_DEBUG)
-    if (request_debug_layer) {
-        flags |= D3D11_CREATE_DEVICE_DEBUG;
-    }
-#endif
-
-    // 1) Try HARDWARE
-    if (!try_create_device(D3D_DRIVER_TYPE_HARDWARE, flags)) {
-        debug_print("[D3D11] Hardware device creation failed; trying WARP...\n");
-        // 2) Try WARP (software rasterizer)
-        if (!try_create_device(D3D_DRIVER_TYPE_WARP, flags & ~D3D11_CREATE_DEVICE_DEBUG)) {
-            debug_print("[D3D11] WARP device creation failed; trying REFERENCE...\n");
-            // 3) Last-ditch REFERENCE (very slow; often not installed). If this fails, bail.
-            if (!try_create_device(D3D_DRIVER_TYPE_REFERENCE, flags & ~D3D11_CREATE_DEVICE_DEBUG)) {
-                debug_print("[D3D11] Failed to create any D3D11 device.\n");
-                return false;
-            }
-        }
-    }
-
-    // Validate feature level
-    if (m_featureLevel < D3D_FEATURE_LEVEL_10_0) {
-        debug_print("[D3D11] Feature level < 10.0 not supported. Initialization aborted.\n");
-        shutdown();
-        return false;
-    }
-
-    // Query OS support for tearing (DXGI 1.5+) before creating the swap chain.
-    query_tearing_support(); // uses IDXGIFactory5::CheckFeatureSupport. See docs. 
-
-    if (!create_swapchain_and_targets(width, height)) {
-        shutdown();
-        return false;
-    }
-
-    return true;
-}
-
-//--------------------------------------------------------------------------------------------------
-// Shutdown all GPU objects owned by this wrapper
-//--------------------------------------------------------------------------------------------------
-void D3D11Device::shutdown()
-{
-    destroy_targets();
-    m_swapchain.Reset();
-    m_context.Reset();
-    m_device.Reset();
-    m_hwnd = nullptr;
-    m_width = m_height = 0;
-    m_debugLayerEnabled = false;
-    m_tearingSupported = false;
-    m_featureLevel = static_cast<D3D_FEATURE_LEVEL>(0);
-}
-
-//--------------------------------------------------------------------------------------------------
-// Resize swap chain (safe with minimized windows). Recreate RTV & viewport.
-//--------------------------------------------------------------------------------------------------
-bool D3D11Device::resize(uint32_t width, uint32_t height)
-{
-    if (!m_swapchain) return false;
-
-    if (width == 0 || height == 0) {
-        // Minimized: just drop RTV so OMSetRenderTargets won't bind stale pointers.
-        destroy_targets();
-        m_width = width;
-        m_height = height;
-        return true;
-    }
-
-    destroy_targets();
-
-    const UINT flags = m_tearingSupported ? DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING : 0;
-    const HRESULT hrResize = m_swapchain->ResizeBuffers(
-        0, width, height, DXGI_FORMAT_UNKNOWN, flags);
-    if (FAILED(hrResize)) {
-        debug_print("[D3D11] ResizeBuffers failed.\n");
-        return false;
-    }
-
-    m_width = width;
-    m_height = height;
-
-    // Recreate backbuffer RTV & viewport
-    ComPtr<ID3D11Texture2D> backBuffer;
-    HRESULT hr = m_swapchain->GetBuffer(
-        0, __uuidof(ID3D11Texture2D),
-        reinterpret_cast<void**>(backBuffer.GetAddressOf()));
-    if (FAILED(hr)) {
-        debug_print("[D3D11] GetBuffer(0) failed after resize.\n");
-        return false;
-    }
-
-    hr = m_device->CreateRenderTargetView(backBuffer.Get(), nullptr, m_rtv.GetAddressOf());
-    if (FAILED(hr)) {
-        debug_print("[D3D11] CreateRenderTargetView failed after resize.\n");
-        return false;
-    }
-
-    // Update viewport
-    D3D11_VIEWPORT vp{};
-    vp.TopLeftX = 0.0f;
-    vp.TopLeftY = 0.0f;
-    vp.Width    = static_cast<FLOAT>(m_width);
-    vp.Height   = static_cast<FLOAT>(m_height);
-    vp.MinDepth = 0.0f;
-    vp.MaxDepth = 1.0f;
-    m_context->RSSetViewports(1, &vp);
-
-    return true;
-}
-
-//--------------------------------------------------------------------------------------------------
-// Begin frame: bind RTV, set viewport, clear
-//--------------------------------------------------------------------------------------------------
-void D3D11Device::begin_frame(const float clear_color[4])
-{
-    if (!m_context || !m_rtv) return;
-
-    ID3D11RenderTargetView* rtvs[] = { m_rtv.Get() };
-    m_context->OMSetRenderTargets(1, rtvs, nullptr);
-
-    D3D11_VIEWPORT vp{};
-    vp.TopLeftX = 0.0f;
-    vp.TopLeftY = 0.0f;
-    vp.Width    = static_cast<FLOAT>(m_width);
-    vp.Height   = static_cast<FLOAT>(m_height);
-    vp.MinDepth = 0.0f;
-    vp.MaxDepth = 1.0f;
-    m_context->RSSetViewports(1, &vp);
-
-    m_context->ClearRenderTargetView(m_rtv.Get(), clear_color);
-}
-
-//--------------------------------------------------------------------------------------------------
-// Present: vsync toggle + tearing flag when allowed; detect device-lost and attempt recovery
-//--------------------------------------------------------------------------------------------------
-bool D3D11Device::present(bool vsync)
-{
-    if (!m_swapchain) return false;
-
-    const UINT flags = (!vsync && m_tearingSupported) ? DXGI_PRESENT_ALLOW_TEARING : 0u;
-    const UINT syncInterval = vsync ? 1u : 0u; // tearing allowed only with syncInterval == 0
-
-    HRESULT hr = m_swapchain->Present(syncInterval, flags);
-
-    if (hr == DXGI_ERROR_DEVICE_REMOVED || hr == DXGI_ERROR_DEVICE_RESET) {
-        debug_print("[D3D11] Device lost on Present; attempting to recreate device and swap chain...\n");
-        const HWND hwnd = m_hwnd;
-        const uint32_t w = m_width ? m_width : 1;
-        const uint32_t h = m_height ? m_height : 1;
-        const bool debugEnabled = m_debugLayerEnabled;
-        shutdown();
-        return initialize(hwnd, w, h, debugEnabled);
-    }
-
-    if (FAILED(hr)) {
-        debug_print("[D3D11] Present failed.\n");
-        return false;
-    }
-    return true;
-}
-
-//--------------------------------------------------------------------------------------------------
-// Try to create a D3D11 device/context with given driver type & flags
-//--------------------------------------------------------------------------------------------------
 bool D3D11Device::try_create_device(D3D_DRIVER_TYPE driverType, UINT flags)
 {
-    static const D3D_FEATURE_LEVEL fls[] = {
-    #if defined(D3D_FEATURE_LEVEL_11_1)
+    static const D3D_FEATURE_LEVEL kRequested[] = {
         D3D_FEATURE_LEVEL_11_1,
-    #endif
         D3D_FEATURE_LEVEL_11_0,
         D3D_FEATURE_LEVEL_10_1,
-        D3D_FEATURE_LEVEL_10_0
+        D3D_FEATURE_LEVEL_10_0,
     };
 
-    ComPtr<ID3D11Device> dev;
-    ComPtr<ID3D11DeviceContext> ctx;
-    D3D_FEATURE_LEVEL flOut{};
+    ComPtr<ID3D11Device> device;
+    ComPtr<ID3D11DeviceContext> context;
+    D3D_FEATURE_LEVEL obtained = D3D_FEATURE_LEVEL_11_0;
 
     HRESULT hr = D3D11CreateDevice(
-        nullptr, // default adapter
-        driverType,
-        nullptr, // software module
-        flags,
-        fls, static_cast<UINT>(std::size(fls)),
-        D3D11_SDK_VERSION,
-        dev.GetAddressOf(),
-        &flOut,
-        ctx.GetAddressOf()
-    );
+        /*pAdapter*/     nullptr,
+        /*DriverType*/   driverType,
+        /*Software*/     nullptr,
+        /*Flags*/        flags,
+        /*pFeatureLevels*/ kRequested,
+        /*FeatureLevels*/  UINT(_countof(kRequested)),
+        /*SDKVersion*/   D3D11_SDK_VERSION,
+        /*ppDevice*/     device.GetAddressOf(),
+        /*pFeatureLevel*/&obtained,
+        /*ppImmediateContext*/ context.GetAddressOf());
 
-#if defined(_DEBUG)
-    if (SUCCEEDED(hr) && (flags & D3D11_CREATE_DEVICE_DEBUG)) {
-        m_debugLayerEnabled = true;
-    }
-#endif
+    if (FAILED(hr)) return false;
 
-    if (FAILED(hr)) {
-        return false;
-    }
-
-    m_device = std::move(dev);
-    m_context = std::move(ctx);
-    m_featureLevel = flOut;
+    m_device = device;
+    m_context = context;
+    m_featureLevel = obtained;
     return true;
 }
 
-//--------------------------------------------------------------------------------------------------
-// Create flip-model swap chain + RTV and set initial viewport
-//--------------------------------------------------------------------------------------------------
+bool D3D11Device::query_tearing_support()
+{
+    m_tearingSupported = false;
+
+    ComPtr<IDXGIFactory4> factory4;
+    if (FAILED(CreateDXGIFactory1(IID_PPV_ARGS(&factory4))))
+        return false;
+
+    ComPtr<IDXGIFactory5> factory5;
+    if (FAILED(factory4.As(&factory5)))
+        return false;
+
+    BOOL allowTearing = FALSE;
+    if (SUCCEEDED(factory5->CheckFeatureSupport(
+            DXGI_FEATURE_PRESENT_ALLOW_TEARING,
+            &allowTearing, sizeof(allowTearing))))
+    {
+        m_tearingSupported = (allowTearing == TRUE);
+    }
+    return m_tearingSupported;
+}
+
+void D3D11Device::destroy_targets()
+{
+    if (m_context) {
+        // Unbind render targets before destroying them
+        m_context->OMSetRenderTargets(0, nullptr, nullptr);
+    }
+    m_rtv.Reset();
+}
+
 bool D3D11Device::create_swapchain_and_targets(uint32_t width, uint32_t height)
 {
-    // Get factory from device
+    assert(m_device && m_context);
+    if (!m_device || !m_context) return false;
+
+    // Acquire factory from the device's adapter to avoid mismatched adapters.
     ComPtr<IDXGIDevice> dxgiDevice;
     HRESULT hr = m_device.As(&dxgiDevice);
     if (FAILED(hr)) return false;
 
     ComPtr<IDXGIAdapter> adapter;
-    hr = dxgiDevice->GetAdapter(adapter.GetAddressOf());
+    hr = dxgiDevice->GetAdapter(&adapter);
     if (FAILED(hr)) return false;
 
-    ComPtr<IDXGIFactory1> factory1;
-    hr = adapter->GetParent(__uuidof(IDXGIFactory1), reinterpret_cast<void**>(factory1.GetAddressOf()));
+    ComPtr<IDXGIFactory1> baseFactory;
+    hr = adapter->GetParent(IID_PPV_ARGS(&baseFactory));
     if (FAILED(hr)) return false;
 
     ComPtr<IDXGIFactory2> factory2;
-    hr = factory1.As(&factory2);
+    hr = baseFactory.As(&factory2);
     if (FAILED(hr)) return false;
 
-    DXGI_SWAP_CHAIN_DESC1 scd{};
-    scd.Width = width;
-    scd.Height = height;
-    scd.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
-    scd.Stereo = FALSE;
-    scd.SampleDesc.Count = 1;
-    scd.SampleDesc.Quality = 0;
-    scd.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT;
-    scd.BufferCount = 2; // double-buffer
-    scd.Scaling = DXGI_SCALING_STRETCH;
-    scd.SwapEffect = DXGI_SWAP_EFFECT_FLIP_DISCARD; // modern flip model
-    scd.AlphaMode = DXGI_ALPHA_MODE_IGNORE;
-    scd.Flags = m_tearingSupported ? DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING : 0;
+    // Disable DXGI's default Alt+Enter behavior (we'll manage windowing ourselves).
+    factory2->MakeWindowAssociation(m_hwnd, DXGI_MWA_NO_ALT_ENTER);
 
-    ComPtr<IDXGISwapChain1> swap;
+    // Build a modern flip-model swap chain.
+    DXGI_SWAP_CHAIN_DESC1 desc = {};
+    desc.Width       = width;
+    desc.Height      = height;
+    desc.Format      = DXGI_FORMAT_R8G8B8A8_UNORM;
+    desc.Stereo      = FALSE;
+    desc.SampleDesc  = { 1, 0 };
+    desc.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT;
+    desc.BufferCount = 2; // double-buffered is usually ideal for flip-model
+    desc.Scaling     = DXGI_SCALING_STRETCH;
+    desc.SwapEffect  = DXGI_SWAP_EFFECT_FLIP_DISCARD;
+    desc.AlphaMode   = DXGI_ALPHA_MODE_IGNORE;
+    desc.Flags       = DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT |
+                       (m_tearingSupported ? DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING : 0);
+
+    ComPtr<IDXGISwapChain1> swapchain;
     hr = factory2->CreateSwapChainForHwnd(
         m_device.Get(),
         m_hwnd,
-        &scd,
-        nullptr, // fullscreen desc
-        nullptr, // restrict output
-        swap.GetAddressOf()
-    );
+        &desc,
+        /*pFullscreenDesc*/ nullptr,
+        /*pRestrictToOutput*/ nullptr,
+        swapchain.GetAddressOf());
+
     if (FAILED(hr)) {
-        debug_print("[D3D11] CreateSwapChainForHwnd failed.\n");
+        dbg_print("[D3D11Device] CreateSwapChainForHwnd failed: 0x%08X\n", hr);
         return false;
     }
 
-    // Disable DXGI's default Alt+Enter; app will manage windowing explicitly if desired.
-    factory2->MakeWindowAssociation(m_hwnd, DXGI_MWA_NO_ALT_ENTER);
+    m_swapchain = swapchain;
 
-    m_swapchain = std::move(swap);
+    // Configure waitable swap chain (max frame latency = 1) and cache the handle.
+    ComPtr<IDXGISwapChain2> sc2;
+    if (SUCCEEDED(m_swapchain.As(&sc2))) {
+        sc2->SetMaximumFrameLatency(1);
+        m_frameLatencyWaitable = sc2->GetFrameLatencyWaitableObject(); // do NOT CloseHandle
+    } else {
+        m_frameLatencyWaitable = nullptr; // not available on older OS
+    }
 
-    // Create RTV
+    // Create RTV from the back buffer
     ComPtr<ID3D11Texture2D> backBuffer;
-    hr = m_swapchain->GetBuffer(0, __uuidof(ID3D11Texture2D), reinterpret_cast<void**>(backBuffer.GetAddressOf()));
-    if (FAILED(hr)) return false;
+    hr = m_swapchain->GetBuffer(0, IID_PPV_ARGS(&backBuffer));
+    if (FAILED(hr)) {
+        dbg_print("[D3D11Device] GetBuffer(0) failed: 0x%08X\n", hr);
+        return false;
+    }
 
-    hr = m_device->CreateRenderTargetView(backBuffer.Get(), nullptr, m_rtv.GetAddressOf());
-    if (FAILED(hr)) return false;
+    ComPtr<ID3D11RenderTargetView> rtv;
+    hr = m_device->CreateRenderTargetView(backBuffer.Get(), nullptr, &rtv);
+    if (FAILED(hr)) {
+        dbg_print("[D3D11Device] CreateRenderTargetView failed: 0x%08X\n", hr);
+        return false;
+    }
+    m_rtv = rtv;
 
-    // Initial viewport
-    D3D11_VIEWPORT vp{};
+    // Set viewport
+    D3D11_VIEWPORT vp = {};
     vp.TopLeftX = 0.0f;
     vp.TopLeftY = 0.0f;
-    vp.Width    = static_cast<FLOAT>(width);
-    vp.Height   = static_cast<FLOAT>(height);
+    vp.Width    = static_cast<float>(width);
+    vp.Height   = static_cast<float>(height);
     vp.MinDepth = 0.0f;
     vp.MaxDepth = 1.0f;
     m_context->RSSetViewports(1, &vp);
@@ -327,40 +183,200 @@ bool D3D11Device::create_swapchain_and_targets(uint32_t width, uint32_t height)
     return true;
 }
 
-//--------------------------------------------------------------------------------------------------
-// Release RTV and unbind from the output-merger
-//--------------------------------------------------------------------------------------------------
-void D3D11Device::destroy_targets()
+// --- Public API --------------------------------------------------------------
+
+bool D3D11Device::initialize(HWND hwnd, uint32_t width, uint32_t height, bool request_debug_layer)
 {
-    if (m_context) {
-        ID3D11RenderTargetView* nullRTV[1] = { nullptr };
-        m_context->OMSetRenderTargets(1, nullRTV, nullptr);
+    shutdown(); // in case of re-init
+
+    m_hwnd = hwnd;
+    m_width = width;
+    m_height = height;
+
+    // Query tearing support early to decide swap-chain flags
+    query_tearing_support();
+
+    // Build device
+    UINT flags = D3D11_CREATE_DEVICE_BGRA_SUPPORT;
+#if defined(_DEBUG)
+    if (request_debug_layer) flags |= D3D11_CREATE_DEVICE_DEBUG;
+#endif
+    m_debugLayerEnabled = (flags & D3D11_CREATE_DEVICE_DEBUG) != 0;
+
+    // Try hardware with current flags; if debug layer missing, fall back without it.
+    if (!try_create_device(D3D_DRIVER_TYPE_HARDWARE, flags)) {
+#if defined(_DEBUG)
+        if (m_debugLayerEnabled) {
+            dbg_print("[D3D11Device] Debug layer unavailable; retrying without it.\n");
+            flags &= ~D3D11_CREATE_DEVICE_DEBUG;
+            m_debugLayerEnabled = false;
+            if (!try_create_device(D3D_DRIVER_TYPE_HARDWARE, flags)) {
+                dbg_print("[D3D11Device] Hardware device failed; trying WARP.\n");
+                if (!try_create_device(D3D_DRIVER_TYPE_WARP, flags)) return false;
+            }
+        } else
+#endif
+        {
+            dbg_print("[D3D11Device] Hardware device failed; trying WARP.\n");
+            if (!try_create_device(D3D_DRIVER_TYPE_WARP, flags)) return false;
+        }
     }
-    m_rtv.Reset();
-}
 
-//--------------------------------------------------------------------------------------------------
-// Tearing support query (DXGI 1.5). Safe to call even if not available.
-//--------------------------------------------------------------------------------------------------
-bool D3D11Device::query_tearing_support()
-{
-    m_tearingSupported = false;
-
-    ComPtr<IDXGIFactory1> factory1;
-    if (FAILED(CreateDXGIFactory1(__uuidof(IDXGIFactory1),
-                                  reinterpret_cast<void**>(factory1.GetAddressOf())))) {
+    // Create swap chain + RTV
+    if (!create_swapchain_and_targets(width, height)) {
+        shutdown();
         return false;
     }
 
-    ComPtr<IDXGIFactory5> factory5;
-    if (SUCCEEDED(factory1.As(&factory5))) {
-        BOOL allowTearing = FALSE;
-        if (SUCCEEDED(factory5->CheckFeatureSupport(DXGI_FEATURE_PRESENT_ALLOW_TEARING,
-                                                    &allowTearing, sizeof(allowTearing)))) {
-            m_tearingSupported = (allowTearing == TRUE);
-        }
+    dbg_print("[D3D11Device] Initialized (FL %x), tearing=%d\n",
+              unsigned(m_featureLevel), m_tearingSupported ? 1 : 0);
+    return true;
+}
+
+void D3D11Device::shutdown()
+{
+    // Release in reverse order of dependencies
+    destroy_targets();
+
+    // Release swap chain last among DXGI objects that reference the device
+    m_swapchain.Reset();
+
+    // Note: Do NOT CloseHandle(m_frameLatencyWaitable); DXGI manages it.
+    m_frameLatencyWaitable = nullptr;
+
+    m_context.Reset();
+    m_device.Reset();
+
+    m_width = m_height = 0;
+    m_hwnd = nullptr;
+    // preserve m_tearingSupported & m_debugLayerEnabled for diagnostics if desired
+}
+
+bool D3D11Device::resize(uint32_t width, uint32_t height)
+{
+    if (!m_swapchain || !m_device || !m_context) return false;
+
+    // Ignore minimized case; we'll rebuild when restored to >0 size.
+    if (width == 0 || height == 0) {
+        m_width = width;
+        m_height = height;
+        return true;
     }
-    return m_tearingSupported;
+
+    if (width == m_width && height == m_height && m_rtv) {
+        // Nothing to do.
+        return true;
+    }
+
+    destroy_targets();
+
+    m_width = width;
+    m_height = height;
+
+    UINT flags = DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT |
+                 (m_tearingSupported ? DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING : 0);
+
+    HRESULT hr = m_swapchain->ResizeBuffers(
+        /*BufferCount*/ 0, // keep same
+        /*Width*/       width,
+        /*Height*/      height,
+        /*NewFormat*/   DXGI_FORMAT_UNKNOWN,
+        /*SwapChainFlags*/ flags);
+
+    if (FAILED(hr)) {
+        dbg_print("[D3D11Device] ResizeBuffers failed: 0x%08X\n", hr);
+        return false;
+    }
+
+    // Recreate RTV
+    ComPtr<ID3D11Texture2D> backBuffer;
+    hr = m_swapchain->GetBuffer(0, IID_PPV_ARGS(&backBuffer));
+    if (FAILED(hr)) {
+        dbg_print("[D3D11Device] GetBuffer(0) after Resize failed: 0x%08X\n", hr);
+        return false;
+    }
+
+    hr = m_device->CreateRenderTargetView(backBuffer.Get(), nullptr, m_rtv.ReleaseAndGetAddressOf());
+    if (FAILED(hr)) {
+        dbg_print("[D3D11Device] CreateRenderTargetView after Resize failed: 0x%08X\n", hr);
+        return false;
+    }
+
+    // Refresh waitable handle (should remain valid, but re-query is harmless)
+    ComPtr<IDXGISwapChain2> sc2;
+    if (SUCCEEDED(m_swapchain.As(&sc2))) {
+        sc2->SetMaximumFrameLatency(1);
+        m_frameLatencyWaitable = sc2->GetFrameLatencyWaitableObject();
+    } else {
+        m_frameLatencyWaitable = nullptr;
+    }
+
+    // Update viewport
+    D3D11_VIEWPORT vp = {};
+    vp.TopLeftX = 0.0f;
+    vp.TopLeftY = 0.0f;
+    vp.Width    = static_cast<float>(width);
+    vp.Height   = static_cast<float>(height);
+    vp.MinDepth = 0.0f;
+    vp.MaxDepth = 1.0f;
+    m_context->RSSetViewports(1, &vp);
+
+    return true;
+}
+
+void D3D11Device::begin_frame(const float clear_color[4])
+{
+    assert(m_rtv && m_context);
+    if (!m_rtv || !m_context) return;
+
+    ID3D11RenderTargetView* rtv = m_rtv.Get();
+    m_context->OMSetRenderTargets(1, &rtv, nullptr);
+
+    // Keep viewport in sync if someone changed width/height externally
+    D3D11_VIEWPORT vp;
+    UINT num = 1;
+    m_context->RSGetViewports(&num, &vp);
+    if (num != 1 || vp.Width != float(m_width) || vp.Height != float(m_height)) {
+        vp.TopLeftX = 0.0f;
+        vp.TopLeftY = 0.0f;
+        vp.Width    = static_cast<float>(m_width);
+        vp.Height   = static_cast<float>(m_height);
+        vp.MinDepth = 0.0f;
+        vp.MaxDepth = 1.0f;
+        m_context->RSSetViewports(1, &vp);
+    }
+
+    m_context->ClearRenderTargetView(m_rtv.Get(), clear_color);
+}
+
+bool D3D11Device::present(bool vsync)
+{
+    if (!m_swapchain) return false;
+
+    const UINT syncInterval = vsync ? 1u : 0u;
+    const UINT presentFlags = (!vsync && m_tearingSupported) ? DXGI_PRESENT_ALLOW_TEARING : 0u;
+
+    HRESULT hr = m_swapchain->Present(syncInterval, presentFlags);
+    if (FAILED(hr)) {
+        // Handle device loss (TDR, driver upgrade, etc.)
+        if (hr == DXGI_ERROR_DEVICE_REMOVED || hr == DXGI_ERROR_DEVICE_RESET) {
+            HRESULT reason = m_device ? m_device->GetDeviceRemovedReason() : S_OK;
+            dbg_print("[D3D11Device] Device lost (Present hr=0x%08X, reason=0x%08X). Reinitializing...\n", hr, reason);
+
+            // Cache state and rebuild
+            HWND hwnd = m_hwnd;
+            uint32_t w = m_width;
+            uint32_t h = m_height;
+            bool wantDebug = m_debugLayerEnabled;
+
+            shutdown();
+            return initialize(hwnd, w, h, wantDebug);
+        }
+        dbg_print("[D3D11Device] Present failed: 0x%08X\n", hr);
+        return false;
+    }
+
+    return true;
 }
 
 } // namespace render
