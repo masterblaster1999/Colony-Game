@@ -193,6 +193,13 @@ endforeach()
 file(GLOB_RECURSE CORE_SOURCES CONFIGURE_DEPENDS "${SRC_DIR}/*.c" "${SRC_DIR}/*.cpp")
 file(GLOB_RECURSE CORE_HEADERS CONFIGURE_DEPENDS "${SRC_DIR}/*.h" "${SRC_DIR}/*.hpp")
 
+# ---- CANONICAL WINDOWS SOURCES (PATCH): exclude legacy src/renderer/** to avoid MSB8027 collisions
+# The modern D3D11 code lives under src/gfx and src/render; the old backend under src/renderer/** clashes
+# on Windows due to identical basenames (e.g., d3d11_device.cpp, Renderer2D_D3D11.cpp).
+list(FILTER CORE_SOURCES EXCLUDE REGEX ".*[\\/]renderer[\\/].*")
+list(FILTER CORE_HEADERS EXCLUDE REGEX ".*[\\/]renderer[\\/].*")
+
+# Exclude entrypoints from the core static lib
 foreach(_rx IN ITEMS
   ".*/Launcher.*\\.cpp$"
   ".*/.*Launcher_.*\\.cpp$"
@@ -206,6 +213,7 @@ foreach(_rx IN ITEMS
   list(FILTER CORE_SOURCES EXCLUDE REGEX "${_rx}")
 endforeach()
 
+# Remove SDL-only bits when not building SDL
 set(SDL_ONLY_SOURCES "")
 foreach(_cand IN ITEMS "src/game/Game.cpp" "src/ui/HudOverlays.cpp")
   if(EXISTS "${CMAKE_SOURCE_DIR}/${_cand}")
@@ -216,6 +224,7 @@ if(SDL_ONLY_SOURCES)
   list(REMOVE_ITEM CORE_SOURCES ${SDL_ONLY_SOURCES})
 endif()
 
+# Keep existing fine-grained excludes
 list(FILTER CORE_SOURCES EXCLUDE REGEX ".*[\\/]render[\\/]d3d11_sprite_batch\\.cpp$")
 # (PATCH) also exclude SingleClick.cpp and similar bootstrap bits from the core library
 list(FILTER CORE_SOURCES EXCLUDE REGEX ".*[\\\\/](os|platform)[\\\\/]win(32)?[\\\\/](WinBootstrap|SingleInstance|CrashHandler|SingleClick)\\.cpp$")
@@ -294,14 +303,14 @@ target_include_directories(colony_core PUBLIC "${CMAKE_BINARY_DIR}/generated")
 # Known game entry points (do NOT include WinLauncher.cpp here)
 set(_KNOWN_WIN_GAME_ENTRIES
   "src/platform/win32_main.cpp" "platform/win32_main.cpp" "src/platform/win32/win32_main.cpp"
-  # (ADDED for this repo layout)
-  "platform/win/win32_main.cpp" "src/platform/win/win32_main.cpp"
+  # (ADDED for this repo layout, prefer src/)
+  "src/platform/win/win32_main.cpp" "platform/win/win32_main.cpp"
   "colonygame.cpp" "src/colonygame.cpp" "src/platform/win32/colonygame.cpp"
-  # (ADDED for this repo layout)
-  "platform/win/colonygame.cpp" "src/platform/win/colonygame.cpp"
+  # (ADDED for this repo layout, prefer src/)
+  "src/platform/win/colonygame.cpp" "platform/win/colonygame.cpp"
   "src/Launcher_Win32.cpp" "Launcher_Win32.cpp"
-  # (ADDED for this repo layout)
-  "platform/win/Launcher_Win32.cpp" "src/platform/win/Launcher_Win32.cpp"
+  # (ADDED for this repo layout, prefer src/)
+  "src/platform/win/Launcher_Win32.cpp" "platform/win/Launcher_Win32.cpp"
 )
 set(_KNOWN_SDL_LAUNCHERS
   "Launcher_SDL.cpp" "SDLLauncher.cpp" "src/Launcher_SDL.cpp"
@@ -311,8 +320,8 @@ set(_KNOWN_SDL_LAUNCHERS
 set(_KNOWN_WIN_BOOTSTRAPPERS
   "WinLauncher.cpp" "src/WinLauncher.cpp"
   "src/platform/win32/WinLauncher.cpp" "platform/win32/WinLauncher.cpp"
-  # (ADDED for this repo layout)
-  "platform/win/WinLauncher.cpp" "src/platform/win/WinLauncher.cpp"
+  # (ADDED for this repo layout, prefer src/)
+  "src/platform/win/WinLauncher.cpp" "platform/win/WinLauncher.cpp"
 )
 
 set(_WIN32_FLAG WIN32)
@@ -487,8 +496,10 @@ if(BUILD_BOOTSTRAPPER AND _BOOTSTRAP)
   # (MERGED) include the project's src/ for the header AND project root for platform/win/*
   target_include_directories(WinLauncher PRIVATE "${CMAKE_SOURCE_DIR}/src" "${CMAKE_SOURCE_DIR}")
 
-  # (NEW) build the PathUtilWin helper used by WinLauncher.cpp
-  if(EXISTS "${CMAKE_SOURCE_DIR}/platform/win/PathUtilWin.cpp")
+  # (PATCH) build the PathUtilWin helper used by WinLauncher.cpp — prefer canonical src/platform/win
+  if(EXISTS "${CMAKE_SOURCE_DIR}/src/platform/win/PathUtilWin.cpp")
+    target_sources(WinLauncher PRIVATE "${CMAKE_SOURCE_DIR}/src/platform/win/PathUtilWin.cpp")
+  elseif(EXISTS "${CMAKE_SOURCE_DIR}/platform/win/PathUtilWin.cpp")
     target_sources(WinLauncher PRIVATE "${CMAKE_SOURCE_DIR}/platform/win/PathUtilWin.cpp")
   endif()
 
