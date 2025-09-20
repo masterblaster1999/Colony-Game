@@ -132,7 +132,8 @@ if(MSVC)
   if(ENABLE_MSVC_ANALYZE)
     add_compile_options(/analyze)
   endif()
-  # ---------- Static runtime default (merged patch) ----------
+
+  # ---------- Static runtime default ----------
   if(MSVC_STATIC_RUNTIME)
     # /MT for Release, /MTd for Debug
     set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
@@ -140,16 +141,19 @@ if(MSVC)
     # /MD for Release, /MDd for Debug
     set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>DLL")
   endif()
-  # ----------------------------------------------------------
+  # -------------------------------------------
 
   if(NOT DEFINED CMAKE_MSVC_DEBUG_INFORMATION_FORMAT)
     set(CMAKE_MSVC_DEBUG_INFORMATION_FORMAT "$<$<CONFIG:Debug,RelWithDebInfo>:ProgramDatabase>")
   endif()
+
   add_link_options(/DYNAMICBASE /NXCOMPAT /guard:cf)
-  add_link_options("$<$<CONFIG:Release>:/INCREMENTAL:NO>")
-  add_link_options("$<$<CONFIG:RelWithDebInfo>:/INCREMENTAL:NO>")
-  add_link_options("$<$<CONFIG:Release>:/OPT:REF;/OPT:ICF;/Brepro>")
-  add_link_options("$<$<CONFIG:RelWithDebInfo>:/OPT:REF;/OPT:ICF>")
+  add_link_options($<$<CONFIG:Release>:/INCREMENTAL:NO>)
+  add_link_options($<$<CONFIG:RelWithDebInfo>:/INCREMENTAL:NO>)
+  # NOTE: do NOT quote these multi-option generator expressions; let CMake split them.
+  add_link_options($<$<CONFIG:Release>:/OPT:REF> $<$<CONFIG:Release>:/OPT:ICF> $<$<CONFIG:Release>:/Brepro>)
+  add_link_options($<$<CONFIG:RelWithDebInfo>:/OPT:REF> $<$<CONFIG:RelWithDebInfo>:/OPT:ICF>)
+
   include(ProcessorCount)
   ProcessorCount(_cg_nproc)
   if(NOT _cg_nproc EQUAL 0)
@@ -193,11 +197,8 @@ endforeach()
 file(GLOB_RECURSE CORE_SOURCES CONFIGURE_DEPENDS "${SRC_DIR}/*.c" "${SRC_DIR}/*.cpp")
 file(GLOB_RECURSE CORE_HEADERS CONFIGURE_DEPENDS "${SRC_DIR}/*.h" "${SRC_DIR}/*.hpp")
 
-# ---- CANONICAL WINDOWS SOURCES (PATCH): exclude legacy src/renderer/** to avoid MSB8027 collisions
-# The modern D3D11 code lives under src/gfx and src/render; the old backend under src/renderer/** clashes
-# on Windows due to identical basenames (e.g., d3d11_device.cpp, Renderer2D_D3D11.cpp).
-list(FILTER CORE_SOURCES EXCLUDE REGEX ".*[\\/]renderer[\\/].*")
-list(FILTER CORE_HEADERS EXCLUDE REGEX ".*[\\/]renderer[\\/].*")
+# Exclude any old/legacy renderer backend to avoid Windows basename collisions
+list(FILTER CORE_SOURCES EXCLUDE REGEX ".*[\\/]renderer[\\/]")
 
 # Exclude entrypoints from the core static lib
 foreach(_rx IN ITEMS
@@ -213,20 +214,22 @@ foreach(_rx IN ITEMS
   list(FILTER CORE_SOURCES EXCLUDE REGEX "${_rx}")
 endforeach()
 
-# Remove SDL-only bits when not building SDL
+# SDL-only sources that should not be in core when building the Win32 frontend
 set(SDL_ONLY_SOURCES "")
 foreach(_cand IN ITEMS "src/game/Game.cpp" "src/ui/HudOverlays.cpp")
   if(EXISTS "${CMAKE_SOURCE_DIR}/${_cand}")
     list(APPEND SDL_ONLY_SOURCES "${CMAKE_SOURCE_DIR}/${_cand}")
   endif()
 endforeach()
-if(SDL_ONLY_SOURCES)
-  list(REMOVE_ITEM CORE_SOURCES ${SDL_ONLY_SOURCES})
+if(NOT FRONTEND STREQUAL "sdl")
+  if(SDL_ONLY_SOURCES)
+    list(REMOVE_ITEM CORE_SOURCES ${SDL_ONLY_SOURCES})
+  endif()
 endif()
 
 # Keep existing fine-grained excludes
 list(FILTER CORE_SOURCES EXCLUDE REGEX ".*[\\/]render[\\/]d3d11_sprite_batch\\.cpp$")
-# (PATCH) also exclude SingleClick.cpp and similar bootstrap bits from the core library
+# (PATCH) also exclude bootstrap-only Win helpers from the core library
 list(FILTER CORE_SOURCES EXCLUDE REGEX ".*[\\\\/](os|platform)[\\\\/]win(32)?[\\\\/](WinBootstrap|SingleInstance|CrashHandler|SingleClick)\\.cpp$")
 
 add_library(colony_core STATIC ${CORE_SOURCES} ${CORE_HEADERS})
@@ -238,6 +241,7 @@ if(ENABLE_UNITY)
   set_property(TARGET colony_core PROPERTY UNITY_BUILD_BATCH_SIZE ${UNITY_BATCH_SIZE_CORE})
 endif()
 
+# PCH for core
 if(NOT PCH_HEADER)
   foreach(_cand IN ITEMS "${SRC_DIR}/pch.h" "${SRC_DIR}/PCH.h" "pch.h" "PCH.h")
     if(EXISTS "${CMAKE_SOURCE_DIR}/${_cand}")
@@ -303,13 +307,10 @@ target_include_directories(colony_core PUBLIC "${CMAKE_BINARY_DIR}/generated")
 # Known game entry points (do NOT include WinLauncher.cpp here)
 set(_KNOWN_WIN_GAME_ENTRIES
   "src/platform/win32_main.cpp" "platform/win32_main.cpp" "src/platform/win32/win32_main.cpp"
-  # (ADDED for this repo layout, prefer src/)
   "src/platform/win/win32_main.cpp" "platform/win/win32_main.cpp"
   "colonygame.cpp" "src/colonygame.cpp" "src/platform/win32/colonygame.cpp"
-  # (ADDED for this repo layout, prefer src/)
   "src/platform/win/colonygame.cpp" "platform/win/colonygame.cpp"
   "src/Launcher_Win32.cpp" "Launcher_Win32.cpp"
-  # (ADDED for this repo layout, prefer src/)
   "src/platform/win/Launcher_Win32.cpp" "platform/win/Launcher_Win32.cpp"
 )
 set(_KNOWN_SDL_LAUNCHERS
@@ -320,13 +321,12 @@ set(_KNOWN_SDL_LAUNCHERS
 set(_KNOWN_WIN_BOOTSTRAPPERS
   "WinLauncher.cpp" "src/WinLauncher.cpp"
   "src/platform/win32/WinLauncher.cpp" "platform/win32/WinLauncher.cpp"
-  # (ADDED for this repo layout, prefer src/)
   "src/platform/win/WinLauncher.cpp" "platform/win/WinLauncher.cpp"
 )
 
 set(_WIN32_FLAG WIN32)
 if(SHOW_CONSOLE)
-  set(_WIN32_FLAG)
+  set(_WIN32_FLAG) # console subsystem instead
 endif()
 
 # Resolve GAME ENTRY
@@ -418,29 +418,31 @@ if(PCH_HEADER_EXE AND EXISTS "${PCH_HEADER_EXE}")
   target_precompile_headers(ColonyGame PRIVATE "${PCH_HEADER_EXE}")
 endif()
 
-# -------- EnableWinQoL (resources, bootstrap, installs, asset copy) ----------
-# (We will embed the app manifest ourselves to avoid any duplication.)
+# -------- EnableWinQoL (resources, installs, asset copy) ----------
 include(cmake/EnableWinQoL.cmake)
 
 set(CG_APP_VERSION "${PROJECT_VERSION}.0")
 # Asset folders to mirror next to the exe
 set(_ASSET_DIRS assets Assets data Data res resources)
 
-# (PATCH) sanitize manifest path for RC via forward slashes
-set(CG_APP_MANIFEST "${CMAKE_SOURCE_DIR}/res/app.manifest")
-file(TO_CMAKE_PATH "${CG_APP_MANIFEST}" CG_APP_MANIFEST_CMAKE) # -> forward slashes
+# (PATCH) manifest/icon paths (manifest is guaranteed; icon is optional)
+set(_ICON_PATH "${CMAKE_SOURCE_DIR}/res/app.ico")
 
 # Keep QoL options but omit MANIFEST; we will embed it explicitly per-target.
 set(_WQ_OPTS
   COMPANY_NAME     "Colony-Game"
   FILE_DESCRIPTION "Colony-Game"
-  ICON             "${CMAKE_SOURCE_DIR}/res/app.ico"
   WORKING_DIR      "$<TARGET_FILE_DIR:ColonyGame>"
   ASSET_DIRS       ${_ASSET_DIRS}
   SKIP_UNITY_FOR_BOOTSTRAP
   SECURITY_HARDENING
   FASTLINK_DEBUG
 )
+if(EXISTS "${_ICON_PATH}")
+  list(APPEND _WQ_OPTS ICON "${_ICON_PATH}")
+else()
+  message(STATUS "res/app.ico not found; skipping icon embedding")
+endif()
 if(WARNINGS_AS_ERRORS)
   list(APPEND _WQ_OPTS WARNINGS_AS_ERRORS)
 endif()
@@ -487,16 +489,15 @@ endif()
 # Bootstrapper executable (PATCH: WinLauncher that spawns ColonyGame.exe)
 # --------------------------------------------------------------------------------------------------
 if(BUILD_BOOTSTRAPPER AND _BOOTSTRAP)
-  # (MERGED) add the tiny config helper to the bootstrapper target
-  add_executable(WinLauncher WIN32 "${_BOOTSTRAP}" "${CMAKE_SOURCE_DIR}/src/launcher/LauncherConfig.cpp")
+  add_executable(WinLauncher WIN32 "${_BOOTSTRAP}")
   set_property(TARGET WinLauncher PROPERTY FOLDER "Bootstrap")
   target_compile_features(WinLauncher PRIVATE cxx_std_20)
   target_link_libraries(WinLauncher PRIVATE Shell32 Ole32 User32)
 
-  # (MERGED) include the project's src/ for the header AND project root for platform/win/*
+  # Include headers from project src/ and project root (for platform/win/* includes)
   target_include_directories(WinLauncher PRIVATE "${CMAKE_SOURCE_DIR}/src" "${CMAKE_SOURCE_DIR}")
 
-  # (PATCH) build the PathUtilWin helper used by WinLauncher.cpp — prefer canonical src/platform/win
+  # (Optional) build PathUtilWin helper if present
   if(EXISTS "${CMAKE_SOURCE_DIR}/src/platform/win/PathUtilWin.cpp")
     target_sources(WinLauncher PRIVATE "${CMAKE_SOURCE_DIR}/src/platform/win/PathUtilWin.cpp")
   elseif(EXISTS "${CMAKE_SOURCE_DIR}/platform/win/PathUtilWin.cpp")
@@ -517,9 +518,6 @@ endif()
 
 # --------------------------------------------------------------------------------------------------
 # Ensure res/ ships next to the EXE automatically (explicit, per-target POST_BUILD copy)
-# This runs even if EnableWinQoL is disabled or customized.
-# Uses generator expressions so it works for multi-config builds (VS). If you upgrade to CMake 3.26+,
-# you may switch 'copy_directory' to 'copy_directory_if_different'.
 # --------------------------------------------------------------------------------------------------
 if(EXISTS "${CMAKE_SOURCE_DIR}/res")
   # Copy for the game executable
@@ -627,9 +625,51 @@ endif()
 # --------------------------------------------------------------------------------------------------
 # Explicit manifest embedding (picked strategy)
 # --------------------------------------------------------------------------------------------------
-# Bring in the helper that generates a per-target RC with a forward-slash manifest path,
-# and disables the linker's auto-embed (/MANIFEST:NO) to guarantee a single manifest.
-include(cmake/win/EmbedManifest.cmake)
+# If res/app.manifest is missing, synthesize a robust default.
+set(CG_APP_MANIFEST "${CMAKE_SOURCE_DIR}/res/app.manifest")
+if(NOT EXISTS "${CG_APP_MANIFEST}")
+  file(MAKE_DIRECTORY "${CMAKE_BINARY_DIR}/generated")
+  set(_GEN_MAN "${CMAKE_BINARY_DIR}/generated/app.manifest")
+  file(WRITE "${_GEN_MAN}" "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>\n"
+    "<assembly xmlns=\"urn:schemas-microsoft-com:asm.v1\" manifestVersion=\"1.0\">\n"
+    "  <application xmlns=\"urn:schemas-microsoft-com:asm.v3\">\n"
+    "    <windowsSettings xmlns:ws2=\"http://schemas.microsoft.com/SMI/2016/WindowsSettings\">\n"
+    "      <ws2:longPathAware>true</ws2:longPathAware>\n"
+    "    </windowsSettings>\n"
+    "  </application>\n"
+    "  <asmv3:application xmlns:asmv3=\"urn:schemas-microsoft-com:asm.v3\">\n"
+    "    <asmv3:windowsSettings>\n"
+    "      <asmv3:dpiAwareness>PerMonitorV2</asmv3:dpiAwareness>\n"
+    "      <asmv3:dpiAware>true/pm</asmv3:dpiAware>\n"
+    "    </asmv3:windowsSettings>\n"
+    "  </asmv3:application>\n"
+    "  <dependency>\n"
+    "    <dependentAssembly>\n"
+    "      <assemblyIdentity type=\"win32\" name=\"Microsoft.Windows.Common-Controls\"\n"
+    "                        version=\"6.0.0.0\" processorArchitecture=\"*\" publicKeyToken=\"6595b64144ccf1df\" language=\"*\"/>\n"
+    "    </dependentAssembly>\n"
+    "  </dependency>\n"
+    "</assembly>\n")
+  set(CG_APP_MANIFEST "${_GEN_MAN}")
+  message(STATUS "Generated default app.manifest at: ${_GEN_MAN}")
+endif()
+# Always sanitize to forward slashes for RC
+file(TO_CMAKE_PATH "${CG_APP_MANIFEST}" CG_APP_MANIFEST_CMAKE)
+
+# Bring in helper (if present) and provide a fallback shim if not.
+include(cmake/win/EmbedManifest.cmake OPTIONAL)
+if(NOT COMMAND cg_embed_manifest)
+  function(cg_embed_manifest tgt manifest_path)
+    file(MAKE_DIRECTORY "${CMAKE_BINARY_DIR}/generated")
+    file(TO_CMAKE_PATH "${manifest_path}" _mpath)
+    set(_rc "${CMAKE_BINARY_DIR}/generated/${tgt}_manifest.rc")
+    file(WRITE "${_rc}" "1 24 \"${_mpath}\"\n")
+    target_sources(${tgt} PRIVATE "${_rc}")
+    if(MSVC)
+      target_link_options(${tgt} PRIVATE /MANIFEST:NO)
+    endif()
+  endfunction()
+endif()
 
 # Embed the sanitized manifest into each Windows target (avoid any duplication).
 cg_embed_manifest(ColonyGame "${CG_APP_MANIFEST_CMAKE}")
@@ -655,7 +695,7 @@ if(TARGET WinLauncher)
 endif()
 
 # --------------------------------------------------------------------------------------------------
-# (Merged patch) Enforce MSVC runtime choice on all targets post-definition
+# Enforce MSVC runtime choice on all targets post-definition
 # --------------------------------------------------------------------------------------------------
 if(MSVC)
   function(_cg_collect_targets dir out_var)
@@ -671,15 +711,12 @@ if(MSVC)
   _cg_collect_targets("${CMAKE_CURRENT_BINARY_DIR}" _ALL_TGTS)
 
   foreach(_t IN LISTS _ALL_TGTS)
-    # Only meaningful for real build targets
     get_target_property(_type ${_t} TYPE)
     if(_type STREQUAL "EXECUTABLE" OR _type STREQUAL "STATIC_LIBRARY" OR
        _type STREQUAL "SHARED_LIBRARY" OR _type STREQUAL "MODULE_LIBRARY")
       if(MSVC_STATIC_RUNTIME)
-        # /MT or /MTd
         set_property(TARGET ${_t} PROPERTY MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
       else()
-        # /MD or /MDd
         set_property(TARGET ${_t} PROPERTY MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>DLL")
       endif()
     endif()
