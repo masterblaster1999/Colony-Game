@@ -475,6 +475,7 @@ target_link_libraries(ColonyGame PRIVATE
   user32 gdi32 shlwapi Dbghelp shell32 comdlg32 comctl32 advapi32
   ole32 oleaut32 imm32 winmm version uuid
   dwmapi xinput9_1_0
+  xaudio2           # <-- added to link XAudio2 engine (Windows SDK import library)
 )
 
 if(ENABLE_UNITY)
@@ -718,7 +719,7 @@ if(MSVC)
 
   foreach(_t IN LISTS _ALL_TGTS)
     get_target_property(_type ${_t} TYPE)
-    if(_type STREQUAL "EXECUTABLE" OR _type STREQUAL "STATIC_LIBRARY" OR _type STREQUAL "SHARED_LIBRARY" OR _type STREQUAL "MODULE_LIBRARY")
+    if(_type STREQUAL "EXECUTABLE" OR _type STREUAL_LIBRARY" OR _type STREQUAL "MODULE_LIBRARY")
       if(MSVC_STATIC_RUNTIME)
         set_property(TARGET ${_t} PROPERTY MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
       else()
