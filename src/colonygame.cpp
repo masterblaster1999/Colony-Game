@@ -228,6 +228,7 @@ struct Config {
     bool vsync      = true;
     bool skipIntro  = false;
     bool safeMode   = false;
+    bool rawInput   = true;   // NEW: enable WM_INPUT raw mouse by default
     std::wstring profile = L"default";
     std::wstring lang    = L"en-US";
     std::optional<uint64_t> seed;
@@ -262,7 +263,9 @@ static void WriteDefaultConfig(const std::wstring& file, const Config& c) {
         << L"[Startup]\r\n"
         << L"skip_intro=" << (c.skipIntro ? L"true" : L"false") << L"\r\n"
         << L"safe_mode="  << (c.safeMode  ? L"true" : L"false") << L"\r\n"
-        << L"seed="       << (c.seed ? std::to_wstring(*c.seed) : L"") << L"\r\n";
+        << L"seed="       << (c.seed ? std::to_wstring(*c.seed) : L"") << L"\r\n\r\n"
+        << L"[Input]\r\n"
+        << L"raw_input="  << (c.rawInput ? L"true" : L"false") << L"\r\n";
     WriteFileW(file, out.str());
 }
 static bool ParseBool(const std::wstring& s, bool fallback=false) {
@@ -324,6 +327,8 @@ static Config LoadConfig(const std::wstring& file, bool createIfMissing, const C
             c.safeMode = ParseBool(val, c.safeMode);
         } else if (k == L"seed") {
             c.seed = ParseU64(val);
+        } else if (k == L"raw_input") {
+            c.rawInput = ParseBool(val, c.rawInput);
         }
     }
     return c;
@@ -474,6 +479,7 @@ struct LaunchOptions {
     std::optional<bool> safeMode;
     std::optional<uint64_t> seed;
     std::optional<std::wstring> configFile;
+    std::optional<bool> rawInput; // NEW
     bool validateOnly = false;
 };
 
@@ -517,6 +523,7 @@ static LaunchOptions ParseArgs(int argc, wchar_t** argv) {
                 L"  --seed <n|random>\n"
                 L"  --safe-mode\n"
                 L"  --skip-intro\n"
+                L"  --raw-input [true|false]\n"
                 L"  --validate\n", L"Help", MB_OK|MB_ICONINFORMATION);
             ExitProcess(0);
         } else if (a == L"--validate") {
@@ -543,6 +550,8 @@ static LaunchOptions ParseArgs(int argc, wchar_t** argv) {
             opt.skipIntro = true;
         } else if (StartsWith(a, L"--safe-mode")) {
             opt.safeMode = true;
+        } else if (StartsWith(a, L"--raw-input")) {
+            auto v = ValueOrNext(args, i); opt.rawInput = ParseBoolFlag(v, true);
         } else if (StartsWith(a, L"--seed")) {
             if (auto v = ValueOrNext(args, i)) {
                 std::wstring s=*v; std::wstring tl=s; std::transform(tl.begin(),tl.end(),tl.begin(),::towlower);
@@ -566,6 +575,7 @@ static Config MakeEffectiveConfig(const Config& file, const LaunchOptions& cli) 
     if (cli.lang && !cli.lang->empty()) eff.lang = *cli.lang;
     if (cli.skipIntro) eff.skipIntro = *cli.skipIntro;
     if (cli.safeMode) eff.safeMode = *cli.safeMode;
+    if (cli.rawInput) eff.rawInput = *cli.rawInput;
     if (cli.seed.has_value()) eff.seed = cli.seed;
     return eff;
 }
@@ -903,13 +913,25 @@ private:
         wcscpy_s(lf.lfFaceName, L"Segoe UI");
         font_ = CreateFontIndirectW(&lf);
 
+        // NEW: Register for raw mouse input (WM_INPUT). Keep legacy WM_MOUSE* messages.
+        if (cfg_.rawInput) {
+            RAWINPUTDEVICE rid{};
+            rid.usUsagePage = 0x01; // Generic Desktop
+            rid.usUsage     = 0x02; // Mouse
+            rid.dwFlags     = 0;    // do not suppress legacy mouse messages
+            rid.hwndTarget  = hwnd_;
+            if (!RegisterRawInputDevices(&rid, 1, sizeof(rid))) {
+                cfg_.rawInput = false; // fall back silently
+            }
+        }
+
         return true;
     }
 
     LRESULT WndProc(HWND h, UINT m, WPARAM w, LPARAM l) {
         switch (m) {
         case WM_DPICHANGED: {
-            // Use the suggested rectangle (MS guidance) to reposition/resize at the new DPI. :contentReference[oaicite:1]{index=1}
+            // Use the suggested rectangle (MS guidance) to reposition/resize at the new DPI.
             const RECT* suggested = reinterpret_cast<const RECT*>(l);
             SetWindowPos(h, nullptr,
                          suggested->left, suggested->top,
@@ -931,6 +953,14 @@ private:
             HDC hdc = GetDC(h);
             if (!back_.mem || back_.w!=clientW_ || back_.h!=clientH_) back_.Create(hdc, clientW_, clientH_);
             ReleaseDC(h, hdc);
+            return 0;
+        }
+        case WM_MBUTTONDOWN: { // NEW: raw-pan while MMB is held
+            rawPanActive_ = true; SetCapture(h);
+            return 0;
+        }
+        case WM_MBUTTONUP: {
+            rawPanActive_ = false; ReleaseCapture();
             return 0;
         }
         case WM_LBUTTONDOWN: {
@@ -975,6 +1005,24 @@ private:
                 case VK_RIGHT: if (keyPan_.x==+1) keyPan_.x=0; break;
                 case VK_UP:    if (keyPan_.y==-1) keyPan_.y=0; break;
                 case VK_DOWN:  if (keyPan_.y==+1) keyPan_.y=0; break;
+            }
+            return 0;
+        }
+        case WM_INPUT: { // NEW: raw input panning
+            if (!cfg_.rawInput || !rawPanActive_) return 0;
+            UINT sz = 0;
+            GetRawInputData((HRAWINPUT)l, RID_INPUT, nullptr, &sz, sizeof(RAWINPUTHEADER));
+            if (sz == 0) return 0;
+            std::vector<BYTE> buf(sz);
+            if (GetRawInputData((HRAWINPUT)l, RID_INPUT, buf.data(), &sz, sizeof(RAWINPUTHEADER)) != sz) return 0;
+            RAWINPUT* ri = reinterpret_cast<RAWINPUT*>(buf.data());
+            if (ri->header.dwType == RIM_TYPEMOUSE) {
+                LONG dx = ri->data.mouse.lLastX;
+                LONG dy = ri->data.mouse.lLastY;
+                // Drag world with the mouse; scale by 1/zoom so speed feels consistent.
+                double k = 1.0 / std::max(0.1, zoom_);
+                camera_.x -= dx * k;
+                camera_.y -= dy * k;
             }
             return 0;
         }
@@ -1426,7 +1474,7 @@ private:
         DrawTextLine(x,y, L"Build: "+sel); y+=16;
 
         SetTextColor(back_.mem, RGB(255,128,64));
-        DrawTextLine(x,y, L"1=Solar  2=Hab  3=O2Gen   LMB place  RMB cancel  G colonist  P pause  +/- speed  Arrows pan");
+        DrawTextLine(x,y, L"1=Solar  2=Hab  3=O2Gen   LMB place  RMB cancel  MMB drag=pan(raw)  G colonist  P pause  +/- speed  Arrows pan");
 
         SelectObject(back_.mem, oldFont);
 
@@ -1522,6 +1570,7 @@ private:
     Vec2i keyPan_{0,0};
     bool buildMode_=false; std::optional<BuildingKind> selected_;
     POINT lastMouse_{};
+    bool rawPanActive_ = false; // NEW: true while MMB held down
 
     // Gamepad state
     bool   padConnected_ = false;
@@ -1555,7 +1604,7 @@ int APIENTRY wWinMain(HINSTANCE hInst, HINSTANCE, LPWSTR, int) {
     CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE);
 
     // Prefer Per‑Monitor v2 DPI awareness (fallback handled internally).
-    EnablePerMonitorDpiV2(); // See Microsoft DPI guidance. :contentReference[oaicite:2]{index=2}
+    EnablePerMonitorDpiV2();
 
     // ARR: register restart and recovery very early, before heavy init.
     InstallWindowsARR();
@@ -1610,3 +1659,4 @@ int APIENTRY wWinMain(HINSTANCE hInst, HINSTANCE, LPWSTR, int) {
     CoUninitialize();
     return rc;
 }
+
