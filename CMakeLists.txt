@@ -419,7 +419,13 @@ if(PCH_HEADER_EXE AND EXISTS "${PCH_HEADER_EXE}")
 endif()
 
 # -------- EnableWinQoL (resources, installs, asset copy) ----------
-include(cmake/EnableWinQoL.cmake)
+# Try to include helper if it's present; provide a safe no-op fallback if not.
+include(cmake/EnableWinQoL.cmake OPTIONAL)
+if(NOT COMMAND enable_win_qol)
+  function(enable_win_qol tgt prod ver)
+    message(STATUS "EnableWinQoL.cmake not found; proceeding without QoL helper for target: ${tgt}")
+  endfunction()
+endif()
 
 set(CG_APP_VERSION "${PROJECT_VERSION}.0")
 # Asset folders to mirror next to the exe
@@ -712,8 +718,7 @@ if(MSVC)
 
   foreach(_t IN LISTS _ALL_TGTS)
     get_target_property(_type ${_t} TYPE)
-    if(_type STREQUAL "EXECUTABLE" OR _type STREQUAL "STATIC_LIBRARY" OR
-       _type STREQUAL "SHARED_LIBRARY" OR _type STREQUAL "MODULE_LIBRARY")
+    if(_type STREQUAL "EXECUTABLE" OR _type STREQUAL "STATIC_LIBRARY" OR _type STREQUAL "SHARED_LIBRARY" OR _type STREQUAL "MODULE_LIBRARY")
       if(MSVC_STATIC_RUNTIME)
         set_property(TARGET ${_t} PROPERTY MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
       else()
@@ -864,4 +869,3 @@ message(STATUS "")
 #   - Stage into build/stage/<cfg> automatically (enabled by default via 'stage_win' target),
 #     or explicitly:
 #       cmake --install build --config Release
-# --------------------------------------------------------------------------------------------------
