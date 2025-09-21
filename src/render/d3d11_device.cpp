@@ -1,6 +1,7 @@
 // src/render/d3d11_device.cpp
 #include "d3d11_device.h"
 #include <algorithm>
+#include <iterator>
 #include <cstdio>
 
 #ifndef DXGI_PRESENT_ALLOW_TEARING
@@ -89,8 +90,8 @@ bool D3D11Device::resize(uint32_t width, uint32_t height) {
 
     destroy_targets();
 
-    // IMPORTANT: Flags passed to ResizeBuffers must match creation with respect
-    // to FRAME_LATENCY_WAITABLE_OBJECT; you can't toggle it post-creation. :contentReference[oaicite:7]{index=7}
+    // IMPORTANT: Flags passed to ResizeBuffers must match creation
+    // with respect to FRAME_LATENCY_WAITABLE_OBJECT; you can't toggle it post-creation.
     UINT flags = 0;
     if (m_tearingSupported) flags |= DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING;
     flags |= DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT;
@@ -129,7 +130,7 @@ bool D3D11Device::resize(uint32_t width, uint32_t height) {
     vp.MaxDepth = 1.0f;
     m_context->RSSetViewports(1, &vp);
 
-    // Reacquire the waitable handle (should be stable, but documented safe to fetch). :contentReference[oaicite:8]{index=8}
+    // Reacquire the waitable handle (should be stable, but documented safe to fetch).
     if (m_swapchain2) {
         HANDLE h = m_swapchain2->GetFrameLatencyWaitableObject();
         if (h && h != m_frameLatencyWaitable) {
@@ -166,7 +167,7 @@ void D3D11Device::begin_frame(const float clear_color[4]) {
 bool D3D11Device::present(bool vsync) {
     if (!m_swapchain) return false;
 
-    // Official guidance: ALLOW_TEARING only with sync interval 0 (vsync==false) and if supported. :contentReference[oaicite:9]{index=9}
+    // Official guidance: ALLOW_TEARING only with sync interval 0 (vsync==false) and if supported.
     const UINT syncInterval = vsync ? 1u : 0u;
     const UINT flags = (!vsync && m_tearingSupported) ? DXGI_PRESENT_ALLOW_TEARING : 0u;
 
@@ -190,16 +191,16 @@ bool D3D11Device::wait_for_next_frame(uint32_t timeout_ms) {
         // No waitable chain available; nothing to wait on.
         return true;
     }
-    // Wait for DXGI to signal the end of the previous present before starting to render the next frame. :contentReference[oaicite:10]{index=10}
+    // Wait for DXGI to signal the end of the previous present before starting to render the next frame.
     DWORD result = WaitForSingleObjectEx(m_frameLatencyWaitable, timeout_ms, TRUE);
     return (result == WAIT_OBJECT_0);
 }
 
 void D3D11Device::set_maximum_frame_latency(UINT max_latency) {
-    // Valid range [1..16] for DXGI frame latency settings. :contentReference[oaicite:11]{index=11}
+    // Valid range [1..16] for DXGI frame latency settings.
     m_maxFrameLatency = std::max<UINT>(1u, std::min<UINT>(16u, max_latency));
     if (m_swapchain2 && m_waitableSwapChain) {
-        // Only valid if the swap chain was created with FRAME_LATENCY_WAITABLE_OBJECT. :contentReference[oaicite:12]{index=12}
+        // Only valid if the swap chain was created with FRAME_LATENCY_WAITABLE_OBJECT.
         (void)m_swapchain2->SetMaximumFrameLatency(m_maxFrameLatency);
     }
 }
@@ -270,13 +271,13 @@ bool D3D11Device::create_swapchain_and_targets(uint32_t width, uint32_t height) 
     scd.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT;
     scd.BufferCount = 2; // double-buffer
     scd.Scaling = DXGI_SCALING_STRETCH;
-    scd.SwapEffect = DXGI_SWAP_EFFECT_FLIP_DISCARD; // flip model for best perf :contentReference[oaicite:13]{index=13}
+    scd.SwapEffect = DXGI_SWAP_EFFECT_FLIP_DISCARD; // flip model for best perf
     scd.AlphaMode = DXGI_ALPHA_MODE_IGNORE;
 
     // Always include waitable flag at creation; optionally add ALLOW_TEARING.
-    scd.Flags = DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT; // required for waitable handle/latency APIs :contentReference[oaicite:14]{index=14}
+    scd.Flags = DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT; // required for waitable handle/latency APIs
     if (m_tearingSupported) {
-        scd.Flags |= DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING; // enables Present(... ALLOW_TEARING) when vsync==false :contentReference[oaicite:15]{index=15}
+        scd.Flags |= DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING; // enables Present(... ALLOW_TEARING) when vsync==false
     }
 
     ComPtr<IDXGISwapChain1> swap;
@@ -302,11 +303,11 @@ bool D3D11Device::create_swapchain_and_targets(uint32_t width, uint32_t height) 
 
     m_waitableSwapChain = (m_swapchain2 != nullptr);
     if (m_waitableSwapChain) {
-        // Default minimal latency; bump to 2 if you need more parallelism. :contentReference[oaicite:16]{index=16}
+        // Default minimal latency; bump to 2 if you need more parallelism.
         m_maxFrameLatency = 1;
         m_swapchain2->SetMaximumFrameLatency(m_maxFrameLatency); // ignore failure if device lost
 
-        // Acquire the waitable object handle (must be closed on shutdown). :contentReference[oaicite:17]{index=17}
+        // Acquire the waitable object handle (must be closed on shutdown).
         m_frameLatencyWaitable = m_swapchain2->GetFrameLatencyWaitableObject();
     }
 
@@ -347,7 +348,7 @@ bool D3D11Device::query_tearing_support() {
         return false;
     }
 
-    // Tearing support check via IDXGIFactory5 (DXGI_FEATURE_PRESENT_ALLOW_TEARING). :contentReference[oaicite:18]{index=18}
+    // Tearing support check via IDXGIFactory5 (DXGI_FEATURE_PRESENT_ALLOW_TEARING).
     ComPtr<IDXGIFactory5> factory5;
     if (SUCCEEDED(factory1.As(&factory5))) {
         BOOL allowTearing = FALSE;
@@ -361,7 +362,7 @@ bool D3D11Device::query_tearing_support() {
 
 void D3D11Device::release_waitable() {
     if (m_frameLatencyWaitable) {
-        // Per docs, the application should CloseHandle when done with it. :contentReference[oaicite:19]{index=19}
+        // Per docs, the application should CloseHandle when done with it.
         CloseHandle(m_frameLatencyWaitable);
         m_frameLatencyWaitable = nullptr;
     }
