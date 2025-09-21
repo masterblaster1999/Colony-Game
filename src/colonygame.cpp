@@ -64,6 +64,13 @@
 #pragma comment(lib, "Advapi32.lib")
 #pragma comment(lib, "Ole32.lib")
 
+// Prefer the high‑performance GPU on hybrid systems (NVIDIA/AMD).
+// The display drivers look for these exported data symbols on process start.
+extern "C" {
+__declspec(dllexport) DWORD NvOptimusEnablement = 0x00000001;   // Prefer dGPU on Optimus
+__declspec(dllexport) int   AmdPowerXpressRequestHighPerformance = 1; // Prefer dGPU on PowerXpress/Enduro
+}
+
 // Enable v6 Common Controls visual styles without a .manifest
 #pragma comment(linker,"\"/manifestdependency:type='win32' \
 name='Microsoft.Windows.Common-Controls' version='6.0.0.0' \
@@ -889,8 +896,8 @@ private:
         wc.hIcon = LoadIcon(nullptr, IDI_APPLICATION);
         if (!RegisterClassW(&wc)) return false;
 
+        // Always create as overlapped; we'll apply borderless/fullscreen after creation.
         DWORD style = WS_OVERLAPPEDWINDOW;
-        if (cfg_.fullscreen) style = WS_POPUP;
 
         RECT rc{0,0,(LONG)cfg_.width,(LONG)cfg_.height};
         AdjustWindowRect(&rc, style, FALSE);
@@ -899,6 +906,10 @@ private:
         hwnd_ = CreateWindowExW(0, kWndClass, kWndTitle, style,
             CW_USEDEFAULT, CW_USEDEFAULT, W, H, nullptr, nullptr, hInst_, this);
         if (!hwnd_) return false;
+
+        // Cache original styles right after creation so we can restore later.
+        origStyle_  = (DWORD)GetWindowLongPtrW(hwnd_, GWL_STYLE);
+        origExStyle_= (DWORD)GetWindowLongPtrW(hwnd_, GWL_EXSTYLE);
 
         // DPI-aware font for HUD using the window's current DPI
         UINT dpi = 0;
@@ -925,11 +936,21 @@ private:
             }
         }
 
+        // If config asked for fullscreen, apply our borderless mode now.
+        if (cfg_.fullscreen) {
+            ApplyWindowMode(/*borderless*/true);
+        }
+
         return true;
     }
 
     LRESULT WndProc(HWND h, UINT m, WPARAM w, LPARAM l) {
         switch (m) {
+        case WM_SYSKEYDOWN: {
+            // Alt+Enter toggles borderless fullscreen (classic Windows convention).
+            if (w == VK_RETURN) { ToggleBorderless(); return 0; }
+            break;
+        }
         case WM_DPICHANGED: {
             // Use the suggested rectangle (MS guidance) to reposition/resize at the new DPI.
             const RECT* suggested = reinterpret_cast<const RECT*>(l);
@@ -985,6 +1006,7 @@ private:
                     else { running_=false; }
                     break;
                 case 'P': paused_ = !paused_; break;
+                case VK_F11: ToggleBorderless(); break; // F11 also toggles borderless
                 case VK_OEM_PLUS: case VK_ADD: simSpeed_=util::clamp(simSpeed_*1.25,0.25,8.0); break;
                 case VK_OEM_MINUS: case VK_SUBTRACT: simSpeed_=util::clamp(simSpeed_/1.25,0.25,8.0); break;
                 case '1': selected_=BuildingKind::Solar;  buildMode_=true;  break;
@@ -1265,6 +1287,24 @@ private:
             }
         }
     }
+    bool TryAssignMining(Colonist& c, TileType tt) {
+        int bestD = INT32_MAX; Vec2i best{-1,-1};
+        for(int y=0;y<world_.H;++y) for(int x=0;x<world_.W;++x){
+            const Tile& t=world_.at(x,y);
+            if (t.type==tt && t.resource>0 && t.walkable) {
+                int d=manhattan(c.tile,{x,y});
+                if(d<bestD){bestD=d; best={x,y};}
+            }
+        }
+        if (best.x>=0) {
+            std::deque<Vec2i> path; if(findPath(world_, c.tile, best, path)) {
+                c.path=std::move(path); c.state=Colonist::State::Moving;
+                c.job={ (tt==TileType::Ice)?JobType::MineIce:JobType::MineRock, best, 18, 0, 0 };
+                return true;
+            }
+        }
+        return false;
+    }
     void AIIdle(Colonist& c) {
         if (pendingBuild_.has_value()) {
             // Go adjacent to footprint
@@ -1290,24 +1330,6 @@ private:
         if (c.tile != hq_) {
             std::deque<Vec2i> path; if(findPath(world_, c.tile, hq_, path)){c.path=std::move(path); c.state=Colonist::State::Moving; c.job={JobType::Deliver,hq_,0,0,0};}
         }
-    }
-    bool TryAssignMining(Colonist& c, TileType tt) {
-        int bestD = INT32_MAX; Vec2i best{-1,-1};
-        for(int y=0;y<world_.H;++y) for(int x=0;x<world_.W;++x){
-            const Tile& t=world_.at(x,y);
-            if (t.type==tt && t.resource>0 && t.walkable) {
-                int d=manhattan(c.tile,{x,y});
-                if(d<bestD){bestD=d; best={x,y};}
-            }
-        }
-        if (best.x>=0) {
-            std::deque<Vec2i> path; if(findPath(world_, c.tile, best, path)) {
-                c.path=std::move(path); c.state=Colonist::State::Moving;
-                c.job={ (tt==TileType::Ice)?JobType::MineIce:JobType::MineRock, best, 18, 0, 0 };
-                return true;
-            }
-        }
-        return false;
     }
     void AIMove(Colonist& c) {
         moveAcc_ += fixedDt_;
@@ -1474,7 +1496,7 @@ private:
         DrawTextLine(x,y, L"Build: "+sel); y+=16;
 
         SetTextColor(back_.mem, RGB(255,128,64));
-        DrawTextLine(x,y, L"1=Solar  2=Hab  3=O2Gen   LMB place  RMB cancel  MMB drag=pan(raw)  G colonist  P pause  +/- speed  Arrows pan");
+        DrawTextLine(x,y, L"1=Solar  2=Hab  3=O2Gen   LMB place  RMB cancel  MMB drag=pan(raw)  G colonist  P pause  +/- speed  Arrows pan  F11/Alt+Enter borderless");
 
         SelectObject(back_.mem, oldFont);
 
@@ -1572,6 +1594,11 @@ private:
     POINT lastMouse_{};
     bool rawPanActive_ = false; // NEW: true while MMB held down
 
+    // Window mode toggling
+    DWORD origStyle_ = 0, origExStyle_ = 0;
+    RECT  windowedRect_{};
+    bool  borderless_ = false;
+
     // Gamepad state
     bool   padConnected_ = false;
     DWORD  padIndex_     = 0;
@@ -1582,6 +1609,53 @@ private:
 
     // Banner
     std::wstring banner_; double bannerTime_=0.0;
+
+    // ---- Borderless/fullscreen helpers ----
+    RECT MonitorRect() const {
+        MONITORINFO mi{}; mi.cbSize = sizeof(mi);
+        HMONITOR mon = MonitorFromWindow(hwnd_, MONITOR_DEFAULTTONEAREST);
+        if (!GetMonitorInfoW(mon, &mi)) {
+            RECT r{}; GetWindowRect(hwnd_, &r); return r;
+        }
+        return mi.rcMonitor;
+    }
+    void ApplyWindowMode(bool borderless) {
+        borderless_ = borderless;
+        DWORD style  = (DWORD)GetWindowLongPtrW(hwnd_, GWL_STYLE);
+        DWORD exstyle= (DWORD)GetWindowLongPtrW(hwnd_, GWL_EXSTYLE);
+        if (!origStyle_)  origStyle_  = style;
+        if (!origExStyle_)origExStyle_= exstyle;
+
+        if (borderless_) {
+            // Remember the current windowed rect so we can restore it later.
+            GetWindowRect(hwnd_, &windowedRect_);
+            SetWindowLongPtrW(hwnd_, GWL_STYLE,  (style & ~WS_OVERLAPPEDWINDOW) | WS_POPUP);
+            SetWindowLongPtrW(hwnd_, GWL_EXSTYLE,(exstyle & ~(WS_EX_CLIENTEDGE|WS_EX_DLGMODALFRAME|WS_EX_WINDOWEDGE)));
+            RECT mr = MonitorRect();
+            SetWindowPos(hwnd_, HWND_TOP, mr.left, mr.top,
+                         mr.right - mr.left, mr.bottom - mr.top,
+                         SWP_NOOWNERZORDER | SWP_FRAMECHANGED | SWP_SHOWWINDOW);
+        } else {
+            // Restore styles and last windowed placement (or center with default size).
+            SetWindowLongPtrW(hwnd_, GWL_STYLE,  (origStyle_ & ~WS_POPUP) | WS_OVERLAPPEDWINDOW);
+            SetWindowLongPtrW(hwnd_, GWL_EXSTYLE, origExStyle_);
+
+            RECT wr = windowedRect_;
+            if (wr.right <= wr.left || wr.bottom <= wr.top) {
+                // Fall back to config size centered on current monitor.
+                RECT mr = MonitorRect();
+                int W = (int)cfg_.width, H = (int)cfg_.height;
+                wr.left = mr.left + ((mr.right - mr.left) - W)/2;
+                wr.top  = mr.top  + ((mr.bottom - mr.top) - H)/2;
+                wr.right = wr.left + W; wr.bottom = wr.top + H;
+            }
+            // Ensure the window frame is applied.
+            SetWindowPos(hwnd_, nullptr, wr.left, wr.top,
+                         wr.right - wr.left, wr.bottom - wr.top,
+                         SWP_NOZORDER | SWP_FRAMECHANGED | SWP_SHOWWINDOW);
+        }
+    }
+    void ToggleBorderless() { ApplyWindowMode(!borderless_); }
 };
 
 //======================================================================================
@@ -1659,4 +1733,3 @@ int APIENTRY wWinMain(HINSTANCE hInst, HINSTANCE, LPWSTR, int) {
     CoUninitialize();
     return rc;
 }
-
