@@ -15,6 +15,7 @@
 #   * (PATCH) Separate WinLauncher bootstrapper exe that spawns the game exe
 #   * (PATCH) Robust manifest embedding via forward-slash paths to avoid RC path issues
 #   * (PICKED STRATEGY) Single explicit manifest via RC + disable linker's auto-embed (/MANIFEST:NO)
+#   * (NEW) D3D11 HLSL compute shader build with FXC, copied next to the EXE and installed
 # ==================================================================================================
 
 cmake_minimum_required(VERSION 3.16)
@@ -431,7 +432,7 @@ endif()
 
 set(CG_APP_VERSION "${PROJECT_VERSION}.0")
 # Asset folders to mirror next to the exe
-set(_ASSET_DIRS assets Assets data Data res resources)
+set(_ASSET_DIRS assets Assets data Data res resources) # (NOTE) build-time shaders handled separately
 
 # (PATCH) manifest/icon paths (manifest is guaranteed; icon is optional)
 set(_ICON_PATH "${CMAKE_SOURCE_DIR}/res/app.ico")
@@ -477,7 +478,8 @@ target_link_libraries(ColonyGame PRIVATE
   user32 gdi32 shlwapi Dbghelp shell32 comdlg32 comctl32 advapi32
   ole32 oleaut32 imm32 winmm version uuid
   dwmapi xinput9_1_0
-  xaudio2           # <-- added to link XAudio2 engine (Windows SDK import library)
+  xaudio2
+  d3d11 dxgi d3dcompiler        # (NEW) D3D11 + DXGI + FXC loader (D3DReadFileToBlob)
 )
 
 if(ENABLE_UNITY)
@@ -492,6 +494,59 @@ endif()
 
 if(MSVC AND SUPPRESS_MSVC_C4505)
   target_compile_options(ColonyGame PRIVATE /wd4505)
+endif()
+
+# --------------------------------------------------------------------------------------------------
+# (NEW) D3D11 HLSL compute shader build with FXC (+ install & copy)
+# --------------------------------------------------------------------------------------------------
+if(MSVC)
+  # FXC (from Windows SDK)
+  find_program(FXC fxc.exe)
+  if(NOT FXC)
+    message(FATAL_ERROR "fxc.exe not found. Install the Windows 10/11 SDK (Desktop C++).")
+  else()
+    message(STATUS "FXC found: ${FXC}")
+  endif()
+
+  # Source and output locations
+  set(SHADER_DIR     "${CMAKE_SOURCE_DIR}/res/shaders")
+  set(SHADER_BIN_DIR "${CMAKE_BINARY_DIR}/shaders")
+  file(MAKE_DIRECTORY "${SHADER_BIN_DIR}")
+
+  # Helper function to compile a compute shader
+  function(compile_hlsl_cs SRC ENTRY PROFILE OUT)
+    add_custom_command(
+      OUTPUT ${OUT}
+      COMMAND ${FXC} /nologo /T ${PROFILE} /E ${ENTRY}
+                      /Fo ${OUT} /O3 /Zi /Qstrip_reflect /Qstrip_debug
+                      /I ${SHADER_DIR} ${SRC}
+      DEPENDS ${SRC}
+      WORKING_DIRECTORY ${SHADER_DIR}
+      COMMENT "Compiling HLSL (CS): ${SRC} -> ${OUT}"
+      VERBATIM
+    )
+  endfunction()
+
+  # --- Add your shaders here ---
+  set(CS_SDFDITHER_SRC "${SHADER_DIR}/CS_SDFDither.hlsl")
+  set(CS_SDFDITHER_BIN "${SHADER_BIN_DIR}/CS_SDFDither.cso")
+  compile_hlsl_cs("${CS_SDFDITHER_SRC}" "main" "cs_5_0" "${CS_SDFDITHER_BIN}")
+
+  # Group them under a custom target so they're built automatically
+  add_custom_target(colony_shaders ALL
+    DEPENDS "${CS_SDFDITHER_BIN}"
+  )
+
+  # Ensure shaders are built before the game exe
+  add_dependencies(ColonyGame colony_shaders)
+
+  # Copy compiled shaders next to the exe after build
+  add_custom_command(TARGET ColonyGame POST_BUILD
+    COMMAND "${CMAKE_COMMAND}" -E make_directory "$<TARGET_FILE_DIR:ColonyGame>/shaders"
+    COMMAND "${CMAKE_COMMAND}" -E copy_directory
+            "${SHADER_BIN_DIR}" "$<TARGET_FILE_DIR:ColonyGame>/shaders"
+    COMMENT "Copying compiled shaders/ next to $<TARGET_FILE_NAME:ColonyGame>"
+    VERBATIM)
 endif()
 
 # --------------------------------------------------------------------------------------------------
@@ -522,6 +577,16 @@ if(BUILD_BOOTSTRAPPER AND _BOOTSTRAP)
 
   if(MSVC AND SUPPRESS_MSVC_C4505)
     target_compile_options(WinLauncher PRIVATE /wd4505)
+  endif()
+
+  # (Optional) also copy shaders next to the launcher for dev convenience
+  if(MSVC)
+    add_custom_command(TARGET WinLauncher POST_BUILD
+      COMMAND "${CMAKE_COMMAND}" -E make_directory "$<TARGET_FILE_DIR:WinLauncher>/shaders"
+      COMMAND "${CMAKE_COMMAND}" -E copy_directory
+              "${CMAKE_BINARY_DIR}/shaders" "$<TARGET_FILE_DIR:WinLauncher>/shaders"
+      COMMENT "Copying compiled shaders/ next to $<TARGET_FILE_NAME:WinLauncher>"
+      VERBATIM)
   endif()
 endif()
 
@@ -694,7 +759,7 @@ get_target_property(_core_sources colony_core SOURCES)
 if(TARGET WinLauncher)
   get_target_property(_launcher_sources WinLauncher SOURCES)
 endif()
-if(_exe_sources OR _core_sources OR _launcher_sources)
+if(_exe_sources OR _core_sources OR _launcher_sources OR CORE_HEADERS)
   source_group(TREE "${CMAKE_SOURCE_DIR}" FILES ${_exe_sources} ${_core_sources} ${_launcher_sources} ${CORE_HEADERS})
 endif()
 source_group("Generated" FILES "${_ver_out}")
@@ -745,6 +810,11 @@ foreach(_d IN LISTS _ASSET_DIRS)
   endif()
 endforeach()
 
+# (NEW) Install compiled shaders produced by FXC
+if(EXISTS "${CMAKE_BINARY_DIR}/shaders")
+  install(DIRECTORY "${CMAKE_BINARY_DIR}/shaders/" DESTINATION "shaders" COMPONENT ColonyRuntime)
+endif()
+
 # Optional: install redists (UCRT/MSVC) app-local
 set(CMAKE_INSTALL_SYSTEM_RUNTIME_DESTINATION .)
 set(CMAKE_INSTALL_UCRT_LIBRARIES TRUE)
@@ -788,6 +858,11 @@ if(TARGET WinLauncher)
 else()
   set(_stage_deps ColonyGame)
 endif()
+# Ensure compiled shaders are also built before staging
+if(TARGET colony_shaders)
+  list(APPEND _stage_deps colony_shaders)
+endif()
+
 add_custom_target(stage_win ALL
   COMMAND "${CMAKE_COMMAND}" -E echo "Staging ColonyGame to: ${CMAKE_INSTALL_PREFIX}/$<CONFIG>"
   COMMAND "${CMAKE_COMMAND}" -DCMAKE_INSTALL_CONFIG_NAME=$<CONFIG> -P "${CMAKE_BINARY_DIR}/cmake_install.cmake"
@@ -841,6 +916,9 @@ if(FRONTEND STREQUAL "sdl")
     message(STATUS "  SDL2                 : NOT FOUND")
   endif()
 endif()
+if(TARGET colony_shaders)
+  message(STATUS "  Shaders              : FXC; outputs at ${CMAKE_BINARY_DIR}/shaders (copied & installed)")
+endif()
 message(STATUS "===============================================================")
 message(STATUS "")
 
@@ -874,4 +952,10 @@ message(STATUS "")
   - Stage into build/stage/<cfg> automatically (enabled by default via 'stage_win' target),
     or explicitly:
       cmake --install build --config Release
-]]
+
+  - Where are my shaders?
+      * Source HLSL:   res/shaders/CS_SDFDither.hlsl
+      * Compiled CSO:  <build>/shaders/CS_SDFDither.cso
+      * Runtime copy:  <build>/bin/<cfg>/shaders/CS_SDFDither.cso
+      * Install path:  stage/<cfg>/shaders/CS_SDFDither.cso
+]] 
