@@ -144,15 +144,17 @@ if(MSVC)
   # -------------------------------------------
 
   if(NOT DEFINED CMAKE_MSVC_DEBUG_INFORMATION_FORMAT)
-    set(CMAKE_MSVC_DEBUG_INFORMATION_FORMAT "$<$<CONFIG:Debug,RelWithDebInfo>:ProgramDatabase>")
+    # PDBs for Debug + RelWithDebInfo (use ProgramDatabase)
+    set(CMAKE_MSVC_DEBUG_INFORMATION_FORMAT
+        "$<$<OR:$<CONFIG:Debug>,$<CONFIG:RelWithDebInfo>>:ProgramDatabase>")
   endif()
 
   add_link_options(/DYNAMICBASE /NXCOMPAT /guard:cf)
-  add_link_options($<$<CONFIG:Release>:/INCREMENTAL:NO>)
-  add_link_options($<$<CONFIG:RelWithDebInfo>:/INCREMENTAL:NO>)
-  # NOTE: do NOT quote these multi-option generator expressions; let CMake split them.
-  add_link_options($<$<CONFIG:Release>:/OPT:REF> $<$<CONFIG:Release>:/OPT:ICF> $<$<CONFIG:Release>:/Brepro>)
-  add_link_options($<$<CONFIG:RelWithDebInfo>:/OPT:REF> $<$<CONFIG:RelWithDebInfo>:/OPT:ICF>)
+  # Release-ish configurations: no incremental, enable REF/ICF & reproducible-ish link
+  add_link_options("$<$<OR:$<CONFIG:Release>,$<CONFIG:RelWithDebInfo>>:/INCREMENTAL:NO>")
+  add_link_options("$<$<OR:$<CONFIG:Release>,$<CONFIG:RelWithDebInfo>>:/OPT:REF>")
+  add_link_options("$<$<OR:$<CONFIG:Release>,$<CONFIG:RelWithDebInfo>>:/OPT:ICF>")
+  add_link_options("$<$<OR:$<CONFIG:Release>,$<CONFIG:RelWithDebInfo>>:/Brepro>")
 
   include(ProcessorCount)
   ProcessorCount(_cg_nproc)
@@ -719,7 +721,7 @@ if(MSVC)
 
   foreach(_t IN LISTS _ALL_TGTS)
     get_target_property(_type ${_t} TYPE)
-    if(_type STREQUAL "EXECUTABLE" OR _type STREUAL_LIBRARY" OR _type STREQUAL "MODULE_LIBRARY")
+    if(_type STREQUAL "EXECUTABLE" OR _type STREQUAL "STATIC_LIBRARY" OR _type STREQUAL "SHARED_LIBRARY" OR _type STREQUAL "MODULE_LIBRARY")
       if(MSVC_STATIC_RUNTIME)
         set_property(TARGET ${_t} PROPERTY MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
       else()
@@ -764,16 +766,16 @@ if(ENABLE_CODE_SIGNING AND CMAKE_BUILD_TYPE MATCHES "Release")
 "execute_process(COMMAND \"${SIGNTOOL_PATH}\"
     sign /fd SHA256 /tr \"${SIGNING_TIMESTAMP_URL}\" /td SHA256
     /f \"${SIGNING_CERT_PATH}\" /p \"${SIGNING_CERT_PASSWORD}\"
-    \"\$ENV{DESTDIR}\${CMAKE_INSTALL_PREFIX}/$<CONFIG>/ColonyGame.exe\")
- message(STATUS \"Signed: \${CMAKE_INSTALL_PREFIX}/$<CONFIG>/ColonyGame.exe\")")
+    \"\$ENV{DESTDIR}\${CMAKE_INSTALL_PREFIX}/\${CMAKE_INSTALL_CONFIG_NAME}/ColonyGame.exe\")
+ message(STATUS \"Signed: \${CMAKE_INSTALL_PREFIX}/\${CMAKE_INSTALL_CONFIG_NAME}/ColonyGame.exe\")")
     # Sign WinLauncher.exe if present
     if(TARGET WinLauncher)
       install(CODE
 "execute_process(COMMAND \"${SIGNTOOL_PATH}\"
     sign /fd SHA256 /tr \"${SIGNING_TIMESTAMP_URL}\" /td SHA256
     /f \"${SIGNING_CERT_PATH}\" /p \"${SIGNING_CERT_PASSWORD}\"
-    \"\$ENV{DESTDIR}\${CMAKE_INSTALL_PREFIX}/$<CONFIG>/WinLauncher.exe\")
- message(STATUS \"Signed: \${CMAKE_INSTALL_PREFIX}/$<CONFIG>/WinLauncher.exe\")")
+    \"\$ENV{DESTDIR}\${CMAKE_INSTALL_PREFIX}/\${CMAKE_INSTALL_CONFIG_NAME}/WinLauncher.exe\")
+ message(STATUS \"Signed: \${CMAKE_INSTALL_PREFIX}/\${CMAKE_INSTALL_CONFIG_NAME}/WinLauncher.exe\")")
     endif()
   else()
     message(WARNING "ENABLE_CODE_SIGNING=ON but signtool or cert not configured; skipping.")
@@ -799,7 +801,7 @@ set(CPACK_PACKAGE_VENDOR "Colony-Game")
 set(CPACK_PACKAGE_VERSION "${PROJECT_VERSION}")
 set(CPACK_GENERATOR "ZIP")
 set(CPACK_PACKAGE_FILE_NAME "${CPACK_PACKAGE_NAME}-${PROJECT_VERSION}-${CG_FRONTEND}-${CG_GIT_SHA}-$<CONFIG>")
-install(CODE "message(STATUS \"Staged at: ${CMAKE_INSTALL_PREFIX}/$<CONFIG>\")")
+install(CODE "message(STATUS \"Staged at: \${CMAKE_INSTALL_PREFIX}/\${CMAKE_INSTALL_CONFIG_NAME}\")")
 include(CPack)
 
 # --------------------------------------------------------------------------------------------------
@@ -843,30 +845,33 @@ message(STATUS "==============================================================="
 message(STATUS "")
 
 # --------------------------------------------------------------------------------------------------
-# Usage hints:
-#   - Default build (Win32 frontend, GUI app):
-#       cmake -S . -B build -G "Visual Studio 17 2022"
-#       cmake --build build --config RelWithDebInfo
-#
-#   - Show console window (affects the game exe):
-#       cmake -S . -B build -DFRONTEND=win32 -DSHOW_CONSOLE=ON
-#
-#   - Build SDL frontend (requires SDL2 in path or via vcpkg):
-#       cmake -S . -B build -DFRONTEND=sdl
-#
-#   - Pick a specific GAME ENTRY file (e.g., win32_main.cpp):
-#       cmake -S . -B build -DLAUNCHER_FILE=src/platform/win32/win32_main.cpp
-#
-#   - Override the BOOTSTRAPPER source (WinLauncher.cpp) or disable it:
-#       cmake -S . -B build -DBOOTSTRAP_FILE=platform/win/WinLauncher.cpp
-#       cmake -S . -B build -DBUILD_BOOTSTRAPPER=OFF
-#
-#   - Static MSVC runtime (/MT):
-#       cmake -S . -B build -DMSVC_STATIC_RUNTIME=ON
-#
-#   - Treat warnings as errors:
-#       cmake -S . -B build -DWARNINGS_AS_ERRORS=ON
-#
-#   - Stage into build/stage/<cfg> automatically (enabled by default via 'stage_win' target),
-#     or explicitly:
-#       cmake --install build --config Release
+# Usage hints (kept as a safe bracket comment)
+# --------------------------------------------------------------------------------------------------
+#[[
+  - Default build (Win32 frontend, GUI app):
+      cmake -S . -B build -G "Visual Studio 17 2022"
+      cmake --build build --config RelWithDebInfo
+
+  - Show console window (affects the game exe):
+      cmake -S . -B build -DFRONTEND=win32 -DSHOW_CONSOLE=ON
+
+  - Build SDL frontend (requires SDL2 in path or via vcpkg):
+      cmake -S . -B build -DFRONTEND=sdl
+
+  - Pick a specific GAME ENTRY file (e.g., win32_main.cpp):
+      cmake -S . -B build -DLAUNCHER_FILE=src/platform/win32/win32_main.cpp
+
+  - Override the BOOTSTRAPPER source (WinLauncher.cpp) or disable it:
+      cmake -S . -B build -DBOOTSTRAP_FILE=platform/win/WinLauncher.cpp
+      cmake -S . -B build -DBUILD_BOOTSTRAPPER=OFF
+
+  - Static MSVC runtime (/MT):
+      cmake -S . -B build -DMSVC_STATIC_RUNTIME=ON
+
+  - Treat warnings as errors:
+      cmake -S . -B build -DWARNINGS_AS_ERRORS=ON
+
+  - Stage into build/stage/<cfg> automatically (enabled by default via 'stage_win' target),
+    or explicitly:
+      cmake --install build --config Release
+]]
