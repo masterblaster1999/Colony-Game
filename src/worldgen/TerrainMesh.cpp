@@ -5,22 +5,6 @@
 
 namespace colony::worldgen {
 
-// -------------------- small math helpers --------------------
-struct Vec3 { float x, y, z; };
-static inline Vec3 operator+(Vec3 a, Vec3 b){ return {a.x+b.x, a.y+b.y, a.z+b.z}; }
-static inline Vec3& operator+=(Vec3& a, Vec3 b){ a.x+=b.x; a.y+=b.y; a.z+=b.z; return a; }
-static inline Vec3 operator-(Vec3 a, Vec3 b){ return {a.x-b.x, a.y-b.y, a.z-b.z}; }
-static inline Vec3 cross(Vec3 a, Vec3 b){
-    return { a.y*b.z - a.z*b.y, a.z*b.x - a.x*b.z, a.x*b.y - a.y*b.x };
-}
-static inline float dot(Vec3 a, Vec3 b){ return a.x*b.x + a.y*b.y + a.z*b.z; }
-static inline Vec3 normalize(Vec3 v){
-    float m2 = dot(v,v);
-    if (m2 <= 1e-16f) return {0,1,0};
-    float inv = 1.0f / std::sqrt(m2);
-    return { v.x*inv, v.y*inv, v.z*inv };
-}
-
 // Pack RGBA8 as 0xRRGGBBAA for easy debugging; change if your pipeline expects a different byte order.
 static inline std::uint32_t packRGBA8(std::uint8_t r, std::uint8_t g, std::uint8_t b, std::uint8_t a){
     return (static_cast<std::uint32_t>(r) << 24) |
@@ -45,104 +29,119 @@ static inline std::uint32_t biomeColor(std::uint8_t biomeId){
     }
 }
 
-MeshData BuildTerrainMesh(const WorldChunk& chunk, const TerrainMeshParams& params)
+MeshData BuildTerrainMesh(const WorldChunk& chunk,
+                          const TerrainMeshParams& params,
+                          HeightSampleFn neighbor)
 {
     MeshData mesh;
 
     const int N = chunk.height.width();
     assert(N == chunk.height.height() && "Height grid must be square");
 
-    const float cell = params.cellSizeMeters;
+    const float cs     = params.cellSizeMeters;
     const float hScale = params.heightScale;
 
-    // Vertex layout: one vertex per grid sample (N x N).
-    mesh.vertices.resize(static_cast<size_t>(N) * N);
+    // Reserve to avoid reallocations:
+    mesh.vertices.reserve(static_cast<size_t>(N) * static_cast<size_t>(N));
+    const int cells = (N - 1) * (N - 1);
+    mesh.indices.reserve(static_cast<size_t>(cells) * 6u);
 
-    // Optional centering so the chunk is around the origin.
-    const float sizeX = (N - 1) * cell;
-    const float sizeZ = (N - 1) * cell;
-    const float baseX = params.centerChunk ? -0.5f * sizeX : params.originX;
-    const float baseZ = params.centerChunk ? -0.5f * sizeZ : params.originZ;
+    // Centering offset (if requested)
+    const float half = params.centerChunk ? (cs * (N - 1)) * 0.5f : 0.0f;
 
-    auto vIndex = [N](int x, int y) -> std::uint32_t {
-        return static_cast<std::uint32_t>(y * N + x);
+    // Height sampler with neighbor-aware border sampling.
+    auto H = [&](int x, int y) -> float {
+        if (x >= 0 && x < N && y >= 0 && y < N) {
+            return chunk.height.at(x, y); // 0..1
+        }
+        if (neighbor) {
+            return neighbor(x, y); // may read from adjacent chunk
+        }
+        // Safe fallback: clamp to edges
+        x = std::clamp(x, 0, N - 1);
+        y = std::clamp(y, 0, N - 1);
+        return chunk.height.at(x, y);
     };
 
-    // ---- 1) Build positions, colors, UVs; zero normals (we'll accumulate) ----
+    // ---- 1) Build vertices (pos, normal, color, uv) ----
     for (int y = 0; y < N; ++y) {
         for (int x = 0; x < N; ++x) {
             TerrainVertex v{};
-            const float h = chunk.height.at(x, y) * hScale;
 
-            v.px = baseX + x * cell;
+            const float h = H(x, y) * hScale;
+
+            v.px = x * cs - half + params.originX;
             v.py = h;
-            v.pz = baseZ + y * cell;
+            v.pz = y * cs - half + params.originZ;
 
-            v.nx = 0.f; v.ny = 0.f; v.nz = 0.f; // will accumulate
+            if (params.generateNormals) {
+                // Central differences with proper scaling to produce stable, seam-free normals.
+                const float hL = H(x - 1, y);
+                const float hR = H(x + 1, y);
+                const float hD = H(x, y - 1);
+                const float hU = H(x, y + 1);
 
-            // Color by local biome id at the same sample
+                // Convert height delta (0..1) to meters with height scale,
+                // then to slope by dividing by horizontal spacing (cs).
+                const float sx = (hL - hR) * hScale / (2.0f * cs);
+                const float sz = (hD - hU) * hScale / (2.0f * cs);
+
+                // Normal pointing up:
+                float nx = -sx, ny = 1.0f, nz = -sz;
+                const float len2 = nx*nx + ny*ny + nz*nz;
+                const float inv  = (len2 > 1e-16f) ? (1.0f / std::sqrt(len2)) : 1.0f;
+                v.nx = nx * inv; v.ny = ny * inv; v.nz = nz * inv;
+            } else {
+                v.nx = 0.0f; v.ny = 1.0f; v.nz = 0.0f;
+            }
+
+            // Color by biome id at the same sample
             const std::uint8_t biome = chunk.biome.at(x, y);
             v.rgba = biomeColor(biome);
 
-            v.u = (N > 1) ? (static_cast<float>(x) / (N - 1)) : 0.f;
-            v.v = (N > 1) ? (static_cast<float>(y) / (N - 1)) : 0.f;
+            v.u = (N > 1) ? (static_cast<float>(x) / (N - 1)) : 0.0f;
+            v.v = (N > 1) ? (static_cast<float>(y) / (N - 1)) : 0.0f;
 
-            mesh.vertices[vIndex(x,y)] = v;
+            mesh.vertices.push_back(v);
         }
     }
 
-    // ---- 2) Emit indices and accumulate area-weighted face normals per vertex ----
-    // Two triangles per cell. For Y-up, use CCW winding:
-    // t0: (i00, i11, i10), t1: (i00, i01, i11).
-    // (This yields upward-pointing normals for flat terrain.)
+    // ---- 2) Emit indices (two triangles per cell) ----
+    auto idx = [N](int x, int y) -> std::uint32_t {
+        return static_cast<std::uint32_t>(y * N + x);
+    };
+
     const bool flip = params.flipWinding;
 
-    mesh.indices.reserve(static_cast<size_t>(N-1) * (N-1) * 6);
-
-    for (int y = 0; y < N-1; ++y) {
-        for (int x = 0; x < N-1; ++x) {
-            const std::uint32_t i00 = vIndex(x,   y);
-            const std::uint32_t i10 = vIndex(x+1, y);
-            const std::uint32_t i01 = vIndex(x,   y+1);
-            const std::uint32_t i11 = vIndex(x+1, y+1);
-
-            auto getP = [&](std::uint32_t i)->Vec3{
-                const auto &v = mesh.vertices[i];
-                return {v.px, v.py, v.pz};
-            };
-
-            auto accumulateTri = [&](std::uint32_t a, std::uint32_t b, std::uint32_t c){
-                const Vec3 pa = getP(a), pb = getP(b), pc = getP(c);
-                // Face normal via cross product of edges (area-weighted magnitude).
-                // N = (pb - pa) x (pc - pa); add to all 3 vertices. (Normalize later)
-                Vec3 n = cross( Vec3{pb.x-pa.x, pb.y-pa.y, pb.z-pa.z},
-                                Vec3{pc.x-pa.x, pc.y-pa.y, pc.z-pa.z} );
-                // Accumulate
-                auto &va = mesh.vertices[a]; va.nx += n.x; va.ny += n.y; va.nz += n.z;
-                auto &vb = mesh.vertices[b]; vb.nx += n.x; vb.ny += n.y; vb.nz += n.z;
-                auto &vc = mesh.vertices[c]; vc.nx += n.x; vc.ny += n.y; vc.nz += n.z;
-
-                mesh.indices.push_back(a);
-                mesh.indices.push_back(b);
-                mesh.indices.push_back(c);
-            };
+    for (int y = 0; y < N - 1; ++y) {
+        for (int x = 0; x < N - 1; ++x) {
+            const std::uint32_t i00 = idx(x,     y);
+            const std::uint32_t i10 = idx(x + 1, y);
+            const std::uint32_t i01 = idx(x,     y + 1);
+            const std::uint32_t i11 = idx(x + 1, y + 1);
 
             if (!flip) {
-                accumulateTri(i00, i11, i10); // CCW
-                accumulateTri(i00, i01, i11); // CCW
+                // CCW for Y-up
+                mesh.indices.push_back(i00); mesh.indices.push_back(i11); mesh.indices.push_back(i10);
+                mesh.indices.push_back(i00); mesh.indices.push_back(i01); mesh.indices.push_back(i11);
             } else {
-                // Flip: CW
-                accumulateTri(i00, i10, i11);
-                accumulateTri(i00, i11, i01);
+                // CW
+                mesh.indices.push_back(i00); mesh.indices.push_back(i10); mesh.indices.push_back(i11);
+                mesh.indices.push_back(i00); mesh.indices.push_back(i11); mesh.indices.push_back(i01);
             }
         }
     }
 
-    // ---- 3) Normalize all vertex normals ----
-    for (auto &v : mesh.vertices) {
-        Vec3 n = normalize(Vec3{v.nx, v.ny, v.nz});
-        v.nx = n.x; v.ny = n.y; v.nz = n.z;
-    }
+    // ---- 3) Optional skirts to hide cracks (esp. with LOD) ----
+    // If desired, add four edge strips extruded downward by params.skirtMeters.
+    // (Not implemented here; left as an optional extension.)
+    // if (params.skirtMeters > 0.0f) {
+    //     // Add vertices/indices along each edge, offsetting Y by -params.skirtMeters.
+    // }
+
+    // Note on index size:
+    // MeshData currently stores 32-bit indices. If you want to pack to 16-bit when possible,
+    // you can do it later in the renderer when params.index32 == false and N*N <= 65535.
 
     return mesh;
 }
