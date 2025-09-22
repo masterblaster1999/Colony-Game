@@ -21,6 +21,16 @@
 cmake_minimum_required(VERSION 3.16)
 
 # --------------------------------------------------------------------------------------------------
+# Policies that must be set BEFORE project() so MSVC abstractions work (runtime & debug info)
+# --------------------------------------------------------------------------------------------------
+if(POLICY CMP0091)
+  cmake_policy(SET CMP0091 NEW)  # MSVC runtime via MSVC_RUNTIME_LIBRARY
+endif()
+if(POLICY CMP0141)
+  cmake_policy(SET CMP0141 NEW)  # MSVC debug info via MSVC_DEBUG_INFORMATION_FORMAT
+endif()
+
+# --------------------------------------------------------------------------------------------------
 # Optional: auto-enable vcpkg toolchain before project() if available (nice for SDL2)
 # --------------------------------------------------------------------------------------------------
 if(NOT DEFINED CMAKE_TOOLCHAIN_FILE AND DEFINED ENV{VCPKG_ROOT})
@@ -54,14 +64,6 @@ project(ColonyGame
 
 # Export compile_commands.json
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
-
-# Modern policies
-if(POLICY CMP0091)
-  cmake_policy(SET CMP0091 NEW) # MSVC runtime selection via MSVC_RUNTIME_LIBRARY. (CMake >= 3.15)
-endif()
-if(POLICY CMP0141)
-  cmake_policy(SET CMP0141 NEW)
-endif()
 
 # --------------------------------------------------------------------------------------------------
 # Cache options
@@ -123,7 +125,12 @@ endif()
 # MSVC toolchain tuning
 # --------------------------------------------------------------------------------------------------
 if(MSVC)
-  add_compile_options(/MP /utf-8 /permissive- /Zc:__cplusplus /Zc:preprocessor /Zc:throwingNew /Zc:inline /bigobj)
+  add_compile_options(
+    /MP /utf-8 /permissive- /Zc:__cplusplus /Zc:preprocessor /Zc:throwingNew /Zc:inline /bigobj
+    # Ensure CFG is enabled at compile-time for MSVC (not clang-cl)
+    $<$<COMPILE_LANG_AND_ID:C,MSVC>:/guard:cf>
+    $<$<COMPILE_LANG_AND_ID:CXX,MSVC>:/guard:cf>
+  )
   add_compile_definitions(UNICODE _UNICODE NOMINMAX WIN32_LEAN_AND_MEAN _CRT_SECURE_NO_WARNINGS _WIN32_WINNT=${CG_MIN_WINVER} WINVER=${CG_MIN_WINVER})
   add_compile_options(/external:anglebrackets /external:W0)
   add_compile_options(/EHsc /W4)
@@ -958,4 +965,4 @@ message(STATUS "")
       * Compiled CSO:  <build>/shaders/CS_SDFDither.cso
       * Runtime copy:  <build>/bin/<cfg>/shaders/CS_SDFDither.cso
       * Install path:  stage/<cfg>/shaders/CS_SDFDither.cso
-]] 
+]]
