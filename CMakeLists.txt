@@ -16,6 +16,7 @@
 #   * (PATCH) Robust manifest embedding via forward-slash paths to avoid RC path issues
 #   * (PICKED STRATEGY) Single explicit manifest via RC + disable linker's auto-embed (/MANIFEST:NO)
 #   * (NEW) D3D11 HLSL compute shader build with FXC, copied next to the EXE and installed
+#   * (PATCH) Dear ImGui integration (Win32 + D3D11) via FetchContent + backend static library
 # ==================================================================================================
 
 cmake_minimum_required(VERSION 3.16)
@@ -94,6 +95,10 @@ option(ENABLE_CLANG_TIDY "Enable clang-tidy if available" OFF)
 option(ENABLE_COMPILER_CACHE "Use compiler cache (sccache/ccache) if detected in PATH" ON)
 set(SRC_DIR "src" CACHE PATH "Path to core source directory")
 
+# (PATCH) ImGui toggles
+option(ENABLE_IMGUI "Enable Dear ImGui integration" ON)
+option(ENABLE_IMGUI_DEMO "Compile ImGui demo window" OFF)
+
 # (PATCH) Split: game entry vs. bootstrapper
 set(LAUNCHER_FILE "" CACHE FILEPATH "Override: path to the GAME ENTRY .cpp (win32_main/SDL main)")
 set(BOOTSTRAP_FILE "" CACHE FILEPATH "Override: path to the bootstrapper .cpp (WinLauncher.cpp)")
@@ -134,6 +139,8 @@ if(MSVC)
   add_compile_definitions(UNICODE _UNICODE NOMINMAX WIN32_LEAN_AND_MEAN _CRT_SECURE_NO_WARNINGS _WIN32_WINNT=${CG_MIN_WINVER} WINVER=${CG_MIN_WINVER})
   add_compile_options(/external:anglebrackets /external:W0)
   add_compile_options(/EHsc /W4)
+  # (PATCH) Create D3D11 debug device in Debug builds
+  add_compile_definitions($<$<CONFIG:Debug>:D3D11_CREATE_DEVICE_DEBUG>)
   if(WARNINGS_AS_ERRORS)
     add_compile_options(/WX)
   endif()
@@ -577,6 +584,48 @@ if(MSVC)
 endif()
 
 # --------------------------------------------------------------------------------------------------
+# (PATCH) Dear ImGui integration (Win32 + D3D11 by default)
+# --------------------------------------------------------------------------------------------------
+if(ENABLE_IMGUI)
+  include(FetchContent)
+  # Lock to a known-good tag of ImGui
+  FetchContent_Declare(
+    imgui
+    GIT_REPOSITORY https://github.com/ocornut/imgui.git
+    GIT_TAG v1.91.0
+  )
+  FetchContent_MakeAvailable(imgui)
+
+  # Common ImGui core sources
+  set(_IMGUI_CORE_SOURCES
+    ${imgui_SOURCE_DIR}/imgui.cpp
+    ${imgui_SOURCE_DIR}/imgui_draw.cpp
+    ${imgui_SOURCE_DIR}/imgui_tables.cpp
+    ${imgui_SOURCE_DIR}/imgui_widgets.cpp
+  )
+  if(ENABLE_IMGUI_DEMO)
+    list(APPEND _IMGUI_CORE_SOURCES ${imgui_SOURCE_DIR}/imgui_demo.cpp)
+  endif()
+
+  if(FRONTEND STREQUAL "win32")
+    # Win32 + D3D11 backend
+    add_library(imgui_backend STATIC
+      ${_IMGUI_CORE_SOURCES}
+      ${imgui_SOURCE_DIR}/backends/imgui_impl_win32.cpp
+      ${imgui_SOURCE_DIR}/backends/imgui_impl_dx11.cpp
+    )
+    target_include_directories(imgui_backend PUBLIC
+      ${imgui_SOURCE_DIR}
+      ${imgui_SOURCE_DIR}/backends
+    )
+    target_link_libraries(imgui_backend PUBLIC d3d11 dxgi)
+    set_target_properties(imgui_backend PROPERTIES FOLDER "3rdparty/imgui")
+    target_compile_definitions(ColonyGame PRIVATE CG_ENABLE_IMGUI=1)
+    target_link_libraries(ColonyGame PRIVATE imgui_backend)
+  endif()
+endif()
+
+# --------------------------------------------------------------------------------------------------
 # Bootstrapper executable (PATCH: WinLauncher that spawns ColonyGame.exe)
 # --------------------------------------------------------------------------------------------------
 if(BUILD_BOOTSTRAPPER AND _BOOTSTRAP)
@@ -721,6 +770,35 @@ if(FRONTEND STREQUAL "sdl")
   endif()
 
   target_compile_definitions(colony_core PUBLIC CG_USE_SDL=1)
+
+  # (PATCH) Optional: ImGui with SDL + D3D11 backend when FRONTEND=sdl
+  if(ENABLE_IMGUI)
+    # Use the same fetched imgui source (already made available above)
+    if(NOT TARGET imgui_backend)
+      set(_IMGUI_SDL_SOURCES
+        ${imgui_SOURCE_DIR}/backends/imgui_impl_sdl2.cpp
+        ${imgui_SOURCE_DIR}/backends/imgui_impl_dx11.cpp
+      )
+      add_library(imgui_backend STATIC
+        ${_IMGUI_CORE_SOURCES}
+        ${_IMGUI_SDL_SOURCES}
+      )
+      target_include_directories(imgui_backend PUBLIC
+        ${imgui_SOURCE_DIR}
+        ${imgui_SOURCE_DIR}/backends
+      )
+      # Ensure SDL include dirs are visible to the backend
+      if(_SDL_TARGET)
+        target_link_libraries(imgui_backend PUBLIC ${_SDL_TARGET})
+      elseif(SDL2_INCLUDE_DIRS)
+        target_include_directories(imgui_backend PUBLIC ${SDL2_INCLUDE_DIRS})
+      endif()
+      target_link_libraries(imgui_backend PUBLIC d3d11 dxgi)
+      set_target_properties(imgui_backend PROPERTIES FOLDER "3rdparty/imgui")
+    endif()
+    target_compile_definitions(ColonyGame PRIVATE CG_ENABLE_IMGUI=1)
+    target_link_libraries(ColonyGame PRIVATE imgui_backend)
+  endif()
 endif()
 
 # --------------------------------------------------------------------------------------------------
@@ -946,6 +1024,15 @@ endif()
 if(TARGET colony_shaders)
   message(STATUS "  Shaders              : FXC; outputs at ${CMAKE_BINARY_DIR}/shaders (copied & installed)")
 endif()
+if(ENABLE_IMGUI)
+  if(FRONTEND STREQUAL "win32")
+    message(STATUS "  ImGui                : ENABLED (Win32 + D3D11)")
+  elseif(FRONTEND STREQUAL "sdl")
+    message(STATUS "  ImGui                : ENABLED (SDL2 + D3D11)")
+  endif()
+else()
+  message(STATUS "  ImGui                : DISABLED")
+endif()
 message(STATUS "===============================================================")
 message(STATUS "")
 
@@ -985,4 +1072,10 @@ message(STATUS "")
       * Compiled CSO:  <build>/shaders/CS_SDFDither.cso
       * Runtime copy:  <build>/bin/<cfg>/shaders/CS_SDFDither.cso
       * Install path:  stage/<cfg>/shaders/CS_SDFDither.cso
-]]
+
+  - Dear ImGui:
+      * ENABLE_IMGUI=ON by default.
+      * Win32 frontend builds imgui_impl_win32 + imgui_impl_dx11.
+      * SDL frontend builds imgui_impl_sdl2 + imgui_impl_dx11.
+      * In code, gate UI with: #if defined(CG_ENABLE_IMGUI)
+]] 
