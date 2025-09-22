@@ -1,147 +1,227 @@
 #pragma once
-#ifndef NOMINMAX
+// xaudio_engine.h
+// Lightweight event system on top of XAudio2 with bus routing and ambience control.
+
+#include <cstdint>
+#include <string>
+#include <vector>
+#include <unordered_map>
+#include <unordered_set>
+#include <memory>
+#include <random>
+#include <optional>
+#include <utility>
+#include <functional>
+
 #define NOMINMAX
-#endif
-#define WIN32_LEAN_AND_MEAN
-#include <windows.h>
+#include <Windows.h>
 #include <xaudio2.h>
 #include <wrl/client.h>
-#include <cstdint>
-#include <vector>
-#include <string>
-#include <memory>
-#include <atomic>
 
-//
-// XAudio2 engine (Windows-only)
-// - Minimal, robust wrapper for in-game audio
-// - One-shot and looping playback
-// - Optional WAV loader (PCM / IEEE float)
-// - No external dependencies beyond XAudio2
-//
-// References:
-//   - XAudio2 initialization & mastering voice creation. (Microsoft Learn) 
-//   - Playing a sound with IXAudio2SourceVoice + XAUDIO2_BUFFER. (Microsoft Learn) 
-//
+#pragma comment(lib, "xaudio2.lib")
 
-namespace audio {
+namespace colony::audio {
 
-using Microsoft::WRL::ComPtr;
+// ---------- Utility ----------
 
-// -------------------------------------------------------------------------------------------------
-// AudioClip: raw PCM or IEEE float samples + WAVEFORMAT(EXTENSIBLE) blob
-// The format blob can be WAVEFORMATEX or WAVEFORMATEXTENSIBLE; pass wf() to XAudio2 APIs.
-// -------------------------------------------------------------------------------------------------
-struct AudioClip {
-    std::vector<std::uint8_t> format; // bytes of WAVEFORMATEX or WAVEFORMATEXTENSIBLE
-    std::vector<std::uint8_t> samples; // PCM/float frames (interleaved for nChannels > 1)
+struct RangeF {
+    float min = 0.0f;
+    float max = 0.0f;
+};
 
-    const WAVEFORMATEX* wf() const noexcept {
-        return reinterpret_cast<const WAVEFORMATEX*>(format.data());
+inline float Clamp(float v, float lo, float hi) { return (v < lo) ? lo : (v > hi) ? hi : v; }
+inline float Lerp(float a, float b, float t) { return a + (b - a) * t; }
+inline float SemitonesToRatio(float semis) { return std::pow(2.0f, semis / 12.0f); }
+
+// ---------- Buses ----------
+
+enum class AudioBus : uint8_t {
+    Master = 0,
+    SFX    = 1,
+    Music  = 2,
+    Ambience = 3,
+    COUNT
+};
+
+// ---------- Biome / Climate ----------
+// Adjust to match your worldgen enums, or map externally.
+
+enum class Biome : uint8_t {
+    Desert, Tundra, Forest, Plains, Wetlands, Ocean, Mountains, Savanna, Unknown
+};
+
+enum class Climate : uint8_t {
+    Polar, Temperate, Tropical, Arid, Continental, Mediterranean, Unknown
+};
+
+// Hash for (Biome, Climate) keys
+struct AmbienceKey {
+    Biome biome = Biome::Unknown;
+    Climate climate = Climate::Unknown;
+    bool operator==(const AmbienceKey& o) const noexcept {
+        return biome == o.biome && climate == o.climate;
     }
-    bool empty() const noexcept { return samples.empty() || format.empty(); }
-
-    // Convenience: sample count (frames * channels) using nBlockAlign
-    std::uint32_t total_sample_frames() const noexcept {
-        if (format.size() < sizeof(WAVEFORMATEX)) return 0;
-        const auto* w = wf();
-        if (!w || w->nBlockAlign == 0) return 0;
-        return static_cast<std::uint32_t>(samples.size() / w->nBlockAlign);
+};
+struct AmbienceKeyHasher {
+    size_t operator()(const AmbienceKey& k) const noexcept {
+        return (static_cast<size_t>(k.biome) * 131) ^ static_cast<size_t>(k.climate);
     }
 };
 
-// -------------------------------------------------------------------------------------------------
-// Voice: RAII wrapper for an IXAudio2SourceVoice
-// - Owns (or references) the submitted sample data for the life of playback
-// - Supports one-shot or looping
-// - Volume / pitch control
-// - WaitUntilFinished() helper for fire-and-forget sounds (optional)
-// -------------------------------------------------------------------------------------------------
-class Voice {
-public:
-    // Create a source voice from 'clip' format; if 'copySamples' is true, the voice
-    // holds a private copy of sample bytes so the caller can discard 'clip.samples'.
-    // If false, the caller must ensure 'clip.samples' outlives playback.
-    static std::unique_ptr<Voice> Create(IXAudio2* xa, const AudioClip& clip, bool copySamples = true);
+// ---------- Clip ----------
+// In-memory WAV (PCM or IEEE float). If you need streaming, extend this.
 
-    ~Voice();
+struct WavData {
+    // Either WAVEFORMATEX or WAVEFORMATEXTENSIBLE inlined here.
+    // We keep the larger one and provide a WAVEFORMATEX* view.
+    WAVEFORMATEXTENSIBLE fmtExt{};
+    bool isExtensible = false;
 
-    Voice(const Voice&) = delete;
-    Voice& operator=(const Voice&) = delete;
+    std::vector<uint8_t> samples;    // raw PCM/float interleaved
+    uint32_t sampleBytesPerFrame = 0; // block align
 
-    // Submit & start playback. If loop==true, the whole clip loops (LoopBegin=0..LoopLength=total).
-    bool Play(bool loop, float volume = 1.0f, float pitchRatio = 1.0f /* 0.5..2.0 typical */);
-
-    // Stop consumption immediately (optionally with XAUDIO2_PLAY_TAILS semantics if you prefer).
-    void Stop(bool playTails = false);
-
-    // Volume [0..>1], Pitch (frequency ratio)
-    void SetVolume(float v);
-    void SetPitch(float ratio);
-
-    // Returns true while voice has buffers queued/playing.
-    bool IsPlaying() const;
-
-    // Block until the submitted buffer finishes (no-op if looping).
-    // Returns false on timeout/error, true if finished.
-    bool WaitUntilFinished(DWORD timeout_ms = INFINITE);
-
-    IXAudio2SourceVoice* raw() const noexcept { return m_voice; }
-
-private:
-    Voice() = default;
-    bool init_(IXAudio2* xa, const AudioClip& clip, bool copySamples);
-    void destroy_();
-
-    // Internal callback implementation signals end-of-buffer
-    struct Callback;
-    Callback*                 m_cb     = nullptr;
-    IXAudio2SourceVoice*      m_voice  = nullptr;
-
-    // We keep a copy of the clip's format bytes.
-    std::vector<std::uint8_t> m_fmt;      // WAVEFORMAT(EX)
-    // Either points to external samples (view) or owns a copy:
-    const std::uint8_t*       m_audioPtr = nullptr;
-    std::vector<std::uint8_t> m_owned;    // when copySamples==true
-    XAUDIO2_BUFFER            m_xbuf{};   // submitted buffer
-
-    std::atomic<bool>         m_started{false};
-    std::atomic<bool>         m_looping{false};
+    const WAVEFORMATEX* Wfx() const noexcept {
+        return isExtensible ? &fmtExt.Format : reinterpret_cast<const WAVEFORMATEX*>(&fmtExt);
+    }
 };
 
-// -------------------------------------------------------------------------------------------------
-// XAudio2Engine: create/destroy the engine & mastering voice; helper to play one-shots
-// -------------------------------------------------------------------------------------------------
-class XAudio2Engine {
+using ClipPtr = std::shared_ptr<WavData>;
+
+// ---------- Event description & handles ----------
+
+struct AudioEventDesc {
+    // One event can randomly pick any of these clips each time it plays.
+    std::vector<std::string> clipIds;
+
+    AudioBus bus = AudioBus::SFX;
+    bool loop = false;
+    uint32_t maxPolyphony = 8;          // concurrent instances allowed
+    float baseVolume = 1.0f;            // linear (1.0 = unity)
+    RangeF volumeJitter = {0.9f, 1.1f}; // random multiplier [min, max]
+    RangeF pitchSemitoneJitter = {-0.25f, 0.25f}; // added semitones per trigger
+    float startDelaySec = 0.0f;         // simple start delay (handled as fade from 0)
+
+    // Optional: per-event fade-in/out defaults
+    float defaultFadeInSec  = 0.02f;
+    float defaultFadeOutSec = 0.05f;
+};
+
+struct AudioEventHandle {
+    uint32_t id = 0; // 0 = invalid
+    bool Valid() const noexcept { return id != 0; }
+};
+
+// ---------- Engine ----------
+
+class XAudioEngine {
 public:
-    // requestDebug: adds XAUDIO2_DEBUG_ENGINE flag on XAudio2Create in debug builds.
-    bool Initialize(bool requestDebug = false);
+    XAudioEngine() = default;
+    ~XAudioEngine();
+
+    // Lifecycle
+    bool Init();   // returns false on failure; safe to call once
     void Shutdown();
 
-    bool IsInitialized() const noexcept { return !!m_xaudio; }
+    // Per-frame (advance fades, reap finished voices)
+    void Update(float dtSeconds);
 
-    // Set master volume [0..1+]
-    void SetMasterVolume(float v);
+    // Content (one-time) -------------------------------------------------------
+    bool RegisterClip(const std::string& id, const std::wstring& wavPath); // WAV only
+    bool RegisterEvent(const std::string& name, const AudioEventDesc& desc);
+    void UnregisterClip(const std::string& id);
+    void UnregisterEvent(const std::string& name);
 
-    // Quick one-shot (returns nullptr on failure). If loop==true, playback loops.
-    // If you pass copySamples=false, 'clip.samples' must stay valid until playback stops.
-    std::unique_ptr<Voice> PlayOneShot(const AudioClip& clip, bool loop = false,
-                                       float volume = 1.0f, float pitchRatio = 1.0f,
-                                       bool copySamples = true);
+    // Playback ----------------------------------------------------------------
+    AudioEventHandle Play(const std::string& eventName,
+                          float volumeScale = 1.0f,
+                          float pitchSemitoneOffset = 0.0f);
 
-    IXAudio2*                 xa()  const noexcept { return m_xaudio.Get(); }
-    IXAudio2MasteringVoice*   mix() const noexcept { return m_master; }
+    // Stop a specific instance (if still alive)
+    void Stop(const AudioEventHandle& handle, float fadeOutSec = 0.05f);
+
+    // Stop all instances of an event
+    void StopEvent(const std::string& eventName, float fadeOutSec = 0.1f);
+
+    // Global stop
+    void StopAll(float fadeOutSec = 0.1f);
+
+    // Buses -------------------------------------------------------------------
+    void SetBusVolume(AudioBus bus, float volume /* linear [0..1..] */);
+    float GetBusVolume(AudioBus bus) const;
+
+    void SetMasterVolume(float volume);
+    float GetMasterVolume() const;
+
+    // Ambience ----------------------------------------------------------------
+    // Map (Biome, Climate) -> event name (must be registered & looping)
+    void RegisterAmbience(Biome biome, Climate climate, const std::string& eventName);
+    void ClearAmbienceMap();
+
+    // Crossfade to ambience for biome/climate (no-op if already active)
+    void SetAmbience(Biome biome, Climate climate, float crossfadeSec = 2.0f);
+
+    // Optional: direct ambience by event
+    void SetAmbienceByEvent(const std::string& eventName, float crossfadeSec = 2.0f);
 
 private:
-    ComPtr<IXAudio2>          m_xaudio;
-    IXAudio2MasteringVoice*   m_master = nullptr;
+    struct VoiceInstance {
+        uint32_t id = 0;
+        IXAudio2SourceVoice* voice = nullptr;
+        ClipPtr clip;
+        std::string eventName;
+
+        // Volume/pitch state
+        float baseVolume = 1.0f;
+        float volumeScale = 1.0f;  // external multiplier (Play argument)
+        float currentVol = 0.0f;   // current applied volume (linear)
+        float targetVol = 1.0f;    // target volume for fades
+        float fadeTime = 0.0f;
+        float fadeElapsed = 0.0f;
+        bool  fadeToSilenceThenStop = false;
+
+        bool looping = false;
+        AudioBus bus = AudioBus::SFX;
+
+        // Utility for cleanup
+        bool stopRequested = false;
+    };
+
+    // Internal helpers
+    VoiceInstance* PlayInternal(const AudioEventDesc& desc, const std::string& eventName,
+                                float volumeScale, float pitchSemitoneOffset);
+    void DestroyVoice(VoiceInstance& inst);
+    void TickVoice(VoiceInstance& inst, float dt);
+    void ReapFinishedVoices();
+    IXAudio2SubmixVoice* BusToSubmix(AudioBus bus) const;
+
+    // WAV loading
+    bool LoadWav(const std::wstring& path, WavData& outData, std::string* outErr = nullptr) const;
+
+private:
+    // XAudio2 core
+    Microsoft::WRL::ComPtr<IXAudio2> m_xaudio;
+    IXAudio2MasteringVoice* m_master = nullptr;
+    IXAudio2SubmixVoice* m_submix[(int)AudioBus::COUNT] = {nullptr, nullptr, nullptr, nullptr};
+
+    // Registries
+    std::unordered_map<std::string, ClipPtr> m_clips;
+    std::unordered_map<std::string, AudioEventDesc> m_events;
+
+    // Playing instances
+    std::unordered_map<uint32_t, VoiceInstance> m_voicesById;
+    std::multimap<std::string, uint32_t> m_eventToVoiceIds; // event name -> IDs
+    uint32_t m_nextId = 1;
+
+    // Ambience mapping & active handles
+    std::unordered_map<AmbienceKey, std::string, AmbienceKeyHasher> m_ambienceMap;
+    std::optional<AudioEventHandle> m_activeAmbience;
+    std::optional<AudioEventHandle> m_prevAmbience;  // fading out
+
+    // RNG
+    std::mt19937 m_rng{ std::random_device{}() };
+
+    // Master volume cache (asked from engine on demand)
+    float m_masterVol = 1.0f;
 };
 
-// -------------------------------------------------------------------------------------------------
-// Optional helpers: Load a simple RIFF/WAVE (PCM or IEEE float) from disk into an AudioClip.
-// - Supports WAVEFORMATEX and WAVEFORMATEXTENSIBLE "fmt " chunks
-// - Does not perform format conversion; you should author content as PCM16 or float32
-// -------------------------------------------------------------------------------------------------
-bool LoadWavFile(const std::wstring& path, AudioClip& outClip, std::wstring* error = nullptr);
-
-} // namespace audio
+} // namespace colony::audio
