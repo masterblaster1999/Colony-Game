@@ -251,6 +251,25 @@ if(ENABLE_UNITY)
   set_property(TARGET colony_core PROPERTY UNITY_BUILD_BATCH_SIZE ${UNITY_BATCH_SIZE_CORE})
 endif()
 
+# --- (NEW per 1.1) Unity exemptions for ODR-prone crash sources ---
+# Compile crash sources in their own TUs even when UNITY_BUILD is enabled.
+if(WIN32)
+  set(_UNITY_EXEMPT_SOURCES "")
+  foreach(_cand IN ITEMS
+    "${CMAKE_SOURCE_DIR}/src/win/CrashHandler.cpp"
+    "${CMAKE_SOURCE_DIR}/src/platform/win/CrashDump.cpp"
+    "${CMAKE_SOURCE_DIR}/platform/win/CrashDump.cpp"
+    "${CMAKE_SOURCE_DIR}/src/platform/win/CrashHandler.cpp"
+  )
+    if(EXISTS "${_cand}")
+      list(APPEND _UNITY_EXEMPT_SOURCES "${_cand}")
+    endif()
+  endforeach()
+  if(_UNITY_EXEMPT_SOURCES)
+    set_source_files_properties(${_UNITY_EXEMPT_SOURCES} PROPERTIES SKIP_UNITY_BUILD_INCLUSION TRUE)
+  endif()
+endif()
+
 # PCH for core
 if(NOT PCH_HEADER)
   foreach(_cand IN ITEMS "${SRC_DIR}/pch.h" "${SRC_DIR}/PCH.h" "pch.h" "PCH.h")
@@ -270,7 +289,8 @@ target_compile_definitions(colony_core PUBLIC
 )
 
 if(WIN32)
-  target_link_libraries(colony_core PUBLIC winmm)
+  # --- (NEW per 1.1) Core needs these for CommandLineToArgvW & MiniDumpWriteDump ---
+  target_link_libraries(colony_core PUBLIC winmm Shell32 Dbghelp)
 endif()
 
 # --------------------------------------------------------------------------------------------------
@@ -966,4 +986,3 @@ message(STATUS "")
       * Runtime copy:  <build>/bin/<cfg>/shaders/CS_SDFDither.cso
       * Install path:  stage/<cfg>/shaders/CS_SDFDither.cso
 ]]
-
