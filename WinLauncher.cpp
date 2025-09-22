@@ -38,6 +38,10 @@
 #include <cwctype>          // iswspace
 #include <ctime>            // localtime_s
 
+#ifndef LOAD_LIBRARY_SEARCH_DEFAULT_DIRS
+#define LOAD_LIBRARY_SEARCH_DEFAULT_DIRS 0x00001000
+#endif
+
 // NEW: centralize Windows path/CWD logic in one place.
 #include "platform/win/PathUtilWin.h"
 
@@ -54,6 +58,23 @@ static std::wstring LastErrorMessage(DWORD err = GetLastError()) {
     std::wstring out = (len && msg) ? msg : L"";
     if (msg) LocalFree(msg);
     return out;
+}
+
+// Restrict DLL search order to safe defaults and remove CWD from search path.
+// Dynamically resolves SetDefaultDllDirectories for broad OS/SDK compatibility.
+static void EnableSafeDllSearch() {
+    HMODULE hKernel32 = GetModuleHandleW(L"kernel32.dll");
+    if (hKernel32) {
+        using PFN_SetDefaultDllDirectories = BOOL (WINAPI*)(DWORD);
+        auto pSetDefaultDllDirectories = reinterpret_cast<PFN_SetDefaultDllDirectories>(
+            GetProcAddress(hKernel32, "SetDefaultDllDirectories"));
+        if (pSetDefaultDllDirectories) {
+            // Only search system locations, the application directory, and explicitly added dirs.
+            pSetDefaultDllDirectories(LOAD_LIBRARY_SEARCH_DEFAULT_DIRS);
+        }
+    }
+    // Ensure the current working directory is not searched for DLLs.
+    SetDllDirectoryW(nullptr);
 }
 
 // Build a proper Windows command line from argv[1..] using Windows quoting rules so the
@@ -171,8 +192,11 @@ public:
 
 // ---------- Entry point ----------
 int APIENTRY wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
+    // Must run before any library loads to constrain DLL search order.
+    EnableSafeDllSearch();
+
     // Ensure asset-relative paths work from any launch context (Explorer, VS, cmd).
-    winpath::ensure_cwd_exe_dir(); // <-- patch applied: call once at the very top
+    winpath::ensure_cwd_exe_dir();
 
     SetErrorMode(SEM_FAILCRITICALERRORS | SEM_NOOPENFILEERRORBOX); // cleaner UX on missing DLLs, etc.
 
