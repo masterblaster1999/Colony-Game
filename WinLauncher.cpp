@@ -7,11 +7,16 @@
 //  3) Launches the real game EXE via CreateProcessW with lpApplicationName set.
 //  4) Enforces single-instance via a named mutex.
 //  5) Verifies a sibling res/ directory exists; logs diagnostics to %LOCALAPPDATA%.
+//  6) NEW: Enables Per‑Monitor‑V2 DPI awareness (fallback to SetProcessDPIAware) before any UI.
+//  7) NEW: Removes current directory from DLL search path; restricts default DLL search dirs.
 //
 // References:
 //  - CreateProcessW: https://learn.microsoft.com/windows/win32/api/processthreadsapi/nf-processthreadsapi-createprocessw
 //  - GetCommandLineW: https://learn.microsoft.com/windows/win32/api/processenv/nf-processenv-getcommandlinew
 //  - CommandLineToArgvW: https://learn.microsoft.com/windows/win32/api/shellapi/nf-shellapi-commandlinetoargvw
+//  - SetDefaultDllDirectories / SetDllDirectoryW: https://learn.microsoft.com/windows/win32/api/libloaderapi/nf-libloaderapi-setdefaultdlldirectories
+//    and https://learn.microsoft.com/windows/win32/api/winbase/nf-winbase-setdlldirectoryw
+//  - DPI awareness APIs: https://learn.microsoft.com/windows/win32/hidpi/setting-the-default-dpi-awareness-for-a-process
 //  - Known folders (used inside PathUtilWin.cpp): https://learn.microsoft.com/windows/win32/api/shlobj_core/nf-shlobj_core-shgetknownfolderpath
 
 #ifndef UNICODE
@@ -37,9 +42,18 @@
 #include <iomanip>
 #include <cwctype>          // iswspace
 #include <ctime>            // localtime_s
+#include <cstdio>           // freopen_s
 
 #ifndef LOAD_LIBRARY_SEARCH_DEFAULT_DIRS
 #define LOAD_LIBRARY_SEARCH_DEFAULT_DIRS 0x00001000
+#endif
+
+// Fallback typedefs for older SDKs when compiling with dynamic DPI calls only.
+#ifndef DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2
+#ifndef DPI_AWARENESS_CONTEXT
+typedef HANDLE DPI_AWARENESS_CONTEXT;
+#endif
+#define DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2 ((DPI_AWARENESS_CONTEXT)-4)
 #endif
 
 // NEW: centralize Windows path/CWD logic in one place.
@@ -73,8 +87,29 @@ static void EnableSafeDllSearch() {
             pSetDefaultDllDirectories(LOAD_LIBRARY_SEARCH_DEFAULT_DIRS);
         }
     }
-    // Ensure the current working directory is not searched for DLLs.
-    SetDllDirectoryW(nullptr);
+    // Explicitly remove the current directory from the search path.
+    // (Pass L"" to remove CWD; passing NULL would *restore* default search order.)
+    SetDllDirectoryW(L"");
+}
+
+// NEW: High‑DPI awareness (Per‑Monitor‑V2 if available, else system‑DPI).
+static void EnableHighDpiAwareness() {
+    HMODULE hUser32 = GetModuleHandleW(L"user32.dll");
+    if (hUser32) {
+        using PFN_SetProcessDpiAwarenessContext = BOOL (WINAPI*)(DPI_AWARENESS_CONTEXT);
+        auto pSetCtx = reinterpret_cast<PFN_SetProcessDpiAwarenessContext>(
+            GetProcAddress(hUser32, "SetProcessDpiAwarenessContext"));
+        if (pSetCtx) {
+            // Best default for desktop games on modern Windows
+            if (pSetCtx(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2)) {
+                return;
+            }
+        }
+        using PFN_SetProcessDPIAware = BOOL (WINAPI*)(void);
+        auto pSetAware = reinterpret_cast<PFN_SetProcessDPIAware>(
+            GetProcAddress(hUser32, "SetProcessDPIAware"));
+        if (pSetAware) pSetAware(); // fallback to system DPI awareness
+    }
 }
 
 // Build a proper Windows command line from argv[1..] using Windows quoting rules so the
@@ -198,7 +233,20 @@ int APIENTRY wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
     // Ensure asset-relative paths work from any launch context (Explorer, VS, cmd).
     winpath::ensure_cwd_exe_dir();
 
-    SetErrorMode(SEM_FAILCRITICALERRORS | SEM_NOOPENFILEERRORBOX); // cleaner UX on missing DLLs, etc.
+    // Set error mode early to avoid OS popups for missing DLLs, etc.
+    SetErrorMode(SEM_FAILCRITICALERRORS | SEM_NOOPENFILEERRORBOX);
+
+    // NEW: Make message boxes crisp under high DPI scaling.
+    EnableHighDpiAwareness();
+
+#if defined(_DEBUG)
+    // Optional: attach a console for quick stderr/stdout in Debug
+    AllocConsole();
+    FILE* f = nullptr;
+    freopen_s(&f, "CONOUT$", "w", stdout);
+    freopen_s(&f, "CONOUT$", "w", stderr);
+    SetConsoleOutputCP(CP_UTF8);
+#endif
 
     SingleInstanceGuard guard;
     if (!guard.acquire(L"Global\\ColonyGame_Singleton_1E2D13F1_B96C_471B_82F5_829B0FF5D4AF")) {
@@ -241,11 +289,14 @@ int APIENTRY wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
 
     log << L"[Launcher] launching: " << gameExe.wstring() << L" args: " << tail << L"\n";
 
+    DWORD creationFlags = CREATE_UNICODE_ENVIRONMENT
+                        | CREATE_DEFAULT_ERROR_MODE; // child does not inherit our error mode
+
     BOOL ok = CreateProcessW(
-        gameExe.wstring().c_str(),                    // lpApplicationName (do not quote paths here)
+        gameExe.wstring().c_str(),                    // lpApplicationName (no quotes here)
         cmdline.empty() ? nullptr : cmdline.data(),   // lpCommandLine (only args, properly quoted)
         nullptr, nullptr, FALSE,
-        CREATE_UNICODE_ENVIRONMENT,
+        creationFlags,
         nullptr,
         exeDir.wstring().c_str(),                     // ensure correct CWD for assets
         &si, &pi);
