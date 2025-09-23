@@ -136,8 +136,8 @@ if(MSVC)
     $<$<COMPILE_LANG_AND_ID:C,MSVC>:/guard:cf>
     $<$<COMPILE_LANG_AND_ID:CXX,MSVC>:/guard:cf>
   )
-  add_compile_definitions(UNICODE _UNICODE NOMINMAX WIN32_LEAN_AND_MEAN _CRT_SECURE_NO_WARNINGS _WIN32_WINNT=${CG_MIN_WINVER} WINVER=${CG_MIN_WINVER})
-  add_compile_options(/external:anglebrackets /external:W0)
+  add_compile_definitions(UNICODE _UNICODE NOMINMAX WIN32_LEAN_AND_MEAN XAUDIO2_HELPER_FUNCTIONS=1 _CRT_SECURE_NO_WARNINGS _WIN32_WINNT=${CG_MIN_WINVER} WINVER=${CG_MIN_WINVER})
+  add_compile_options(/external:anglebrackets /external:W0 /external:templates-)
   add_compile_options(/EHsc /W4)
   # (PATCH) Create D3D11 debug device in Debug builds
   add_compile_definitions($<$<CONFIG:Debug>:D3D11_CREATE_DEVICE_DEBUG>)
@@ -1078,4 +1078,4 @@ message(STATUS "")
       * Win32 frontend builds imgui_impl_win32 + imgui_impl_dx11.
       * SDL frontend builds imgui_impl_sdl2 + imgui_impl_dx11.
       * In code, gate UI with: #if defined(CG_ENABLE_IMGUI)
-]] 
+]]
