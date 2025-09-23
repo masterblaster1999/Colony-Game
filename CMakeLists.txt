@@ -16,6 +16,7 @@
 #   * (PATCH) Robust manifest embedding via forward-slash paths to avoid RC path issues
 #   * (PICKED STRATEGY) Single explicit manifest via RC + disable linker's auto-embed (/MANIFEST:NO)
 #   * (NEW) D3D11 HLSL compute shader build with FXC, copied next to the EXE and installed
+#   * (NEW) D3D11 HLSL VS/PS shader builds (Starfield) with FXC, copied next to the EXE and installed
 #   * (PATCH) Dear ImGui integration (Win32 + D3D11) via FetchContent + backend static library
 # ==================================================================================================
 
@@ -531,7 +532,7 @@ if(MSVC AND SUPPRESS_MSVC_C4505)
 endif()
 
 # --------------------------------------------------------------------------------------------------
-# (NEW) D3D11 HLSL compute shader build with FXC (+ install & copy)
+# (NEW) D3D11 HLSL shader builds with FXC (+ install & copy)
 # --------------------------------------------------------------------------------------------------
 if(MSVC)
   # FXC (from Windows SDK)
@@ -561,20 +562,45 @@ if(MSVC)
     )
   endfunction()
 
-  # --- Add your shaders here ---
+  # Helper function to compile a generic HLSL (VS/PS/etc.)
+  function(compile_hlsl SRC ENTRY PROFILE OUT)
+    add_custom_command(
+      OUTPUT ${OUT}
+      COMMAND ${FXC} /nologo /T ${PROFILE} /E ${ENTRY}
+                      /Fo ${OUT} /O3 /Zi /Qstrip_reflect /Qstrip_debug
+                      /I ${SHADER_DIR} ${SRC}
+      DEPENDS ${SRC}
+      WORKING_DIRECTORY ${SHADER_DIR}
+      COMMENT "Compiling HLSL: ${SRC} (${ENTRY}/${PROFILE}) -> ${OUT}"
+      VERBATIM
+    )
+  endfunction()
+
+  # --- Compute shader(s) ---
   set(CS_SDFDITHER_SRC "${SHADER_DIR}/CS_SDFDither.hlsl")
   set(CS_SDFDITHER_BIN "${SHADER_BIN_DIR}/CS_SDFDither.cso")
   compile_hlsl_cs("${CS_SDFDITHER_SRC}" "main" "cs_5_0" "${CS_SDFDITHER_BIN}")
 
-  # Group them under a custom target so they're built automatically
+  # --- VS/PS shader(s) (Starfield) ---
+  set(STARFIELD_SRC "${SHADER_DIR}/Starfield.hlsl")
+  set(STARFIELD_VS  "${SHADER_BIN_DIR}/StarfieldVS.cso")
+  set(STARFIELD_PS  "${SHADER_BIN_DIR}/StarfieldPS.cso")
+  compile_hlsl("${STARFIELD_SRC}" "VSMain" "vs_5_0" "${STARFIELD_VS}")
+  compile_hlsl("${STARFIELD_SRC}" "PSMain" "ps_5_0" "${STARFIELD_PS}")
+
+  # Group them under custom targets so they're built automatically
   add_custom_target(colony_shaders ALL
     DEPENDS "${CS_SDFDITHER_BIN}"
+  )
+  add_custom_target(colony_starfield_shaders ALL
+    DEPENDS "${STARFIELD_VS}" "${STARFIELD_PS}"
   )
 
   # Ensure shaders are built before the game exe
   add_dependencies(ColonyGame colony_shaders)
+  add_dependencies(ColonyGame colony_starfield_shaders)
 
-  # Copy compiled shaders next to the exe after build
+  # Copy compiled shaders next to the exe after build (copies entire bin dir)
   add_custom_command(TARGET ColonyGame POST_BUILD
     COMMAND "${CMAKE_COMMAND}" -E make_directory "$<TARGET_FILE_DIR:ColonyGame>/shaders"
     COMMAND "${CMAKE_COMMAND}" -E copy_directory
@@ -967,6 +993,9 @@ endif()
 if(TARGET colony_shaders)
   list(APPEND _stage_deps colony_shaders)
 endif()
+if(TARGET colony_starfield_shaders)
+  list(APPEND _stage_deps colony_starfield_shaders)
+endif()
 
 add_custom_target(stage_win ALL
   COMMAND "${CMAKE_COMMAND}" -E echo "Staging ColonyGame to: ${CMAKE_INSTALL_PREFIX}/$<CONFIG>"
@@ -1021,7 +1050,7 @@ if(FRONTEND STREQUAL "sdl")
     message(STATUS "  SDL2                 : NOT FOUND")
   endif()
 endif()
-if(TARGET colony_shaders)
+if(TARGET colony_shaders OR TARGET colony_starfield_shaders)
   message(STATUS "  Shaders              : FXC; outputs at ${CMAKE_BINARY_DIR}/shaders (copied & installed)")
 endif()
 if(ENABLE_IMGUI)
@@ -1070,8 +1099,11 @@ message(STATUS "")
   - Where are my shaders?
       * Source HLSL:   res/shaders/CS_SDFDither.hlsl
       * Compiled CSO:  <build>/shaders/CS_SDFDither.cso
-      * Runtime copy:  <build>/bin/<cfg>/shaders/CS_SDFDither.cso
-      * Install path:  stage/<cfg>/shaders/CS_SDFDither.cso
+      * Source HLSL:   res/shaders/Starfield.hlsl
+      * Compiled VS:   <build>/shaders/StarfieldVS.cso
+      * Compiled PS:   <build>/shaders/StarfieldPS.cso
+      * Runtime copy:  <build>/bin/<cfg>/shaders/*.cso
+      * Install path:  stage/<cfg>/shaders/*.cso
 
   - Dear ImGui:
       * ENABLE_IMGUI=ON by default.
