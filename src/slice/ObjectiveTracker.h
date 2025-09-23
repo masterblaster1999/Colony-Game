@@ -267,15 +267,34 @@ struct SubObjective {
     double activatedAt = 0.0;
 
     struct Builder {
-        SubObjective so;
-        explicit Builder(std::string id_) { so.id = std::move(id_); }
-        Builder& title(std::string t){ so.title = std::move(t); return *this; }
-        Builder& allOf(std::vector<Criterion> v){ so.logic = Logic::All; so.criteria = std::move(v); return *this; }
-        Builder& anyOf(std::vector<Criterion> v){ so.logic = Logic::Any; so.criteria = std::move(v); return *this; }
-        Builder& onActivateFn(std::function<void(SliceState&)> f){ so.onActivate = std::move(f); return *this; }
-        Builder& onCompleteFn(std::function<void(SliceState&)> f){ so.onComplete = std::move(f); return *this; }
-        Builder& onFailFn(std::function<void(SliceState&)> f){ so.onFail = std::move(f); return *this; }
-        SubObjective build(){ return std::move(so); }
+        // Store fields first; construct SubObjective in build()
+        std::string id_;
+        std::string title_;
+        Logic       logic_ = Logic::All;
+        std::vector<Criterion> criteria_;
+        std::function<void(SliceState&)> onActivate_;
+        std::function<void(SliceState&)> onComplete_;
+        std::function<void(SliceState&)> onFail_;
+
+        explicit Builder(std::string id) : id_(std::move(id)) {}
+        Builder& title(std::string t){ title_ = std::move(t); return *this; }
+        Builder& allOf(std::vector<Criterion> v){ logic_ = Logic::All; criteria_ = std::move(v); return *this; }
+        Builder& anyOf(std::vector<Criterion> v){ logic_ = Logic::Any; criteria_ = std::move(v); return *this; }
+        Builder& onActivateFn(std::function<void(SliceState&)> f){ onActivate_ = std::move(f); return *this; }
+        Builder& onCompleteFn(std::function<void(SliceState&)> f){ onComplete_ = std::move(f); return *this; }
+        Builder& onFailFn(std::function<void(SliceState&)> f){ onFail_ = std::move(f); return *this; }
+
+        SubObjective build(){
+            SubObjective so;
+            so.id = std::move(id_);
+            so.title = std::move(title_);
+            so.logic = logic_;
+            so.criteria = std::move(criteria_);
+            so.onActivate = std::move(onActivate_);
+            so.onComplete = std::move(onComplete_);
+            so.onFail = std::move(onFail_);
+            return so;
+        }
     };
 };
 
@@ -327,27 +346,89 @@ struct Objective {
     std::string lastFailReason;
 
     struct Builder {
-        Objective o;
-        explicit Builder(std::string id_) { o.id = std::move(id_); }
-        Builder& title(std::string t){ o.title = std::move(t); return *this; }
-        Builder& desc(std::string d){ o.description = std::move(d); return *this; }
-        Builder& allOf(std::vector<Criterion> v){ o.logic = Logic::All; o.criteria = std::move(v); return *this; }
-        Builder& anyOf(std::vector<Criterion> v){ o.logic = Logic::Any; o.criteria = std::move(v); return *this; }
-        Builder& subAll(std::vector<SubObjective> v){ o.subLogic = Logic::All; o.subs = std::move(v); return *this; }
-        Builder& subAny(std::vector<SubObjective> v, int minCount = 1){ o.subLogic = Logic::Any; o.subs = std::move(v); o.minSubsToComplete = std::max(1, minCount); return *this; }
-        Builder& minColonists(int n){ o.minColonistsAlive = n; return *this; }
-        Builder& timeout(double secs){ o.timeoutSeconds = secs; return *this; }
-        Builder& reward(int s){ o.scoreReward = s; return *this; }
-        Builder& penaltyOnFail(int s){ o.scorePenaltyOnFail = s; return *this; }
-        Builder& weight(double w){ o.weight = w; return *this; }
-        Builder& markCheckpoint(bool v=true){ o.checkpoint = v; return *this; }
-        Builder& repeatable(int times){ o.repeatCountTarget = std::max(1, times); return *this; }
-        Builder& nextOnComplete(std::string id){ o.nextOnCompleteId = std::move(id); return *this; }
-        Builder& nextOnFail(std::string id){ o.nextOnFailId = std::move(id); return *this; }
-        Builder& onActivateFn(std::function<void(SliceState&)> f){ o.onActivate = std::move(f); return *this; }
-        Builder& onCompleteFn(std::function<void(SliceState&)> f){ o.onComplete = std::move(f); return *this; }
-        Builder& onFailFn(std::function<void(SliceState&)> f){ o.onFail = std::move(f); return *this; }
-        Objective build(){ return std::move(o); }
+        // Store fields; materialize Objective in build()
+        std::string id_;
+        std::string title_;
+        std::string description_;
+        Logic logic_ = Logic::All;
+        std::vector<Criterion> criteria_;
+        // Sub objectives
+        Logic subLogic_ = Logic::All;
+        int   minSubsToComplete_ = -1;
+        std::vector<SubObjective> subs_;
+        // Fail rules
+        std::optional<int>    minColonistsAlive_;
+        std::optional<double> timeoutSeconds_;
+        bool                  failIfLost_ = true;
+        // Scoring & progression
+        int    scoreReward_ = 0;
+        int    scorePenaltyOnFail_ = 0;
+        double weight_ = 1.0;
+        bool   checkpoint_ = false;
+        int    repeatCountTarget_ = 1;
+        // Branching
+        std::string nextOnCompleteId_;
+        std::string nextOnFailId_;
+        // Enable/disable
+        bool enabled_ = true;
+        // Callbacks
+        std::function<void(SliceState&)> onActivate_;
+        std::function<void(SliceState&)> onComplete_;
+        std::function<void(SliceState&)> onFail_;
+
+        explicit Builder(std::string id) : id_(std::move(id)) {}
+        Builder& title(std::string t){ title_ = std::move(t); return *this; }
+        Builder& desc(std::string d){ description_ = std::move(d); return *this; }
+        Builder& allOf(std::vector<Criterion> v){ logic_ = Logic::All; criteria_ = std::move(v); return *this; }
+        Builder& anyOf(std::vector<Criterion> v){ logic_ = Logic::Any; criteria_ = std::move(v); return *this; }
+        Builder& subAll(std::vector<SubObjective> v){ subLogic_ = Logic::All; subs_ = std::move(v); return *this; }
+        Builder& subAny(std::vector<SubObjective> v, int minCount = 1){ subLogic_ = Logic::Any; subs_ = std::move(v); minSubsToComplete_ = std::max(1, minCount); return *this; }
+        Builder& minColonists(int n){ minColonistsAlive_ = n; return *this; }
+        Builder& timeout(double secs){ timeoutSeconds_ = secs; return *this; }
+        Builder& reward(int s){ scoreReward_ = s; return *this; }
+        Builder& penaltyOnFail(int s){ scorePenaltyOnFail_ = s; return *this; }
+        Builder& weight(double w){ weight_ = w; return *this; }
+        Builder& markCheckpoint(bool v=true){ checkpoint_ = v; return *this; }
+        Builder& repeatable(int times){ repeatCountTarget_ = std::max(1, times); return *this; }
+        Builder& nextOnComplete(std::string id){ nextOnCompleteId_ = std::move(id); return *this; }
+        Builder& nextOnFail(std::string id){ nextOnFailId_ = std::move(id); return *this; }
+        Builder& onActivateFn(std::function<void(SliceState&)> f){ onActivate_ = std::move(f); return *this; }
+        Builder& onCompleteFn(std::function<void(SliceState&)> f){ onComplete_ = std::move(f); return *this; }
+        Builder& onFailFn(std::function<void(SliceState&)> f){ onFail_ = std::move(f); return *this; }
+
+        Objective build(){
+            Objective o;
+            o.id = std::move(id_);
+            o.title = std::move(title_);
+            o.description = std::move(description_);
+            // own criteria
+            o.logic = logic_;
+            o.criteria = std::move(criteria_);
+            // sub objectives
+            o.subLogic = subLogic_;
+            o.minSubsToComplete = minSubsToComplete_;
+            o.subs = std::move(subs_);
+            // fail rules
+            o.minColonistsAlive = minColonistsAlive_;
+            o.timeoutSeconds    = timeoutSeconds_;
+            o.failIfLost        = failIfLost_;
+            // scoring & progression
+            o.scoreReward       = scoreReward_;
+            o.scorePenaltyOnFail= scorePenaltyOnFail_;
+            o.weight            = weight_;
+            o.checkpoint        = checkpoint_;
+            o.repeatCountTarget = repeatCountTarget_;
+            // branching
+            o.nextOnCompleteId  = std::move(nextOnCompleteId_);
+            o.nextOnFailId      = std::move(nextOnFailId_);
+            // enable/disable
+            o.enabled           = enabled_;
+            // callbacks
+            o.onActivate        = std::move(onActivate_);
+            o.onComplete        = std::move(onComplete_);
+            o.onFail            = std::move(onFail_);
+            return o;
+        }
     };
 };
 
