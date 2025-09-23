@@ -9,6 +9,8 @@
 // - Pause, single-step, time-scale; heightmap regenerate; FOV control
 // - D3D11 debug InfoQueue (debug builds)
 // - On-title stats incl. FPS, GPU ms per section, bodies, VSync, time-scale, seed
+// - Objective tracker glue (debug hotkeys + title progress):
+//      Y=build, U=craft, J=spawn colonist, K=colonist death
 //
 // NOTE: D3D11 has fixed line width == 1.0. Thick/AA lines require custom geometry
 // (quads/GS) if desired.
@@ -42,6 +44,10 @@
 
 #include "space/OrbitalSystem.h"
 #include "render/OrbitalRenderer.h"
+
+// >>> Added: vertical-slice objective system glue
+#include "slice/ObjectiveTracker.h"
+// <<<
 
 #pragma comment(lib, "d3d11.lib")
 #pragma comment(lib, "dxgi.lib")
@@ -765,6 +771,13 @@ struct Slice {
         if (keyPressed('C')) { followSelected = false; orbitCam.target = XMFLOAT3(0,0,0); } // reset target
         if (keyPressed('3')) { fovDeg = std::max(20.f, fovDeg - 2.f); }
         if (keyPressed('4')) { fovDeg = std::min(120.f, fovDeg + 2.f); }
+
+        // --- Added: objective tracker debug events (simulate slice loop) ---
+        if (keyPressed('Y')) { /* Build structure */ g_slice.notifyStructureBuilt(); }
+        if (keyPressed('U')) { /* Craft item     */ g_slice.notifyItemCrafted(); }
+        if (keyPressed('J')) { /* Spawn colonist */ g_slice.notifyColonistSpawned(); }
+        if (keyPressed('K')) { /* Colonist death */ g_slice.notifyColonistDied(); } // also logs "colonist.death" event internally
+        // -------------------------------------------------------------------
     }
 
     void updateCameraMouse() {
@@ -801,6 +814,15 @@ struct Slice {
         // Light anim (slow rotate)
         static float tLight = 0.f; tLight += (float)dt * 0.2f;
         lightDir = XMFLOAT3(std::cos(tLight)*0.3f, 0.8f, std::sin(tLight)*0.5f);
+
+        // --- Added: feed objective tracker time ---
+        // Pause/resume logic mirrors app 'paused' + 'singleStep' semantics.
+        if (!paused) {
+            g_slice.update(dt);
+        } else if (singleStep) {
+            g_slice.update(dt); // single-step advances once while paused
+        }
+        // ------------------------------------------
 
         if (!paused || singleStep) {
             timeDays += dt * timeScale;
@@ -902,24 +924,50 @@ struct Slice {
 };
 
 // --------------------------------------------------------------------------------------
+// Added: global objective tracker instance + basic localization
+// --------------------------------------------------------------------------------------
+static slice::ObjectiveTracker g_slice =
+    slice::ObjectiveTracker::MakeDefault(/*surviveSeconds*/ 600.0,
+                                         /*structuresToBuild*/ 2,
+                                         /*itemsToCraft*/ 1,
+                                         /*startingColonists*/ 3);
+
+// --------------------------------------------------------------------------------------
 // App boilerplate
 // --------------------------------------------------------------------------------------
 static Device gDev;
 static Slice  gSlice;
 static bool   gRunning = true;
 
+static std::wstring MMSS(double s) {
+    if (s < 0.0) s = 0.0;
+    int is = int(s + 0.5);
+    int m = is / 60; int sec = is % 60;
+    wchar_t buf[16]; swprintf_s(buf, L"%02d:%02d", m, sec);
+    return buf;
+}
+
 static void UpdateWindowTitle(HWND hwnd, const Slice& s) {
     std::wstring selName = L"";
     if (!s.orbital.Bodies().empty() && s.selectedBody >= 0 && s.selectedBody < (int)s.orbital.Bodies().size()) {
         selName = Widen(s.orbital.Bodies()[size_t(s.selectedBody)].name);
     }
+
+    // Slice HUD first line (localized via g_slice localizer)
+    auto hud = g_slice.hudLines();
+    std::wstring objLine = hud.empty() ? L"Objective: (none)" : Widen(hud[0]);
+    int pct = int(g_slice.overallProgress() * 100.0 + 0.5);
+    const auto& st = g_slice.state();
+
     wchar_t title[512];
     swprintf_s(title,
-        L"Colony Vertical Slice | FPS: %.0f (%.2f ms) | GPU: F%.2fms T%.2fms C%.2fms O%.2fms | Bodies:%zu Sel:%s | VSync:%s | TimeScale:%.2f | Seed:%u",
+        L"Colony Vertical Slice | FPS: %.0f (%.2f ms) | GPU: F%.2fms T%.2fms C%.2fms O%.2fms | Bodies:%zu Sel:%s | VSync:%s | TimeScale:%.2f | Seed:%u | %s | %d%% | Built:%d Crafted:%d Colonists:%d | Surv:%s",
         s.fps.fps, s.fps.ms,
         s.timerFrame.lastMs, s.timerTerrain.lastMs, s.timerCube.lastMs, s.timerOrbital.lastMs,
         s.orbital.Bodies().size(), selName.c_str(),
-        s.vsync ? L"On" : L"Off", s.timeScale, gSeed);
+        s.vsync ? L"On" : L"Off", s.timeScale, gSeed,
+        objLine.c_str(), pct, st.structuresBuilt, st.itemsCrafted, st.colonistsAlive,
+        MMSS(st.elapsedSeconds).c_str());
     SetWindowTextW(hwnd, title);
 }
 
@@ -953,6 +1001,25 @@ int APIENTRY wWinMain(HINSTANCE hi, HINSTANCE, LPWSTR cl, int) {
 
     gDev.create(hwnd, 1280, 720);
     gSlice.create(gDev);
+
+    // Optional: localized labels for the default tracker tokens
+    g_slice.setLocalizer([](std::string_view tok)->std::string{
+        if (tok=="EstablishColony") return "Establish the colony";
+        if (tok=="BuildDesc") return "Build structures";
+        if (tok=="BuildStructures") return "Build structures";
+        if (tok=="EnableProduction") return "Enable production";
+        if (tok=="CraftDesc") return "Craft items";
+        if (tok=="CraftItems") return "Craft items";
+        if (tok=="WeatherTheNight") return "Weather the night";
+        if (tok=="SurviveDesc") return "Survive the timer";
+        if (tok=="SurviveTimer") return "Survive timer";
+        if (tok=="NoDeaths60s") return "No deaths in last 60s";
+        if (tok=="NoRecentDeaths") return "No recent deaths";
+        if (tok=="KeepThemAlive") return "Keep them alive";
+        if (tok=="EndWith3Colonists") return "Finish with at least 3 colonists alive";
+        if (tok=="ColonistsGte3") return "Colonists \u2265 3";
+        return std::string(tok);
+    });
 
     // Fixed-step update for determinism; render every loop
     const double dtFixed = 1.0 / 120.0;
