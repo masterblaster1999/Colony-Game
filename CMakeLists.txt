@@ -979,9 +979,8 @@ foreach(_d IN LISTS _ASSET_DIRS)
 endforeach()
 
 # (NEW) Install compiled shaders produced by FXC
-if(EXISTS "${CMAKE_BINARY_DIR}/shaders")
-  install(DIRECTORY "${CMAKE_BINARY_DIR}/shaders/" DESTINATION "shaders" COMPONENT ColonyRuntime)
-endif()
+# (Unconditionally install the shaders directory; 'stage_win' depends on shader targets so it exists.)
+install(DIRECTORY "${CMAKE_BINARY_DIR}/shaders/" DESTINATION "shaders" COMPONENT ColonyRuntime)
 
 # Optional: install redists (UCRT/MSVC) app-local
 set(CMAKE_INSTALL_SYSTEM_RUNTIME_DESTINATION .)
