@@ -335,8 +335,9 @@ Listener3D XAudioEngine::GetListener() const { return m_listener; }
 void XAudioEngine::SetInstanceVolume(const AudioEventHandle& h, float linearVol) {
     if (!h.Valid()) return;
     auto it = m_voicesById.find(h.id);
-    if (it == m_voicesById.end() || !it->second.voice) return;
-    it->second.volumeScale = std::max(0.0f, linearVol);
+    if (it != m_voicesById.end() && it->second.voice) {
+        it->second.volumeScale = std::max(0.0f, linearVol);
+    }
 }
 
 void XAudioEngine::SetInstancePitchSemitones(const AudioEventHandle& h, float semitones) {
@@ -548,42 +549,42 @@ bool XAudioEngine::IsBusSolo(AudioBus bus) const {
 
 // --------------------------- Bus FX (Reverb/Meter/EQ/Echo/Limiter) ---------------------------
 
+// NOTE: Avoid referencing private nested types outside the class.
+// Build the effect chain using generic flags + IUnknown* pointers, not slot type names.
 #if CG_AUDIO_HAS_XAUDIO2FX || CG_AUDIO_HAS_XAPOFX
-// Rebuild the effect chain for a bus from enabled slots.
-// Order: EQ -> Echo -> Reverb -> Meter (meter last).
 static void RebuildBusEffectChain(IXAudio2SubmixVoice* v,
 #if CG_AUDIO_HAS_XAPOFX
-    const XAudioEngine::EQSlot& eq,
-    const XAudioEngine::EchoSlot& echo,
+    bool eqEnabled, IUnknown* eqFx,
+    bool echoEnabled, IUnknown* echoFx,
 #else
-    const int& /*eq*/,
-    const int& /*echo*/,
+    bool /*eqEnabled*/, IUnknown* /*eqFx*/,
+    bool /*echoEnabled*/, IUnknown* /*echoFx*/,
 #endif
 #if CG_AUDIO_HAS_XAUDIO2FX
-    const XAudioEngine::ReverbSlot& reverb,
-    const XAudioEngine::MeterSlot& meter
+    bool reverbEnabled, IUnknown* reverbFx,
+    bool meterEnabled,  IUnknown* meterFx
 #else
-    const int& /*reverb*/,
-    const int& /*meter*/
+    bool /*reverbEnabled*/, IUnknown* /*reverbFx*/,
+    bool /*meterEnabled*/,  IUnknown* /*meterFx*/
 #endif
 ) {
     if (!v) return;
 
     std::vector<XAUDIO2_EFFECT_DESCRIPTOR> effs;
 #if CG_AUDIO_HAS_XAPOFX
-    if (eq.enabled  && eq.fx)   { XAUDIO2_EFFECT_DESCRIPTOR d{}; d.pEffect = eq.fx;   d.InitialState = TRUE; d.OutputChannels = 0; effs.push_back(d); }
-    if (echo.enabled&& echo.fx) { XAUDIO2_EFFECT_DESCRIPTOR d{}; d.pEffect = echo.fx; d.InitialState = TRUE; d.OutputChannels = 0; effs.push_back(d); }
+    if (eqEnabled  && eqFx)   { XAUDIO2_EFFECT_DESCRIPTOR d{}; d.pEffect = eqFx;   d.InitialState = TRUE; d.OutputChannels = 0; effs.push_back(d); }
+    if (echoEnabled&& echoFx) { XAUDIO2_EFFECT_DESCRIPTOR d{}; d.pEffect = echoFx; d.InitialState = TRUE; d.OutputChannels = 0; effs.push_back(d); }
 #endif
 #if CG_AUDIO_HAS_XAUDIO2FX
-    if (reverb.enabled && reverb.fx) { XAUDIO2_EFFECT_DESCRIPTOR d{}; d.pEffect = reverb.fx; d.InitialState = TRUE; d.OutputChannels = 0; effs.push_back(d); }
-    if (meter.enabled  && meter.fx)  { XAUDIO2_EFFECT_DESCRIPTOR d{}; d.pEffect = meter.fx;  d.InitialState = TRUE; d.OutputChannels = 0; effs.push_back(d); }
+    if (reverbEnabled && reverbFx) { XAUDIO2_EFFECT_DESCRIPTOR d{}; d.pEffect = reverbFx; d.InitialState = TRUE; d.OutputChannels = 0; effs.push_back(d); }
+    if (meterEnabled  && meterFx)  { XAUDIO2_EFFECT_DESCRIPTOR d{}; d.pEffect = meterFx;  d.InitialState = TRUE; d.OutputChannels = 0; effs.push_back(d); }
 #endif
 
     if (!effs.empty()) {
         XAUDIO2_EFFECT_CHAIN chain{ static_cast<UINT32>(effs.size()), effs.data() };
         v->SetEffectChain(&chain); // How-to: Create an Effect Chain. :contentReference[oaicite:15]{index=15}
     } else {
-        // Clear chain: set empty chain
+        // Clear chain
         XAUDIO2_EFFECT_CHAIN chain{ 0, nullptr };
         v->SetEffectChain(&chain);
     }
@@ -606,11 +607,13 @@ void XAudioEngine::EnableBusReverb(AudioBus bus, bool enable) {
 
     RebuildBusEffectChain(v,
 #if CG_AUDIO_HAS_XAPOFX
-        m_eq[(int)bus], m_echo[(int)bus],
+        m_eq[(int)bus].enabled,   m_eq[(int)bus].fx,
+        m_echo[(int)bus].enabled, m_echo[(int)bus].fx,
 #else
-        0, 0,
+        false, nullptr, false, nullptr,
 #endif
-        m_reverb[(int)bus], m_meter[(int)bus]);
+        m_reverb[(int)bus].enabled, m_reverb[(int)bus].fx,
+        m_meter[(int)bus].enabled,  m_meter[(int)bus].fx);
 }
 
 void XAudioEngine::SetBusReverbParams(AudioBus bus, const XAUDIO2FX_REVERB_PARAMETERS& p) {
@@ -656,11 +659,13 @@ void XAudioEngine::EnableBusMeter(AudioBus bus, bool enable) {
 
     RebuildBusEffectChain(v,
 #if CG_AUDIO_HAS_XAPOFX
-        m_eq[(int)bus], m_echo[(int)bus],
+        m_eq[(int)bus].enabled,   m_eq[(int)bus].fx,
+        m_echo[(int)bus].enabled, m_echo[(int)bus].fx,
 #else
-        0, 0,
+        false, nullptr, false, nullptr,
 #endif
-        m_reverb[(int)bus], m_meter[(int)bus]);
+        m_reverb[(int)bus].enabled, m_reverb[(int)bus].fx,
+        m_meter[(int)bus].enabled,  m_meter[(int)bus].fx);
 }
 
 bool XAudioEngine::GetBusMeterLevels(AudioBus bus, std::vector<float>& channelPeaks) const {
@@ -701,11 +706,14 @@ void XAudioEngine::EnableBusEQ(AudioBus bus, bool enable) {
     }
     m_eq[(int)bus].enabled = enable;
 
-    RebuildBusEffectChain(v, m_eq[(int)bus], m_echo[(int)bus],
+    RebuildBusEffectChain(v,
+        m_eq[(int)bus].enabled,   m_eq[(int)bus].fx,
+        m_echo[(int)bus].enabled, m_echo[(int)bus].fx,
 #if CG_AUDIO_HAS_XAUDIO2FX
-        m_reverb[(int)bus], m_meter[(int)bus]
+        m_reverb[(int)bus].enabled, m_reverb[(int)bus].fx,
+        m_meter[(int)bus].enabled,  m_meter[(int)bus].fx
 #else
-        0, 0
+        false, nullptr, false, nullptr
 #endif
     );
 }
@@ -733,11 +741,14 @@ void XAudioEngine::EnableBusEcho(AudioBus bus, bool enable) {
     }
     m_echo[(int)bus].enabled = enable;
 
-    RebuildBusEffectChain(v, m_eq[(int)bus], m_echo[(int)bus],
+    RebuildBusEffectChain(v,
+        m_eq[(int)bus].enabled,   m_eq[(int)bus].fx,
+        m_echo[(int)bus].enabled, m_echo[(int)bus].fx,
 #if CG_AUDIO_HAS_XAUDIO2FX
-        m_reverb[(int)bus], m_meter[(int)bus]
+        m_reverb[(int)bus].enabled, m_reverb[(int)bus].fx,
+        m_meter[(int)bus].enabled,  m_meter[(int)bus].fx
 #else
-        0, 0
+        false, nullptr, false, nullptr
 #endif
     );
 }
@@ -895,12 +906,17 @@ PerformanceData XAudioEngine::GetPerformanceData() const {
 
     XAUDIO2_PERFORMANCE_DATA pd{};
     m_xaudio->GetPerformanceData(&pd); // GetPerformanceData. :contentReference[oaicite:23]{index=23}
-    out.activeSourceVoiceCount   = pd.ActiveSourceVoiceCount;
-    out.totalVoices              = pd.TotalVoiceCount;
-    out.audioCyclesSinceLastQuery= pd.AudioCyclesSinceLastQuery;
-    out.totalCyclesSinceLastQuery= pd.TotalCyclesSinceLastQuery;
-    out.memoryUsageBytes         = pd.MemoryUsageInBytes;
-    out.currentLatencySamples    = pd.CurrentLatencyInSamples;
+
+    // Fields available in XAudio2 2.9 (Windows 10/11 SDK). 'TotalVoiceCount' no longer exists.
+    out.activeSourceVoiceCount    = pd.ActiveSourceVoiceCount;
+    // Derive an approximate "total voices" = sources + submixes + master
+    uint32_t derivedTotalVoices   = pd.ActiveSourceVoiceCount + pd.ActiveSubmixVoiceCount + 1u;
+    out.totalVoices               = derivedTotalVoices;
+
+    out.audioCyclesSinceLastQuery = pd.AudioCyclesSinceLastQuery;
+    out.totalCyclesSinceLastQuery = pd.TotalCyclesSinceLastQuery;
+    out.memoryUsageBytes          = pd.MemoryUsageInBytes;
+    out.currentLatencySamples     = pd.CurrentLatencyInSamples;
     return out;
 }
 
