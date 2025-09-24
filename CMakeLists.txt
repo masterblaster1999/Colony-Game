@@ -18,6 +18,7 @@
 #   * (NEW) D3D11 HLSL compute shader build with FXC, copied next to the EXE and installed
 #   * (NEW) D3D11 HLSL VS/PS shader builds (Starfield) with FXC, copied next to the EXE and installed
 #   * (PATCH) Dear ImGui integration (Win32 + D3D11) via FetchContent + backend static library
+#   * (PATCH-ODR) Exclude Windows duplicate AtomicFileWin.cpp to fix ODR with AtomicFile.cpp
 # ==================================================================================================
 
 cmake_minimum_required(VERSION 3.16)
@@ -249,6 +250,14 @@ endif()
 list(FILTER CORE_SOURCES EXCLUDE REGEX ".*[\\/]render[\\/]d3d11_sprite_batch\\.cpp$")
 # (PATCH) also exclude bootstrap-only Win helpers from the core library
 list(FILTER CORE_SOURCES EXCLUDE REGEX ".*[\\\\/](os|platform)[\\\\/]win(32)?[\\\\/](WinBootstrap|SingleInstance|CrashHandler|SingleClick)\\.cpp$")
+
+# --------------------------------------------------------------------------------------------------
+# (PATCH-ODR) Remove duplicate Windows atomic file I/O TU to fix ODR with AtomicFile.cpp
+# Compile exactly one implementation: prefer the cross-platform src/io/AtomicFile.cpp.
+# --------------------------------------------------------------------------------------------------
+# If a Windows-specific AtomicFileWin.cpp exists anywhere under src/io[/win], drop it.
+list(FILTER CORE_SOURCES EXCLUDE REGEX ".*[\\\\/]io([\\\\/]win)?[\\\\/]AtomicFileWin\\.cpp$")
+message(STATUS "ODR fix: excluding AtomicFileWin.cpp from colony_core to avoid duplicate definitions with AtomicFile.cpp")
 
 add_library(colony_core STATIC ${CORE_SOURCES} ${CORE_HEADERS})
 target_include_directories(colony_core PUBLIC "${SRC_DIR}")
@@ -1062,6 +1071,7 @@ if(ENABLE_IMGUI)
 else()
   message(STATUS "  ImGui                : DISABLED")
 endif()
+message(STATUS "  ODR fix              : AtomicFileWin.cpp excluded (use AtomicFile.cpp)")
 message(STATUS "===============================================================")
 message(STATUS "")
 
