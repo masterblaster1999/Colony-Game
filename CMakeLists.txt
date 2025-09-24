@@ -465,6 +465,34 @@ if(PCH_HEADER_EXE AND EXISTS "${PCH_HEADER_EXE}")
   target_precompile_headers(ColonyGame PRIVATE "${PCH_HEADER_EXE}")
 endif()
 
+# ---- Default seed + debug keys support (merged minimal hook) ------------------
+# WorldSeed.cpp lives under src/game and is already pulled into colony_core via the
+# GLOB above. We only add include paths to executable targets here. If for any reason
+# WorldSeed.cpp is NOT part of colony_core, we will also attach it to the exe.
+set(COLONY_EXTRA_SRC "${CMAKE_SOURCE_DIR}/src/game/WorldSeed.cpp")
+set(COLONY_EXTRA_INC "${CMAKE_SOURCE_DIR}/src")
+
+# Determine if WorldSeed.cpp is already compiled into colony_core.
+set(_WORLDSEED_IN_CORE OFF)
+if(EXISTS "${COLONY_EXTRA_SRC}")
+  foreach(_s IN LISTS CORE_SOURCES)
+    if(_s STREQUAL "${COLONY_EXTRA_SRC}")
+      set(_WORLDSEED_IN_CORE ON)
+      break()
+    endif()
+  endforeach()
+endif()
+
+foreach(tgt IN ITEMS ColonyGame VerticalSlice App Sandbox Game)
+  if (TARGET ${tgt})
+    target_include_directories(${tgt} PRIVATE ${COLONY_EXTRA_INC})
+    if (EXISTS "${COLONY_EXTRA_SRC}" AND NOT _WORLDSEED_IN_CORE)
+      target_sources(${tgt} PRIVATE ${COLONY_EXTRA_SRC})
+    endif()
+  endif()
+endforeach()
+# -----------------------------------------------------------------------------
+
 # -------- EnableWinQoL (resources, installs, asset copy) ----------
 # Try to include helper if it's present; provide a safe no-op fallback if not.
 include(cmake/EnableWinQoL.cmake OPTIONAL)
@@ -976,7 +1004,7 @@ if(ENABLE_CODE_SIGNING AND CMAKE_BUILD_TYPE MATCHES "Release")
 "execute_process(COMMAND \"${SIGNTOOL_PATH}\"
     sign /fd SHA256 /tr \"${SIGNING_TIMESTAMP_URL}\" /td SHA256
     /f \"${SIGNING_CERT_PATH}\" /p \"${SIGNING_CERT_PASSWORD}\"
-    \"\$ENV{DESTDIR}\${CMAKE_INSTALL_PREFIX}/\${CMAKE_INSTALL_CONFIG_NAME}/ColonyGame.exe\")
+    \"\$ENV{DESTDIR}\${CMAKE_INSTALL_PREFIX}/\${CMAKE_INSTALL_CONFIG_NAME}/ColonyGame.exe\") 
  message(STATUS \"Signed: \${CMAKE_INSTALL_PREFIX}/\${CMAKE_INSTALL_CONFIG_NAME}/ColonyGame.exe\")")
     # Sign WinLauncher.exe if present
     if(TARGET WinLauncher)
@@ -984,7 +1012,7 @@ if(ENABLE_CODE_SIGNING AND CMAKE_BUILD_TYPE MATCHES "Release")
 "execute_process(COMMAND \"${SIGNTOOL_PATH}\"
     sign /fd SHA256 /tr \"${SIGNING_TIMESTAMP_URL}\" /td SHA256
     /f \"${SIGNING_CERT_PATH}\" /p \"${SIGNING_CERT_PASSWORD}\"
-    \"\$ENV{DESTDIR}\${CMAKE_INSTALL_PREFIX}/\${CMAKE_INSTALL_CONFIG_NAME}/WinLauncher.exe\")
+    \"\$ENV{DESTDIR}\${CMAKE_INSTALL_PREFIX}/\${CMAKE_INSTALL_CONFIG_NAME}/WinLauncher.exe\") 
  message(STATUS \"Signed: \${CMAKE_INSTALL_PREFIX}/\${CMAKE_INSTALL_CONFIG_NAME}/WinLauncher.exe\")")
     endif()
   else()
