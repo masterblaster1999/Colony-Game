@@ -1,6 +1,6 @@
-#define WIN32_LEAN_AND_MEAN
-#include <Windows.h>
+#include "platform/win/WinSDK.h"
 #include <ShlObj.h>         // SHGetKnownFolderPath
+#include <KnownFolders.h>   // FOLDERID_LocalAppData
 #include <filesystem>
 #include <system_error>
 #include "PathUtilWin.h"
