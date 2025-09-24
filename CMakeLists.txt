@@ -101,6 +101,11 @@ set(SRC_DIR "src" CACHE PATH "Path to core source directory")
 option(ENABLE_IMGUI "Enable Dear ImGui integration" ON)
 option(ENABLE_IMGUI_DEMO "Compile ImGui demo window" OFF)
 
+# (NEW) Tracy profiler toggles (small CMake addition)
+option(ENABLE_TRACY "Enable Tracy profiler (TRACY_ENABLE + TracyClient.cpp)" ON)
+set(TRACY_ROOT "${CMAKE_SOURCE_DIR}/external/tracy" CACHE PATH "Path to Tracy checkout (wolfpld/tracy)")
+option(TRACY_FETCH "Fetch Tracy with FetchContent if TRACY_ROOT is not found" OFF)
+
 # (PATCH) Split: game entry vs. bootstrapper
 set(LAUNCHER_FILE "" CACHE FILEPATH "Override: path to the GAME ENTRY .cpp (win32_main/SDL main)")
 set(BOOTSTRAP_FILE "" CACHE FILEPATH "Override: path to the bootstrapper .cpp (WinLauncher.cpp)")
@@ -685,6 +690,50 @@ if(ENABLE_IMGUI)
     set_target_properties(imgui_backend PROPERTIES FOLDER "3rdparty/imgui")
     target_compile_definitions(ColonyGame PRIVATE CG_ENABLE_IMGUI=1)
     target_link_libraries(ColonyGame PRIVATE imgui_backend)
+    # (Small CMake add) Make ImGui headers visible to colony_core if UI code is compiled there.
+    target_link_libraries(colony_core PUBLIC imgui_backend)
+  endif()
+endif()
+
+# --------------------------------------------------------------------------------------------------
+# (NEW) Tracy profiler integration (Small CMake additions)
+# --------------------------------------------------------------------------------------------------
+set(_TRACY_STATUS "DISABLED")
+if(ENABLE_TRACY)
+  set(_TRACY_FOUND FALSE)
+  set(TRACY_PUBLIC_DIR "${TRACY_ROOT}/public")
+  if(EXISTS "${TRACY_PUBLIC_DIR}/TracyClient.cpp")
+    set(_TRACY_FOUND TRUE)
+    set(_TRACY_PUBLIC_DIR "${TRACY_PUBLIC_DIR}")
+  elseif(TRACY_FETCH)
+    include(FetchContent)
+    # Use a recent stable tag; update as needed.
+    FetchContent_Declare(
+      tracy
+      GIT_REPOSITORY https://github.com/wolfpld/tracy.git
+      GIT_TAG v0.12.2
+    )
+    FetchContent_MakeAvailable(tracy)
+    set(_TRACY_PUBLIC_DIR "${tracy_SOURCE_DIR}/public")
+    if(EXISTS "${_TRACY_PUBLIC_DIR}/TracyClient.cpp")
+      set(_TRACY_FOUND TRUE)
+    endif()
+  endif()
+
+  if(_TRACY_FOUND)
+    add_library(tracy_client STATIC "${_TRACY_PUBLIC_DIR}/TracyClient.cpp")
+    target_include_directories(tracy_client PUBLIC "${_TRACY_PUBLIC_DIR}")
+    target_compile_definitions(tracy_client PUBLIC TRACY_ENABLE)
+    # Windows sockets for client transport:
+    target_link_libraries(tracy_client PUBLIC ws2_32)
+    set_target_properties(tracy_client PROPERTIES FOLDER "3rdparty/tracy")
+    # Link to both core (for headers/defs during build) and the final exe.
+    target_link_libraries(colony_core PUBLIC tracy_client)
+    target_link_libraries(ColonyGame PRIVATE tracy_client)
+    set(_TRACY_STATUS "ENABLED (${_TRACY_PUBLIC_DIR})")
+  else()
+    message(WARNING "ENABLE_TRACY=ON but Tracy was not found. Set TRACY_ROOT or enable TRACY_FETCH=ON.")
+    set(_TRACY_STATUS "ENABLED (NOT FOUND)")
   endif()
 endif()
 
@@ -861,6 +910,8 @@ if(FRONTEND STREQUAL "sdl")
     endif()
     target_compile_definitions(ColonyGame PRIVATE CG_ENABLE_IMGUI=1)
     target_link_libraries(ColonyGame PRIVATE imgui_backend)
+    # (Small CMake add) Provide headers/defs to colony_core
+    target_link_libraries(colony_core PUBLIC imgui_backend)
   endif()
 endif()
 
@@ -1098,6 +1149,7 @@ if(ENABLE_IMGUI)
 else()
   message(STATUS "  ImGui                : DISABLED")
 endif()
+message(STATUS "  Tracy profiler       : ${_TRACY_STATUS}")
 message(STATUS "  ODR fix              : AtomicFileWin.cpp excluded (use AtomicFile.cpp)")
 message(STATUS "===============================================================")
 message(STATUS "")
@@ -1119,7 +1171,7 @@ message(STATUS "")
   - Pick a specific GAME ENTRY file (e.g., win32_main.cpp):
       cmake -S . -B build -DLAUNCHER_FILE=src/platform/win32/win32_main.cpp
 
-  - Override the BOOTSTRAPPER source (WinLauncher.cpp) or disable it:
+  - Override the BOOTSTRAP source (WinLauncher.cpp) or disable it:
       cmake -S . -B build -DBOOTSTRAP_FILE=platform/win/WinLauncher.cpp
       cmake -S . -B build -DBUILD_BOOTSTRAPPER=OFF
 
@@ -1147,4 +1199,9 @@ message(STATUS "")
       * Win32 frontend builds imgui_impl_win32 + imgui_impl_dx11.
       * SDL frontend builds imgui_impl_sdl2 + imgui_impl_dx11.
       * In code, gate UI with: #if defined(CG_ENABLE_IMGUI)
+
+  - Tracy:
+      * ENABLE_TRACY=ON builds tracy_client from TRACY_ROOT/public/TracyClient.cpp (or FetchContent if TRACY_FETCH=ON).
+      * Linkage adds TRACY_ENABLE define and ws2_32 on Windows.
+      * Run Tracy.exe and click 'Connect' while the game is running.
 ]]
