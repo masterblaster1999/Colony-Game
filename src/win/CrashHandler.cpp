@@ -11,8 +11,13 @@
 #include <new>          // std::set_new_handler
 #include <cstdio>
 #include <cstdint>
+#include <cwchar>       // _itow_s, _ui64tow_s
 
 #pragma comment(lib, "Dbghelp.lib")
+
+#ifndef _countof
+#define _countof(arr) (sizeof(arr) / sizeof((arr)[0]))
+#endif
 
 namespace crash {
 
@@ -45,8 +50,8 @@ static fs::path EnsureDumpDir() {
 static std::wstring NowStamp() {
     SYSTEMTIME st{}; GetLocalTime(&st);
     wchar_t buf[64];
-    swprintf(buf, 64, L"%04u-%02u-%02u_%02u-%02u-%02u",
-             st.wYear, st.wMonth, st.wDay, st.wHour, st.wMinute, st.wSecond);
+    swprintf_s(buf, _countof(buf), L"%04u-%02u-%02u_%02u-%02u-%02u",
+               st.wYear, st.wMonth, st.wDay, st.wHour, st.wMinute, st.wSecond);
     return buf;
 }
 
@@ -54,11 +59,13 @@ static void AppendLine(std::wstring& s, const wchar_t* key, const wchar_t* value
     s.append(key).append(L"=").append(value).append(L"\r\n");
 }
 static void AppendLine(std::wstring& s, const wchar_t* key, uint32_t value) {
-    wchar_t buf[32]; _itow_s(static_cast<int>(value), buf, 10);
+    wchar_t buf[32];
+    _itow_s(static_cast<int>(value), buf, _countof(buf), 10); // value, buffer, size, radix
     s.append(key).append(L"=").append(buf).append(L"\r\n");
 }
 static void AppendLine(std::wstring& s, const wchar_t* key, uint64_t value) {
-    wchar_t buf[64]; _ui64tow_s(value, buf, 10); // value, buffer, radix
+    wchar_t buf[64];
+    _ui64tow_s(value, buf, _countof(buf), 10);                // value, buffer, size, radix
     s.append(key).append(L"=").append(buf).append(L"\r\n");
 }
 
@@ -75,13 +82,16 @@ static MINIDUMP_TYPE ChooseDumpType(bool include_scans, bool include_handles, bo
 static void WriteCrashInfoTxt(const fs::path& dmpPath, EXCEPTION_POINTERS* ep) {
     std::wstring text;
     OSVERSIONINFOEXW ver{}; ver.dwOSVersionInfoSize = sizeof(ver);
+#pragma warning(push)
+#pragma warning(disable: 4996) // GetVersionExW is deprecated; acceptable for diagnostics
     ::GetVersionExW(reinterpret_cast<OSVERSIONINFOW*>(&ver));
+#pragma warning(pop)
     SYSTEM_INFO si{}; GetSystemInfo(&si);
 
     AppendLine(text, L"app", g_appName);
-    AppendLine(text, L"os_major", ver.dwMajorVersion);
-    AppendLine(text, L"os_minor", ver.dwMinorVersion);
-    AppendLine(text, L"os_build", ver.dwBuildNumber);
+    AppendLine(text, L"os_major", static_cast<uint32_t>(ver.dwMajorVersion));
+    AppendLine(text, L"os_minor", static_cast<uint32_t>(ver.dwMinorVersion));
+    AppendLine(text, L"os_build", static_cast<uint32_t>(ver.dwBuildNumber));
     AppendLine(text, L"cpu_count", static_cast<uint32_t>(si.dwNumberOfProcessors));
     if (ep && ep->ExceptionRecord) {
         AppendLine(text, L"exception_code", static_cast<uint64_t>(ep->ExceptionRecord->ExceptionCode));
@@ -90,7 +100,8 @@ static void WriteCrashInfoTxt(const fs::path& dmpPath, EXCEPTION_POINTERS* ep) {
 
     fs::path txt = dmpPath; txt.replace_extension(L".txt");
     FILE* f = nullptr;
-    if (_wfopen_s(&f, txt.c_str(), L"wb, ccs=UTF-8") == 0 && f) {
+    // Text mode with UTF-8 encoding; fputws converts wide to UTF-8
+    if (_wfopen_s(&f, txt.c_str(), L"wt, ccs=UTF-8") == 0 && f) {
         fputws(text.c_str(), f);
         fclose(f);
     }
