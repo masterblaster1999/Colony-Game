@@ -19,6 +19,7 @@
 #   * (NEW) D3D11 HLSL VS/PS shader builds (Starfield) with FXC, copied next to the EXE and installed
 #   * (PATCH) Dear ImGui integration (Win32 + D3D11) via FetchContent + backend static library
 #   * (PATCH-ODR) Exclude Windows duplicate AtomicFileWin.cpp to fix ODR with AtomicFile.cpp
+#   * (NEW) Procedural terrain module sources + runtime-compiled Terrain.hlsl staged to /shaders
 # ==================================================================================================
 
 cmake_minimum_required(VERSION 3.16)
@@ -457,6 +458,17 @@ add_executable(ColonyGame ${_WIN32_FLAG} "${_GAME_ENTRY}")
 target_link_libraries(ColonyGame PRIVATE colony_core)
 target_compile_features(ColonyGame PRIVATE cxx_std_20)
 
+# (NEW) Procedural terrain module sources (Renderer + Mesh + World wrapper)
+# These are added to the executable target so the core static lib stays platform-agnostic.
+target_sources(ColonyGame PRIVATE
+  src/world/WorldSystem.hpp
+  src/world/WorldSystem.cpp
+  src/render/TerrainMesh.hpp
+  src/render/TerrainMesh.cpp
+  src/render/TerrainRenderer.hpp
+  src/render/TerrainRenderer.cpp
+)
+
 # PCH for game exe
 if(NOT PCH_HEADER_EXE)
   foreach(_cand IN ITEMS "${SRC_DIR}/pch.h" "${SRC_DIR}/PCH.h" "pch.h" "PCH.h")
@@ -621,14 +633,38 @@ if(MSVC)
   # --- Compute shader(s) ---
   set(CS_SDFDITHER_SRC "${SHADER_DIR}/CS_SDFDither.hlsl")
   set(CS_SDFDITHER_BIN "${SHADER_BIN_DIR}/CS_SDFDither.cso")
-  compile_hlsl_cs("${CS_SDFDITHER_SRC}" "main" "cs_5_0" "${CS_SDFDITHER_BIN}")
+  if(EXISTS "${CS_SDFDITHER_SRC}")
+    compile_hlsl_cs("${CS_SDFDITHER_SRC}" "main" "cs_5_0" "${CS_SDFDITHER_BIN}")
+  endif()
 
   # --- VS/PS shader(s) (Starfield) ---
   set(STARFIELD_SRC "${SHADER_DIR}/Starfield.hlsl")
   set(STARFIELD_VS  "${SHADER_BIN_DIR}/StarfieldVS.cso")
   set(STARFIELD_PS  "${SHADER_BIN_DIR}/StarfieldPS.cso")
-  compile_hlsl("${STARFIELD_SRC}" "VSMain" "vs_5_0" "${STARFIELD_VS}")
-  compile_hlsl("${STARFIELD_SRC}" "PSMain" "ps_5_0" "${STARFIELD_PS}")
+  if(EXISTS "${STARFIELD_SRC}")
+    compile_hlsl("${STARFIELD_SRC}" "VSMain" "vs_5_0" "${STARFIELD_VS}")
+    compile_hlsl("${STARFIELD_SRC}" "PSMain" "ps_5_0" "${STARFIELD_PS}")
+  endif()
+
+  # --- (NEW) Stage runtime-compiled Terrain shader source next to /shaders ---
+  # TerrainRenderer.cpp compiles Terrain.hlsl at runtime via D3DCompileFromFile.
+  # We stage the .hlsl into <build>/shaders and later copy the whole folder next to the EXE.
+  set(TERRAIN_HLSL_SRC "${SHADER_DIR}/Terrain.hlsl")
+  if(EXISTS "${TERRAIN_HLSL_SRC}")
+    add_custom_command(
+      OUTPUT "${SHADER_BIN_DIR}/Terrain.hlsl"
+      COMMAND "${CMAKE_COMMAND}" -E copy_if_different
+              "${TERRAIN_HLSL_SRC}" "${SHADER_BIN_DIR}/Terrain.hlsl"
+      DEPENDS "${TERRAIN_HLSL_SRC}"
+      COMMENT "Staging Terrain.hlsl for runtime compilation"
+      VERBATIM)
+    add_custom_target(colony_terrain_src ALL
+      DEPENDS "${SHADER_BIN_DIR}/Terrain.hlsl"
+    )
+    add_dependencies(ColonyGame colony_terrain_src)
+  else()
+    message(STATUS "res/shaders/Terrain.hlsl not found; skipping staging (renderer will need a shader at runtime).")
+  endif()
 
   # Group them under custom targets so they're built automatically
   add_custom_target(colony_shaders ALL
@@ -642,12 +678,12 @@ if(MSVC)
   add_dependencies(ColonyGame colony_shaders)
   add_dependencies(ColonyGame colony_starfield_shaders)
 
-  # Copy compiled shaders next to the exe after build (copies entire bin dir)
+  # Copy compiled shaders (and staged Terrain.hlsl) next to the exe after build
   add_custom_command(TARGET ColonyGame POST_BUILD
     COMMAND "${CMAKE_COMMAND}" -E make_directory "$<TARGET_FILE_DIR:ColonyGame>/shaders"
     COMMAND "${CMAKE_COMMAND}" -E copy_directory
             "${SHADER_BIN_DIR}" "$<TARGET_FILE_DIR:ColonyGame>/shaders"
-    COMMENT "Copying compiled shaders/ next to $<TARGET_FILE_NAME:ColonyGame>"
+    COMMENT "Copying compiled/staged shaders/ next to $<TARGET_FILE_NAME:ColonyGame>"
     VERBATIM)
 endif()
 
@@ -773,7 +809,7 @@ if(BUILD_BOOTSTRAPPER AND _BOOTSTRAP)
       COMMAND "${CMAKE_COMMAND}" -E make_directory "$<TARGET_FILE_DIR:WinLauncher>/shaders"
       COMMAND "${CMAKE_COMMAND}" -E copy_directory
               "${CMAKE_BINARY_DIR}/shaders" "$<TARGET_FILE_DIR:WinLauncher>/shaders"
-      COMMENT "Copying compiled shaders/ next to $<TARGET_FILE_NAME:WinLauncher>"
+      COMMENT "Copying compiled/shaders/ next to $<TARGET_FILE_NAME:WinLauncher>"
       VERBATIM)
   endif()
 endif()
@@ -1029,7 +1065,7 @@ foreach(_d IN LISTS _ASSET_DIRS)
   endif()
 endforeach()
 
-# (NEW) Install compiled shaders produced by FXC
+# (NEW) Install compiled/staged shaders produced by FXC and Terrain.hlsl
 # (Unconditionally install the shaders directory; 'stage_win' depends on shader targets so it exists.)
 install(DIRECTORY "${CMAKE_BINARY_DIR}/shaders/" DESTINATION "shaders" COMPONENT ColonyRuntime)
 
@@ -1082,6 +1118,9 @@ if(TARGET colony_shaders)
 endif()
 if(TARGET colony_starfield_shaders)
   list(APPEND _stage_deps colony_starfield_shaders)
+endif()
+if(TARGET colony_terrain_src)
+  list(APPEND _stage_deps colony_terrain_src)
 endif()
 
 add_custom_target(stage_win ALL
@@ -1140,6 +1179,9 @@ endif()
 if(TARGET colony_shaders OR TARGET colony_starfield_shaders)
   message(STATUS "  Shaders              : FXC; outputs at ${CMAKE_BINARY_DIR}/shaders (copied & installed)")
 endif()
+if(TARGET colony_terrain_src)
+  message(STATUS "  Terrain shader       : Terrain.hlsl staged to ${CMAKE_BINARY_DIR}/shaders (copied & installed)")
+endif()
 if(ENABLE_IMGUI)
   if(FRONTEND STREQUAL "win32")
     message(STATUS "  ImGui                : ENABLED (Win32 + D3D11)")
@@ -1191,8 +1233,9 @@ message(STATUS "")
       * Source HLSL:   res/shaders/Starfield.hlsl
       * Compiled VS:   <build>/shaders/StarfieldVS.cso
       * Compiled PS:   <build>/shaders/StarfieldPS.cso
-      * Runtime copy:  <build>/bin/<cfg>/shaders/*.cso
-      * Install path:  stage/<cfg>/shaders/*.cso
+      * Source HLSL:   res/shaders/Terrain.hlsl (staged to <build>/shaders and copied next to the EXE)
+      * Runtime copy:  <build>/bin/<cfg>/shaders/*
+      * Install path:  stage/<cfg>/shaders/*
 
   - Dear ImGui:
       * ENABLE_IMGUI=ON by default.
