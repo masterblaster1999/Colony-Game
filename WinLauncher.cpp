@@ -9,6 +9,8 @@
 //  5) Verifies a sibling res/ directory exists; logs diagnostics to %LOCALAPPDATA%.
 //  6) NEW: Enables Per‑Monitor‑V2 DPI awareness (fallback to SetProcessDPIAware) before any UI.
 //  7) NEW: Removes current directory from DLL search path; restricts default DLL search dirs.
+//  8) NEW: (Optional) Embedded fixed‑timestep game loop wiring. Define COLONY_EMBED_GAME_LOOP
+//          to build a single‑binary game that runs in‑process with a stable 60 Hz simulation.
 //
 // References:
 //  - CreateProcessW: https://learn.microsoft.com/windows/win32/api/processthreadsapi/nf-processthreadsapi-createprocessw
@@ -58,6 +60,9 @@ typedef HANDLE DPI_AWARENESS_CONTEXT;
 
 // NEW: centralize Windows path/CWD logic in one place.
 #include "platform/win/PathUtilWin.h"
+
+// NEW: Minimal wiring for a fixed‑timestep loop (optional embedded mode)
+#include "core/FixedTimestep.h"
 
 namespace fs = std::filesystem;
 
@@ -225,6 +230,98 @@ public:
     ~SingleInstanceGuard() { if (h_) CloseHandle(h_); }
 };
 
+#if defined(COLONY_EMBED_GAME_LOOP)
+// ---------------------- Optional embedded game loop -------------------------
+static bool g_pauseRequested = false;
+static bool g_stepRequested  = false;
+static HWND g_mainWnd = nullptr;
+
+static LRESULT CALLBACK EmbeddedWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
+    switch (msg) {
+    case WM_KEYDOWN:
+        if (wParam == 'P') { g_pauseRequested = !g_pauseRequested; return 0; }
+        if (wParam == 'O') { g_stepRequested = true; return 0; }
+        if (wParam == VK_ESCAPE) { PostQuitMessage(0); return 0; }
+        break;
+    case WM_DESTROY:
+        PostQuitMessage(0);
+        return 0;
+    }
+    return DefWindowProcW(hWnd, msg, wParam, lParam);
+}
+
+// Stub hooks you can wire to your real game systems.
+static void Game_Update(double /*dt*/) {
+    // TODO: call into your engine update (AI/physics/gameplay).
+}
+static void Game_Render(double /*alpha*/) {
+    // TODO: call into your renderer; Present() etc.
+}
+
+static int RunEmbeddedGameLoop(std::wofstream& logFile) {
+    // Register a minimal window class
+    WNDCLASSW wc{};
+    wc.lpfnWndProc   = EmbeddedWndProc;
+    wc.hInstance     = GetModuleHandleW(nullptr);
+    wc.lpszClassName = L"ColonyGameEmbeddedWndClass";
+    wc.hCursor       = LoadCursor(nullptr, IDC_ARROW);
+    wc.hIcon         = LoadIcon(nullptr, IDI_APPLICATION);
+
+    if (!RegisterClassW(&wc)) {
+        MsgBox(L"Colony Game", L"Failed to register window class.");
+        return 3;
+    }
+
+    // Create the main window
+    g_mainWnd = CreateWindowExW(
+        0, wc.lpszClassName, L"Colony Game (embedded)",
+        WS_OVERLAPPEDWINDOW, CW_USEDEFAULT, CW_USEDEFAULT, 1280, 720,
+        nullptr, nullptr, wc.hInstance, nullptr);
+
+    if (!g_mainWnd) {
+        MsgBox(L"Colony Game", L"Failed to create window.");
+        return 3;
+    }
+
+    ShowWindow(g_mainWnd, SW_SHOWDEFAULT);
+    UpdateWindow(g_mainWnd);
+
+    core::FixedTimestep loop(60.0);     // 60 Hz simulation
+    loop.set_max_steps_per_frame(180);   // safety cap
+
+    bool running = true;
+    MSG msg{};
+    while (running) {
+        while (PeekMessageW(&msg, nullptr, 0, 0, PM_REMOVE)) {
+            if (msg.message == WM_QUIT) { running = false; }
+            TranslateMessage(&msg);
+            DispatchMessageW(&msg);
+        }
+        if (!running) break;
+
+        loop.set_paused(g_pauseRequested);
+        if (g_stepRequested) { loop.step_once(); g_stepRequested = false; }
+
+        auto stats = loop.tick(
+            [&](double dt)    { Game_Update(dt);    },
+            [&](double alpha) { Game_Render(alpha); }
+        );
+
+        // Optional: emit quick perf line to the log
+        if ((stats.total_steps % 120) == 0) {
+            logFile << L"[Loop] fps=" << stats.fps
+                    << L" steps=" << stats.steps_this_frame
+                    << L" alpha=" << stats.alpha << L"\n";
+            logFile.flush();
+        }
+    }
+
+    DestroyWindow(g_mainWnd);
+    g_mainWnd = nullptr;
+    return 0;
+}
+#endif // COLONY_EMBED_GAME_LOOP
+
 // ---------- Entry point ----------
 int APIENTRY wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
     // Must run before any library loads to constrain DLL search order.
@@ -258,6 +355,18 @@ int APIENTRY wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
     auto log = OpenLogFile();
     log << L"[Launcher] started in: " << exeDir.wstring() << L"\n";
 
+#if defined(COLONY_EMBED_GAME_LOOP)
+    // Optional single-binary mode: run the game loop in-process instead of spawning a child.
+    log << L"[Launcher] COLONY_EMBED_GAME_LOOP defined; running embedded loop.\n";
+    if (!VerifyResources()) {
+        MsgBox(L"Colony Game",
+               L"Missing or invalid 'res' folder next to the executable.\n"
+               L"Make sure the game is installed correctly.");
+        log << L"[Launcher] res/ check failed\n";
+        return 1;
+    }
+    return RunEmbeddedGameLoop(log);
+#else
     if (!VerifyResources()) {
         MsgBox(L"Colony Game",
                L"Missing or invalid 'res' folder next to the executable.\n"
@@ -316,4 +425,5 @@ int APIENTRY wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
     CloseHandle(pi.hProcess);
     log << L"[Launcher] success; exiting.\n";
     return 0;
+#endif
 }
