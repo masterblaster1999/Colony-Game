@@ -58,6 +58,8 @@
 
 #ifndef SLICE_OT_VERSION_MAJOR
   #define SLICE_OT_VERSION_MAJOR 3
+#endif
+#ifndef SLICE_OT_VERSION_MINOR
   #define SLICE_OT_VERSION_MINOR 0
 #endif
 
@@ -104,7 +106,7 @@ namespace slice {
 // ================================ Utilities ==================================
 
 #if SLICE_OT_ENABLE_HASH
-// constexpr FNV-1a 64-bit (ASCII/UTF-8). Non-cryptographic. :contentReference[oaicite:4]{index=4}
+// constexpr FNV-1a 64-bit (ASCII/UTF-8). Non-cryptographic.
 constexpr std::uint64_t fnv1a64(const char* s, std::uint64_t h = 14695981039346656037ull) {
     return (*s == 0) ? h : fnv1a64(s + 1, (h ^ static_cast<unsigned char>(*s)) * 1099511628211ull);
 }
@@ -460,7 +462,9 @@ public:
         index_ = static_cast<std::size_t>(-1);
         lastCheckpoint_.reset();
         lastProgress_.assign(objectives_.size(), 0.0f);
+#if !SLICE_OT_ENABLE_TELEMETRY
         counterSnapshots_.clear();
+#endif
         for (auto& o : objectives_) {
             o.status = Status::Locked; o.activatedAt = 0.0; o.completedAt = 0.0; o.lastFailReason.clear(); o.repeatCountProgress = 0;
             for (auto& so : o.subs) { so.status = Status::Locked; so.activatedAt = 0.0; }
@@ -713,7 +717,9 @@ public:
 
         state_.clear(); totalScore_=0; index_=static_cast<std::size_t>(-1); lastCheckpoint_.reset();
         lastProgress_.assign(objectives_.size(), 0.0f);
+#if !SLICE_OT_ENABLE_TELEMETRY
         counterSnapshots_.clear();
+#endif
         for (auto& o: objectives_) {
             o.status=Status::Locked; o.activatedAt=0.0; o.completedAt=0.0; o.lastFailReason.clear(); o.repeatCountProgress=0;
             for (auto& so: o.subs){ so.status=Status::Locked; so.activatedAt=0.0; }
