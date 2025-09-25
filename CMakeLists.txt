@@ -21,6 +21,7 @@
 #   * (PATCH-ODR) Exclude Windows duplicate AtomicFileWin.cpp to fix ODR with AtomicFile.cpp
 #   * (NEW) Procedural terrain module sources + runtime-compiled Terrain.hlsl staged to /shaders
 #   * (NEW) DXC path for modern HLSL (Shader Model 6.x) side-by-side with FXC fallback
+#   * (NEW) Prefer embedding platform/win/DpiAware.manifest (Per-Monitor V2 DPI) via RC
 # ==================================================================================================
 
 cmake_minimum_required(VERSION 3.16)
@@ -29,14 +30,14 @@ cmake_minimum_required(VERSION 3.16)
 # Policies that must be set BEFORE project() so MSVC abstractions work (runtime & debug info)
 # --------------------------------------------------------------------------------------------------
 if(POLICY CMP0091)
-  cmake_policy(SET CMP0091 NEW)  # MSVC runtime via MSVC_RUNTIME_LIBRARY
+  cmake_policy(SET CMP0091 NEW)  # MSVC runtime via MSVC_RUNTIME_LIBRARY (see docs)
 endif()
 if(POLICY CMP0141)
-  cmake_policy(SET CMP0141 NEW)  # MSVC debug info via MSVC_DEBUG_INFORMATION_FORMAT
+  cmake_policy(SET CMP0141 NEW)  # MSVC debug info via MSVC_DEBUG_INFORMATION_FORMAT (see docs)
 endif()
 
 # --------------------------------------------------------------------------------------------------
-# Optional: auto-enable vcpkg toolchain before project() if available (nice for SDL2)
+# Optional: auto-enable vcpkg toolchain before project() if available (nice for SDL2 and libs)
 # --------------------------------------------------------------------------------------------------
 if(NOT DEFINED CMAKE_TOOLCHAIN_FILE AND DEFINED ENV{VCPKG_ROOT})
   if(EXISTS "$ENV{VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake")
@@ -46,7 +47,7 @@ if(NOT DEFINED CMAKE_TOOLCHAIN_FILE AND DEFINED ENV{VCPKG_ROOT})
   endif()
 endif()
 
-# Prefer config packages when available (SDL2, etc.)
+# Prefer config packages when available (SDL2, fmt, spdlog, etc.)
 set(CMAKE_FIND_PACKAGE_PREFER_CONFIG ON)
 
 # Group targets into folders in Visual Studio
@@ -121,6 +122,19 @@ set(SIGNING_CERT_PASSWORD "" CACHE STRING "Password for the code signing certifi
 set(SIGNING_TIMESTAMP_URL "http://timestamp.digicert.com" CACHE STRING "RFC3161 timestamp URL")
 
 # --------------------------------------------------------------------------------------------------
+# Optional clang-tidy wiring (project-wide)
+# --------------------------------------------------------------------------------------------------
+if(ENABLE_CLANG_TIDY)
+  find_program(CLANG_TIDY_BIN NAMES clang-tidy clang-tidy.exe)
+  if(CLANG_TIDY_BIN)
+    set(CMAKE_CXX_CLANG_TIDY "${CLANG_TIDY_BIN};-quiet")
+    message(STATUS "clang-tidy enabled: ${CLANG_TIDY_BIN}")
+  else()
+    message(WARNING "ENABLE_CLANG_TIDY=ON but clang-tidy not found in PATH.")
+  endif()
+endif()
+
+# --------------------------------------------------------------------------------------------------
 # Compiler cache launcher (sccache/ccache)
 # --------------------------------------------------------------------------------------------------
 if(ENABLE_COMPILER_CACHE)
@@ -157,7 +171,7 @@ if(MSVC)
     add_compile_options(/analyze)
   endif()
 
-  # ---------- Static runtime default ----------
+  # ---------- Static runtime default (requires CMP0091=NEW) ----------
   if(MSVC_STATIC_RUNTIME)
     # /MT for Release, /MTd for Debug
     set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
@@ -165,10 +179,10 @@ if(MSVC)
     # /MD for Release, /MDd for Debug
     set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>DLL")
   endif()
-  # -------------------------------------------
+  # -------------------------------------------------------------------
 
   if(NOT DEFINED CMAKE_MSVC_DEBUG_INFORMATION_FORMAT)
-    # PDBs for Debug + RelWithDebInfo (use ProgramDatabase)
+    # PDBs for Debug + RelWithDebInfo (use ProgramDatabase abstraction)
     set(CMAKE_MSVC_DEBUG_INFORMATION_FORMAT
         "$<$<OR:$<CONFIG:Debug>,$<CONFIG:RelWithDebInfo>>:ProgramDatabase>")
   endif()
@@ -260,9 +274,7 @@ list(FILTER CORE_SOURCES EXCLUDE REGEX ".*[\\\\/](os|platform)[\\\\/]win(32)?[\\
 
 # --------------------------------------------------------------------------------------------------
 # (PATCH-ODR) Remove duplicate Windows atomic file I/O TU to fix ODR with AtomicFile.cpp
-# Compile exactly one implementation: prefer the cross-platform src/io/AtomicFile.cpp.
 # --------------------------------------------------------------------------------------------------
-# If a Windows-specific AtomicFileWin.cpp exists anywhere under src/io[/win], drop it.
 list(FILTER CORE_SOURCES EXCLUDE REGEX ".*[\\\\/]io([\\\\/]win)?[\\\\/]AtomicFileWin\\.cpp$")
 message(STATUS "ODR fix: excluding AtomicFileWin.cpp from colony_core to avoid duplicate definitions with AtomicFile.cpp")
 
@@ -276,7 +288,6 @@ if(ENABLE_UNITY)
 endif()
 
 # --- (NEW per 1.1) Unity exemptions for ODR-prone crash sources ---
-# Compile crash sources in their own TUs even when UNITY_BUILD is enabled.
 if(WIN32)
   set(_UNITY_EXEMPT_SOURCES "")
   foreach(_cand IN ITEMS
@@ -315,6 +326,42 @@ target_compile_definitions(colony_core PUBLIC
 if(WIN32)
   # --- (NEW per 1.1) Core needs these for CommandLineToArgvW & MiniDumpWriteDump ---
   target_link_libraries(colony_core PUBLIC winmm Shell32 Dbghelp)
+endif()
+
+# --------------------------------------------------------------------------------------------------
+# Optional: link common vcpkg-provided libs if present (fmt/spdlog/EnTT/etc.)
+# --------------------------------------------------------------------------------------------------
+find_package(fmt CONFIG QUIET)
+if(fmt_FOUND)
+  target_link_libraries(colony_core PUBLIC fmt::fmt)
+endif()
+
+find_package(spdlog CONFIG QUIET)
+if(spdlog_FOUND)
+  target_link_libraries(colony_core PUBLIC spdlog::spdlog)
+endif()
+
+find_package(EnTT CONFIG QUIET)
+if(EnTT_FOUND)
+  target_link_libraries(colony_core PUBLIC EnTT::EnTT)
+endif()
+
+find_package(directx-headers CONFIG QUIET)
+if(TARGET Microsoft::DirectX-Guids OR TARGET Microsoft::DirectX-Headers)
+  # Header-only; linking as INTERFACE signals include paths/defines where provided
+  target_link_libraries(colony_core PUBLIC Microsoft::DirectX-Headers)
+endif()
+
+find_package(directxtex CONFIG QUIET)
+if(TARGET DirectXTex::DirectXTex)
+  target_link_libraries(colony_core PUBLIC DirectXTex::DirectXTex)
+elseif(TARGET DirectXTex) # some packages export this alias
+  target_link_libraries(colony_core PUBLIC DirectXTex)
+endif()
+
+find_package(taskflow CONFIG QUIET)
+if(TARGET taskflow::taskflow)
+  target_link_libraries(colony_core PUBLIC taskflow::taskflow)
 endif()
 
 # --------------------------------------------------------------------------------------------------
@@ -358,7 +405,6 @@ target_include_directories(colony_core PUBLIC "${CMAKE_BINARY_DIR}/generated")
 # --------------------------------------------------------------------------------------------------
 # Entry discovery (GAME ENTRY vs. BOOTSTRAPPER)
 # --------------------------------------------------------------------------------------------------
-# Known game entry points (do NOT include WinLauncher.cpp here)
 set(_KNOWN_WIN_GAME_ENTRIES
   "src/platform/win32_main.cpp" "platform/win32_main.cpp" "src/platform/win32/win32_main.cpp"
   "src/platform/win/win32_main.cpp" "platform/win/win32_main.cpp"
@@ -371,7 +417,6 @@ set(_KNOWN_SDL_LAUNCHERS
   "Launcher_SDL.cpp" "SDLLauncher.cpp" "src/Launcher_SDL.cpp"
   "src/platform/sdl/Launcher_SDL.cpp" "platform/sdl/Launcher_SDL.cpp" "src/SDLLauncher.cpp"
 )
-# Known bootstrap sources
 set(_KNOWN_WIN_BOOTSTRAPPERS
   "WinLauncher.cpp" "src/WinLauncher.cpp"
   "src/platform/win32/WinLauncher.cpp" "platform/win32/WinLauncher.cpp"
@@ -380,14 +425,13 @@ set(_KNOWN_WIN_BOOTSTRAPPERS
 
 set(_WIN32_FLAG WIN32)
 if(SHOW_CONSOLE)
-  set(_WIN32_FLAG) # console subsystem instead
+  set(_WIN32_FLAG)
 endif()
 
 # Resolve GAME ENTRY
 set(_GAME_ENTRY "")
 set(CG_FRONTEND_STR "${FRONTEND}")
 
-# Back-compat: if user passed -DLAUNCHER_FILE=... and it points to WinLauncher.cpp, treat it as BOOTSTRAP_FILE.
 if(LAUNCHER_FILE)
   if(EXISTS "${LAUNCHER_FILE}")
     if(LAUNCHER_FILE MATCHES ".*[Ww]in[Ll]auncher.*\\.cpp$")
@@ -460,7 +504,6 @@ target_link_libraries(ColonyGame PRIVATE colony_core)
 target_compile_features(ColonyGame PRIVATE cxx_std_20)
 
 # (NEW) Procedural terrain module sources (Renderer + Mesh + World wrapper)
-# These are added to the executable target so the core static lib stays platform-agnostic.
 target_sources(ColonyGame PRIVATE
   src/world/WorldSystem.hpp
   src/world/WorldSystem.cpp
@@ -484,13 +527,8 @@ if(PCH_HEADER_EXE AND EXISTS "${PCH_HEADER_EXE}")
 endif()
 
 # ---- Default seed + debug keys support (merged minimal hook) ------------------
-# WorldSeed.cpp lives under src/game and is already pulled into colony_core via the
-# GLOB above. We only add include paths to executable targets here. If for any reason
-# WorldSeed.cpp is NOT part of colony_core, we will also attach it to the exe.
 set(COLONY_EXTRA_SRC "${CMAKE_SOURCE_DIR}/src/game/WorldSeed.cpp")
 set(COLONY_EXTRA_INC "${CMAKE_SOURCE_DIR}/src")
-
-# Determine if WorldSeed.cpp is already compiled into colony_core.
 set(_WORLDSEED_IN_CORE OFF)
 if(EXISTS "${COLONY_EXTRA_SRC}")
   foreach(_s IN LISTS CORE_SOURCES)
@@ -500,7 +538,6 @@ if(EXISTS "${COLONY_EXTRA_SRC}")
     endif()
   endforeach()
 endif()
-
 foreach(tgt IN ITEMS ColonyGame VerticalSlice App Sandbox Game)
   if (TARGET ${tgt})
     target_include_directories(${tgt} PRIVATE ${COLONY_EXTRA_INC})
@@ -509,10 +546,9 @@ foreach(tgt IN ITEMS ColonyGame VerticalSlice App Sandbox Game)
     endif()
   endif()
 endforeach()
-# -----------------------------------------------------------------------------
+# ------------------------------------------------------------------------------
 
 # -------- EnableWinQoL (resources, installs, asset copy) ----------
-# Try to include helper if it's present; provide a safe no-op fallback if not.
 include(cmake/EnableWinQoL.cmake OPTIONAL)
 if(NOT COMMAND enable_win_qol)
   function(enable_win_qol tgt prod ver)
@@ -521,13 +557,10 @@ if(NOT COMMAND enable_win_qol)
 endif()
 
 set(CG_APP_VERSION "${PROJECT_VERSION}.0")
-# Asset folders to mirror next to the exe
-set(_ASSET_DIRS assets Assets data Data res resources) # (NOTE) build-time shaders handled separately
+set(_ASSET_DIRS assets Assets data Data res resources)
 
-# (PATCH) manifest/icon paths (manifest is guaranteed; icon is optional)
 set(_ICON_PATH "${CMAKE_SOURCE_DIR}/res/app.ico")
 
-# Keep QoL options but omit MANIFEST; we will embed it explicitly per-target.
 set(_WQ_OPTS
   COMPANY_NAME     "Colony-Game"
   FILE_DESCRIPTION "Colony-Game"
@@ -563,13 +596,13 @@ target_compile_definitions(ColonyGame PRIVATE
   $<$<BOOL:${SHOW_CONSOLE}>:CG_CONSOLE_APP=1>
 )
 
-# Core Win32 libs (EnableWinQoL may link Shell32; we link explicitly to be safe)
+# Core Win32 libs
 target_link_libraries(ColonyGame PRIVATE
   user32 gdi32 shlwapi Dbghelp shell32 comdlg32 comctl32 advapi32
   ole32 oleaut32 imm32 winmm version uuid
   dwmapi xinput9_1_0
   xaudio2
-  d3d11 dxgi d3dcompiler        # (FXC/D3DCompile at runtime; DXC used at build-time)
+  d3d11 dxgi d3dcompiler
 )
 
 if(ENABLE_UNITY)
@@ -590,14 +623,25 @@ endif()
 # (NEW) HLSL shader builds with **DXC (SM 6.x)** side-by-side with **FXC (SM 5.x)** + install & copy
 # --------------------------------------------------------------------------------------------------
 if(MSVC)
-  # Toggle + defaults
   option(USE_DXC "Compile HLSL with DirectXShaderCompiler (dxc) when available" ON)
   set(DXC_SHADER_MODEL "6_0" CACHE STRING "Default Shader Model for DXC (e.g., 6_0, 6_6)")
 
-  # Locate compilers (DXC optional; FXC from Windows SDK)
-  # Hints for DXC: Vulkan SDK commonly bundles it.
+  # Locate DXC with extra vcpkg hints; fall back to FXC from the Windows SDK
+  set(_DXC_HINTS "")
+  if(DEFINED ENV{VCPKG_ROOT})
+    if(DEFINED VCPKG_TARGET_TRIPLET)
+      list(APPEND _DXC_HINTS "$ENV{VCPKG_ROOT}/installed/${VCPKG_TARGET_TRIPLET}/tools/directx-dxc")
+      list(APPEND _DXC_HINTS "$ENV{VCPKG_ROOT}/installed/${VCPKG_TARGET_TRIPLET}/tools/dxc")
+    endif()
+    if(DEFINED VCPKG_HOST_TRIPLET)
+      list(APPEND _DXC_HINTS "$ENV{VCPKG_ROOT}/installed/${VCPKG_HOST_TRIPLET}/tools/directx-dxc")
+      list(APPEND _DXC_HINTS "$ENV{VCPKG_ROOT}/installed/${VCPKG_HOST_TRIPLET}/tools/dxc")
+    endif()
+  endif()
+
   find_program(DXC NAMES dxc dxc.exe
-               HINTS "$ENV{VULKAN_SDK}/Bin" "$ENV{VULKAN_SDK}/Bin64" "$ENV{VULKAN_SDK}/Bin32"
+               HINTS ${_DXC_HINTS}
+                     "$ENV{VULKAN_SDK}/Bin" "$ENV{VULKAN_SDK}/Bin64" "$ENV{VULKAN_SDK}/Bin32"
                      "$ENV{DXC_DIR}" "$ENV{DXC_PATH}")
   if(USE_DXC AND DXC)
     set(_USE_DXC TRUE)
@@ -608,23 +652,17 @@ if(MSVC)
 
   find_program(FXC fxc.exe)
   if(NOT _USE_DXC AND NOT FXC)
-    message(FATAL_ERROR "Neither dxc.exe nor fxc.exe found. Install the Windows 10/11 SDK for FXC, or provide DXC (e.g., via Vulkan SDK).")
+    message(FATAL_ERROR "Neither dxc.exe nor fxc.exe found. Install the Windows SDK (FXC) or provide DXC (e.g., via vcpkg tools or Vulkan SDK).")
   endif()
   if(FXC)
     message(STATUS "FXC found: ${FXC}")
   endif()
 
-  # Source and output locations
   set(SHADER_DIR     "${CMAKE_SOURCE_DIR}/res/shaders")
   set(SHADER_BIN_DIR "${CMAKE_BINARY_DIR}/shaders")
   file(MAKE_DIRECTORY "${SHADER_BIN_DIR}")
 
-  # --------------------------
-  # Compiler helpers (DXC/FXC)
-  # --------------------------
-  # dxc compile
   function(_compile_with_dxc OUT SRC STAGE ENTRY)
-    # Map STAGE -> profile for SM 6.x
     if(STAGE STREQUAL "vs")
       set(_profile "vs_${DXC_SHADER_MODEL}")
     elseif(STAGE STREQUAL "ps")
@@ -647,9 +685,7 @@ if(MSVC)
     )
   endfunction()
 
-  # fxc compile
   function(_compile_with_fxc OUT SRC STAGE ENTRY)
-    # Map STAGE -> profile for SM 5.0
     if(STAGE STREQUAL "vs")
       set(_profile "vs_5_0")
     elseif(STAGE STREQUAL "ps")
@@ -671,7 +707,6 @@ if(MSVC)
     )
   endfunction()
 
-  # Front function: pick DXC if enabled+found, else FXC
   function(compile_hlsl_auto OUT SRC STAGE ENTRY)
     if(_USE_DXC)
       _compile_with_dxc(${OUT} "${SRC}" "${STAGE}" "${ENTRY}")
@@ -681,7 +716,6 @@ if(MSVC)
     set(${OUT} "${OUT}" PARENT_SCOPE)
   endfunction()
 
-  # --------- Declare shaders ----------
   set(_compiled_outputs "")
 
   # --- Compute shader(s) ---
@@ -720,18 +754,15 @@ if(MSVC)
     message(STATUS "res/shaders/Terrain.hlsl not found; skipping staging (renderer will need a shader at runtime).")
   endif()
 
-  # Group them under custom targets so they're built automatically
   if(_compiled_outputs)
     add_custom_target(colony_shaders ALL DEPENDS ${_compiled_outputs})
   endif()
 
-  # Keep a separate alias for Starfield group if present (back-compat with summary)
   if(EXISTS "${STARFIELD_SRC}")
     add_custom_target(colony_starfield_shaders ALL
       DEPENDS "${STARFIELD_VS}" "${STARFIELD_PS}")
   endif()
 
-  # Ensure shaders are built before the game exe
   if(TARGET colony_shaders)
     add_dependencies(ColonyGame colony_shaders)
   endif()
@@ -739,7 +770,6 @@ if(MSVC)
     add_dependencies(ColonyGame colony_starfield_shaders)
   endif()
 
-  # Copy compiled shaders (and staged Terrain.hlsl) next to the exe after build
   add_custom_command(TARGET ColonyGame POST_BUILD
     COMMAND "${CMAKE_COMMAND}" -E make_directory "$<TARGET_FILE_DIR:ColonyGame>/shaders"
     COMMAND "${CMAKE_COMMAND}" -E copy_directory
@@ -747,7 +777,6 @@ if(MSVC)
     COMMENT "Copying compiled/staged shaders/ next to $<TARGET_FILE_NAME:ColonyGame>"
     VERBATIM)
 
-  # Summary string for the configure banner
   if(_USE_DXC)
     set(_SHADER_COMPILER_SUMMARY "DXC (SM ${DXC_SHADER_MODEL})" CACHE INTERNAL "" FORCE)
   else()
@@ -760,7 +789,6 @@ endif()
 # --------------------------------------------------------------------------------------------------
 if(ENABLE_IMGUI)
   include(FetchContent)
-  # Lock to a known-good tag of ImGui
   FetchContent_Declare(
     imgui
     GIT_REPOSITORY https://github.com/ocornut/imgui.git
@@ -768,7 +796,6 @@ if(ENABLE_IMGUI)
   )
   FetchContent_MakeAvailable(imgui)
 
-  # Common ImGui core sources
   set(_IMGUI_CORE_SOURCES
     ${imgui_SOURCE_DIR}/imgui.cpp
     ${imgui_SOURCE_DIR}/imgui_draw.cpp
@@ -780,7 +807,6 @@ if(ENABLE_IMGUI)
   endif()
 
   if(FRONTEND STREQUAL "win32")
-    # Win32 + D3D11 backend
     add_library(imgui_backend STATIC
       ${_IMGUI_CORE_SOURCES}
       ${imgui_SOURCE_DIR}/backends/imgui_impl_win32.cpp
@@ -794,7 +820,6 @@ if(ENABLE_IMGUI)
     set_target_properties(imgui_backend PROPERTIES FOLDER "3rdparty/imgui")
     target_compile_definitions(ColonyGame PRIVATE CG_ENABLE_IMGUI=1)
     target_link_libraries(ColonyGame PRIVATE imgui_backend)
-    # (Small CMake add) Make ImGui headers visible to colony_core if UI code is compiled there.
     target_link_libraries(colony_core PUBLIC imgui_backend)
   endif()
 endif()
@@ -811,7 +836,6 @@ if(ENABLE_TRACY)
     set(_TRACY_PUBLIC_DIR "${TRACY_PUBLIC_DIR}")
   elseif(TRACY_FETCH)
     include(FetchContent)
-    # Use a recent stable tag; update as needed.
     FetchContent_Declare(
       tracy
       GIT_REPOSITORY https://github.com/wolfpld/tracy.git
@@ -828,10 +852,8 @@ if(ENABLE_TRACY)
     add_library(tracy_client STATIC "${_TRACY_PUBLIC_DIR}/TracyClient.cpp")
     target_include_directories(tracy_client PUBLIC "${_TRACY_PUBLIC_DIR}")
     target_compile_definitions(tracy_client PUBLIC TRACY_ENABLE)
-    # Windows sockets for client transport:
     target_link_libraries(tracy_client PUBLIC ws2_32)
     set_target_properties(tracy_client PROPERTIES FOLDER "3rdparty/tracy")
-    # Link to both core (for headers/defs during build) and the final exe.
     target_link_libraries(colony_core PUBLIC tracy_client)
     target_link_libraries(ColonyGame PRIVATE tracy_client)
     set(_TRACY_STATUS "ENABLED (${_TRACY_PUBLIC_DIR})")
@@ -849,11 +871,8 @@ if(BUILD_BOOTSTRAPPER AND _BOOTSTRAP)
   set_property(TARGET WinLauncher PROPERTY FOLDER "Bootstrap")
   target_compile_features(WinLauncher PRIVATE cxx_std_20)
   target_link_libraries(WinLauncher PRIVATE Shell32 Ole32 User32)
-
-  # Include headers from project src/ and project root (for platform/win/* includes)
   target_include_directories(WinLauncher PRIVATE "${CMAKE_SOURCE_DIR}/src" "${CMAKE_SOURCE_DIR}")
 
-  # (Optional) build PathUtilWin helper if present
   if(EXISTS "${CMAKE_SOURCE_DIR}/src/platform/win/PathUtilWin.cpp")
     target_sources(WinLauncher PRIVATE "${CMAKE_SOURCE_DIR}/src/platform/win/PathUtilWin.cpp")
   elseif(EXISTS "${CMAKE_SOURCE_DIR}/platform/win/PathUtilWin.cpp")
@@ -871,7 +890,6 @@ if(BUILD_BOOTSTRAPPER AND _BOOTSTRAP)
     target_compile_options(WinLauncher PRIVATE /wd4505)
   endif()
 
-  # (Optional) also copy shaders next to the launcher for dev convenience
   if(MSVC)
     add_custom_command(TARGET WinLauncher POST_BUILD
       COMMAND "${CMAKE_COMMAND}" -E make_directory "$<TARGET_FILE_DIR:WinLauncher>/shaders"
@@ -883,10 +901,9 @@ if(BUILD_BOOTSTRAPPER AND _BOOTSTRAP)
 endif()
 
 # --------------------------------------------------------------------------------------------------
-# Ensure res/ ships next to the EXE automatically (explicit, per-target POST_BUILD copy)
+# Ensure res/ ships next to the EXE automatically
 # --------------------------------------------------------------------------------------------------
 if(EXISTS "${CMAKE_SOURCE_DIR}/res")
-  # Copy for the game executable
   if(TARGET ColonyGame)
     add_custom_command(TARGET ColonyGame POST_BUILD
       COMMAND "${CMAKE_COMMAND}" -E make_directory "$<TARGET_FILE_DIR:ColonyGame>/res"
@@ -895,7 +912,6 @@ if(EXISTS "${CMAKE_SOURCE_DIR}/res")
       COMMENT "Copying res/ next to $<TARGET_FILE_NAME:ColonyGame>"
       VERBATIM)
   endif()
-  # Copy for the launcher (if built)
   if(TARGET WinLauncher)
     add_custom_command(TARGET WinLauncher POST_BUILD
       COMMAND "${CMAKE_COMMAND}" -E make_directory "$<TARGET_FILE_DIR:WinLauncher>/res"
@@ -917,7 +933,6 @@ if(MSVC)
   endif()
 endif()
 
-# Choose startup project (prefer launcher if built)
 if(TARGET WinLauncher)
   set_property(DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}" PROPERTY VS_STARTUP_PROJECT WinLauncher)
 else()
@@ -987,9 +1002,7 @@ if(FRONTEND STREQUAL "sdl")
 
   target_compile_definitions(colony_core PUBLIC CG_USE_SDL=1)
 
-  # (PATCH) Optional: ImGui with SDL + D3D11 backend when FRONTEND=sdl
   if(ENABLE_IMGUI)
-    # Use the same fetched imgui source (already made available above)
     if(NOT TARGET imgui_backend)
       set(_IMGUI_SDL_SOURCES
         ${imgui_SOURCE_DIR}/backends/imgui_impl_sdl2.cpp
@@ -1003,7 +1016,6 @@ if(FRONTEND STREQUAL "sdl")
         ${imgui_SOURCE_DIR}
         ${imgui_SOURCE_DIR}/backends
       )
-      # Ensure SDL include dirs are visible to the backend
       if(_SDL_TARGET)
         target_link_libraries(imgui_backend PUBLIC ${_SDL_TARGET})
       elseif(SDL2_INCLUDE_DIRS)
@@ -1014,7 +1026,6 @@ if(FRONTEND STREQUAL "sdl")
     endif()
     target_compile_definitions(ColonyGame PRIVATE CG_ENABLE_IMGUI=1)
     target_link_libraries(ColonyGame PRIVATE imgui_backend)
-    # (Small CMake add) Provide headers/defs to colony_core
     target_link_libraries(colony_core PUBLIC imgui_backend)
   endif()
 endif()
@@ -1022,19 +1033,25 @@ endif()
 # --------------------------------------------------------------------------------------------------
 # Explicit manifest embedding (picked strategy)
 # --------------------------------------------------------------------------------------------------
-# If res/app.manifest is missing, synthesize a robust default.
-set(CG_APP_MANIFEST "${CMAKE_SOURCE_DIR}/res/app.manifest")
-if(NOT EXISTS "${CG_APP_MANIFEST}")
+# Prefer platform/win/DpiAware.manifest from the repo; else res/app.manifest; else synthesize one.
+set(_manifest_candidates
+  "${CMAKE_SOURCE_DIR}/platform/win/DpiAware.manifest"
+  "${CMAKE_SOURCE_DIR}/res/app.manifest"
+)
+set(CG_APP_MANIFEST "")
+foreach(_cand IN LISTS _manifest_candidates)
+  if(EXISTS "${_cand}")
+    set(CG_APP_MANIFEST "${_cand}")
+    break()
+  endif()
+endforeach()
+
+if(NOT CG_APP_MANIFEST)
   file(MAKE_DIRECTORY "${CMAKE_BINARY_DIR}/generated")
   set(_GEN_MAN "${CMAKE_BINARY_DIR}/generated/app.manifest")
   file(WRITE "${_GEN_MAN}" "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>\n"
-    "<assembly xmlns=\"urn:schemas-microsoft-com:asm.v1\" manifestVersion=\"1.0\">\n"
-    "  <application xmlns=\"urn:schemas-microsoft-com:asm.v3\">\n"
-    "    <windowsSettings xmlns:ws2=\"http://schemas.microsoft.com/SMI/2016/WindowsSettings\">\n"
-    "      <ws2:longPathAware>true</ws2:longPathAware>\n"
-    "    </windowsSettings>\n"
-    "  </application>\n"
-    "  <asmv3:application xmlns:asmv3=\"urn:schemas-microsoft-com:asm.v3\">\n"
+    "<assembly xmlns=\"urn:schemas-microsoft-com:asm.v1\" manifestVersion=\"1.0\" xmlns:asmv3=\"urn:schemas-microsoft-com:asm.v3\">\n"
+    "  <asmv3:application>\n"
     "    <asmv3:windowsSettings>\n"
     "      <asmv3:dpiAwareness>PerMonitorV2</asmv3:dpiAwareness>\n"
     "      <asmv3:dpiAware>true/pm</asmv3:dpiAware>\n"
@@ -1050,17 +1067,20 @@ if(NOT EXISTS "${CG_APP_MANIFEST}")
   set(CG_APP_MANIFEST "${_GEN_MAN}")
   message(STATUS "Generated default app.manifest at: ${_GEN_MAN}")
 endif()
+
 # Always sanitize to forward slashes for RC
 file(TO_CMAKE_PATH "${CG_APP_MANIFEST}" CG_APP_MANIFEST_CMAKE)
 
-# Bring in helper (if present) and provide a fallback shim if not.
+# If helper exists, use it; otherwise generate a tiny .rc that includes the manifest using the
+# documented constants: CREATEPROCESS_MANIFEST_RESOURCE_ID RT_MANIFEST "<path>"
+# (We also explicitly disable the linker's auto-embed to avoid duplicate manifests.)
 include(cmake/win/EmbedManifest.cmake OPTIONAL)
 if(NOT COMMAND cg_embed_manifest)
   function(cg_embed_manifest tgt manifest_path)
     file(MAKE_DIRECTORY "${CMAKE_BINARY_DIR}/generated")
     file(TO_CMAKE_PATH "${manifest_path}" _mpath)
     set(_rc "${CMAKE_BINARY_DIR}/generated/${tgt}_manifest.rc")
-    file(WRITE "${_rc}" "1 24 \"${_mpath}\"\n")
+    file(WRITE "${_rc}" "#include <winuser.h>\nCREATEPROCESS_MANIFEST_RESOURCE_ID RT_MANIFEST \"${_mpath}\"\n")
     target_sources(${tgt} PRIVATE "${_rc}")
     if(MSVC)
       target_link_options(${tgt} PRIVATE /MANIFEST:NO)
@@ -1068,7 +1088,6 @@ if(NOT COMMAND cg_embed_manifest)
   endfunction()
 endif()
 
-# Embed the sanitized manifest into each Windows target (avoid any duplication).
 cg_embed_manifest(ColonyGame "${CG_APP_MANIFEST_CMAKE}")
 if(TARGET WinLauncher)
   cg_embed_manifest(WinLauncher "${CG_APP_MANIFEST_CMAKE}")
@@ -1126,7 +1145,6 @@ endif()
 set(CMAKE_INSTALL_PREFIX "${CMAKE_BINARY_DIR}/stage" CACHE PATH "Install prefix (staging root)" FORCE)
 include(GNUInstallDirs)
 
-# Install assets (EnableWinQoL copies post-build too; this covers install prefix)
 foreach(_d IN LISTS _ASSET_DIRS)
   if(EXISTS "${CMAKE_SOURCE_DIR}/${_d}")
     install(DIRECTORY "${_d}/" DESTINATION "${_d}" COMPONENT ColonyRuntime)
@@ -1134,7 +1152,6 @@ foreach(_d IN LISTS _ASSET_DIRS)
 endforeach()
 
 # (NEW) Install compiled/staged shaders produced by DXC/FXC and Terrain.hlsl
-# (Unconditionally install the shaders directory; 'stage_win' depends on shader targets so it exists.)
 install(DIRECTORY "${CMAKE_BINARY_DIR}/shaders/" DESTINATION "shaders" COMPONENT ColonyRuntime)
 
 # Optional: install redists (UCRT/MSVC) app-local
@@ -1153,14 +1170,12 @@ if(ENABLE_CODE_SIGNING AND CMAKE_BUILD_TYPE MATCHES "Release")
     find_program(SIGNTOOL_PATH NAMES signtool signtool.exe)
   endif()
   if(SIGNTOOL_PATH AND EXISTS "${SIGNING_CERT_PATH}")
-    # Sign ColonyGame.exe
     install(CODE
 "execute_process(COMMAND \"${SIGNTOOL_PATH}\"
     sign /fd SHA256 /tr \"${SIGNING_TIMESTAMP_URL}\" /td SHA256
     /f \"${SIGNING_CERT_PATH}\" /p \"${SIGNING_CERT_PASSWORD}\"
     \"\$ENV{DESTDIR}\${CMAKE_INSTALL_PREFIX}/\${CMAKE_INSTALL_CONFIG_NAME}/ColonyGame.exe\") 
  message(STATUS \"Signed: \${CMAKE_INSTALL_PREFIX}/\${CMAKE_INSTALL_CONFIG_NAME}/ColonyGame.exe\")")
-    # Sign WinLauncher.exe if present
     if(TARGET WinLauncher)
       install(CODE
 "execute_process(COMMAND \"${SIGNTOOL_PATH}\"
@@ -1180,7 +1195,6 @@ if(TARGET WinLauncher)
 else()
   set(_stage_deps ColonyGame)
 endif()
-# Ensure compiled shaders are also built before staging
 if(TARGET colony_shaders)
   list(APPEND _stage_deps colony_shaders)
 endif()
