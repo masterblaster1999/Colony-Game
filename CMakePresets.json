@@ -2,19 +2,15 @@
   "version": 6,
   "configurePresets": [
     {
-      "name": "vs2022-x64",
-      "displayName": "VS 2022 x64",
-      "generator": "Visual Studio 17 2022",
-      "architecture": {
-        "value": "x64",
-        "strategy": "external"
-      },
-      "binaryDir": "${sourceDir}/build",
+      "name": "vs2022-win64",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build/win64",
       "cacheVariables": {
-        "CMAKE_MSVC_RUNTIME_LIBRARY": "MultiThreaded$<$<CONFIG:Debug>:Debug>DLL",
-        "CMAKE_INTERPROCEDURAL_OPTIMIZATION_RELEASE": "ON",
-        "CMAKE_INTERPROCEDURAL_OPTIMIZATION_RELWITHDEBINFO": "ON"
+        "CMAKE_BUILD_TYPE": "RelWithDebInfo",
+        "CMAKE_MSVC_RUNTIME_LIBRARY": "MultiThreaded$<IF:$<CONFIG:Debug>,Debug,>",
+        "CMAKE_TOOLCHAIN_FILE": "${sourceDir}/vcpkg/scripts/buildsystems/vcpkg.cmake"
       }
     }
-  ]
+  ],
+  "buildPresets": [{ "name": "build", "configurePreset": "vs2022-win64" }]
 }
