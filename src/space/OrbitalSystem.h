@@ -1,12 +1,14 @@
 #pragma once
 // OrbitalSystem.h - minimal, self-contained Keplerian system for star/planets/moons.
 // Uses double-precision for orbits, converts to float for rendering.
+// Windows-only (DirectXMath).
 
 #include <vector>
 #include <string>
 #include <random>
 #include <cstdint>
 #include <optional>
+#include <cmath>
 #include <DirectXMath.h>
 
 namespace colony::space {
@@ -25,6 +27,18 @@ constexpr double DAY_S   = 86400.0;
 constexpr double AU_TO_UNITS = 50.0;     // 1 AU = 50 scene units
 constexpr double KM_TO_UNITS = AU_TO_UNITS / AU_KM;
 constexpr double PLANET_RADIUS_SCALE = 6000.0; // exaggerate radii for visibility
+
+// ---- Unit helpers (robust against token-gluing mistakes) --------------------
+// These literals are optional sugar; they help avoid writing ad-hoc numeric
+// concoctions that can accidentally form invalid C++ tokens.
+namespace units::literals {
+    // seconds in a day (returns seconds)
+    constexpr double operator"" _day(long double d) { return static_cast<double>(d) * DAY_S; }
+    // kilometers in AU (returns kilometers)
+    constexpr double operator"" _AU (long double d) { return static_cast<double>(d) * AU_KM; }
+    // kilometers (no-op; for readability)
+    constexpr double operator"" _km (long double d) { return static_cast<double>(d); }
+} // namespace units::literals
 
 enum class BodyType : uint8_t { Star, Planet, Moon };
 
@@ -61,8 +75,16 @@ struct Body {
     Vec3d       worldPosKm{};             // updated each tick
 };
 
+// ---- Compile-time hash for safe default seeds --------------------------------
+constexpr std::uint64_t fnv1a64(const char* s,
+                                std::uint64_t h = 14695981039346656037ull) {
+    return (*s == 0) ? h : fnv1a64(s + 1, (h ^ static_cast<unsigned char>(*s)) * 1099511628211ull);
+}
+
 struct SystemConfig {
-    uint64_t seed = 0xC01ony;
+    // NOTE: Fixed the invalid literal suffix issue (was: 0xC01ony).
+    // Use a robust, deterministic default seed derived from a string.
+    std::uint64_t seed = fnv1a64("colony");
     int minPlanets = 4;
     int maxPlanets = 9;
     bool generateMoons = true;
