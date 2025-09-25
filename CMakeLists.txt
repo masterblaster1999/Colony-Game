@@ -20,6 +20,7 @@
 #   * (PATCH) Dear ImGui integration (Win32 + D3D11) via FetchContent + backend static library
 #   * (PATCH-ODR) Exclude Windows duplicate AtomicFileWin.cpp to fix ODR with AtomicFile.cpp
 #   * (NEW) Procedural terrain module sources + runtime-compiled Terrain.hlsl staged to /shaders
+#   * (NEW) DXC path for modern HLSL (Shader Model 6.x) side-by-side with FXC fallback
 # ==================================================================================================
 
 cmake_minimum_required(VERSION 3.16)
@@ -568,7 +569,7 @@ target_link_libraries(ColonyGame PRIVATE
   ole32 oleaut32 imm32 winmm version uuid
   dwmapi xinput9_1_0
   xaudio2
-  d3d11 dxgi d3dcompiler        # (NEW) D3D11 + DXGI + FXC loader (D3DReadFileToBlob)
+  d3d11 dxgi d3dcompiler        # (FXC/D3DCompile at runtime; DXC used at build-time)
 )
 
 if(ENABLE_UNITY)
@@ -586,14 +587,30 @@ if(MSVC AND SUPPRESS_MSVC_C4505)
 endif()
 
 # --------------------------------------------------------------------------------------------------
-# (NEW) D3D11 HLSL shader builds with FXC (+ install & copy)
+# (NEW) HLSL shader builds with **DXC (SM 6.x)** side-by-side with **FXC (SM 5.x)** + install & copy
 # --------------------------------------------------------------------------------------------------
 if(MSVC)
-  # FXC (from Windows SDK)
-  find_program(FXC fxc.exe)
-  if(NOT FXC)
-    message(FATAL_ERROR "fxc.exe not found. Install the Windows 10/11 SDK (Desktop C++).")
+  # Toggle + defaults
+  option(USE_DXC "Compile HLSL with DirectXShaderCompiler (dxc) when available" ON)
+  set(DXC_SHADER_MODEL "6_0" CACHE STRING "Default Shader Model for DXC (e.g., 6_0, 6_6)")
+
+  # Locate compilers (DXC optional; FXC from Windows SDK)
+  # Hints for DXC: Vulkan SDK commonly bundles it.
+  find_program(DXC NAMES dxc dxc.exe
+               HINTS "$ENV{VULKAN_SDK}/Bin" "$ENV{VULKAN_SDK}/Bin64" "$ENV{VULKAN_SDK}/Bin32"
+                     "$ENV{DXC_DIR}" "$ENV{DXC_PATH}")
+  if(USE_DXC AND DXC)
+    set(_USE_DXC TRUE)
+    message(STATUS "DXC found: ${DXC} (SM ${DXC_SHADER_MODEL})")
   else()
+    set(_USE_DXC FALSE)
+  endif()
+
+  find_program(FXC fxc.exe)
+  if(NOT _USE_DXC AND NOT FXC)
+    message(FATAL_ERROR "Neither dxc.exe nor fxc.exe found. Install the Windows 10/11 SDK for FXC, or provide DXC (e.g., via Vulkan SDK).")
+  endif()
+  if(FXC)
     message(STATUS "FXC found: ${FXC}")
   endif()
 
@@ -602,39 +619,77 @@ if(MSVC)
   set(SHADER_BIN_DIR "${CMAKE_BINARY_DIR}/shaders")
   file(MAKE_DIRECTORY "${SHADER_BIN_DIR}")
 
-  # Helper function to compile a compute shader
-  function(compile_hlsl_cs SRC ENTRY PROFILE OUT)
+  # --------------------------
+  # Compiler helpers (DXC/FXC)
+  # --------------------------
+  # dxc compile
+  function(_compile_with_dxc OUT SRC STAGE ENTRY)
+    # Map STAGE -> profile for SM 6.x
+    if(STAGE STREQUAL "vs")
+      set(_profile "vs_${DXC_SHADER_MODEL}")
+    elseif(STAGE STREQUAL "ps")
+      set(_profile "ps_${DXC_SHADER_MODEL}")
+    elseif(STAGE STREQUAL "cs")
+      set(_profile "cs_${DXC_SHADER_MODEL}")
+    else()
+      message(FATAL_ERROR "Unknown STAGE '${STAGE}' for DXC.")
+    endif()
     add_custom_command(
       OUTPUT ${OUT}
-      COMMAND ${FXC} /nologo /T ${PROFILE} /E ${ENTRY}
-                      /Fo ${OUT} /O3 /Zi /Qstrip_reflect /Qstrip_debug
-                      /I ${SHADER_DIR} ${SRC}
+      COMMAND ${DXC} -nologo -T ${_profile} -E ${ENTRY}
+                     -Fo ${OUT} -O3
+                     -Qstrip_reflect -Qstrip_debug
+                     -I ${SHADER_DIR} ${SRC}
       DEPENDS ${SRC}
       WORKING_DIRECTORY ${SHADER_DIR}
-      COMMENT "Compiling HLSL (CS): ${SRC} -> ${OUT}"
+      COMMENT "DXC ${SRC} (${ENTRY}/${_profile}) -> ${OUT}"
       VERBATIM
     )
   endfunction()
 
-  # Helper function to compile a generic HLSL (VS/PS/etc.)
-  function(compile_hlsl SRC ENTRY PROFILE OUT)
+  # fxc compile
+  function(_compile_with_fxc OUT SRC STAGE ENTRY)
+    # Map STAGE -> profile for SM 5.0
+    if(STAGE STREQUAL "vs")
+      set(_profile "vs_5_0")
+    elseif(STAGE STREQUAL "ps")
+      set(_profile "ps_5_0")
+    elseif(STAGE STREQUAL "cs")
+      set(_profile "cs_5_0")
+    else()
+      message(FATAL_ERROR "Unknown STAGE '${STAGE}' for FXC.")
+    endif()
     add_custom_command(
       OUTPUT ${OUT}
-      COMMAND ${FXC} /nologo /T ${PROFILE} /E ${ENTRY}
+      COMMAND ${FXC} /nologo /T ${_profile} /E ${ENTRY}
                       /Fo ${OUT} /O3 /Zi /Qstrip_reflect /Qstrip_debug
                       /I ${SHADER_DIR} ${SRC}
       DEPENDS ${SRC}
       WORKING_DIRECTORY ${SHADER_DIR}
-      COMMENT "Compiling HLSL: ${SRC} (${ENTRY}/${PROFILE}) -> ${OUT}"
+      COMMENT "FXC ${SRC} (${ENTRY}/${_profile}) -> ${OUT}"
       VERBATIM
     )
   endfunction()
+
+  # Front function: pick DXC if enabled+found, else FXC
+  function(compile_hlsl_auto OUT SRC STAGE ENTRY)
+    if(_USE_DXC)
+      _compile_with_dxc(${OUT} "${SRC}" "${STAGE}" "${ENTRY}")
+    else()
+      _compile_with_fxc(${OUT} "${SRC}" "${STAGE}" "${ENTRY}")
+    endif()
+    set(${OUT} "${OUT}" PARENT_SCOPE)
+  endfunction()
+
+  # --------- Declare shaders ----------
+  set(_compiled_outputs "")
 
   # --- Compute shader(s) ---
   set(CS_SDFDITHER_SRC "${SHADER_DIR}/CS_SDFDither.hlsl")
   set(CS_SDFDITHER_BIN "${SHADER_BIN_DIR}/CS_SDFDither.cso")
   if(EXISTS "${CS_SDFDITHER_SRC}")
-    compile_hlsl_cs("${CS_SDFDITHER_SRC}" "main" "cs_5_0" "${CS_SDFDITHER_BIN}")
+    compile_hlsl_auto("${CS_SDFDITHER_BIN}" "${CS_SDFDITHER_SRC}" "cs" "main")
+    list(APPEND _compiled_outputs "${CS_SDFDITHER_BIN}")
   endif()
 
   # --- VS/PS shader(s) (Starfield) ---
@@ -642,13 +697,12 @@ if(MSVC)
   set(STARFIELD_VS  "${SHADER_BIN_DIR}/StarfieldVS.cso")
   set(STARFIELD_PS  "${SHADER_BIN_DIR}/StarfieldPS.cso")
   if(EXISTS "${STARFIELD_SRC}")
-    compile_hlsl("${STARFIELD_SRC}" "VSMain" "vs_5_0" "${STARFIELD_VS}")
-    compile_hlsl("${STARFIELD_SRC}" "PSMain" "ps_5_0" "${STARFIELD_PS}")
+    compile_hlsl_auto("${STARFIELD_VS}" "${STARFIELD_SRC}" "vs" "VSMain")
+    compile_hlsl_auto("${STARFIELD_PS}" "${STARFIELD_SRC}" "ps" "PSMain")
+    list(APPEND _compiled_outputs "${STARFIELD_VS}" "${STARFIELD_PS}")
   endif()
 
   # --- (NEW) Stage runtime-compiled Terrain shader source next to /shaders ---
-  # TerrainRenderer.cpp compiles Terrain.hlsl at runtime via D3DCompileFromFile.
-  # We stage the .hlsl into <build>/shaders and later copy the whole folder next to the EXE.
   set(TERRAIN_HLSL_SRC "${SHADER_DIR}/Terrain.hlsl")
   if(EXISTS "${TERRAIN_HLSL_SRC}")
     add_custom_command(
@@ -667,16 +721,23 @@ if(MSVC)
   endif()
 
   # Group them under custom targets so they're built automatically
-  add_custom_target(colony_shaders ALL
-    DEPENDS "${CS_SDFDITHER_BIN}"
-  )
-  add_custom_target(colony_starfield_shaders ALL
-    DEPENDS "${STARFIELD_VS}" "${STARFIELD_PS}"
-  )
+  if(_compiled_outputs)
+    add_custom_target(colony_shaders ALL DEPENDS ${_compiled_outputs})
+  endif()
+
+  # Keep a separate alias for Starfield group if present (back-compat with summary)
+  if(EXISTS "${STARFIELD_SRC}")
+    add_custom_target(colony_starfield_shaders ALL
+      DEPENDS "${STARFIELD_VS}" "${STARFIELD_PS}")
+  endif()
 
   # Ensure shaders are built before the game exe
-  add_dependencies(ColonyGame colony_shaders)
-  add_dependencies(ColonyGame colony_starfield_shaders)
+  if(TARGET colony_shaders)
+    add_dependencies(ColonyGame colony_shaders)
+  endif()
+  if(TARGET colony_starfield_shaders)
+    add_dependencies(ColonyGame colony_starfield_shaders)
+  endif()
 
   # Copy compiled shaders (and staged Terrain.hlsl) next to the exe after build
   add_custom_command(TARGET ColonyGame POST_BUILD
@@ -685,6 +746,13 @@ if(MSVC)
             "${SHADER_BIN_DIR}" "$<TARGET_FILE_DIR:ColonyGame>/shaders"
     COMMENT "Copying compiled/staged shaders/ next to $<TARGET_FILE_NAME:ColonyGame>"
     VERBATIM)
+
+  # Summary string for the configure banner
+  if(_USE_DXC)
+    set(_SHADER_COMPILER_SUMMARY "DXC (SM ${DXC_SHADER_MODEL})" CACHE INTERNAL "" FORCE)
+  else()
+    set(_SHADER_COMPILER_SUMMARY "FXC (SM 5.0)" CACHE INTERNAL "" FORCE)
+  endif()
 endif()
 
 # --------------------------------------------------------------------------------------------------
@@ -1065,7 +1133,7 @@ foreach(_d IN LISTS _ASSET_DIRS)
   endif()
 endforeach()
 
-# (NEW) Install compiled/staged shaders produced by FXC and Terrain.hlsl
+# (NEW) Install compiled/staged shaders produced by DXC/FXC and Terrain.hlsl
 # (Unconditionally install the shaders directory; 'stage_win' depends on shader targets so it exists.)
 install(DIRECTORY "${CMAKE_BINARY_DIR}/shaders/" DESTINATION "shaders" COMPONENT ColonyRuntime)
 
@@ -1177,7 +1245,11 @@ if(FRONTEND STREQUAL "sdl")
   endif()
 endif()
 if(TARGET colony_shaders OR TARGET colony_starfield_shaders)
-  message(STATUS "  Shaders              : FXC; outputs at ${CMAKE_BINARY_DIR}/shaders (copied & installed)")
+  if(DEFINED _SHADER_COMPILER_SUMMARY)
+    message(STATUS "  Shaders              : ${_SHADER_COMPILER_SUMMARY}; outputs at ${CMAKE_BINARY_DIR}/shaders (copied & installed)")
+  else()
+    message(STATUS "  Shaders              : (none detected)")
+  endif()
 endif()
 if(TARGET colony_terrain_src)
   message(STATUS "  Terrain shader       : Terrain.hlsl staged to ${CMAKE_BINARY_DIR}/shaders (copied & installed)")
@@ -1236,6 +1308,10 @@ message(STATUS "")
       * Source HLSL:   res/shaders/Terrain.hlsl (staged to <build>/shaders and copied next to the EXE)
       * Runtime copy:  <build>/bin/<cfg>/shaders/*
       * Install path:  stage/<cfg>/shaders/*
+
+  - Switch DXC on/off:
+      * ON (default):   -DUSE_DXC=ON   (targets SM ${DXC_SHADER_MODEL}; outputs DXIL)
+      * OFF:            -DUSE_DXC=OFF  (targets SM 5.0; outputs DXBC via FXC)
 
   - Dear ImGui:
       * ENABLE_IMGUI=ON by default.
