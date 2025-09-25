@@ -1,0 +1,42 @@
+{
+  "defaults": {
+    "compiler": "AUTO",
+    "dxc_sm": "6_6",
+    "fxc_sm": "5_0",
+    "defines": ["GLOBAL_DEFINE=1"],
+    "includes": ["include"]
+  },
+
+  "shaders": [
+    {
+      "src": "Starfield.hlsl",
+      "stages": [
+        { "stage": "vs", "entry": "VSMain", "profile": "vs_5_0", "compiler": "FXC", "out": "StarfieldVS.cso" },
+        { "stage": "ps", "entry": "PSMain", "profile": "ps_5_0", "compiler": "FXC", "out": "StarfieldPS.cso" }
+      ]
+    },
+    {
+      "src": "CS_SDFDither.hlsl",
+      "stages": [
+        { "stage": "cs", "entry": "main", "profile": "cs_6_6", "compiler": "DXC", "out": "CS_SDFDither.cso" }
+      ]
+    }
+  ],
+
+  "globs": [
+    {
+      "patterns": ["**/*.hlsl"],
+      "exclude_regex": ["(^|/)inc/"],
+      "assume": {
+        "compiler": "AUTO",
+        "defines": ["DEBUG_VIS=0"],
+        "includes": ["include"]
+      },
+      "map": [
+        { "regex": ".*\\bCS_.*\\.hlsl$", "stage": "cs", "entry": "main",  "profile": "cs_6_6", "compiler": "DXC" },
+        { "regex": ".*\\bVS.*\\.hlsl$",  "stage": "vs", "entry": "VSMain","profile": "vs_5_0", "compiler": "FXC" },
+        { "regex": ".*\\bPS.*\\.hlsl$",  "stage": "ps", "entry": "PSMain","profile": "ps_5_0", "compiler": "FXC" }
+      ]
+    }
+  ]
+}
