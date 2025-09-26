@@ -58,6 +58,8 @@
 #include <limits>
 #include <new>
 #include <cstdio>
+#include <cstdarg>   // va_list, va_* for debug_printf
+#include <iterator>  // std::size for raw arrays
 
 // -----------------------------------------------------------------------------------------------
 // Windows & friends (order matters)
@@ -75,6 +77,7 @@
 #include <errhandlingapi.h>      // GetLastError
 #include <timeapi.h>             // timeBeginPeriod/timeEndPeriod (winmm)
 #include <VersionHelpers.h>      // IsWindows* helpers
+#include <winreg.h>              // Registry helpers
 #include <wrl/client.h>          // Microsoft::WRL::ComPtr
 
 #ifndef CG_PCH_ENABLE_D3D11
@@ -107,15 +110,24 @@
   #else
     #include <dxgi.h>
   #endif
-  #include <d3dcompiler.h>
+  #if __has_include(<d3dcompiler.h>)
+    #include <d3dcompiler.h>
+  #else
+    // If d3dcompiler.h isn't present, downstream should disable CG_PCH_ENABLE_HLSL_COMPILE.
+  #endif
   #if CG_PCH_ENABLE_DXGI_DEBUG
-    #include <dxgidebug.h>
+    #if __has_include(<dxgidebug.h>)
+      #include <dxgidebug.h>
+    #endif
   #endif
 #endif
 
 #if CG_PCH_ENABLE_XAUDIO2
   #if __has_include(<xaudio2.h>)
     #include <xaudio2.h> // XAudio2.9 in Windows SDK
+    #define CG_HAS_XAUDIO2 1
+  #else
+    #define CG_HAS_XAUDIO2 0
   #endif
 #endif
 
@@ -837,7 +849,7 @@ CG_ALWAYS_INLINE void d3d11_enable_debug_breaks(ID3D11Device* device) {
 #endif
 
 // ---------- XAudio2 debug helper ----------
-#if CG_PCH_ENABLE_XAUDIO2
+#if CG_PCH_ENABLE_XAUDIO2 && CG_HAS_XAUDIO2
 CG_ALWAYS_INLINE void xaudio2_set_debug(IXAudio2* xa, bool enable) {
 #ifdef _DEBUG
   if (!xa) return;
@@ -852,7 +864,7 @@ CG_ALWAYS_INLINE void xaudio2_set_debug(IXAudio2* xa, bool enable) {
 #endif
 
 // ---------- HLSL compile helper (D3DCompile) ----------
-#if CG_PCH_ENABLE_HLSL_COMPILE && CG_PCH_ENABLE_D3D11
+#if CG_PCH_ENABLE_HLSL_COMPILE && CG_PCH_ENABLE_D3D11 && __has_include(<d3dcompiler.h>)
 CG_ALWAYS_INLINE HRESULT hlsl_compile(const void* src, size_t len,
                                       const char* entry, const char* target,
                                       const D3D_SHADER_MACRO* defines,
