@@ -5,8 +5,6 @@
   "homepage": "https://github.com/masterblaster1999/Colony-Game",
   "license": "MIT",
 
-  "builtin-baseline": "b1b19307e2d2ec1eefbdb7ea069de7d4bcd31f01",
-
   "dependencies": [
     "fmt",
     "spdlog",
@@ -32,6 +30,7 @@
     },
 
     "winpixevent",
-    "taskflow"
+    "taskflow",
+    "doctest"
   ]
 }
