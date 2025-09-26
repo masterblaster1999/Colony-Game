@@ -39,7 +39,7 @@ set_property(CACHE FRONTEND PROPERTY STRINGS win32 sdl)
 # Prefer static MSVC runtime with a single CMake knob (default OFF = dynamic CRT)
 option(MSVC_STATIC_RUNTIME "Link /MT or /MTd" OFF)
 
-# Optional Link-Time Optimization via CMake IPO (no manual /GL or /LTCG flags)
+# Optional Link-Time Optimization via CMake IPO (no manual /GL or /LTCG flags required)
 # Use: -DCOLONY_LTO=ON
 option(COLONY_LTO "Enable Link-Time Optimization (IPO) for Release" OFF)
 if(COLONY_LTO)
@@ -104,8 +104,11 @@ if(MSVC)
   # Full PDBs for better diagnostics instead of FASTLINK
   add_link_options(/DEBUG:FULL)
 
-  # NOTE: We do NOT add manual /GL or /LTCG flags here.
-  #       Release LTO is controlled by COLONY_LTO + IPO above.
+  # Tiny fix:
+  # - Use unquoted generator expressions for LTCG path (/GL at compile, /LTCG at link)
+  # - Do NOT force /O2 (Release already sets it)
+  add_compile_options($<$<CONFIG:Release>:/GL>)
+  add_link_options($<$<CONFIG:Release>:/LTCG>)
 endif()
 
 # --- Sanitize any leaked generator expressions in global flags
