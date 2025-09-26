@@ -110,13 +110,9 @@ set(CG_ADD_DEFAULT_INSTALL_RULES ON CACHE BOOL "Add default install/copy rules i
 if(CG_ADD_DEFAULT_INSTALL_RULES)
   # If your main executable target is named differently, adjust below.
   if(TARGET ColonyGame)
-    # Copy resources next to the built EXE on each build for easy F5 runs
-    add_custom_command(TARGET ColonyGame POST_BUILD
-      COMMAND ${CMAKE_COMMAND} -E copy_directory
-              "${CMAKE_SOURCE_DIR}/res" "$<TARGET_FILE_DIR:ColonyGame>/res")
-    add_custom_command(TARGET ColonyGame POST_BUILD
-      COMMAND ${CMAKE_COMMAND} -E copy_directory
-              "${CMAKE_SOURCE_DIR}/shaders" "$<TARGET_FILE_DIR:ColonyGame>/shaders")
+    # NOTE: The POST_BUILD copy commands were intentionally removed from the
+    # top-level file. Define them inside src/CMakeLists.txt where ColonyGame
+    # is created, per CMake's requirement for add_custom_command(TARGET ...).
 
     # Install layout for packaging/zip
     install(TARGETS ColonyGame RUNTIME DESTINATION .)
@@ -127,7 +123,7 @@ if(CG_ADD_DEFAULT_INSTALL_RULES)
       install(DIRECTORY shaders/ DESTINATION shaders)
     endif()
   else()
-    message(STATUS "Target 'ColonyGame' not found at top level; default copy/install rules skipped.")
+    message(STATUS "Target 'ColonyGame' not found at top level; default install rules only.")
   endif()
 endif()
 
