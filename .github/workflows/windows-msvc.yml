@@ -1,66 +1,79 @@
-name: windows-msvc
+name: Windows MSVC
 
 on:
   push:
-    branches: [ main ]
+    branches: [ main, master ]
   pull_request:
 
-permissions:
-  contents: read
-
-# Windows-only CI
 jobs:
   build:
     runs-on: windows-2022
 
     env:
-      # Use vcpkg manifest + binary caching
-      VCPKG_FEATURE_FLAGS: manifests,binarycaching
+      # Ensure 64-bit triplet by default in manifest mode
       VCPKG_DEFAULT_TRIPLET: x64-windows
-      # Let MSBuild decide parallelism for PCH friendliness
-      CMAKE_BUILD_PARALLEL_LEVEL: "0"
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-        with:
-          submodules: recursive
 
-      # Make cl.exe, link.exe, etc. available in PATH for both VS/Ninja generators
-      - name: MSVC Dev Cmd (x64)
+      - name: Setup CMake
+        # Use the supported tag; README documents @latest and version pinning
+        uses: lukka/get-cmake@latest  # https://github.com/lukka/get-cmake
+        with:
+          cmakeVersion: latest
+
+      - name: Setup MSVC Developer Command Prompt
         uses: ilammy/msvc-dev-cmd@v1
         with:
           arch: x64
-          toolset: 14.4
+          vsversion: 2022
 
-      # Fix: use a supported ref for get-cmake
-      - name: Get CMake & Ninja
-        uses: lukka/get-cmake@latest
-        with:
-          cmakeVersion: latest       # or pin: "~3.31.0"
-          ninjaVersion: latest       # not used by VS generator, but harmless
+      - name: Show Visual Studio & vcpkg locations (diagnostics)
+        shell: pwsh
+        run: |
+          Write-Host "VCPKG_INSTALLATION_ROOT=$env:VCPKG_INSTALLATION_ROOT"
+          Write-Host "VSWHERE:"
+          & "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe" -latest -products * -requires Microsoft.Component.MSBuild -property installationPath
 
-      # Optional: warm vcpkg cache (binary artifacts)
-      - name: Cache vcpkg artifacts
+      - name: Cache vcpkg artifacts (manifest mode)
         uses: actions/cache@v4
         with:
           path: |
-            C:\Users\runneradmin\AppData\Local\vcpkg\archives
             build/vcpkg_installed
-          key: vcpkg-${{ runner.os }}-${{ hashFiles('vcpkg.json', 'vcpkg-configuration.json') }}
+          key: v1-${{ runner.os }}-vcpkg-${{ hashFiles('vcpkg.json') }}
+          restore-keys: |
+            v1-${{ runner.os }}-vcpkg-
 
-      - name: Configure (Visual Studio generator)
+      - name: Cache CMake build
+        uses: actions/cache@v4
+        with:
+          path: |
+            build/CMakeCache.txt
+            build/CMakeFiles
+          key: v1-${{ runner.os }}-cmake-${{ hashFiles('CMakeLists.txt', 'cmake/**/*.cmake', 'src/**/*.cpp', 'src/**/*.h') }}
+          restore-keys: |
+            v1-${{ runner.os }}-cmake-
+
+      - name: Configure (VS 2022, x64)
+        shell: pwsh
         run: >
           cmake -S . -B build
-          -G "Visual Studio 17 2022"
-          -A x64
+          -G "Visual Studio 17 2022" -A x64
+          -DCMAKE_TOOLCHAIN_FILE="$env:VCPKG_INSTALLATION_ROOT\scripts\buildsystems\vcpkg.cmake"
           -DBUILD_TESTING=ON
-          -DENABLE_IMGUI=ON
-          -DTRACY_FETCH=ON
-          -DMSVC_STATIC_RUNTIME=OFF
+          -DCOLONY_LTO=OFF
 
       - name: Build (Release)
+        shell: pwsh
         run: cmake --build build --config Release --parallel
 
-      - name: Run tests (Release)
-        run: ctest --test-dir build -C Release --output-on-failure
+      - name: Run tests (ctest)
+        if: success()
+        shell: pwsh
+        run: ctest --test-dir build --config Release --output-on-failure
+
+      - name: Package (cpack ZIP)
+        if: success()
+        shell: pwsh
+        run: cmake --build build --config Release --target package
