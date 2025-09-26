@@ -5,6 +5,8 @@
   "homepage": "https://github.com/masterblaster1999/Colony-Game",
   "license": "MIT",
 
+  "builtin-baseline": "b1b19307e2d2ec1eefbdb7ea069de7d4bcd31f01",
+
   "dependencies": [
     "fmt",
     "spdlog",
@@ -19,18 +21,11 @@
     "directx-headers",
     "directx-dxc",
 
-    {
-      "name": "directxtex",
-      "features": [ "dx11" ]
-    },
+    { "name": "directxtex", "features": [ "dx11" ] },
 
-    {
-      "name": "tracy",
-      "default-features": false
-    },
+    { "name": "tracy", "default-features": false },
 
     "winpixevent",
-    "taskflow",
-    "doctest"
+    "taskflow"
   ]
 }
