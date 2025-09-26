@@ -1,16 +1,12 @@
 cmake_minimum_required(VERSION 3.26)
 
 # ---------------- Policies & developer UX ----------------
-# Honor CMAKE_MSVC_RUNTIME_LIBRARY for MSVC (runtime selection via CMake).  (CMP0091)
 if(POLICY CMP0091)
-  cmake_policy(SET CMP0091 NEW)
+  cmake_policy(SET CMP0091 NEW) # Honor CMAKE_MSVC_RUNTIME_LIBRARY
 endif()
-
-# Generate compile_commands.json for better tooling/IntelliSense.
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
 # ---------------- vcpkg auto-wire (before project()) ----------------
-# If no toolchain is explicitly provided, pick up vcpkg from VCPKG_ROOT.
 if(NOT DEFINED CMAKE_TOOLCHAIN_FILE)
   if(DEFINED ENV{VCPKG_ROOT} AND EXISTS "$ENV{VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake")
     set(CMAKE_TOOLCHAIN_FILE
@@ -36,11 +32,9 @@ option(BUILD_BOOTSTRAPPER   "Build WinLauncher bootstrapper"     ON)
 set(FRONTEND "win32" CACHE STRING "Frontend to build: win32 or sdl")
 set_property(CACHE FRONTEND PROPERTY STRINGS win32 sdl)
 
-# Prefer static MSVC runtime with a single CMake knob (default OFF = dynamic CRT)
 option(MSVC_STATIC_RUNTIME "Link /MT or /MTd" OFF)
 
-# Optional Link-Time Optimization via CMake IPO (no manual /GL or /LTCG flags)
-# Use: -DCOLONY_LTO=ON
+# Optional LTO via IPO
 option(COLONY_LTO "Enable Link-Time Optimization (IPO) for Release" OFF)
 if(COLONY_LTO)
   include(CheckIPOSupported)
@@ -79,30 +73,23 @@ endif()
 
 # ------------- Toolchain & compiler flags
 include(cmake/msvc_flags.cmake OPTIONAL)
-
 if(MSVC)
-  # Choose CRT via single toggle; defaults to dynamic CRT (/MD, /MDd)
   if(MSVC_STATIC_RUNTIME)
     set(CMAKE_MSVC_RUNTIME_LIBRARY
         "MultiThreaded$<$<CONFIG:Debug>:Debug>"
-        CACHE STRING "MSVC runtime" FORCE)   # /MT or /MTd
+        CACHE STRING "MSVC runtime" FORCE)
   else()
     set(CMAKE_MSVC_RUNTIME_LIBRARY
         "MultiThreaded$<$<CONFIG:Debug>:Debug>DLL"
-        CACHE STRING "MSVC runtime" FORCE)   # /MD or /MDd
+        CACHE STRING "MSVC runtime" FORCE)
   endif()
 
-  # Warnings & conformance; use multi-proc; correct __cplusplus; safe new
   add_compile_options(/W4 /permissive- /Zc:__cplusplus /Zc:throwingNew /EHsc /MP)
-
-  # Full PDBs for better diagnostics instead of FASTLINK
   add_link_options(/DEBUG:FULL)
-
-  # NOTE: Do NOT add manual /GL or /LTCG here; LTO is controlled via IPO above.
+  # No manual /O2 or /GL /LTCG here; IPO controls LTO for Release
 endif()
 
-# --- Sanitize any leaked generator expressions in global flags
-#     (Prevents build tools from treating '$<...>' like filenames, e.g., '$<1:/O2>'.)
+# --- Sanitize leaked generator expressions in global flags
 foreach(v
   CMAKE_C_FLAGS CMAKE_C_FLAGS_DEBUG CMAKE_C_FLAGS_RELEASE CMAKE_C_FLAGS_RELWITHDEBINFO CMAKE_C_FLAGS_MINSIZEREL
   CMAKE_CXX_FLAGS CMAKE_CXX_FLAGS_DEBUG CMAKE_CXX_FLAGS_RELEASE CMAKE_CXX_FLAGS_RELWITHDEBINFO CMAKE_CXX_FLAGS_MINSIZEREL)
@@ -113,10 +100,8 @@ foreach(v
   endif()
 endforeach()
 
-# ------------- Dependencies (vcpkg-friendly)
+# ------------- Dependencies & helpers
 include(cmake/deps.cmake)
-
-# ------------- Shaders (DXC/FXC fallback)
 include(cmake/shaders.cmake)
 
 # ------------- Sources & targets
@@ -124,7 +109,6 @@ add_subdirectory(src)
 
 # ------------- Install/Stage
 include(cmake/install_stage.cmake OPTIONAL)
-
 set(CG_ADD_DEFAULT_INSTALL_RULES ON CACHE BOOL "Add default install/copy rules if not provided elsewhere")
 if(CG_ADD_DEFAULT_INSTALL_RULES)
   if(TARGET ColonyGame)
@@ -150,7 +134,7 @@ if(BUILD_TESTING)
   endif()
 endif()
 
-# ------------- Packaging (ZIP + MSVC runtime redist)
+# ------------- Packaging
 include(InstallRequiredSystemLibraries)
 set(CPACK_PACKAGE_NAME "ColonyGame")
 set(CPACK_PACKAGE_VERSION "${CG_VERSION_STR}")
@@ -158,5 +142,4 @@ set(CPACK_GENERATOR "ZIP")
 set(CPACK_PACKAGE_FILE_NAME "ColonyGame-${CPACK_PACKAGE_VERSION}-win64")
 include(CPack)
 
-# ------------- Helpful tips (if any)
 include(cmake/tips.cmake OPTIONAL)
