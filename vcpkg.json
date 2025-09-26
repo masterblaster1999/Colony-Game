@@ -4,6 +4,9 @@
   "description": "Windows-only colony sim / engine dependencies via vcpkg (DX11/DX12 toolchain, UI, profiling).",
   "homepage": "https://github.com/masterblaster1999/Colony-Game",
   "license": "MIT",
+
+  "builtin-baseline": "b1b19307e2d2ec1eefbdb7ea069de7d4bcd31f01",
+
   "dependencies": [
     "fmt",
     "spdlog",
@@ -25,13 +28,10 @@
 
     {
       "name": "tracy",
-      "default-features": false,
-      "features": [ "on-demand" ]
+      "default-features": false
     },
 
     "winpixevent",
     "taskflow"
-  ],
-
-  "builtin-baseline": "CHANGE-ME-WITH-A-VCPKG-COMMIT"
+  ]
 }
