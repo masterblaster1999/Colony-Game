@@ -1,0 +1,66 @@
+name: windows-msvc
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+
+permissions:
+  contents: read
+
+# Windows-only CI
+jobs:
+  build:
+    runs-on: windows-2022
+
+    env:
+      # Use vcpkg manifest + binary caching
+      VCPKG_FEATURE_FLAGS: manifests,binarycaching
+      VCPKG_DEFAULT_TRIPLET: x64-windows
+      # Let MSBuild decide parallelism for PCH friendliness
+      CMAKE_BUILD_PARALLEL_LEVEL: "0"
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      # Make cl.exe, link.exe, etc. available in PATH for both VS/Ninja generators
+      - name: MSVC Dev Cmd (x64)
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+          toolset: 14.4
+
+      # Fix: use a supported ref for get-cmake
+      - name: Get CMake & Ninja
+        uses: lukka/get-cmake@latest
+        with:
+          cmakeVersion: latest       # or pin: "~3.31.0"
+          ninjaVersion: latest       # not used by VS generator, but harmless
+
+      # Optional: warm vcpkg cache (binary artifacts)
+      - name: Cache vcpkg artifacts
+        uses: actions/cache@v4
+        with:
+          path: |
+            C:\Users\runneradmin\AppData\Local\vcpkg\archives
+            build/vcpkg_installed
+          key: vcpkg-${{ runner.os }}-${{ hashFiles('vcpkg.json', 'vcpkg-configuration.json') }}
+
+      - name: Configure (Visual Studio generator)
+        run: >
+          cmake -S . -B build
+          -G "Visual Studio 17 2022"
+          -A x64
+          -DBUILD_TESTING=ON
+          -DENABLE_IMGUI=ON
+          -DTRACY_FETCH=ON
+          -DMSVC_STATIC_RUNTIME=OFF
+
+      - name: Build (Release)
+        run: cmake --build build --config Release --parallel
+
+      - name: Run tests (Release)
+        run: ctest --test-dir build -C Release --output-on-failure
