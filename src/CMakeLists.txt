@@ -1,14 +1,33 @@
-# -------- Source lists --------
-set(SRC_CORE
-  core/app.cpp core/app.h
-  # ... add your actual sources here
+# -------- Source lists (robust, no hardcoded nonexistent files) --------
+
+# Discover core/game sources under src/
+file(GLOB_RECURSE SRC_CORE CONFIGURE_DEPENDS
+  "${CMAKE_SOURCE_DIR}/src/*.cpp"
+  "${CMAKE_SOURCE_DIR}/src/*.cxx"
+  "${CMAKE_SOURCE_DIR}/src/*.cc"
+  "${CMAKE_SOURCE_DIR}/src/*.c"
 )
 
-set(SRC_WIN32
-  platform/win/WinLauncher.cpp
-  platform/win/win32_main.cpp
-  # split big platform file(s) here if needed (see section 5)
+# Discover Windows platform sources (support either layout: platform/win/* or src/platform/win/*)
+file(GLOB_RECURSE SRC_WIN32 CONFIGURE_DEPENDS
+  "${CMAKE_SOURCE_DIR}/platform/win/*.cpp"
+  "${CMAKE_SOURCE_DIR}/platform/win/*.c"
+  "${CMAKE_SOURCE_DIR}/src/platform/win/*.cpp"
+  "${CMAKE_SOURCE_DIR}/src/platform/win/*.c"
 )
+
+# Include the existing launcher at the repo root if present
+if(EXISTS "${CMAKE_SOURCE_DIR}/WinLauncher.cpp")
+  list(APPEND SRC_WIN32 "${CMAKE_SOURCE_DIR}/WinLauncher.cpp")
+endif()
+
+list(REMOVE_DUPLICATES SRC_CORE)
+list(REMOVE_DUPLICATES SRC_WIN32)
+
+# Fail early if we truly have no sources (prevents add_executable() with an empty list)
+if(NOT SRC_CORE AND NOT SRC_WIN32)
+  message(FATAL_ERROR "No source files found under src/ or platform/win/, and no WinLauncher.cpp at repo root.")
+endif()
 
 # -------- Target --------
 add_executable(ColonyGame
@@ -37,14 +56,34 @@ target_link_libraries(ColonyGame
 
 # Add Windows platform resources and helpers (manifest, version info, crash handler, GPU preference)
 if(WIN32)
-  target_sources(ColonyGame PRIVATE
-    "${CMAKE_SOURCE_DIR}/platform/win/Manifest.rc"
-    "${CMAKE_BINARY_DIR}/generated/Version.rc"
-    "${CMAKE_SOURCE_DIR}/platform/win/CrashHandler.cpp"
-    "${CMAKE_SOURCE_DIR}/platform/win/CrashHandler.h"
-    "${CMAKE_SOURCE_DIR}/src/platform/win/GpuPreference.cpp"
-  )
-  # Explicit system libs for crash dumps and shell paths
+  # Collect optional sources/resources safely (only add if they exist)
+  set(_WIN_OPTIONAL_SOURCES)
+
+  # Manifest & version resource
+  if(EXISTS "${CMAKE_SOURCE_DIR}/platform/win/Manifest.rc")
+    list(APPEND _WIN_OPTIONAL_SOURCES "${CMAKE_SOURCE_DIR}/platform/win/Manifest.rc")
+  endif()
+  if(EXISTS "${CMAKE_BINARY_DIR}/generated/Version.rc")
+    list(APPEND _WIN_OPTIONAL_SOURCES "${CMAKE_BINARY_DIR}/generated/Version.rc")
+  endif()
+
+  # Crash handler (cpp only; header doesn't need to be added as a source to compile)
+  if(EXISTS "${CMAKE_SOURCE_DIR}/platform/win/CrashHandler.cpp")
+    list(APPEND _WIN_OPTIONAL_SOURCES "${CMAKE_SOURCE_DIR}/platform/win/CrashHandler.cpp")
+  endif()
+
+  # GPU preference shim (support both possible layouts)
+  if(EXISTS "${CMAKE_SOURCE_DIR}/src/platform/win/GpuPreference.cpp")
+    list(APPEND _WIN_OPTIONAL_SOURCES "${CMAKE_SOURCE_DIR}/src/platform/win/GpuPreference.cpp")
+  elseif(EXISTS "${CMAKE_SOURCE_DIR}/platform/win/GpuPreference.cpp")
+    list(APPEND _WIN_OPTIONAL_SOURCES "${CMAKE_SOURCE_DIR}/platform/win/GpuPreference.cpp")
+  endif()
+
+  if(_WIN_OPTIONAL_SOURCES)
+    target_sources(ColonyGame PRIVATE ${_WIN_OPTIONAL_SOURCES})
+  endif()
+
+  # Explicit system libs for crash dumps and shell paths (only link if on Windows)
   target_link_libraries(ColonyGame PRIVATE dbghelp shell32 ole32)
 endif()
 
@@ -56,7 +95,8 @@ target_compile_definitions(ColonyGame PRIVATE
 
 # Include paths: local src + generated headers (build_info.h, etc.)
 target_include_directories(ColonyGame PRIVATE
-  ${CMAKE_CURRENT_SOURCE_DIR}
+  "${CMAKE_SOURCE_DIR}/src"
+  "${CMAKE_SOURCE_DIR}"
   "${CMAKE_BINARY_DIR}/generated"
 )
 
