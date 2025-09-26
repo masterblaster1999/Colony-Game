@@ -30,7 +30,7 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 # ------------- Options (Windows-first)
 option(ENABLE_IMGUI         "Enable Dear ImGui overlay"          ON)
 option(ENABLE_TRACY         "Enable Tracy profiler"              ON)
-option(TRACY_FETCH          "FetchContent Tracy"                 ON)
+option(TRACY_FETCH          "FetchContent Tracy (unused; link vcpkg target)" OFF)
 option(SHOW_CONSOLE         "Show Console for WIN32 exe"         OFF)
 option(BUILD_BOOTSTRAPPER   "Build WinLauncher bootstrapper"     ON)
 set(FRONTEND "win32" CACHE STRING "Frontend to build: win32 or sdl")
@@ -39,7 +39,7 @@ set_property(CACHE FRONTEND PROPERTY STRINGS win32 sdl)
 # Prefer static MSVC runtime with a single CMake knob (default OFF = dynamic CRT)
 option(MSVC_STATIC_RUNTIME "Link /MT or /MTd" OFF)
 
-# Optional Link-Time Optimization via CMake IPO (no manual /GL or /LTCG flags required)
+# Optional Link-Time Optimization via CMake IPO (no manual /GL or /LTCG flags)
 # Use: -DCOLONY_LTO=ON
 option(COLONY_LTO "Enable Link-Time Optimization (IPO) for Release" OFF)
 if(COLONY_LTO)
@@ -53,7 +53,6 @@ if(COLONY_LTO)
 endif()
 
 # ---------------- Build info (Git hash / timestamp / version) ----------------
-# Capture short Git hash; fall back to "unknown" if not a git workspace.
 execute_process(
   COMMAND git rev-parse --short=12 HEAD
   WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
@@ -64,26 +63,21 @@ execute_process(
 if(CG_GIT_HASH STREQUAL "")
   set(CG_GIT_HASH "unknown")
 endif()
-
 string(TIMESTAMP CG_BUILD_TIMESTAMP "%Y-%m-%d %H:%M:%S")
 
-# Semantic version (bump as needed)
 set(CG_VERSION_MAJOR 0)
 set(CG_VERSION_MINOR 1)
 set(CG_VERSION_PATCH 0)
 set(CG_VERSION_STR "${CG_VERSION_MAJOR}.${CG_VERSION_MINOR}.${CG_VERSION_PATCH}")
 
-# Configure generated headers/resources used by targets (if templates exist)
 configure_file("${CMAKE_SOURCE_DIR}/src/build_info.h.in"
                "${CMAKE_BINARY_DIR}/generated/build_info.h" @ONLY)
-configure_file("${CMAKE_SOURCE_DIR}/platform/win/Version.rc.in"
-               "${CMAKE_BINARY_DIR}/generated/Version.rc" @ONLY)
+if(EXISTS "${CMAKE_SOURCE_DIR}/platform/win/Version.rc.in")
+  configure_file("${CMAKE_SOURCE_DIR}/platform/win/Version.rc.in"
+                 "${CMAKE_BINARY_DIR}/generated/Version.rc" @ONLY)
+endif()
 
 # ------------- Toolchain & compiler flags
-
-# If you keep extra settings in cmake/msvc_flags.cmake they'll still run.
-# The block below provides hardened defaults & one-switch CRT selection.
-# It runs BEFORE targets are created so the runtime setting propagates.
 include(cmake/msvc_flags.cmake OPTIONAL)
 
 if(MSVC)
@@ -104,16 +98,11 @@ if(MSVC)
   # Full PDBs for better diagnostics instead of FASTLINK
   add_link_options(/DEBUG:FULL)
 
-  # Tiny fix:
-  # - Use unquoted generator expressions for LTCG path (/GL at compile, /LTCG at link)
-  # - Do NOT force /O2 (Release already sets it)
-  add_compile_options($<$<CONFIG:Release>:/GL>)
-  add_link_options($<$<CONFIG:Release>:/LTCG>)
+  # NOTE: Do NOT add manual /GL or /LTCG here; LTO is controlled via IPO above.
 endif()
 
 # --- Sanitize any leaked generator expressions in global flags
-#     (Prevents build tools from treating '$<...>' text like filenames,
-#      e.g., '$<1:/O2>' causing C1083.)
+#     (Prevents build tools from treating '$<...>' like filenames, e.g., '$<1:/O2>'.)
 foreach(v
   CMAKE_C_FLAGS CMAKE_C_FLAGS_DEBUG CMAKE_C_FLAGS_RELEASE CMAKE_C_FLAGS_RELWITHDEBINFO CMAKE_C_FLAGS_MINSIZEREL
   CMAKE_CXX_FLAGS CMAKE_CXX_FLAGS_DEBUG CMAKE_CXX_FLAGS_RELEASE CMAKE_CXX_FLAGS_RELWITHDEBINFO CMAKE_CXX_FLAGS_MINSIZEREL)
@@ -125,7 +114,7 @@ foreach(v
 endforeach()
 
 # ------------- Dependencies (vcpkg-friendly)
-include(cmake/deps.cmake)           # SDL2 (if FRONTEND=sdl), imgui wiring, Tracy, etc.
+include(cmake/deps.cmake)
 
 # ------------- Shaders (DXC/FXC fallback)
 include(cmake/shaders.cmake)
@@ -134,20 +123,11 @@ include(cmake/shaders.cmake)
 add_subdirectory(src)
 
 # ------------- Install/Stage
-# Prefer your existing staging if present; otherwise add safe defaults here.
 include(cmake/install_stage.cmake OPTIONAL)
 
-# Allow disabling these defaults from cache or from your included script.
 set(CG_ADD_DEFAULT_INSTALL_RULES ON CACHE BOOL "Add default install/copy rules if not provided elsewhere")
-
 if(CG_ADD_DEFAULT_INSTALL_RULES)
-  # If your main executable target is named differently, adjust below.
   if(TARGET ColonyGame)
-    # NOTE: The POST_BUILD copy commands were intentionally removed from the
-    # top-level file. Define them inside src/CMakeLists.txt where ColonyGame
-    # is created, per CMake's requirement for add_custom_command(TARGET ...).
-
-    # Install layout for packaging/zip
     install(TARGETS ColonyGame RUNTIME DESTINATION .)
     if(EXISTS "${CMAKE_SOURCE_DIR}/res")
       install(DIRECTORY res/     DESTINATION res)
@@ -160,7 +140,7 @@ if(CG_ADD_DEFAULT_INSTALL_RULES)
   endif()
 endif()
 
-# ------------- Testing (robust when tests/ isn't present)
+# ------------- Testing
 include(CTest)
 if(BUILD_TESTING)
   if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/CMakeLists.txt")
@@ -171,7 +151,6 @@ if(BUILD_TESTING)
 endif()
 
 # ------------- Packaging (ZIP + MSVC runtime redist)
-# Includes VC++ redistributable DLLs when needed and creates a ZIP package target.
 include(InstallRequiredSystemLibraries)
 set(CPACK_PACKAGE_NAME "ColonyGame")
 set(CPACK_PACKAGE_VERSION "${CG_VERSION_STR}")
@@ -179,5 +158,5 @@ set(CPACK_GENERATOR "ZIP")
 set(CPACK_PACKAGE_FILE_NAME "ColonyGame-${CPACK_PACKAGE_VERSION}-win64")
 include(CPack)
 
-# ------------- Helpful tips (fixed bracket block)
+# ------------- Helpful tips (if any)
 include(cmake/tips.cmake OPTIONAL)
