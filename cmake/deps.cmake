@@ -1,69 +1,99 @@
+# Frontend selection
 if(FRONTEND STREQUAL "sdl")
-  find_package(SDL2 CONFIG REQUIRED)         # via vcpkg.json
+  # SDL2 is provided by vcpkg ("sdl2" port)
+  find_package(SDL2 CONFIG REQUIRED)
 endif()
 
-# ImGui: either local sources or vcpkg (choose one strategy)
+# ---------------------------------------------------------------------------
+# ImGui: use the vcpkg-provided target (NO vendored sources, NO local paths)
+# ---------------------------------------------------------------------------
+# IMPORTANT:
+#   - Enable the appropriate imgui port features in vcpkg.json:
+#       * Win32 + D3D11 frontend:  [core, docking-experimental, win32-binding, dx11-binding]
+#       * SDL2 + D3D11 frontend:   [core, docking-experimental, sdl2-binding, dx11-binding]
+#
+#   - We deliberately DO NOT compile any files from third_party/imgui/*.
+#   - To keep existing CMake link lines working, we create a lightweight "imgui"
+#     INTERFACE target that forwards to the real vcpkg target imgui::imgui.
+#
 if(ENABLE_IMGUI)
-  # Example: use bundled imgui in third_party/imgui (if you have it)
-  add_library(imgui STATIC
-    third_party/imgui/imgui.cpp
-    third_party/imgui/imgui_draw.cpp
-    third_party/imgui/imgui_tables.cpp
-    third_party/imgui/imgui_widgets.cpp
-    third_party/imgui/backends/imgui_impl_dx11.cpp
-    $<$<STREQUAL:${FRONTEND},win32>:third_party/imgui/backends/imgui_impl_win32.cpp>
-    $<$<STREQUAL:${FRONTEND},sdl>:third_party/imgui/backends/imgui_impl_sdl2.cpp>
-  )
-  target_include_directories(imgui SYSTEM PUBLIC third_party/imgui)
+  find_package(imgui CONFIG REQUIRED)           # from vcpkg; exports imgui::imgui
+  # Backwards-compatible target name "imgui" (was a STATIC lib before), now an interface alias.
+  if(TARGET imgui)
+    # If some outer code already defined a conflicting target named "imgui", fail loudly.
+    message(FATAL_ERROR "A target named 'imgui' already exists. Remove any vendored/legacy ImGui target.")
+  endif()
+  add_library(imgui INTERFACE)
+  target_link_libraries(imgui INTERFACE imgui::imgui)
+  # No third_party/imgui sources, no backends compiled here — the vcpkg port handles that via features.
 endif()
 
-# Tracy (quiet, robust fetch; build client only)
+# ---------------------------------------------------------------------------
+# Tracy (quiet & robust):
+#   1) Prefer vcpkg's exported target: Tracy::TracyClient
+#   2) Else, FetchContent the official repo with the MODERN API
+#   3) Fallback: build client from public/TracyClient.cpp only
+# ---------------------------------------------------------------------------
 if(ENABLE_TRACY)
-  # Default to fetching Tracy; allow overriding with -DTRACY_FETCH=OFF
-  option(TRACY_FETCH "Fetch Tracy sources with FetchContent" ON)
-
-  # Allow configuring the exact Tracy revision at configure time:
-  #   -DTRACY_TAG=v0.11.1   OR   -DTRACY_TAG=v0.12.2   OR a full commit SHA.
+  # Allow the user to pick a specific revision when fetching Tracy
   if(NOT DEFINED TRACY_TAG OR TRACY_TAG STREQUAL "")
-    set(TRACY_TAG "v0.12.2" CACHE STRING "Tracy tag or commit (e.g., v0.11.1 or a SHA)")
+    set(TRACY_TAG "v0.11.1" CACHE STRING "Tracy tag/commit to fetch when vcpkg is unavailable")
   endif()
 
-  if(TRACY_FETCH)
-    include(FetchContent)
+  # First try vcpkg
+  find_package(Tracy CONFIG QUIET)
 
-    # Make CI/offline more stable and avoid unnecessary updates.
-    set(FETCHCONTENT_UPDATES_DISCONNECTED ON)
-
-    FetchContent_Declare(tracy
-      GIT_REPOSITORY https://github.com/wolfpld/tracy.git
-      GIT_TAG        ${TRACY_TAG}    # Must be a valid tag or commit (e.g., v0.11.1 or v0.12.2)
-      GIT_SHALLOW    TRUE
-    )
-    # Download only; do not pull in Tracy's full CMake project (keeps Windows configure quiet)
-    FetchContent_GetProperties(tracy)
-    if(NOT tracy_POPULATED)
-      FetchContent_Populate(tracy)
-    endif()
-    set(_TRACY_SRC "${tracy_SOURCE_DIR}")
+  if(TARGET Tracy::TracyClient)
+    # Make a friendly local name that existing code can link to
+    add_library(tracy_client ALIAS Tracy::TracyClient)
   else()
-    # If not fetching, allow users to point at a local checkout of Tracy.
-    # By default, look for third_party/tracy in the source tree.
-    if(NOT DEFINED TRACY_ROOT OR TRACY_ROOT STREQUAL "")
-      set(TRACY_ROOT "${CMAKE_SOURCE_DIR}/third_party/tracy" CACHE PATH "Path to local Tracy checkout")
+    # Optionally fetch Tracy (default ON)
+    option(TRACY_FETCH "Fetch Tracy sources with FetchContent (modern API)" ON)
+
+    if(TRACY_FETCH)
+      include(FetchContent)
+      # Stable CI: do not update once fetched unless asked
+      set(FETCHCONTENT_UPDATES_DISCONNECTED ON)
+      FetchContent_Declare(tracy
+        GIT_REPOSITORY https://github.com/wolfpld/tracy.git
+        GIT_TAG        ${TRACY_TAG}
+        GIT_SHALLOW    TRUE
+      )
+      # Modern, non-deprecated way (avoids CMP0169 warnings)
+      FetchContent_MakeAvailable(tracy)
+
+      # If the project exports a namespaced target, use it; otherwise compile client-only
+      if(TARGET Tracy::TracyClient)
+        add_library(tracy_client ALIAS Tracy::TracyClient)
+      elseif(EXISTS "${tracy_SOURCE_DIR}/public/TracyClient.cpp")
+        add_library(tracy_client STATIC "${tracy_SOURCE_DIR}/public/TracyClient.cpp")
+        target_include_directories(tracy_client SYSTEM PUBLIC "${tracy_SOURCE_DIR}/public")
+      else()
+        message(FATAL_ERROR
+          "Fetched Tracy, but couldn't locate Tracy::TracyClient or public/TracyClient.cpp at: ${tracy_SOURCE_DIR}")
+      endif()
+    else()
+      # No fetch: expect a local checkout
+      if(NOT DEFINED TRACY_ROOT OR TRACY_ROOT STREQUAL "")
+        set(TRACY_ROOT "${CMAKE_SOURCE_DIR}/third_party/tracy" CACHE PATH "Path to local Tracy checkout")
+      endif()
+      if(EXISTS "${TRACY_ROOT}/public/TracyClient.cpp")
+        add_library(tracy_client STATIC "${TRACY_ROOT}/public/TracyClient.cpp")
+        target_include_directories(tracy_client SYSTEM PUBLIC "${TRACY_ROOT}/public")
+      else()
+        message(FATAL_ERROR
+          "ENABLE_TRACY=ON but Tracy sources not found at: ${TRACY_ROOT}. "
+          "Set TRACY_ROOT to a valid checkout or enable TRACY_FETCH=ON.")
+      endif()
     endif()
-    set(_TRACY_SRC "${TRACY_ROOT}")
   endif()
 
-  # Build the client we embed in the game; GUI/server not needed.
-  if(EXISTS "${_TRACY_SRC}/public/TracyClient.cpp")
-    add_library(tracy_client STATIC "${_TRACY_SRC}/public/TracyClient.cpp")
-    target_include_directories(tracy_client SYSTEM PUBLIC "${_TRACY_SRC}/public")
+  # Useful runtime policy toggles (apply to whichever tracy_client we built/aliased)
+  option(TRACY_ON_DEMAND      "Profiler connects on demand"         OFF)
+  option(TRACY_ONLY_LOCALHOST "Accept only localhost connections"   OFF)
+  option(TRACY_NO_BROADCAST   "Disable UDP discovery broadcast"     OFF)
 
-    # Useful runtime policy toggles
-    option(TRACY_ON_DEMAND      "Profiler connects on demand"          OFF)
-    option(TRACY_ONLY_LOCALHOST "Accept only localhost connections"     OFF)
-    option(TRACY_NO_BROADCAST   "Disable UDP discovery broadcast"       OFF)
-
+  if(TARGET tracy_client)
     target_compile_definitions(tracy_client PUBLIC
       TRACY_ENABLE
       $<$<BOOL:${TRACY_ON_DEMAND}>:TRACY_ON_DEMAND>
@@ -73,9 +103,5 @@ if(ENABLE_TRACY)
     if(WIN32)
       target_link_libraries(tracy_client PUBLIC ws2_32)
     endif()
-  else()
-    message(FATAL_ERROR
-      "ENABLE_TRACY=ON but Tracy sources were not found at: ${_TRACY_SRC}. "
-      "Either enable TRACY_FETCH=ON or set TRACY_ROOT to a local Tracy checkout.")
   endif()
 endif()
