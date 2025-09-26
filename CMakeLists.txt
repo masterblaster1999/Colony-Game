@@ -22,6 +22,11 @@ endif()
 
 project(ColonyGame LANGUAGES CXX)
 
+# --- Language standard (project-wide)
+set(CMAKE_CXX_STANDARD 20)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_CXX_EXTENSIONS OFF)
+
 # ------------- Options (Windows-first)
 option(ENABLE_IMGUI         "Enable Dear ImGui overlay"          ON)
 option(ENABLE_TRACY         "Enable Tracy profiler"              ON)
@@ -33,6 +38,19 @@ set_property(CACHE FRONTEND PROPERTY STRINGS win32 sdl)
 
 # Prefer static MSVC runtime with a single CMake knob (default OFF = dynamic CRT)
 option(MSVC_STATIC_RUNTIME "Link /MT or /MTd" OFF)
+
+# Optional Link-Time Optimization via CMake IPO (no manual /GL or /LTCG flags)
+# Use: -DCOLONY_LTO=ON
+option(COLONY_LTO "Enable Link-Time Optimization (IPO) for Release" OFF)
+if(COLONY_LTO)
+  include(CheckIPOSupported)
+  check_ipo_supported(RESULT _ipo_ok OUTPUT _ipo_msg)
+  if(_ipo_ok)
+    set(CMAKE_INTERPROCEDURAL_OPTIMIZATION_RELEASE ON)
+  else()
+    message(WARNING "IPO/LTO not supported here: ${_ipo_msg}")
+  endif()
+endif()
 
 # ---------------- Build info (Git hash / timestamp / version) ----------------
 # Capture short Git hash; fall back to "unknown" if not a git workspace.
@@ -86,10 +104,22 @@ if(MSVC)
   # Full PDBs for better diagnostics instead of FASTLINK
   add_link_options(/DEBUG:FULL)
 
-  # Release: enable whole program optimization (LTO)
-  add_compile_options("$<$<CONFIG:Release>:/GL>")
-  add_link_options("$<$<CONFIG:Release>:/LTCG>")
+  # NOTE: We do NOT add manual /GL or /LTCG flags here.
+  #       Release LTO is controlled by COLONY_LTO + IPO above.
 endif()
+
+# --- Sanitize any leaked generator expressions in global flags
+#     (Prevents build tools from treating '$<...>' text like filenames,
+#      e.g., '$<1:/O2>' causing C1083.)
+foreach(v
+  CMAKE_C_FLAGS CMAKE_C_FLAGS_DEBUG CMAKE_C_FLAGS_RELEASE CMAKE_C_FLAGS_RELWITHDEBINFO CMAKE_C_FLAGS_MINSIZEREL
+  CMAKE_CXX_FLAGS CMAKE_CXX_FLAGS_DEBUG CMAKE_CXX_FLAGS_RELEASE CMAKE_CXX_FLAGS_RELWITHDEBINFO CMAKE_CXX_FLAGS_MINSIZEREL)
+  if(DEFINED ${v} AND "${${v}}" MATCHES "\\$<")
+    string(REGEX REPLACE "\\$<[^>]*>" "" _SANITIZED "${${v}}")
+    message(WARNING "${v} contained generator expressions; sanitizing to: '${_SANITIZED}'")
+    set(${v} "${_SANITIZED}" CACHE STRING "Sanitized by top-level CMakeLists" FORCE)
+  endif()
+endforeach()
 
 # ------------- Dependencies (vcpkg-friendly)
 include(cmake/deps.cmake)           # SDL2 (if FRONTEND=sdl), imgui wiring, Tracy, etc.
