@@ -1,7 +1,7 @@
-cmake_minimum_required(VERSION 3.24)
+cmake_minimum_required(VERSION 3.26)
 
 # ---------------- Policies & developer UX ----------------
-# Honor CMAKE_MSVC_RUNTIME_LIBRARY for MSVC (runtime selection via CMake).
+# Honor CMAKE_MSVC_RUNTIME_LIBRARY for MSVC (runtime selection via CMake).  (CMP0091)
 if(POLICY CMP0091)
   cmake_policy(SET CMP0091 NEW)
 endif()
@@ -23,15 +23,15 @@ endif()
 project(ColonyGame LANGUAGES CXX)
 
 # ------------- Options (Windows-first)
-option(ENABLE_IMGUI         "Enable Dear ImGui overlay" ON)
-option(ENABLE_TRACY         "Enable Tracy profiler"     ON)
-option(TRACY_FETCH          "FetchContent Tracy"        ON)
-option(SHOW_CONSOLE         "Show Console for WIN32 exe" OFF)
-option(BUILD_BOOTSTRAPPER   "Build WinLauncher bootstrapper" ON)
+option(ENABLE_IMGUI         "Enable Dear ImGui overlay"          ON)
+option(ENABLE_TRACY         "Enable Tracy profiler"              ON)
+option(TRACY_FETCH          "FetchContent Tracy"                 ON)
+option(SHOW_CONSOLE         "Show Console for WIN32 exe"         OFF)
+option(BUILD_BOOTSTRAPPER   "Build WinLauncher bootstrapper"     ON)
 set(FRONTEND "win32" CACHE STRING "Frontend to build: win32 or sdl")
 set_property(CACHE FRONTEND PROPERTY STRINGS win32 sdl)
 
-# Prefer static MSVC runtime with a single CMake knob
+# Prefer static MSVC runtime with a single CMake knob (default OFF = dynamic CRT)
 option(MSVC_STATIC_RUNTIME "Link /MT or /MTd" OFF)
 
 # ---------------- Build info (Git hash / timestamp / version) ----------------
@@ -62,7 +62,34 @@ configure_file("${CMAKE_SOURCE_DIR}/platform/win/Version.rc.in"
                "${CMAKE_BINARY_DIR}/generated/Version.rc" @ONLY)
 
 # ------------- Toolchain & compiler flags
-include(cmake/msvc_flags.cmake)
+
+# If you keep extra settings in cmake/msvc_flags.cmake they'll still run.
+# The block below provides hardened defaults & one-switch CRT selection.
+# It runs BEFORE targets are created so the runtime setting propagates.
+include(cmake/msvc_flags.cmake OPTIONAL)
+
+if(MSVC)
+  # Choose CRT via single toggle; defaults to dynamic CRT (/MD, /MDd)
+  if(MSVC_STATIC_RUNTIME)
+    set(CMAKE_MSVC_RUNTIME_LIBRARY
+        "MultiThreaded$<$<CONFIG:Debug>:Debug>"
+        CACHE STRING "MSVC runtime" FORCE)   # /MT or /MTd
+  else()
+    set(CMAKE_MSVC_RUNTIME_LIBRARY
+        "MultiThreaded$<$<CONFIG:Debug>:Debug>DLL"
+        CACHE STRING "MSVC runtime" FORCE)   # /MD or /MDd
+  endif()
+
+  # Warnings & conformance; use multi-proc; correct __cplusplus; safe new
+  add_compile_options(/W4 /permissive- /Zc:__cplusplus /Zc:throwingNew /EHsc /MP)
+
+  # Full PDBs for better diagnostics instead of FASTLINK
+  add_link_options(/DEBUG:FULL)
+
+  # Release: enable whole program optimization (LTO)
+  add_compile_options("$<$<CONFIG:Release>:/GL>")
+  add_link_options("$<$<CONFIG:Release>:/LTCG>")
+endif()
 
 # ------------- Dependencies (vcpkg-friendly)
 include(cmake/deps.cmake)           # SDL2 (if FRONTEND=sdl), imgui wiring, Tracy, etc.
@@ -74,7 +101,35 @@ include(cmake/shaders.cmake)
 add_subdirectory(src)
 
 # ------------- Install/Stage
-include(cmake/install_stage.cmake)
+# Prefer your existing staging if present; otherwise add safe defaults here.
+include(cmake/install_stage.cmake OPTIONAL)
+
+# Allow disabling these defaults from cache or from your included script.
+set(CG_ADD_DEFAULT_INSTALL_RULES ON CACHE BOOL "Add default install/copy rules if not provided elsewhere")
+
+if(CG_ADD_DEFAULT_INSTALL_RULES)
+  # If your main executable target is named differently, adjust below.
+  if(TARGET ColonyGame)
+    # Copy resources next to the built EXE on each build for easy F5 runs
+    add_custom_command(TARGET ColonyGame POST_BUILD
+      COMMAND ${CMAKE_COMMAND} -E copy_directory
+              "${CMAKE_SOURCE_DIR}/res" "$<TARGET_FILE_DIR:ColonyGame>/res")
+    add_custom_command(TARGET ColonyGame POST_BUILD
+      COMMAND ${CMAKE_COMMAND} -E copy_directory
+              "${CMAKE_SOURCE_DIR}/shaders" "$<TARGET_FILE_DIR:ColonyGame>/shaders")
+
+    # Install layout for packaging/zip
+    install(TARGETS ColonyGame RUNTIME DESTINATION .)
+    if(EXISTS "${CMAKE_SOURCE_DIR}/res")
+      install(DIRECTORY res/     DESTINATION res)
+    endif()
+    if(EXISTS "${CMAKE_SOURCE_DIR}/shaders")
+      install(DIRECTORY shaders/ DESTINATION shaders)
+    endif()
+  else()
+    message(STATUS "Target 'ColonyGame' not found at top level; default copy/install rules skipped.")
+  endif()
+endif()
 
 # ------------- Testing (robust when tests/ isn't present)
 include(CTest)
@@ -96,4 +151,4 @@ set(CPACK_PACKAGE_FILE_NAME "ColonyGame-${CPACK_PACKAGE_VERSION}-win64")
 include(CPack)
 
 # ------------- Helpful tips (fixed bracket block)
-include(cmake/tips.cmake)
+include(cmake/tips.cmake OPTIONAL)
