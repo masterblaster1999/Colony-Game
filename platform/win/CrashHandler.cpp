@@ -1,60 +1,46 @@
-// CrashHandler.cpp
-#define WIN32_LEAN_AND_MEAN
-#include <windows.h>
-#include <dbghelp.h>
-#include <filesystem>
-#include <string>
-#include <chrono>
-#include <iomanip>
-#include <sstream>
-
-#pragma comment(lib, "Dbghelp.lib")
-
-namespace fs = std::filesystem;
-
-static fs::path g_dumpDir;
-
-static LONG WINAPI TopLevelFilter(EXCEPTION_POINTERS* pEx) {
-    // timestamp
-    auto now = std::chrono::system_clock::now();
-    std::time_t tt = std::chrono::system_clock::to_time_t(now);
-    std::tm tm{};
-    localtime_s(&tm, &tt);
-    std::wstringstream name;
-    name << L"crash-" << (1900 + tm.tm_year)
-         << L"-" << std::setw(2) << std::setfill(L'0') << (tm.tm_mon + 1)
-         << L"-" << std::setw(2) << tm.tm_mday
-         << L"_" << std::setw(2) << tm.tm_hour
-         << L"-" << std::setw(2) << tm.tm_min
-         << L"-" << std::setw(2) << tm.tm_sec
-         << L".dmp";
-
-    fs::path outPath = g_dumpDir / name.str();
-
-    HANDLE hFile = CreateFileW(outPath.c_str(), GENERIC_WRITE, FILE_SHARE_READ, nullptr,
-                               CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
-    if (hFile == INVALID_HANDLE_VALUE) return EXCEPTION_CONTINUE_SEARCH;
-
-    MINIDUMP_EXCEPTION_INFORMATION mei{};
-    mei.ThreadId = GetCurrentThreadId();
-    mei.ExceptionPointers = pEx;
-    mei.ClientPointers = FALSE;
-
-    // A balanced minidump type that keeps dumps small but useful:
-    MINIDUMP_TYPE type = (MINIDUMP_TYPE)(
-        MiniDumpWithThreadInfo |
-        MiniDumpWithIndirectlyReferencedMemory |
-        MiniDumpScanMemory
-    );
-
-    MiniDumpWriteDump(GetCurrentProcess(), GetCurrentProcessId(), hFile, type, &mei, nullptr, nullptr);
-    CloseHandle(hFile);
-    return EXCEPTION_EXECUTE_HANDLER;
-}
-
-namespace app::crash {
-    void install_minidump_handler(const fs::path& dumpDir) {
-        g_dumpDir = dumpDir;
-        SetUnhandledExceptionFilter(TopLevelFilter); // hooks unhandled exceptions
-    }
-}
+diff --git a/platform/win/CrashHandler.cpp b/platform/win/CrashHandler.cpp
+new file mode 100644
+--- /dev/null
++++ b/platform/win/CrashHandler.cpp
+@@ -0,0 +1,66 @@
++#include "CrashHandler.h"
++#include <windows.h>
++#include <dbghelp.h>
++#include <shlobj.h>   // SHGetKnownFolderPath
++#include <string>
++
++static std::wstring CG_GetCrashDir() {
++    PWSTR path = nullptr;
++    std::wstring out;
++    if (SUCCEEDED(SHGetKnownFolderPath(FOLDERID_LocalAppData, KF_FLAG_CREATE, nullptr, &path))) {
++        out.assign(path);
++        CoTaskMemFree(path);
++        out += L"\\ColonyGame\\Crashes";
++        CreateDirectoryW(out.c_str(), nullptr);
++    } else {
++        out = L".";
++    }
++    return out;
++}
++
++static LONG WINAPI CG_Unhandled(EXCEPTION_POINTERS* ep) {
++    SYSTEMTIME st; GetLocalTime(&st);
++    std::wstring dir = CG_GetCrashDir();
++    wchar_t file[MAX_PATH];
++    swprintf_s(file, L"%s\\ColonyGame_%04u%02u%02u_%02u%02u%02u.dmp",
++               dir.c_str(), st.wYear, st.wMonth, st.wDay, st.wHour, st.wMinute, st.wSecond);
++
++    HANDLE h = CreateFileW(file, GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
++    if (h != INVALID_HANDLE_VALUE) {
++        MINIDUMP_EXCEPTION_INFORMATION mei{};
++        mei.ThreadId = GetCurrentThreadId();
++        mei.ExceptionPointers = ep;
++        MiniDumpWriteDump(GetCurrentProcess(), GetCurrentProcessId(), h, MiniDumpNormal, &mei, nullptr, nullptr);
++        CloseHandle(h);
++    }
++    return EXCEPTION_EXECUTE_HANDLER;
++}
++
++void InstallCrashHandler(const wchar_t*) {
++    SetUnhandledExceptionFilter(CG_Unhandled);
++}
