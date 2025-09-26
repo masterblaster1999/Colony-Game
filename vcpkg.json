@@ -4,27 +4,20 @@
   "description": "Windows-only colony sim / engine dependencies via vcpkg (DX11/DX12 toolchain, UI, profiling).",
   "homepage": "https://github.com/masterblaster1999/Colony-Game",
   "license": "MIT",
-
   "builtin-baseline": "b1b19307e2d2ec1eefbdb7ea069de7d4bcd31f01",
-
   "dependencies": [
     "fmt",
     "spdlog",
     "entt",
-
     {
       "name": "imgui",
       "default-features": false,
       "features": [ "docking-experimental", "win32-binding", "dx11-binding" ]
     },
-
     "directx-headers",
     "directx-dxc",
-
     { "name": "directxtex", "features": [ "dx11" ] },
-
     { "name": "tracy", "default-features": false },
-
     "winpixevent",
     "taskflow"
   ]
