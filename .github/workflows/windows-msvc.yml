@@ -10,16 +10,15 @@ jobs:
     runs-on: windows-2022
 
     env:
-      # Ensure 64-bit triplet by default in manifest mode
       VCPKG_DEFAULT_TRIPLET: x64-windows
+      CMAKE_BUILD_PARALLEL_LEVEL: "0"   # let MSBuild handle PCH jobs
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
       - name: Setup CMake
-        # Use the supported tag; README documents @latest and version pinning
-        uses: lukka/get-cmake@latest  # https://github.com/lukka/get-cmake
+        uses: lukka/get-cmake@latest
         with:
           cmakeVersion: latest
 
@@ -33,27 +32,14 @@ jobs:
         shell: pwsh
         run: |
           Write-Host "VCPKG_INSTALLATION_ROOT=$env:VCPKG_INSTALLATION_ROOT"
-          Write-Host "VSWHERE:"
           & "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe" -latest -products * -requires Microsoft.Component.MSBuild -property installationPath
 
       - name: Cache vcpkg artifacts (manifest mode)
         uses: actions/cache@v4
         with:
-          path: |
-            build/vcpkg_installed
+          path: build/vcpkg_installed
           key: v1-${{ runner.os }}-vcpkg-${{ hashFiles('vcpkg.json') }}
-          restore-keys: |
-            v1-${{ runner.os }}-vcpkg-
-
-      - name: Cache CMake build
-        uses: actions/cache@v4
-        with:
-          path: |
-            build/CMakeCache.txt
-            build/CMakeFiles
-          key: v1-${{ runner.os }}-cmake-${{ hashFiles('CMakeLists.txt', 'cmake/**/*.cmake', 'src/**/*.cpp', 'src/**/*.h') }}
-          restore-keys: |
-            v1-${{ runner.os }}-cmake-
+          restore-keys: v1-${{ runner.os }}-vcpkg-
 
       - name: Configure (VS 2022, x64)
         shell: pwsh
