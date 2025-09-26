@@ -22,11 +22,17 @@ if(WIN32 AND NOT SHOW_CONSOLE)
 endif()
 
 # Link libs (keep existing + append Windows-specific as needed)
+# NOTE: Use keyword form everywhere (PRIVATE) to avoid mixing signatures (CMP0023).
+# Also: when a generator expression needs to expand to multiple libraries,
+#       use a *semicolon*-separated list and quote the genex argument.
 target_link_libraries(ColonyGame
-  d3d11 dxgi d3dcompiler
-  $<$<BOOL:${ENABLE_IMGUI}>:imgui>
-  $<$<BOOL:${ENABLE_TRACY}>:tracy_client>
-  $<$<STREQUAL:${FRONTEND},sdl>:SDL2::SDL2 SDL2::SDL2main>
+  PRIVATE
+    d3d11
+    dxgi
+    d3dcompiler
+    $<$<BOOL:${ENABLE_IMGUI}>:imgui>
+    $<$<BOOL:${ENABLE_TRACY}>:tracy_client>
+    "$<$<STREQUAL:${FRONTEND},sdl>:SDL2::SDL2;SDL2::SDL2main>"
 )
 
 # Add Windows platform resources and helpers (manifest, version info, crash handler, GPU preference)
