@@ -5,7 +5,7 @@
 #include <string>
 #include <cwchar>
 
-#include "platform/win/WinPaths.hpp" // winenv::resource_dir()
+#include "platform/win/WinPaths.h"  // matches the actual file in src/platform/win/
 
 namespace fs = std::filesystem;
 
