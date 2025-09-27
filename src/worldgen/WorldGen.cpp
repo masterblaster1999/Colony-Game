@@ -1,3 +1,4 @@
+// src/worldgen/WorldGen.cpp
 #include "WorldGen.hpp"
 #include "Hash.hpp"
 #include "RNG.hpp"
@@ -262,3 +263,4 @@ void ScatterStage::generate(StageContext& ctx) {
 }
 
 } // namespace colony::worldgen
+
