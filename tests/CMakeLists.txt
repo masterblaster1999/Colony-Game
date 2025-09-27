@@ -10,12 +10,10 @@ if(EXISTS "${CMAKE_SOURCE_DIR}/tests/smoke/smoke.cpp")
   list(APPEND TEST_SOURCES "${CMAKE_SOURCE_DIR}/tests/smoke/smoke.cpp")
 endif()
 
-# Pick up any other tests if you add them later
 file(GLOB_RECURSE _MORE_TESTS CONFIGURE_DEPENDS "${CMAKE_SOURCE_DIR}/tests/*.cpp")
 list(REMOVE_ITEM _MORE_TESTS "${CMAKE_SOURCE_DIR}/tests/smoke/smoke.cpp")
 list(APPEND TEST_SOURCES ${_MORE_TESTS})
 
-# Ensure we always have at least one file to avoid configure failure
 if(TEST_SOURCES STREQUAL "")
   set(_stub "${CMAKE_BINARY_DIR}/tests/auto_stub_smoke.cpp")
   file(WRITE "${_stub}" [=[
@@ -29,6 +27,11 @@ endif()
 
 add_executable(colony_smoke ${TEST_SOURCES})
 target_compile_features(colony_smoke PRIVATE cxx_std_20)
+
+# **Make doctest compile as UTF-8 too**
+if(MSVC)
+  target_compile_options(colony_smoke PRIVATE /utf-8)
+endif()
 
 if(doctest_FOUND)
   target_link_libraries(colony_smoke PRIVATE doctest::doctest)
