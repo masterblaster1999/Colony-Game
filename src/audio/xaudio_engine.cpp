@@ -1,4 +1,19 @@
 // xaudio_engine.cpp
+//
+// Patch notes:
+// - Ensure math constants are available by defining _USE_MATH_DEFINES before <cmath>
+//   (adds M_PI, etc.). Also include a fallback #ifndef M_PI guard.
+// - Ensure XAudio2 helper inline functions (XAudio2CutoffFrequencyToOnePoleCoefficient,
+//   XAudio2CutoffFrequencyToRadians, etc.) are declared by defining XAUDIO2_HELPER_FUNCTIONS
+//   before including <xaudio2.h>. This is required on modern Windows SDKs.
+
+#define _USE_MATH_DEFINES
+#ifndef XAUDIO2_HELPER_FUNCTIONS
+#define XAUDIO2_HELPER_FUNCTIONS 1
+#endif
+
+#include <xaudio2.h>  // must come after XAUDIO2_HELPER_FUNCTIONS
+
 #include "xaudio_engine.h"
 
 #include <fstream>
@@ -7,6 +22,10 @@
 #include <algorithm>
 #include <limits>
 #include <cmath>
+
+#ifndef M_PI
+#define M_PI 3.14159265358979323846
+#endif
 
 using Microsoft::WRL::ComPtr;
 
