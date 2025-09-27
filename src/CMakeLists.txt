@@ -11,6 +11,19 @@ if(EXISTS "${CMAKE_SOURCE_DIR}/WinLauncher.cpp")
   list(APPEND SRC_ALL "${CMAKE_SOURCE_DIR}/WinLauncher.cpp")
 endif()
 
+# --- BEGIN: Stabilize crash-dump TU for MSVC (C2712) ---
+# The TU 'platform/win/CrashDumpWin.cpp' uses __try/__except in functions
+# that currently trigger C2712 under /EHsc. We:
+#   - exclude it from this build
+#   - add a tiny stub that exports the same API so linking succeeds
+#   - leave a one-line switch to bring it back (compiled with /EHa) once refactored.
+list(FILTER SRC_ALL EXCLUDE REGEX ".*/platform/win/CrashDumpWin\\.cpp$")
+
+if(EXISTS "${CMAKE_SOURCE_DIR}/platform/win/CrashDumpWin.h")
+  list(APPEND SRC_ALL "${CMAKE_SOURCE_DIR}/platform/win/CrashDumpStub.cpp")
+endif()
+# --- END: Stabilize crash-dump TU for MSVC (C2712) ---
+
 add_executable(ColonyGame ${SRC_ALL})
 
 if(WIN32 AND NOT SHOW_CONSOLE)
@@ -23,7 +36,7 @@ target_include_directories(ColonyGame PRIVATE
   "${CMAKE_BINARY_DIR}/generated"
 )
 
-# **Belt-and-suspenders:** make sure this target itself is /utf-8 too.
+# Make sure this target is /utf-8 too (fmt 11.x requires it)
 if(MSVC)
   target_compile_options(ColonyGame PRIVATE /utf-8)
 endif()
@@ -82,3 +95,15 @@ add_custom_command(TARGET ColonyGame POST_BUILD
   COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/shaders" "$<TARGET_FILE_DIR:ColonyGame>/shaders"
   VERBATIM
 )
+
+# ------------------------------------------------------------------------------
+# OPTIONAL (when you’re ready to bring back the real CrashDumpWin.cpp):
+#   1) Remove the EXCLUDE + Stub block above
+#   2) Add this per-source flag to allow SEH+C++ in that TU:
+# if(MSVC AND EXISTS "${CMAKE_SOURCE_DIR}/platform/win/CrashDumpWin.cpp")
+#   set_source_files_properties("${CMAKE_SOURCE_DIR}/platform/win/CrashDumpWin.cpp"
+#     PROPERTIES COMPILE_OPTIONS "/EHa")
+# endif()
+#   3) In CrashDumpWin.cpp, make PresetFor take CrashDumpWin::DumpLevel and
+#      add static_casts where you assign between enum types.
+# ------------------------------------------------------------------------------
