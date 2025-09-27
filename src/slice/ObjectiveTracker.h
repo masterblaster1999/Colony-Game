@@ -706,7 +706,10 @@ public:
 
     bool deserialize(std::string_view data) {
         SLICE_OT_LOCK_GUARD;
+
+        // Patch: use a *real* istringstream instance for robust parsing
         std::istringstream iss(std::string(data));
+
         std::string tag;
         int vmaj=0, vmin=0;
         if (!(iss >> tag)) return false;
