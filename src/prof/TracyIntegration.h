@@ -1,3 +1,4 @@
+// src/prof/TracyIntegration.h
 #pragma once
 #include <d3d11.h>
 
@@ -13,10 +14,16 @@
   #include "Tracy.hpp"
   #include "TracyD3D11.hpp"
 #else
+  // ---- No-op fallbacks when Tracy is disabled -----------------
   // CPU zones
-  #define ZoneScoped           do {} while(0)
-  #define ZoneScopedN(x)       do {} while(0)
-  #define FrameMark            do {} while(0)
+  #define ZoneScoped                 do {} while(0)
+  #define ZoneScopedN(x)             do { (void)sizeof(x); } while(0)
+  #define FrameMark                  do {} while(0)
+
+  // Optional helpers often used in codebases that include Tracy
+  // (defined as no-ops here so you can use them freely).
+  #define TracyPlot(name, value)     do { (void)sizeof(name); (void)sizeof(value); } while(0)
+  #define TracyMessage(msg, len)     do { (void)sizeof(msg); (void)sizeof(len); } while(0)
 #endif
 
 namespace cg::prof
