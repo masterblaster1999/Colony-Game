@@ -253,7 +253,6 @@ void OrbitalRenderer::Render(ID3D11DeviceContext* ctx,
 
     // Rebuild orbit VBs if body count changed (simple heuristic)
     // (If you change elements at runtime, you may want a hash to detect changes)
-    D3D11_DEVICE_CONTEXT_DESC dd{};
     ComPtr<ID3D11Device> dev;
     ctx->GetDevice(&dev);
     if (m_cachedOrbitBodyCount != system.Bodies().size()) {
