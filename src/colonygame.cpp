@@ -347,8 +347,11 @@ static Config LoadConfig(const std::wstring& file, bool createIfMissing, const C
 // Docs: RegisterApplicationRestart, RegisterApplicationRecoveryCallback, ApplicationRecoveryInProgress/Finished.
 //======================================================================================
 static DWORD WINAPI Colony_RecoveryCallback(PVOID /*ctx*/) {
-    DWORD cancel = 0;
-    ApplicationRecoveryInProgress(&cancel); // ping WER; returns cancel!=0 if user cancelled recovery
+    // Correct type: PBOOL -> BOOL*
+    BOOL cancel = FALSE;
+    // Ping WER; if the user canceled recovery, bail out quickly.
+    // (Return value is HRESULT; pbCancelled conveys the cancel status.)
+    (void)ApplicationRecoveryInProgress(&cancel);
     if (cancel) {
         ApplicationRecoveryFinished(FALSE);
         return 0;
@@ -447,12 +450,12 @@ static float NormalizeThumb(SHORT v, SHORT deadzone)
 // DPI: Enable Per‑Monitor v2 + helpers (graceful fallback for older systems)
 //======================================================================================
 
-// Fallback definitions for older SDKs where these are not present at compile-time.
-#ifndef DPI_AWARENESS_CONTEXT
-DECLARE_HANDLE(DPI_AWARENESS_CONTEXT);
-#endif
+// Don’t redefine DPI_AWARENESS_CONTEXT. Call SetProcessDpiAwarenessContext dynamically with HANDLE.
+// If the SDK doesn’t provide the PMv2 constant, define a local one we pass to the function.
 #ifndef DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2
-#define DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2 ((DPI_AWARENESS_CONTEXT)-4)
+    #define COLONY_DPI_CTX_PMV2 ((HANDLE)-4)
+#else
+    #define COLONY_DPI_CTX_PMV2 DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2
 #endif
 
 static void EnablePerMonitorDpiV2()
@@ -460,10 +463,10 @@ static void EnablePerMonitorDpiV2()
     // Prefer Per‑Monitor v2 (Windows 10+) via SetProcessDpiAwarenessContext; fall back to SetProcessDPIAware.
     HMODULE user32 = GetModuleHandleW(L"user32.dll");
     if (user32) {
-        using SetProcCtxFn = BOOL (WINAPI*)(DPI_AWARENESS_CONTEXT);
+        using SetProcCtxFn = BOOL (WINAPI*)(HANDLE); // avoid referencing DPI_AWARENESS_CONTEXT type
         auto pSet = reinterpret_cast<SetProcCtxFn>(GetProcAddress(user32, "SetProcessDpiAwarenessContext"));
         if (pSet) {
-            if (pSet(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2)) {
+            if (pSet(COLONY_DPI_CTX_PMV2)) {
                 return; // success
             }
         }
