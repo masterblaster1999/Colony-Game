@@ -1,0 +1,35 @@
+name: Lint • clang-tidy & clang-format
+
+on:
+  pull_request:
+    paths:
+      - "src/**"
+      - "include/**"
+      - "tests/**"
+      - ".clang-tidy"
+      - ".clang-format"
+      - ".github/workflows/lint.yml"
+
+jobs:
+  lint:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: C/C++ linter
+        uses: cpp-linter/cpp-linter-action@v2
+        with:
+          # Use project files if present
+          style: file
+          tidy-checks: >
+            clang-analyzer-*,
+            bugprone-*,
+            performance-*,
+            portability-*,
+            readability-*,
+            modernize-*,
+            -modernize-use-trailing-return-type,
+            -readability-identifier-naming
+          files-changed-only: false
+          version: "16"
+        # Prefer annotations over red X for newcomers
+        continue-on-error: true
