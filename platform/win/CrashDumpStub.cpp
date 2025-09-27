@@ -12,26 +12,26 @@
 
 namespace CrashDumpWin {
 
-bool Initialize() noexcept {
+bool Initialize() {
   // No-op: pretend the crash dumper is installed.
   return true;
 }
 
-void Shutdown() noexcept {
+void Shutdown() {
   // No-op
 }
 
-bool SetDumpDirectory(const wchar_t* /*dir*/) noexcept {
+bool SetDumpDirectory(const wchar_t* /*dir*/) {
   // No-op: accept any directory
   return true;
 }
 
-bool WriteProcessDump(DumpLevel /*level*/) noexcept {
+bool WriteProcessDump(DumpLevel /*level*/) {
   // No-op: say we succeeded so callers can continue.
   return true;
 }
 
-bool WriteProcessDumpTo(const wchar_t* /*path*/, DumpLevel /*level*/) noexcept {
+bool WriteProcessDumpTo(const wchar_t* /*path*/, DumpLevel /*level*/) {
   // No-op variant
   return true;
 }
