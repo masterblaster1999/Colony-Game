@@ -59,9 +59,11 @@
 #include <unordered_map>
 #include <utility>
 #include <vector>
+#include <random>                 // PATCH: rng helpers / fallbacks
 
 #include "Fields.hpp"
-#include "RNG.hpp" // must provide Pcg32 (Windows build parity)
+#include "RNG.hpp"                // must provide Pcg32 (Windows build parity)
+#include "Math.hpp"               // PATCH: central inline math (lerp/smoothstep)
 
 namespace colony::worldgen {
 
@@ -91,10 +93,12 @@ inline float dot(const Vec2& a, const Vec2& b) noexcept { return a.x*b.x + a.y*b
 inline float length(const Vec2& v) noexcept { return std::sqrt(dot(v,v)); }
 inline Vec2  normalize(const Vec2& v) noexcept { float L = length(v); return L>0.f?Vec2{v.x/L,v.y/L}:Vec2{0,0}; }
 inline float clamp01(float v) noexcept { return v < 0.f ? 0.f : (v > 1.f ? 1.f : v); }
-inline float lerp(float a, float b, float t) noexcept { return a + (b - a) * t; }
-inline float smoothstep(float a, float b, float x) noexcept {
-    float t = clamp01((x - a) / (b - a)); return t*t*(3.f - 2.f*t);
-}
+
+// NOTE: lerp/smoothstep come from Math.hpp to avoid ODR conflicts.
+// inline constexpr float lerp(float a, float b, float t) noexcept { return a + (b - a) * t; } // (moved)
+// inline float smoothstep(float a, float b, float x) noexcept {                                   // (moved)
+//     float t = clamp01((x - a) / (b - a)); return t*t*(3.f - 2.f*t);
+// }
 inline float smootherstep(float a, float b, float x) noexcept {
     float t = clamp01((x - a) / (b - a)); return t*t*t*(t*(t*6.f - 15.f) + 10.f);
 }
@@ -423,7 +427,7 @@ struct WorleyF1 { float f1=0.f; std::uint32_t id=0; };
 inline WorleyF1 worleyF1(float fx, float fy, std::uint32_t seed) noexcept {
     int xi = (int)std::floor(fx), yi = (int)std::floor(fy);
     float best = 1e30f; std::uint32_t bestId = 0;
-    for (int dy=-1; dy<=1; ++dy) for (int dx=-1; dx<=1; ++dx) {
+    for (int dy=-1; dy<=1; ++dy) for (int dx=-1; dx<=1) {
         int cx = xi + dx, cy = yi + dy;
         // feature point within the cell
         float jx = hash01(cx,cy,seed ^ 0xA53u);
