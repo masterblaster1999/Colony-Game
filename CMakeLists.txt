@@ -59,7 +59,6 @@ if(CG_GIT_HASH STREQUAL "")
 endif()
 string(TIMESTAMP CG_BUILD_TIMESTAMP "%Y-%m-%d %H:%M:%S")
 
-# Version stamp (configure only if templates exist)
 if(EXISTS "${CMAKE_SOURCE_DIR}/src/build_info.h.in")
   configure_file("${CMAKE_SOURCE_DIR}/src/build_info.h.in"
                  "${CMAKE_BINARY_DIR}/generated/build_info.h" @ONLY)
@@ -77,12 +76,12 @@ if(MSVC)
     set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>DLL" CACHE STRING "" FORCE) # /MD or /MDd
   endif()
 
-  # Clean, strict defaults. NOTE: no /MP here to avoid the PCH warning.
-  add_compile_options(/W4 /permissive- /Zc:__cplusplus /Zc:throwingNew /EHsc)
+  # **Add /utf-8** here project-wide, plus strict defaults.  No /MP (avoid PCH warning).
+  add_compile_options(/utf-8 /W4 /permissive- /Zc:__cplusplus /Zc:throwingNew /EHsc)
   add_link_options(/DEBUG:FULL)
 endif()
 
-# ---- GLOBAL FLAG SANITIZER (kills '$<...>' and stray '/O2' or '/MP') ----
+# ---- GLOBAL FLAG SANITIZER (keeps the $<1:/O2 bug away) ----
 function(_cg_sanitize VAR)
   if(DEFINED ${VAR})
     set(_v "${${VAR}}")
