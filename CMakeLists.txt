@@ -77,7 +77,7 @@ if(MSVC)
   endif()
 
   # UTF-8, high warnings, modern conformance.  No /MP here (avoid PCH oddities).
-  add_compile_options(/utf-8 /W4 /permissive- /Zc:__cplusplus /Zc:throwingNew /EHsc)
+  add_compile_options(/utf-8 /W4 /permissive- /Zc:__cplusplus /Zc:throwingNew /Zc:preprocessor /EHsc)
   add_link_options(/DEBUG:FULL)
 endif()
 
@@ -134,7 +134,8 @@ set(COLONY_THIRDPARTY_INCLUDE_DIRS "" CACHE INTERNAL "")
 # --- SDL2 (only if FRONTEND is sdl) ---
 if(FRONTEND STREQUAL "sdl")
   find_package(SDL2 CONFIG REQUIRED)  # vcpkg: provides SDL2::SDL2 and optionally SDL2::SDL2main
-  add_compile_definitions(COLONY_WITH_SDL2=1 SDL_MAIN_HANDLED=1)
+  # Define both macros for compatibility with existing source guards.
+  add_compile_definitions(COLONY_WITH_SDL2=1 COLONY_WITH_SDL=1 SDL_MAIN_HANDLED=1)
   list(APPEND COLONY_THIRDPARTY_LIBS
     $<TARGET_NAME_IF_EXISTS:SDL2::SDL2main>
     $<IF:$<TARGET_EXISTS:SDL2::SDL2>,SDL2::SDL2,SDL2::SDL2-static>
@@ -192,12 +193,15 @@ if(ENABLE_TRACY)
     endif()
 
     # Build the client library from the canonical source file.
-    add_library(tracy_client STATIC "${tracy_SOURCE_DIR}/public/TracyClient.cpp")
-    target_include_directories(tracy_client PUBLIC
-      "${tracy_SOURCE_DIR}/public"         # for <tracy/Tracy.hpp>
-      "${tracy_SOURCE_DIR}/public/tracy"   # for <Tracy.hpp>
-    )
-    target_compile_definitions(tracy_client PUBLIC TRACY_ENABLE=1)
+    if(NOT TARGET tracy_client)
+      add_library(tracy_client STATIC "${tracy_SOURCE_DIR}/public/TracyClient.cpp")
+      target_include_directories(tracy_client PUBLIC
+        "${tracy_SOURCE_DIR}/public"         # for <tracy/Tracy.hpp>
+        "${tracy_SOURCE_DIR}/public/tracy"   # for <Tracy.hpp>
+      )
+      target_compile_definitions(tracy_client PUBLIC TRACY_ENABLE=1)
+    endif()
+
     list(APPEND COLONY_THIRDPARTY_LIBS tracy_client)
 
     # Also expose include dirs globally so any TU can #include <Tracy.hpp>.
