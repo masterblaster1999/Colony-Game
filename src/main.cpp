@@ -9,6 +9,7 @@
 #include <iostream>
 #include <algorithm>
 #include <string>
+#include <cmath>
 
 #include "D3DUtils.h"
 #include "PoissonDisk.h"
@@ -74,13 +75,21 @@ int main()
         // -----------------------------
         ComPtr<ID3D11Device> device;
         ComPtr<ID3D11DeviceContext> ctx;
+
+        // FIX: Avoid preprocessor directives inside a function-like macro argument (MSVC C5101/C2059).
+        // Build the Flags value first, then call inside HR_CHECK.
+        UINT deviceFlags = 0;
+    #ifdef _DEBUG
+        deviceFlags |= D3D11_CREATE_DEVICE_DEBUG;
+    #endif
+
         HR_CHECK(D3D11CreateDevice(
-            nullptr, D3D_DRIVER_TYPE_HARDWARE, 0,
-#ifdef _DEBUG
-            D3D11_CREATE_DEVICE_DEBUG |
-#endif
-            0,
-            nullptr, 0, D3D11_SDK_VERSION,
+            nullptr,                     // Adapter
+            D3D_DRIVER_TYPE_HARDWARE,    // DriverType
+            0,                           // Software
+            deviceFlags,                 // Flags (precomputed)
+            nullptr, 0,                  // Feature levels (nullptr = default)
+            D3D11_SDK_VERSION,
             device.GetAddressOf(),
             nullptr,
             ctx.GetAddressOf()));
@@ -130,8 +139,8 @@ int main()
         // Compile compute shaders
         // -----------------------------
         const std::wstring shaderDir = L"shaders\\";
-        auto csOutflowBlob = d3d::CompileShaderFromFile(shaderDir + L"ThermalOutflowCS.hlsl", "CSMain", "cs_5_0");
-        auto csApplyBlob   = d3d::CompileShaderFromFile(shaderDir + L"ThermalApplyCS.hlsl",   "CSMain", "cs_5_0");
+        auto csOutflowBlob = d3d::CompileShaderFromFile(shaderDir + L"ThermalOutflowCS.hlsl", L"CSMain", "cs_5_0");
+        auto csApplyBlob   = d3d::CompileShaderFromFile(shaderDir + L"ThermalApplyCS.hlsl",   L"CSMain", "cs_5_0");
 
         ComPtr<ID3D11ComputeShader> csOutflow, csApply;
         HR_CHECK(device->CreateComputeShader(csOutflowBlob->GetBufferPointer(), csOutflowBlob->GetBufferSize(), nullptr, csOutflow.GetAddressOf()));
