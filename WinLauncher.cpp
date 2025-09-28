@@ -11,15 +11,18 @@
 //  7) NEW: Removes current directory from DLL search path; restricts default DLL search dirs.
 //  8) NEW: (Optional) Embedded fixed‑timestep game loop wiring. Define COLONY_EMBED_GAME_LOOP
 //          to build a single‑binary game that runs in‑process with a stable 60 Hz simulation.
+//  9) NEW: Fail‑fast on heap corruption via HeapSetInformation(…, HeapEnableTerminationOnCorruption).
+// 10) NEW: Debug console attaches to parent console when present; otherwise allocates a console.
 //
 // References:
 //  - CreateProcessW: https://learn.microsoft.com/windows/win32/api/processthreadsapi/nf-processthreadsapi-createprocessw
-//  - GetCommandLineW: https://learn.microsoft.com/windows/win32/api/processenv/nf-processenv-getcommandlinew
-//  - CommandLineToArgvW: https://learn.microsoft.com/windows/win32/api/shellapi/nf-shellapi-commandlinetoargvw
+//  - GetCommandLineW / CommandLineToArgvW: https://learn.microsoft.com/windows/win32/api/processenv/nf-processenv-getcommandlinew
+//                                           https://learn.microsoft.com/windows/win32/api/shellapi/nf-shellapi-commandlinetoargvw
 //  - SetDefaultDllDirectories / SetDllDirectoryW: https://learn.microsoft.com/windows/win32/api/libloaderapi/nf-libloaderapi-setdefaultdlldirectories
-//    and https://learn.microsoft.com/windows/win32/api/winbase/nf-winbase-setdlldirectoryw
-//  - DPI awareness APIs: https://learn.microsoft.com/windows/win32/hidpi/setting-the-default-dpi-awareness-for-a-process
-//  - Known folders (used inside PathUtilWin.cpp): https://learn.microsoft.com/windows/win32/api/shlobj_core/nf-shlobj_core-shgetknownfolderpath
+//  - DPI awareness APIs: https://learn.microsoft.com/windows/win32/api/winuser/nf-winuser-setprocessdpiawarenesscontext
+//                        https://learn.microsoft.com/windows/win32/hidpi/setting-the-default-dpi-awareness-for-a-process
+//  - HeapSetInformation (HeapEnableTerminationOnCorruption): https://learn.microsoft.com/windows/win32/api/heapapi/nf-heapapi-heapsetinformation
+//  - AttachConsole(ATTACH_PARENT_PROCESS): https://learn.microsoft.com/windows/console/attachconsole
 
 #ifndef UNICODE
 #define UNICODE
@@ -77,6 +80,19 @@ static std::wstring LastErrorMessage(DWORD err = GetLastError()) {
     std::wstring out = (len && msg) ? msg : L"";
     if (msg) LocalFree(msg);
     return out;
+}
+
+// NEW: Fail‑fast on heap corruption for improved crash diagnosability.
+static void EnableHeapTerminationOnCorruption() {
+    HMODULE hKernel = GetModuleHandleW(L"kernel32.dll");
+    if (hKernel) {
+        using HeapSetInformation_t = BOOL (WINAPI *)(HANDLE, HEAP_INFORMATION_CLASS, PVOID, SIZE_T);
+        auto pHeapSetInformation =
+            reinterpret_cast<HeapSetInformation_t>(GetProcAddress(hKernel, "HeapSetInformation"));
+        if (pHeapSetInformation) {
+            pHeapSetInformation(GetProcessHeap(), HeapEnableTerminationOnCorruption, nullptr, 0);
+        }
+    }
 }
 
 // Restrict DLL search order to safe defaults and remove CWD from search path.
@@ -322,8 +338,25 @@ static int RunEmbeddedGameLoop(std::wofstream& logFile) {
 }
 #endif // COLONY_EMBED_GAME_LOOP
 
+#ifdef _DEBUG
+// NEW: Prefer attaching to an existing parent console (if launched from a terminal).
+static void AttachParentConsoleOrAlloc() {
+    if (!AttachConsole(ATTACH_PARENT_PROCESS)) {
+        AllocConsole();
+    }
+    FILE* f = nullptr;
+    freopen_s(&f, "CONOUT$", "w", stdout);
+    freopen_s(&f, "CONOUT$", "w", stderr);
+    freopen_s(&f, "CONIN$",  "r", stdin);
+    SetConsoleOutputCP(CP_UTF8);
+}
+#endif
+
 // ---------- Entry point ----------
 int APIENTRY wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
+    // NEW: Enable fail-fast behavior on heap corruption as early as possible.
+    EnableHeapTerminationOnCorruption();
+
     // Must run before any library loads to constrain DLL search order.
     EnableSafeDllSearch();
 
@@ -336,13 +369,9 @@ int APIENTRY wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
     // NEW: Make message boxes crisp under high DPI scaling.
     EnableHighDpiAwareness();
 
-#if defined(_DEBUG)
-    // Optional: attach a console for quick stderr/stdout in Debug
-    AllocConsole();
-    FILE* f = nullptr;
-    freopen_s(&f, "CONOUT$", "w", stdout);
-    freopen_s(&f, "CONOUT$", "w", stderr);
-    SetConsoleOutputCP(CP_UTF8);
+#ifdef _DEBUG
+    // NEW: Attach to parent console when present; otherwise allocate a console.
+    AttachParentConsoleOrAlloc();
 #endif
 
     SingleInstanceGuard guard;
