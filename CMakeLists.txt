@@ -128,8 +128,8 @@ endforeach()
 # We do discovery in the top-level so subdirs can rely on imported targets.
 # We'll link everything to the main app target after add_subdirectory(src).
 
-set(COLONY_THIRDPARTY_LIBS        "" CACHE INTERNAL "")
-set(COLONY_THIRDPARTY_INCLUDE_DIRS"" CACHE INTERNAL "")
+set(COLONY_THIRDPARTY_LIBS         "" CACHE INTERNAL "")
+set(COLONY_THIRDPARTY_INCLUDE_DIRS "" CACHE INTERNAL "")
 
 # --- SDL2 (only if FRONTEND is sdl) ---
 if(FRONTEND STREQUAL "sdl")
@@ -143,33 +143,68 @@ endif()
 
 # --- ImGui (optional overlay) ---
 if(ENABLE_IMGUI)
-  # vcpkg installs imgui::imgui (+ optional backends via features: win32-binding, dx11-binding, etc.)
+  # 1) Prefer a proper package (vcpkg) providing imgui::imgui.
   find_package(imgui CONFIG QUIET)
   if(TARGET imgui::imgui)
     add_compile_definitions(COLONY_WITH_IMGUI=1)
     list(APPEND COLONY_THIRDPARTY_LIBS imgui::imgui)
+
+  # 2) Fallback: build from vendored submodule with Win32 + D3D11 backends.
+  elseif(EXISTS "${CMAKE_SOURCE_DIR}/externals/imgui/imgui.cpp")
+    add_library(imgui STATIC
+      externals/imgui/imgui.cpp
+      externals/imgui/imgui_draw.cpp
+      externals/imgui/imgui_tables.cpp
+      externals/imgui/imgui_widgets.cpp
+      # backends for Win32 + D3D11
+      externals/imgui/backends/imgui_impl_win32.cpp
+      externals/imgui/backends/imgui_impl_dx11.cpp
+    )
+    target_include_directories(imgui PUBLIC externals/imgui)
+    add_compile_definitions(COLONY_WITH_IMGUI=1)
+    list(APPEND COLONY_THIRDPARTY_LIBS imgui)
+  else()
+    message(WARNING "ENABLE_IMGUI=ON but neither imgui::imgui (vcpkg) nor externals/imgui found. UI overlay will be disabled.")
   endif()
 endif()
 
 # --- Tracy (headers for profiler UI + optional client lib) ---
 if(ENABLE_TRACY)
   add_compile_definitions(TRACY_ENABLE=1)
-  # Prefer existing package/port first
+
+  # 1) Prefer vcpkg-provided imported target (Tracy::TracyClient).
   find_package(Tracy CONFIG QUIET)
   if(TARGET Tracy::TracyClient)
     list(APPEND COLONY_THIRDPARTY_LIBS Tracy::TracyClient)
+
+  # 2) Fallback: Fetch Tracy sources and build a local client lib.
   elseif(TRACY_FETCH)
     include(FetchContent)
-    # Fetch Tracy headers to satisfy #include <Tracy.hpp> even if you build TracyClient.cpp yourself.
-    # (This avoids "Tracy.hpp: No such file or directory".)
     FetchContent_Declare(tracy
       GIT_REPOSITORY https://github.com/wolfpld/tracy.git
-      GIT_TAG v0.11  # pick a known release; adjust as needed
+      GIT_TAG v0.11
       GIT_SHALLOW TRUE
     )
-    FetchContent_MakeAvailable(tracy)
-    # Tracy.hpp is under ${tracy_SOURCE_DIR}/public/tracy
-    list(APPEND COLONY_THIRDPARTY_INCLUDE_DIRS "${tracy_SOURCE_DIR}/public/tracy")
+    # Only populate (don't add_subdirectory) to avoid pulling in extras we don't need.
+    FetchContent_GetProperties(tracy)
+    if(NOT tracy_POPULATED)
+      FetchContent_Populate(tracy)
+    endif()
+
+    # Build the client library from the canonical source file.
+    add_library(tracy_client STATIC "${tracy_SOURCE_DIR}/public/TracyClient.cpp")
+    target_include_directories(tracy_client PUBLIC
+      "${tracy_SOURCE_DIR}/public"         # for <tracy/Tracy.hpp>
+      "${tracy_SOURCE_DIR}/public/tracy"   # for <Tracy.hpp>
+    )
+    target_compile_definitions(tracy_client PUBLIC TRACY_ENABLE=1)
+    list(APPEND COLONY_THIRDPARTY_LIBS tracy_client)
+
+    # Also expose include dirs globally so any TU can #include <Tracy.hpp>.
+    list(APPEND COLONY_THIRDPARTY_INCLUDE_DIRS
+      "${tracy_SOURCE_DIR}/public" "${tracy_SOURCE_DIR}/public/tracy")
+  else()
+    message(WARNING "ENABLE_TRACY=ON but neither Tracy::TracyClient nor TRACY_FETCH available. Profiling will be disabled at link time.")
   endif()
 endif()
 
@@ -214,4 +249,3 @@ include(CTest)
 if(BUILD_TESTING)
   add_subdirectory(tests)
 endif()
-
