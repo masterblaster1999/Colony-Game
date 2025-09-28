@@ -76,9 +76,25 @@ if(MSVC)
     set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>DLL" CACHE STRING "" FORCE) # /MD or /MDd
   endif()
 
-  # **Add /utf-8** here project-wide, plus strict defaults.  No /MP (avoid PCH warning).
+  # UTF-8, high warnings, modern conformance.  No /MP here (avoid PCH oddities).
   add_compile_options(/utf-8 /W4 /permissive- /Zc:__cplusplus /Zc:throwingNew /EHsc)
   add_link_options(/DEBUG:FULL)
+endif()
+
+# ---- Global compile definitions (Windows-first) ----
+#   - XAUDIO2_HELPER_FUNCTIONS + _USE_MATH_DEFINES make XAudio2 helpers & M_PI available project-wide.
+#   - NOMINMAX & WIN32_LEAN_AND_MEAN reduce Windows header noise.
+#   - _CRT_SECURE_NO_WARNINGS quiets MSVC getenv/_wgetenv warnings (code still may use _dupenv_s at your discretion).
+if(WIN32)
+  add_compile_definitions(
+    _USE_MATH_DEFINES
+    XAUDIO2_HELPER_FUNCTIONS=1
+    NOMINMAX
+    WIN32_LEAN_AND_MEAN
+    _CRT_SECURE_NO_WARNINGS
+    UNICODE
+    _UNICODE
+  )
 endif()
 
 # ---- GLOBAL FLAG SANITIZER (keeps the $<1:/O2 bug away) ----
@@ -105,17 +121,97 @@ foreach(v
   _cg_sanitize(${v})
 endforeach()
 
-# ---- Third-party deps (vcpkg-friendly) ----
-include(cmake/deps.cmake)
+# ====================================================================================
+# Third-party deps (vcpkg-friendly): SDL2 (optional), ImGui (optional), Tracy headers
+# ====================================================================================
+
+# We do discovery in the top-level so subdirs can rely on imported targets.
+# We'll link everything to the main app target after add_subdirectory(src).
+
+set(COLONY_THIRDPARTY_LIBS        "" CACHE INTERNAL "")
+set(COLONY_THIRDPARTY_INCLUDE_DIRS"" CACHE INTERNAL "")
+
+# --- SDL2 (only if FRONTEND is sdl) ---
+if(FRONTEND STREQUAL "sdl")
+  find_package(SDL2 CONFIG REQUIRED)  # vcpkg: provides SDL2::SDL2 and optionally SDL2::SDL2main
+  add_compile_definitions(COLONY_WITH_SDL2=1 SDL_MAIN_HANDLED=1)
+  list(APPEND COLONY_THIRDPARTY_LIBS
+    $<TARGET_NAME_IF_EXISTS:SDL2::SDL2main>
+    $<IF:$<TARGET_EXISTS:SDL2::SDL2>,SDL2::SDL2,SDL2::SDL2-static>
+  )
+endif()
+
+# --- ImGui (optional overlay) ---
+if(ENABLE_IMGUI)
+  # vcpkg installs imgui::imgui (+ optional backends via features: win32-binding, dx11-binding, etc.)
+  find_package(imgui CONFIG QUIET)
+  if(TARGET imgui::imgui)
+    add_compile_definitions(COLONY_WITH_IMGUI=1)
+    list(APPEND COLONY_THIRDPARTY_LIBS imgui::imgui)
+  endif()
+endif()
+
+# --- Tracy (headers for profiler UI + optional client lib) ---
+if(ENABLE_TRACY)
+  add_compile_definitions(TRACY_ENABLE=1)
+  # Prefer existing package/port first
+  find_package(Tracy CONFIG QUIET)
+  if(TARGET Tracy::TracyClient)
+    list(APPEND COLONY_THIRDPARTY_LIBS Tracy::TracyClient)
+  elseif(TRACY_FETCH)
+    include(FetchContent)
+    # Fetch Tracy headers to satisfy #include <Tracy.hpp> even if you build TracyClient.cpp yourself.
+    # (This avoids "Tracy.hpp: No such file or directory".)
+    FetchContent_Declare(tracy
+      GIT_REPOSITORY https://github.com/wolfpld/tracy.git
+      GIT_TAG v0.11  # pick a known release; adjust as needed
+      GIT_SHALLOW TRUE
+    )
+    FetchContent_MakeAvailable(tracy)
+    # Tracy.hpp is under ${tracy_SOURCE_DIR}/public/tracy
+    list(APPEND COLONY_THIRDPARTY_INCLUDE_DIRS "${tracy_SOURCE_DIR}/public/tracy")
+  endif()
+endif()
+
+# --- Propagate include dirs globally if we accumulated any ---
+if(COLONY_THIRDPARTY_INCLUDE_DIRS)
+  include_directories(${COLONY_THIRDPARTY_INCLUDE_DIRS})
+endif()
 
 # ---- HLSL shaders helper (DXC/FXC) ----
 include(cmake/shaders.cmake OPTIONAL)
 
-# ---- Sources / targets ----
+# ===========================
+#   Sources / targets
+# ===========================
+# The 'src' CMakeLists should create the main executable target named 'ColonyGame'
+# (as seen in your build logs). We link discovered third-party libs to it below.
 add_subdirectory(src)
 
-# ---- Tests ----
+# Link third-party libs to the main app if the target exists
+if(TARGET ColonyGame)
+  if(COLONY_THIRDPARTY_LIBS)
+    target_link_libraries(ColonyGame PRIVATE ${COLONY_THIRDPARTY_LIBS})
+  endif()
+
+  # Frontend toggles
+  if(FRONTEND STREQUAL "win32")
+    target_compile_definitions(ColonyGame PRIVATE CG_FRONTEND_WIN32=1)
+  elseif(FRONTEND STREQUAL "sdl")
+    target_compile_definitions(ColonyGame PRIVATE CG_FRONTEND_SDL=1)
+  endif()
+
+  # Prefer GUI subsystem on Windows unless SHOW_CONSOLE=ON
+  if(WIN32 AND NOT SHOW_CONSOLE)
+    set_target_properties(ColonyGame PROPERTIES WIN32_EXECUTABLE ON)
+  endif()
+endif()
+
+# ===========================
+#        Tests
+# ===========================
 include(CTest)
 if(BUILD_TESTING)
   add_subdirectory(tests)
 endif()
+
