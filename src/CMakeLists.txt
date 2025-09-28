@@ -26,8 +26,13 @@ if(EXISTS "${CMAKE_SOURCE_DIR}/platform/win/CrashDumpWin.h")
 endif()
 # --- END: Stabilize crash-dump TU for MSVC (C2712) ---
 
-# --- Exclude SDL sources unless the SDL frontend is selected ---
-if(NOT FRONTEND STREQUAL "sdl")
+# --- Frontend gating: build either the native Win32 frontend (default) or the SDL one ---
+if(FRONTEND STREQUAL "sdl")
+  # For SDL builds, drop Win32 entry points that would conflict with SDL2main
+  list(FILTER SRC_ALL EXCLUDE REGEX ".*/platform/win32_main\\.cpp$")
+  list(FILTER SRC_ALL EXCLUDE REGEX ".*/launcher/LauncherMain\\.cpp$")
+else()
+  # Default: Win32 frontend – exclude any SDL-only sources
   list(FILTER SRC_ALL EXCLUDE REGEX ".*/Launcher_SDL\\.cpp$")
   list(FILTER SRC_ALL EXCLUDE REGEX ".*/SDL.*\\.(c|cpp)$")
 endif()
@@ -55,10 +60,10 @@ if(EXISTS "${CMAKE_SOURCE_DIR}/src/pch.h")
   target_precompile_headers(ColonyGame PRIVATE "${CMAKE_SOURCE_DIR}/src/pch.h")
 endif()
 
-# Compile-time defines for optional systems + deterministic SDL switch
+# Compile-time defines for optional systems + deterministic frontend switch
+# Define COLONY_USE_SDL only when building the SDL frontend.
 target_compile_definitions(ColonyGame PRIVATE
-  $<$<STREQUAL:${FRONTEND},sdl>:BUILD_WITH_SDL2=1>
-  $<$<NOT:$<STREQUAL:${FRONTEND},sdl>>:BUILD_WITH_SDL2=0>
+  $<$<STREQUAL:${FRONTEND},sdl>:COLONY_USE_SDL=1>
   $<$<BOOL:${ENABLE_IMGUI}>:CG_ENABLE_IMGUI>
   $<$<BOOL:${ENABLE_TRACY}>:TRACY_ENABLE>
 )
