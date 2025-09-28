@@ -2,15 +2,15 @@
   "version": 6,
   "configurePresets": [
     {
-      "name": "vs2022-win64",
-      "generator": "Ninja",
-      "binaryDir": "${sourceDir}/build/win64",
+      "name": "msvc-vs2022",
+      "generator": "Visual Studio 17 2022",
+      "binaryDir": "${sourceDir}/build",
+      "toolchainFile": "${sourceDir}/vcpkg/scripts/buildsystems/vcpkg.cmake",
       "cacheVariables": {
-        "CMAKE_BUILD_TYPE": "RelWithDebInfo",
-        "CMAKE_MSVC_RUNTIME_LIBRARY": "MultiThreaded$<IF:$<CONFIG:Debug>,Debug,>",
-        "CMAKE_TOOLCHAIN_FILE": "${sourceDir}/vcpkg/scripts/buildsystems/vcpkg.cmake"
+        "CMAKE_POLICY_DEFAULT_CMP0091": "NEW",
+        "CMAKE_MSVC_RUNTIME_LIBRARY": "MultiThreaded$<$<CONFIG:Debug>:Debug>",
+        "CMAKE_CXX_STANDARD": "20"
       }
     }
-  ],
-  "buildPresets": [{ "name": "build", "configurePreset": "vs2022-win64" }]
+  ]
 }
