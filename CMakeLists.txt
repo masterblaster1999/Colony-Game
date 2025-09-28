@@ -81,12 +81,12 @@ if(MSVC)
   add_link_options(/DEBUG:FULL)
 endif()
 
-# ---- Global compile definitions (Windows-first) ----
-#   - XAUDIO2_HELPER_FUNCTIONS + _USE_MATH_DEFINES make XAudio2 helpers & M_PI available project-wide.
-#   - NOMINMAX & WIN32_LEAN_AND_MEAN reduce Windows header noise.
-#   - _CRT_SECURE_NO_WARNINGS quiets MSVC getenv/_wgetenv warnings (code still may use _dupenv_s at your discretion).
+# ---- Build options interface (centralized Windows macros) ----
+#   - Defines are provided via an INTERFACE target and linked to all binaries,
+#     avoiding per-file #define spam and macro redefinitions.
 if(WIN32)
-  add_compile_definitions(
+  add_library(colony_build_options INTERFACE)
+  target_compile_definitions(colony_build_options INTERFACE
     _USE_MATH_DEFINES
     XAUDIO2_HELPER_FUNCTIONS=1
     NOMINMAX
@@ -234,6 +234,11 @@ if(TARGET ColonyGame)
     target_link_libraries(ColonyGame PRIVATE ${COLONY_THIRDPARTY_LIBS})
   endif()
 
+  # Apply centralized Windows compile definitions to the main target
+  if(TARGET colony_build_options)
+    target_link_libraries(ColonyGame PRIVATE colony_build_options)
+  endif()
+
   # Frontend toggles
   if(FRONTEND STREQUAL "win32")
     target_compile_definitions(ColonyGame PRIVATE CG_FRONTEND_WIN32=1)
@@ -275,6 +280,11 @@ if(BUILD_COLONY_COMPUTE_EROSION)
       "${_ED_BASE}/src/PoissonDisk.cpp"
     )
     target_include_directories(ColonyComputeErosion PRIVATE "${_ED_BASE}/src")
+
+    # Apply centralized Windows compile definitions to the demo target
+    if(TARGET colony_build_options)
+      target_link_libraries(ColonyComputeErosion PRIVATE colony_build_options)
+    endif()
 
     if(MSVC)
       target_link_libraries(ColonyComputeErosion PRIVATE d3d11 d3dcompiler)
