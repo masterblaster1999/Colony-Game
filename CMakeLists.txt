@@ -217,11 +217,12 @@ endif()
 include(cmake/shaders.cmake OPTIONAL)
 
 # ===========================
-#   Sources / targets
+#   Main game sources / target
 # ===========================
-# The 'src' CMakeLists should create the main executable target named 'ColonyGame'
-# (as seen in your build logs). We link discovered third-party libs to it below.
-add_subdirectory(src)
+# Only add the game's 'src' dir if it has its own CMakeLists.txt
+if(EXISTS "${CMAKE_SOURCE_DIR}/src/CMakeLists.txt")
+  add_subdirectory(src)
+endif()
 
 # Link third-party libs to the main app if the target exists
 if(TARGET ColonyGame)
@@ -243,9 +244,63 @@ if(TARGET ColonyGame)
 endif()
 
 # ===========================
+#  Compute-shader erosion demo
+# ===========================
+option(BUILD_COLONY_COMPUTE_EROSION "Build the compute-shader erosion demo tool" ON)
+
+if(BUILD_COLONY_COMPUTE_EROSION)
+  # Try a few common layouts for the demo sources:
+  set(_ED_BASE "")
+  if(EXISTS "${CMAKE_SOURCE_DIR}/samples/compute_erosion/src/main.cpp")
+    set(_ED_BASE "${CMAKE_SOURCE_DIR}/samples/compute_erosion")
+  elseif(EXISTS "${CMAKE_SOURCE_DIR}/tools/erosion_demo/src/main.cpp")
+    set(_ED_BASE "${CMAKE_SOURCE_DIR}/tools/erosion_demo")
+  elseif(EXISTS "${CMAKE_SOURCE_DIR}/src/main.cpp"
+      AND EXISTS "${CMAKE_SOURCE_DIR}/src/D3DUtils.cpp"
+      AND EXISTS "${CMAKE_SOURCE_DIR}/src/PoissonDisk.cpp")
+    # Fallback to top-level src/ (use with caution if your game also lives in src/)
+    set(_ED_BASE "${CMAKE_SOURCE_DIR}")
+  endif()
+
+  if(_ED_BASE STREQUAL "")
+    message(STATUS "ColonyComputeErosion sources not found; skipping demo target.")
+  else()
+    add_executable(ColonyComputeErosion
+      "${_ED_BASE}/src/main.cpp"
+      "${_ED_BASE}/src/D3DUtils.cpp"
+      "${_ED_BASE}/src/PoissonDisk.cpp"
+    )
+    target_include_directories(ColonyComputeErosion PRIVATE "${_ED_BASE}/src")
+
+    if(MSVC)
+      target_link_libraries(ColonyComputeErosion PRIVATE d3d11 d3dcompiler)
+    else()
+      message(FATAL_ERROR "ColonyComputeErosion requires Windows/MSVC (D3D11).")
+    endif()
+
+    # Copy shaders and README next to the binary after build (if present)
+    if(EXISTS "${_ED_BASE}/shaders")
+      add_custom_command(TARGET ColonyComputeErosion POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:ColonyComputeErosion>/shaders"
+        COMMAND ${CMAKE_COMMAND} -E copy_directory
+                "${_ED_BASE}/shaders"
+                "$<TARGET_FILE_DIR:ColonyComputeErosion>/shaders"
+      )
+    endif()
+    if(EXISTS "${_ED_BASE}/README.md")
+      add_custom_command(TARGET ColonyComputeErosion POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy
+                "${_ED_BASE}/README.md"
+                "$<TARGET_FILE_DIR:ColonyComputeErosion>/README.md"
+      )
+    endif()
+  endif()
+endif()
+
+# ===========================
 #        Tests
 # ===========================
 include(CTest)
-if(BUILD_TESTING)
+if(BUILD_TESTING AND EXISTS "${CMAKE_SOURCE_DIR}/tests/CMakeLists.txt")
   add_subdirectory(tests)
 endif()
