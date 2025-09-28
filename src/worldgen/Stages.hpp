@@ -1,25 +1,12 @@
 #pragma once
-// World generation stages interface & utilities (supercharged, header-only, Windows-safe)
+// World generation stages interface & utilities (Windows-safe)
 //
-// Highlights:
-// • Windows hygiene: guard against stray MIDL 'small'/'large' and <Windows.h> macro min/max.
-// • Stronger noise toolbox: value & Perlin, fBM / ridged / billow, Worley F1(+id), domain warp,
-//   plus tileable variants (periodic in X/Y).
-// • High-quality random sampling:
-//     - AliasTable (Walker/Vose) for O(1) discrete sampling.
-//     - PoissonDiskSampler (Bridson) with optional mask/density predicate for 2D blue-noise scatter.
-// • Deterministic seeding utilities (splitmix64), per-stage sub-RNGs.
-// • DEM analysis:
-//     - Horn slope/aspect on regular grids.
-//     - D8 flow with explicit flat handling + accumulation and river masks.
-// • Filters & remapping:
-//     - Separable sliding box blur.
-//     - 3-pass “almost Gaussian” blur.
-//     - Normalize/rescale, clamp/threshold, morphological (dilate/erode), chamfer distance.
-// • GeneratorSettings with common worldgen knobs.
-// • Stage registry (topological) + pipeline runner with progress callback, cancellation,
-//   per-stage timings, and simple error text.
-// • Optional minimal job queue (header-only) for parallel chunk builds.
+// This header purposely avoids defining StageContext, RNG, or noise bodies.
+// Those live in:
+//   - worldgen/StageContext.hpp
+//   - worldgen/Random.hpp
+//   - worldgen/Noise.hpp
+// Math helpers (lerp/smoothstep, etc.) live in worldgen/Math.hpp.
 //
 // NOTE: Keep heavy stage *implementations* elsewhere to avoid recompiles.
 // This header deliberately avoids including <Windows.h> and undefines common macro traps.
@@ -59,18 +46,19 @@
 #include <unordered_map>
 #include <utility>
 #include <vector>
-#include <random>                 // PATCH: rng helpers / fallbacks
 
-#include "Fields.hpp"
-#include "RNG.hpp"                // must provide Pcg32 (Windows build parity)
-#include "Math.hpp"               // PATCH: central inline math (lerp/smoothstep)
+#include "worldgen/StageContext.hpp" // StageContext, Pcg32 visibility
+#include "worldgen/Random.hpp"       // Pcg32 API
+#include "worldgen/Noise.hpp"        // noise::* declarations/definitions
+#include "worldgen/Math.hpp"         // lerp/smoothstep, etc.
+#include "Fields.hpp"                // Grid<T> or equivalent project type
 
 namespace colony::worldgen {
 
 // =================================================================================================
-// Versioning & small math
+// Versioning & small math types/utilities local to worldgen
 // =================================================================================================
-inline constexpr std::uint32_t kWorldgenHeaderVersion = 4;
+inline constexpr std::uint32_t kWorldgenHeaderVersion = 5;
 inline constexpr float kPi  = 3.14159265358979323846f;
 inline constexpr float kTau = 6.28318530717958647692f;
 
@@ -93,12 +81,6 @@ inline float dot(const Vec2& a, const Vec2& b) noexcept { return a.x*b.x + a.y*b
 inline float length(const Vec2& v) noexcept { return std::sqrt(dot(v,v)); }
 inline Vec2  normalize(const Vec2& v) noexcept { float L = length(v); return L>0.f?Vec2{v.x/L,v.y/L}:Vec2{0,0}; }
 inline float clamp01(float v) noexcept { return v < 0.f ? 0.f : (v > 1.f ? 1.f : v); }
-
-// NOTE: lerp/smoothstep come from Math.hpp to avoid ODR conflicts.
-// inline constexpr float lerp(float a, float b, float t) noexcept { return a + (b - a) * t; } // (moved)
-// inline float smoothstep(float a, float b, float x) noexcept {                                   // (moved)
-//     float t = clamp01((x - a) / (b - a)); return t*t*(3.f - 2.f*t);
-// }
 inline float smootherstep(float a, float b, float x) noexcept {
     float t = clamp01((x - a) / (b - a)); return t*t*t*(t*(t*6.f - 15.f) + 10.f);
 }
@@ -249,198 +231,8 @@ struct GeneratorSettings {
 };
 
 // =================================================================================================
-// Context (coords, seeds, sub-RNGs)
+// Noise lives in worldgen/Noise.hpp — do not provide bodies here.
 // =================================================================================================
-struct StageContext {
-    const GeneratorSettings& settings;
-    const ChunkCoord         chunk;
-    Pcg32&                   rng;      // RNG for this stage/chunk (provided by caller)
-    WorldChunk&              out;      // read/write access to fields
-
-    // ---- coordinate helpers ----
-    int   cells()      const noexcept { return settings.cellsPerChunk; }
-    float cellSize()   const noexcept { return settings.cellSizeMeters; }
-    Vec2  chunk_origin_world() const noexcept {
-        const float span = cellSize() * static_cast<float>(cells());
-        return { static_cast<float>(chunk.x) * span,
-                 static_cast<float>(chunk.y) * span };
-    }
-    Vec2  cell_origin_world(int cx, int cy) const noexcept {
-        Vec2 org = chunk_origin_world();
-        return { org.x + static_cast<float>(cx) * cellSize(),
-                 org.y + static_cast<float>(cy) * cellSize() };
-    }
-    Vec2  cell_center_world(int cx, int cy) const noexcept {
-        Vec2 o = cell_origin_world(cx, cy);
-        const float h = 0.5f * cellSize();
-        return { o.x + h, o.y + h };
-    }
-
-    // ---- deterministic seeds ----
-    std::uint64_t chunk_seed() const noexcept {
-        using detail::hash_combine64; using detail::hash_u32;
-        const auto s0 = hash_combine64(hash_u32(static_cast<std::uint32_t>(chunk.x)),
-                                       hash_u32(static_cast<std::uint32_t>(chunk.y)));
-        return hash_combine64(static_cast<std::uint64_t>(settings.worldSeed), s0);
-    }
-    std::uint64_t stage_seed(StageId id) const noexcept {
-        using detail::hash_combine64;
-        return hash_combine64(chunk_seed(), static_cast<std::uint64_t>(to_underlying(id)));
-    }
-    std::uint64_t sub_seed(StageId id, std::string_view tag) const noexcept {
-        using detail::hash_combine64; using detail::hash_str;
-        return hash_combine64(stage_seed(id), hash_str(tag));
-    }
-    // Fresh Pcg32 derived from a tag
-    Pcg32 sub_rng(StageId id, std::string_view tag) const noexcept {
-        const auto s = sub_seed(id, tag);
-        return Pcg32{ static_cast<std::uint32_t>(s), static_cast<std::uint32_t>(s >> 32) };
-    }
-};
-
-// =================================================================================================
-// Noise & random sampling helpers
-// =================================================================================================
-namespace noise {
-
-// 2D integer hash -> [0,1)
-inline float hash01(int x, int y, std::uint32_t seed) noexcept {
-    std::uint32_t h = static_cast<std::uint32_t>(x) * 0x27d4eb2dU
-                    ^ static_cast<std::uint32_t>(y) * 0x85ebca6bU
-                    ^ seed * 0x9e3779b9U;
-    h ^= h >> 16; h *= 0x7feb352dU; h ^= h >> 15; h *= 0x846ca68bU; h ^= h >> 16;
-    return (h & 0x00FFFFFFu) / float(0x01000000u);
-}
-
-inline float smooth(float t) noexcept { return t*t*(3.f - 2.f*t); }
-inline float fade(float t) noexcept { return t*t*t*(t*(t*6.f - 15.f) + 10.f); } // Perlin fade
-
-// Value noise 2D (optionally tileable with integer period in lattice cells)
-inline float value2D(float fx, float fy, std::uint32_t seed, int periodX=0, int periodY=0) noexcept {
-    const int x0i = (int)std::floor(fx), y0i = (int)std::floor(fy);
-    const int x1i = x0i + 1,             y1i = y0i + 1;
-    const int x0 = detail::wrapi(x0i, periodX), x1 = detail::wrapi(x1i, periodX);
-    const int y0 = detail::wrapi(y0i, periodY), y1 = detail::wrapi(y1i, periodY);
-    float tx = smooth(fx - (float)x0i), ty = smooth(fy - (float)y0i);
-    float v00 = hash01(x0,y0,seed);
-    float v10 = hash01(x1,y0,seed);
-    float v01 = hash01(x0,y1,seed);
-    float v11 = hash01(x1,y1,seed);
-    float a = v00 + (v10 - v00)*tx;
-    float b = v01 + (v11 - v01)*tx;
-    return a + (b - a)*ty; // [0,1]
-}
-
-// Improved Perlin-style gradient noise (2D, hash-based gradients), tileable via period.
-inline Vec2 grad_from_hash(std::uint32_t h) noexcept {
-    // 8 directions on the unit circle
-    constexpr float g = 0.70710678118f;
-    switch (h & 7u) {
-        default: case 0: return { 1, 0};
-        case 1: return {-1, 0};
-        case 2: return { 0, 1};
-        case 3: return { 0,-1};
-        case 4: return { g, g};
-        case 5: return {-g, g};
-        case 6: return { g,-g};
-        case 7: return {-g,-g};
-    }
-}
-inline float perlin2D(float fx, float fy, std::uint32_t seed, int periodX=0, int periodY=0) noexcept {
-    const int x0i = (int)std::floor(fx), y0i = (int)std::floor(fy);
-    const int x1i = x0i + 1,             y1i = y0i + 1;
-    const int x0 = detail::wrapi(x0i, periodX), x1 = detail::wrapi(x1i, periodX);
-    const int y0 = detail::wrapi(y0i, periodY), y1 = detail::wrapi(y1i, periodY);
-
-    float dx = fx - (float)x0i, dy = fy - (float)y0i;
-    float u = fade(dx), v = fade(dy);
-
-    auto h00 = grad_from_hash((std::uint32_t)detail::splitmix64(detail::hash_combine64(seed, (std::uint64_t)((x0<<16) ^ y0))));
-    auto h10 = grad_from_hash((std::uint32_t)detail::splitmix64(detail::hash_combine64(seed, (std::uint64_t)((x1<<16) ^ y0))));
-    auto h01 = grad_from_hash((std::uint32_t)detail::splitmix64(detail::hash_combine64(seed, (std::uint64_t)((x0<<16) ^ y1))));
-    auto h11 = grad_from_hash((std::uint32_t)detail::splitmix64(detail::hash_combine64(seed, (std::uint64_t)((x1<<16) ^ y1))));
-    float n00 = dot(h00, {dx,    dy    });
-    float n10 = dot(h10, {dx-1.f,dy    });
-    float n01 = dot(h01, {dx,    dy-1.f});
-    float n11 = dot(h11, {dx-1.f,dy-1.f});
-    float nx0 = n00 + (n10 - n00)*u;
-    float nx1 = n01 + (n11 - n01)*u;
-    return nx0 + (nx1 - nx0)*v; // ~[-1,1]
-}
-
-// Fractals built from any scalar noise function
-inline float fbm2D(float fx, float fy, std::uint32_t seed,
-                   int octaves=5, float lac=2.0f, float gain=0.5f,
-                   float (*basis)(float,float,std::uint32_t,int,int)=perlin2D,
-                   int periodX=0, int periodY=0) noexcept {
-    float amp = 0.5f, sum = 0.f, norm = 0.f;
-    for (int i=0;i<octaves;i++) {
-        sum  += amp * basis(fx, fy, seed + (std::uint32_t)i*131u, periodX, periodY);
-        norm += amp;
-        fx *= lac; fy *= lac; amp *= gain;
-        if (periodX) periodX *= 2;
-        if (periodY) periodY *= 2;
-    }
-    return norm>0.f ? sum/norm : 0.f;
-}
-inline float billow2D(float fx, float fy, std::uint32_t seed,
-                      int octaves=5, float lac=2.0f, float gain=0.5f,
-                      float (*basis)(float,float,std::uint32_t,int,int)=perlin2D,
-                      int periodX=0, int periodY=0) noexcept {
-    float amp = 0.5f, sum = 0.f, norm = 0.f;
-    for (int i=0;i<octaves;i++) {
-        float n = 2.f * std::abs(basis(fx, fy, seed + (std::uint32_t)i*733u, periodX, periodY)) - 1.f;
-        sum  += amp * n;
-        norm += amp;
-        fx *= lac; fy *= lac; amp *= gain;
-        if (periodX) periodX *= 2;
-        if (periodY) periodY *= 2;
-    }
-    return norm>0.f ? sum/norm : 0.f;
-}
-inline float ridged2D(float fx, float fy, std::uint32_t seed,
-                      int octaves=5, float lac=2.0f, float gain=0.5f,
-                      float (*basis)(float,float,std::uint32_t,int,int)=perlin2D,
-                      int periodX=0, int periodY=0) noexcept {
-    float amp = 0.5f, sum = 0.f, norm = 0.f;
-    for (int i=0;i<octaves;i++) {
-        float n = 1.f - std::abs(basis(fx, fy, seed + (std::uint32_t)i*977u, periodX, periodY));
-        n *= n; // sharpen ridges
-        sum  += amp * n;
-        norm += amp;
-        fx *= lac; fy *= lac; amp *= gain;
-        if (periodX) periodX *= 2;
-        if (periodY) periodY *= 2;
-    }
-    return norm>0.f ? sum/norm : 0.f;
-}
-
-// Domain warp (one step)
-inline Vec2 warp2D(Vec2 p, std::uint32_t seed, float amp=0.5f, float freq=1.0f, int periodX=0, int periodY=0) noexcept {
-    float dx = fbm2D(p.x*freq, p.y*freq, seed ^ 0x243F6A88u, 4, 2.0f, 0.5f, perlin2D, periodX, periodY);
-    float dy = fbm2D(p.x*freq, p.y*freq, seed ^ 0x85A308D3u, 4, 2.0f, 0.5f, perlin2D, periodX, periodY);
-    return { p.x + (dx)*amp, p.y + (dy)*amp };
-}
-
-// Worley (cellular) noise: returns F1 distance (Euclidean) and a hashed cell id
-struct WorleyF1 { float f1=0.f; std::uint32_t id=0; };
-inline WorleyF1 worleyF1(float fx, float fy, std::uint32_t seed) noexcept {
-    int xi = (int)std::floor(fx), yi = (int)std::floor(fy);
-    float best = 1e30f; std::uint32_t bestId = 0;
-    for (int dy=-1; dy<=1; ++dy) for (int dx=-1; dx<=1) {
-        int cx = xi + dx, cy = yi + dy;
-        // feature point within the cell
-        float jx = hash01(cx,cy,seed ^ 0xA53u);
-        float jy = hash01(cx,cy,seed ^ 0x5A3u);
-        float px = (float)cx + jx;
-        float py = (float)cy + jy;
-        float d2 = (fx-px)*(fx-px) + (fy-py)*(fy-py);
-        if (d2 < best) { best = d2; bestId = (std::uint32_t)(cx*73856093 ^ cy*19349663) ^ seed; }
-    }
-    return { std::sqrt(best), bestId };
-}
-
-} // namespace noise
 
 // =================================================================================================
 // Alias table for O(1) discrete sampling (Walker 1974; Vose 1991)
@@ -455,7 +247,6 @@ public:
         prob_.assign(n, 0.0f); alias_.assign(n, 0u);
         if (n == 0) return;
 
-        // Normalize to mean 1.0; treat non-positive weights as zero.
         long double sum = 0.0L;
         for (float v : w) if (v > 0.f && std::isfinite(v)) sum += (long double)v;
         std::vector<long double> scaled(n, 0.0L);
@@ -468,8 +259,8 @@ public:
         while (!small.empty() && !large.empty()) {
             const size_t s = small.back(); small.pop_back();
             const size_t l = large.back(); large.pop_back();
-            prob_[s]  = (float)scaled[s];         // threshold in [0,1)
-            alias_[s] = (std::uint32_t)l;         // aliased index
+            prob_[s]  = (float)scaled[s];
+            alias_[s] = (std::uint32_t)l;
             scaled[l] = (scaled[l] + scaled[s]) - 1.0L;
             ((scaled[l] < 1.0L) ? small : large).push_back(l);
         }
@@ -481,8 +272,8 @@ public:
     std::uint32_t sample(URNG& rng) const {
         if (prob_.empty()) return 0;
         const std::uint32_t n = (std::uint32_t)prob_.size();
-        const std::uint32_t i = rng.next_u32() % n;
-        const float r = (rng.next_u32() & 0xFFFFFF) / float(0x1000000);
+        const std::uint32_t i = (rng.next() % n);
+        const float r = (rng.next() & 0xFFFFFF) / float(0x1000000);
         return (r < prob_[i]) ? i : alias_[i];
     }
 
@@ -527,7 +318,7 @@ struct PoissonDiskSampler {
             }
             return true;
         };
-        auto rand01 = [&](Pcg32& r)->float { return (r.next_u32() & 0xFFFFFF) / float(0x1000000); };
+        auto rand01 = [&](Pcg32& r)->float { return (r.next() & 0xFFFFFF) / float(0x1000000); };
         auto rand_uniform = [&](float a, float b)->float { return a + (b-a)*rand01(rng); };
         auto accept_at    = [&](Vec2 p)->bool {
             if (!maskOrDensity) return true;
@@ -550,7 +341,7 @@ struct PoissonDiskSampler {
 
         std::vector<int> active; active.push_back(0);
         while (!active.empty()) {
-            int ai = (int)(rng.next_u32() % active.size());
+            int ai = (int)(rng.next() % active.size());
             int idx = active[(size_t)ai];
             Vec2 base = out[(size_t)idx];
             bool found = false;
@@ -572,6 +363,38 @@ struct PoissonDiskSampler {
         return out;
     }
 };
+
+// Convenience random helpers built on Pcg32
+inline float rand01(Pcg32& rng) noexcept { return (rng.next() & 0xFFFFFF) / float(0x1000000); }
+inline float rand_range(Pcg32& rng, float a, float b) noexcept { return a + (b-a)*rand01(rng); }
+
+// Uniform or mask/density-based scatter across the whole chunk
+inline std::vector<ObjectInstance>
+scatter_objects(const StageContext& ctx, StageId sid, float minDistanceMeters,
+                std::uint32_t kindId, std::uint32_t tags, int maxCount = -1,
+                std::function<float(Vec2)> maskOrDensity = {}) {
+    Vec2 org = ctx.chunk_origin_world();
+    const float span = ctx.cellSize() * (float)ctx.cells();
+    auto localRng = ctx.sub_rng(sid, "scatter");
+    auto pts = PoissonDiskSampler::generate(
+        std::max(0.01f, minDistanceMeters), org, {org.x+span, org.y+span}, localRng, 30, std::move(maskOrDensity));
+
+    std::vector<ObjectInstance> out;
+    out.reserve(pts.size());
+    const int cap = (maxCount < 0) ? (int)pts.size() : std::min<int>(maxCount, (int)pts.size());
+    for (int i=0;i<cap;i++) {
+        const Vec2 p = pts[(size_t)i];
+        ObjectInstance inst{};
+        inst.wx = p.x; inst.wy = p.y;
+        inst.kind = kindId;
+        inst.tags = tags;
+        inst.scale = 0.85f + 0.3f * rand01(localRng);
+        inst.rot   = rand_range(localRng, 0.f, kTau);
+        inst.seed  = (std::uint32_t)ctx.sub_seed(sid, "scatter_item_"+std::to_string(i));
+        out.push_back(inst);
+    }
+    return out;
+}
 
 // =================================================================================================
 // Filters & grid utilities (pointer-based, row-major width*height)
@@ -736,44 +559,8 @@ inline void slope_aspect(const float* z, int w, int h, float dx,
     }
 }
 
-// D8 flow direction (one receiver) with flat resolution + accumulation.
-// Returns (flow accumulation in "cell count", dirIndex [0..7 or -1], in-degree per cell).
+// D8 flow direction and accumulation (with simple flat handling)
 struct FlowField { std::vector<float> accum; std::vector<int8_t> dir; std::vector<uint16_t> indeg; };
-
-// Resolve flats by nudging equal-height neighbors slightly downhill in a breadth-first way.
-// This avoids stuck plateaus causing indegree cycles. Jitter value is relative to cell spacing.
-inline void resolve_flats(std::vector<float>& z, int w, int h, float epsilon=1e-4f) {
-    // Simple pass: for each flat plateau pixel, slightly lower a path towards any lower neighbor.
-    // This is a pragmatic, lightweight alternative to full depression fill; keeps local detail.
-    auto idx = [w](int x,int y){ return (size_t)y*w + x; };
-    static const int dx[8] = {1,1,0,-1,-1,-1,0,1};
-    static const int dy[8] = {0,1,1, 1, 0,-1,-1,-1};
-    // Iterate a couple of times to break ambiguous flats
-    for (int iter=0; iter<2; ++iter) {
-        for (int y=0;y<h;y++) for (int x=0;x<w;x++) {
-            float z0 = z[idx(x,y)];
-            // skip clear downhill cells
-            bool hasDown=false; bool hasEqual=false;
-            for (int k=0;k<8;k++){
-                int xn=x+dx[k], yn=y+dy[k]; if (xn<0||xn>=w||yn<0||yn>=h) continue;
-                float dz = z0 - z[idx(xn,yn)];
-                if (dz>0.f) { hasDown=true; break; }
-                if (std::abs(dz) < 1e-7f) hasEqual=true;
-            }
-            if (!hasDown && hasEqual) {
-                // create a tiny gradient towards the first outbound edge if any equal neighbor exists
-                for (int k=0;k<8;k++){
-                    int xn=x+dx[k], yn=y+dy[k]; if (xn<0||xn>=w||yn<0||yn>=h) continue;
-                    float dz = z0 - z[idx(xn,yn)];
-                    if (std::abs(dz) < 1e-7f) {
-                        z[idx(xn,yn)] -= epsilon; // nudge equal neighbor down slightly
-                        break;
-                    }
-                }
-            }
-        }
-    }
-}
 
 inline FlowField d8_flow_accum(const float* height, int w, int h, float flatJitter = 1e-6f) {
     auto idx = [w](int x,int y){ return (size_t)y*w + x; };
@@ -1126,40 +913,8 @@ private:
 };
 
 // =================================================================================================
-// Object scatter convenience (Poisson disk) and biome table scaffold
+// Simple biome lookup table
 // =================================================================================================
-inline float rand01(Pcg32& rng) noexcept { return (rng.next_u32() & 0xFFFFFF) / float(0x1000000); }
-inline float rand_range(Pcg32& rng, float a, float b) noexcept { return a + (b-a)*rand01(rng); }
-
-// Uniform or mask/density-based scatter across the whole chunk
-inline std::vector<ObjectInstance>
-scatter_objects(const StageContext& ctx, StageId sid, float minDistanceMeters,
-                std::uint32_t kindId, std::uint32_t tags, int maxCount = -1,
-                std::function<float(Vec2)> maskOrDensity = {}) {
-    Vec2 org = ctx.chunk_origin_world();
-    const float span = ctx.cellSize() * (float)ctx.cells();
-    auto localRng = ctx.sub_rng(sid, "scatter");
-    auto pts = PoissonDiskSampler::generate(
-        std::max(0.01f, minDistanceMeters), org, {org.x+span, org.y+span}, localRng, 30, std::move(maskOrDensity));
-
-    std::vector<ObjectInstance> out;
-    out.reserve(pts.size());
-    const int cap = (maxCount < 0) ? (int)pts.size() : std::min<int>(maxCount, (int)pts.size());
-    for (int i=0;i<cap;i++) {
-        const Vec2 p = pts[(size_t)i];
-        ObjectInstance inst{};
-        inst.wx = p.x; inst.wy = p.y;
-        inst.kind = kindId;
-        inst.tags = tags;
-        inst.scale = 0.85f + 0.3f * rand01(localRng);
-        inst.rot   = rand_range(localRng, 0.f, kTau);
-        inst.seed  = (std::uint32_t)ctx.sub_seed(sid, "scatter_item_"+std::to_string(i));
-        out.push_back(inst);
-    }
-    return out;
-}
-
-// Simple biome lookup: threshold bins on temperature & moisture.
 struct BiomeTable {
     int tempBands = 4;
     int moistBands = 4;
