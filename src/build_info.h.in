@@ -1,9 +1,4 @@
-diff --git a/src/build_info.h.in b/src/build_info.h.in
-new file mode 100644
---- /dev/null
-+++ b/src/build_info.h.in
-@@ -0,0 +1,5 @@
-+#pragma once
-+#define CG_BUILD_GIT_HASH "@CG_GIT_HASH@"
-+#define CG_BUILD_TIMESTAMP "@CG_BUILD_TIMESTAMP@"
-+#define CG_VERSION_STR "@CG_VERSION_STR@"
+#pragma once
+#define CG_BUILD_GIT_HASH      "@CG_GIT_HASH@"
+#define CG_BUILD_TIMESTAMP     "@CG_BUILD_TIMESTAMP@"
+#define CG_VERSION_STR         "@CG_VERSION_STR@"
