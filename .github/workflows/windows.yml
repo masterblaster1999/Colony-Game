@@ -41,10 +41,10 @@ jobs:
             Write-Host "✅ All file names are Windows-safe."
           }
 
-      - name: Setup CMake 3.31.x
-        uses: lukka/get-cmake@v3
+      - name: Setup CMake 3.31.0
+        uses: lukka/get-cmake@latest
         with:
-          cmake-version: 3.31.0
+          cmakeVersion: 3.31.0
 
       - name: Cache vcpkg artifacts (if repo uses vcpkg)
         if: ${{ hashFiles('vcpkg.json', 'vcpkg-configuration.json') != '' }}
