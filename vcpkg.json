@@ -47,13 +47,17 @@
     "taskflow",
     "doctest",
 
-    // Build-fix deps from CI
-    "sdl2",
-    "miniaudio"
+    {
+      "$comment": "Build-fix deps from CI",
+      "name": "sdl2"
+    },
+    {
+      "name": "miniaudio"
+    }
   ],
 
   "vcpkg-configuration": {
-    // Optional: place custom/hotfix ports in this folder if needed later
+    "$comment": "Optional: place custom/hotfix ports in this folder if needed later",
     "overlay-ports": [
       "vcpkg-ports"
     ]
