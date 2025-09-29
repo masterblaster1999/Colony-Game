@@ -54,12 +54,5 @@
     {
       "name": "miniaudio"
     }
-  ],
-
-  "vcpkg-configuration": {
-    "$comment": "Optional: place custom/hotfix ports in this folder if needed later",
-    "overlay-ports": [
-      "vcpkg-ports"
-    ]
-  }
+  ]
 }
