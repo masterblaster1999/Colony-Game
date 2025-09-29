@@ -139,8 +139,8 @@ int main()
         // Compile compute shaders
         // -----------------------------
         const std::wstring shaderDir = L"shaders\\";
-        auto csOutflowBlob = d3d::CompileShaderFromFile(shaderDir + L"ThermalOutflowCS.hlsl", L"CSMain", "cs_5_0");
-        auto csApplyBlob   = d3d::CompileShaderFromFile(shaderDir + L"ThermalApplyCS.hlsl",   L"CSMain", "cs_5_0");
+        auto csOutflowBlob = d3d::CompileShaderFromFile(shaderDir + L"ThermalOutflowCS.hlsl", "CSMain", "cs_5_0");
+        auto csApplyBlob   = d3d::CompileShaderFromFile(shaderDir + L"ThermalApplyCS.hlsl",   "CSMain", "cs_5_0");
 
         ComPtr<ID3D11ComputeShader> csOutflow, csApply;
         HR_CHECK(device->CreateComputeShader(csOutflowBlob->GetBufferPointer(), csOutflowBlob->GetBufferSize(), nullptr, csOutflow.GetAddressOf()));
