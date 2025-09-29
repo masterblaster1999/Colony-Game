@@ -6,9 +6,19 @@
 #include <vector>
 #include <stdexcept>
 #include <cstdint>
+#include <sstream>  // for HR_CHECK message formatting
+#include <cstring>  // for std::memcpy
 
 #ifndef HR_CHECK
-#define HR_CHECK(x) do { HRESULT _hr = (x); if (FAILED(_hr)) { throw std::runtime_error("HRESULT failed at " __FILE__ ":" + std::to_string(__LINE__)); } } while(0)
+#define HR_CHECK(x) do { \
+    HRESULT _hr = (x); \
+    if (FAILED(_hr)) { \
+        std::ostringstream _oss; \
+        _oss << "HRESULT 0x" << std::hex << std::uppercase << static_cast<unsigned long>(_hr) \
+             << " at " << __FILE__ << ":" << std::dec << __LINE__; \
+        throw std::runtime_error(_oss.str()); \
+    } \
+} while(0)
 #endif
 
 using Microsoft::WRL::ComPtr;
@@ -79,7 +89,7 @@ namespace d3d
     {
         D3D11_MAPPED_SUBRESOURCE ms{};
         HR_CHECK(ctx->Map(cb, 0, D3D11_MAP_WRITE_DISCARD, 0, &ms));
-        memcpy(ms.pData, &value, sizeof(T));
+        std::memcpy(ms.pData, &value, sizeof(T));
         ctx->Unmap(cb, 0);
     }
 
