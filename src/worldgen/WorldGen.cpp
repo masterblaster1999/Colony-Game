@@ -8,6 +8,26 @@
 
 namespace colony::worldgen {
 
+// -----------------------------------------------------------------------------
+// PATCH NOTE:
+//   We added a *named RNG stream* for the Scatter stage ("SCATTER1") so that it
+//   draws from its own deterministic stream instead of depending only on the
+//   stage id. If you keep a central list of stream names in WorldSeed.cpp,
+//   mirror this constant there as well.
+// -----------------------------------------------------------------------------
+namespace {
+    // ASCII-packed tag: "SCATTER1"
+    static constexpr std::uint64_t STREAM_SCATTER = 0x5343415454455231ull;
+
+    // Decide which RNG stream to use for a given stage.
+    // New: ScatterStage gets its own named stream; others fall back to st->id().
+    static inline std::uint64_t select_stream_for_stage(const StagePtr& st) {
+        if (dynamic_cast<const ScatterStage*>(st.get()))
+            return STREAM_SCATTER;          // dedicated, stable stream for scatter
+        return static_cast<std::uint64_t>(st->id()); // default
+    }
+}
+
 // -------------------- tiny helpers --------------------
 static inline float lerp(float a, float b, float t)  { return a + (b - a) * t; }
 static inline float smoothstep(float a, float b, float x) {
@@ -82,7 +102,11 @@ WorldChunk WorldGenerator::makeEmptyChunk_(ChunkCoord coord) const {
 
 void WorldGenerator::run_(WorldChunk& chunk, std::uint64_t worldSeed) const {
     for (const auto& st : stages_) {
-        auto [state, stream] = derive_pcg_seed(worldSeed, chunk.coord.x, chunk.coord.y, static_cast<std::uint64_t>(st->id()));
+        // PATCH: use a named per-stage stream where applicable (e.g., SCATTER1)
+        const std::uint64_t streamName = select_stream_for_stage(st);
+        auto [state, stream] = derive_pcg_seed(
+            worldSeed, chunk.coord.x, chunk.coord.y, streamName
+        );
         Pcg32 rng(state, stream);
         StageContext ctx{ settings_, chunk.coord, rng, chunk };
         st->generate(ctx);
@@ -263,4 +287,3 @@ void ScatterStage::generate(StageContext& ctx) {
 }
 
 } // namespace colony::worldgen
-
