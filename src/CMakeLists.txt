@@ -71,7 +71,7 @@ target_compile_definitions(ColonyGame PRIVATE
 # Link libs (propagate Windows flags/defs/libs from interface target)
 target_link_libraries(ColonyGame
   PRIVATE
-    colony_win32_libs
+    colony_build_options
     "$<$<STREQUAL:${FRONTEND},sdl>:SDL2::SDL2;SDL2::SDL2main>"
 )
 
