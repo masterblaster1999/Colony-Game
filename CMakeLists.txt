@@ -5,6 +5,7 @@ if(POLICY CMP0091)
   cmake_policy(SET CMP0091 NEW)  # honor CMAKE_MSVC_RUNTIME_LIBRARY
 endif()
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
+set_property(GLOBAL PROPERTY USE_FOLDERS ON)
 
 # ---- vcpkg toolchain (auto) ----
 if(NOT DEFINED CMAKE_TOOLCHAIN_FILE)
@@ -250,6 +251,33 @@ if(TARGET ColonyGame)
   if(WIN32 AND NOT SHOW_CONSOLE)
     set_target_properties(ColonyGame PROPERTIES WIN32_EXECUTABLE ON)
   endif()
+
+  # ---- Integrations and quality-of-life ----
+  # Precompiled headers, if present
+  if(EXISTS "${CMAKE_SOURCE_DIR}/src/common/pch.hpp")
+    target_precompile_headers(ColonyGame PRIVATE src/common/pch.hpp)
+  endif()
+
+  # Expose generated build info include dir and version resource if they exist
+  if(EXISTS "${CMAKE_BINARY_DIR}/generated/build_info.h")
+    target_include_directories(ColonyGame PRIVATE "${CMAKE_BINARY_DIR}/generated")
+  endif()
+  if(EXISTS "${CMAKE_BINARY_DIR}/generated/Version.rc")
+    target_sources(ColonyGame PRIVATE "${CMAKE_BINARY_DIR}/generated/Version.rc")
+  endif()
+
+  # Let the game know where to look for runtime-compiled / precompiled shaders
+  target_compile_definitions(ColonyGame PRIVATE SHADER_DIR=L\"shaders/\")
+
+  # If a 'shaders' build target is defined by cmake/shaders.cmake, build it before the game
+  if(TARGET shaders)
+    add_dependencies(ColonyGame shaders)
+  endif()
+
+  # Make VS debugger start in the source root so relative paths (res/, shaders/) resolve
+  if(MSVC)
+    set_target_properties(ColonyGame PROPERTIES VS_DEBUGGER_WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}")
+  endif()
 endif()
 
 # ===========================
@@ -315,6 +343,21 @@ if(WIN32 AND TARGET ColonyGame)
     VERBATIM
   )
   add_dependencies(stage_win ColonyGame)
+endif()
+
+# ---- Install & CPack (portable ZIP) ----
+if(WIN32 AND TARGET ColonyGame)
+  install(TARGETS ColonyGame RUNTIME DESTINATION .)
+  if(EXISTS "${CMAKE_SOURCE_DIR}/res")
+    install(DIRECTORY "${CMAKE_SOURCE_DIR}/res" DESTINATION .)
+  endif()
+  if(EXISTS "${CMAKE_BINARY_DIR}/shaders")
+    install(DIRECTORY "${CMAKE_BINARY_DIR}/shaders" DESTINATION .)
+  elseif(EXISTS "${CMAKE_SOURCE_DIR}/shaders")
+    install(DIRECTORY "${CMAKE_SOURCE_DIR}/shaders" DESTINATION .)
+  endif()
+  set(CPACK_GENERATOR "ZIP")
+  include(CPack)
 endif()
 
 # ===========================
