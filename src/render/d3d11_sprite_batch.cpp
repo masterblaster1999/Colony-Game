@@ -60,7 +60,7 @@ public:
 
         // Grow GPU buffer if needed
         ComPtr<ID3D11Device> dev;
-        ctx->GetDevice(&dev);
+        ctx->GetDevice(dev.GetAddressOf());
         if (!dev) return;
 
         if (!vb_ || capacity_ < cpuVerts_.size()) {
@@ -154,17 +154,5 @@ static void CreateSpriteVB_Patched(ID3D11Device* dev, size_t MaxVerts) {
     g_spriteBatch.init(dev, MaxVerts);
 }
 
-// Upload path (called every frame after filling CPU vertices)
-void SpriteBatch::flush(ID3D11DeviceContext* ctx) {
-    // This is the fixed Map/Unmap path from the patch, adapted to class members.
-    if (!ctx || cpuVerts_.empty() || !vb_) return;
-
-    D3D11_MAPPED_SUBRESOURCE m{};
-    if (FAILED(ctx->Map(vb_.Get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &m)) || !m.pData) {
-        return;
-    }
-    std::memcpy(m.pData, cpuVerts_.data(), cpuVerts_.size() * sizeof(Vertex));
-    ctx->Unmap(vb_.Get(), 0);
-
-    // set pipeline and Draw happens outside of this function.
-}
+// NOTE: The duplicate definition of `SpriteBatch::flush(ID3D11DeviceContext*)` that
+// previously lived here has been removed to resolve MSVC error C2084.
