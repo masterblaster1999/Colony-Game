@@ -87,10 +87,21 @@ jobs:
         # requires 'stage_win' target in your CMake (see snippet below)
         run: cmake --build build --config Release --target stage_win --parallel
 
+      # === Minimal fix inserted here: compute short SHA in PowerShell ===
+      - name: Derive short SHA (7)
+        id: shortsha
+        shell: pwsh
+        env:
+          RAW_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          $short = "${env:RAW_SHA}".Substring(0,7)
+          "SHORT_SHA=$short" | Out-File -FilePath $env:GITHUB_ENV -Append
+          "short_sha=$short" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+
       - name: Upload staged artifact
         uses: actions/upload-artifact@v4
         with:
-          name: ColonyGame-win64-${{ github.sha.substr(0,7) }}
+          name: ColonyGame-win64-${{ steps.shortsha.outputs.short_sha }}
           path: build/stage/bin/**
           if-no-files-found: error
           retention-days: 7
