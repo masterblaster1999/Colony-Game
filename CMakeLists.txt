@@ -219,7 +219,102 @@ if(COLONY_THIRDPARTY_INCLUDE_DIRS)
 endif()
 
 # ---- HLSL shaders helper (DXC/FXC) ----
+# Keep existing optional include (project-local override)
 include(cmake/shaders.cmake OPTIONAL)
+
+# ---- Built-in DXC-based HLSL compilation (SM6+) ----
+# If the project didn't define a 'shaders' target in cmake/shaders.cmake, build one here.
+option(BUILD_SHADERS "Compile HLSL shaders with DXC" ON)
+set(DXC_DEFAULT_SM "6_7" CACHE STRING "Default Shader Model version (e.g. 6_6, 6_7)")
+set_property(CACHE DXC_DEFAULT_SM PROPERTY STRINGS 6_6 6_7)
+
+if(BUILD_SHADERS AND NOT TARGET shaders)
+  # Locate dxc.exe (can also set -DDXC_EXE=C:/path/to/dxc.exe)
+  find_program(DXC_EXE NAMES dxc HINTS
+    "$ENV{VCToolsInstallDir}/bin/Hostx64/x64"
+    "$ENV{WindowsSdkDir}/bin/x64"
+    "$ENV{WindowsSdkDir}/bin"
+  )
+  if(NOT DXC_EXE)
+    message(WARNING "DXC not found on PATH or SDK; set DXC_EXE or install the DirectX Shader Compiler. Shaders will not be compiled.")
+  endif()
+
+  if(DXC_EXE AND EXISTS "${CMAKE_SOURCE_DIR}/shaders")
+    file(GLOB_RECURSE HLSL_SOURCES CONFIGURE_DEPENDS
+      "${CMAKE_SOURCE_DIR}/shaders/*.hlsl"
+    )
+    set(SHADER_BIN_DIR "${CMAKE_BINARY_DIR}/shaders")
+    file(MAKE_DIRECTORY "${SHADER_BIN_DIR}")
+
+    # Helper to infer stage/profile/entry from filename suffix.
+    function(_cg_infer_profile_and_entry SRC OUT_PROFILE OUT_ENTRY)
+      get_filename_component(_name_we "${SRC}" NAME_WE)
+      string(TOLOWER "${_name_we}" _lower)
+      # default entry names per stage
+      set(_prof "")
+      set(_entry "")
+      if(_lower MATCHES "(_|\\.)vs$|^vs_")
+        set(_prof "vs_${DXC_DEFAULT_SM}")  ; set(_entry "VSMain")
+      elseif(_lower MATCHES "(_|\\.)ps$|^ps_")
+        set(_prof "ps_${DXC_DEFAULT_SM}")  ; set(_entry "PSMain")
+      elseif(_lower MATCHES "(_|\\.)cs$|^cs_")
+        set(_prof "cs_${DXC_DEFAULT_SM}")  ; set(_entry "CSMain")
+      elseif(_lower MATCHES "(_|\\.)gs$|^gs_")
+        set(_prof "gs_${DXC_DEFAULT_SM}")  ; set(_entry "GSMain")
+      elseif(_lower MATCHES "(_|\\.)hs$|^hs_")
+        set(_prof "hs_${DXC_DEFAULT_SM}")  ; set(_entry "HSMain")
+      elseif(_lower MATCHES "(_|\\.)ds$|^ds_")
+        set(_prof "ds_${DXC_DEFAULT_SM}")  ; set(_entry "DSMain")
+      elseif(_lower MATCHES "(_|\\.)ms$|^ms_")
+        set(_prof "ms_${DXC_DEFAULT_SM}")  ; set(_entry "MSMain")
+      elseif(_lower MATCHES "(_|\\.)as$|^as_")
+        set(_prof "as_${DXC_DEFAULT_SM}")  ; set(_entry "ASMain")
+      endif()
+      set(${OUT_PROFILE} "${_prof}" PARENT_SCOPE)
+      set(${OUT_ENTRY}   "${_entry}" PARENT_SCOPE)
+    endfunction()
+
+    set(_BUILT_CSOS "")
+    foreach(SRC IN LISTS HLSL_SOURCES)
+      # Determine profile/entry from filename; skip if ambiguous.
+      _cg_infer_profile_and_entry("${SRC}" PROFILE ENTRY)
+      if(NOT PROFILE)
+        message(STATUS "Skipping shader (stage not inferred): ${SRC}  [Use suffix _vs/_ps/_cs/_gs/_hs/_ds/_ms/_as]")
+        continue()
+      endif()
+
+      get_filename_component(NAME_WE "${SRC}" NAME_WE)
+      set(OUTFILE "${SHADER_BIN_DIR}/${NAME_WE}.cso")
+
+      # Build command:
+      #   dxc -T <profile> -E <entry> -Fo <out> [-Zi -Qembed_debug | -Qstrip_debug] -I shaders <src>
+      add_custom_command(
+        OUTPUT "${OUTFILE}"
+        COMMAND ${CMAKE_COMMAND} -E make_directory "${SHADER_BIN_DIR}"
+        COMMAND "${DXC_EXE}" -nologo
+                -T ${PROFILE} -E ${ENTRY}
+                $<$<CONFIG:Debug>:-Zi> $<$<CONFIG:Debug>:-Qembed_debug>
+                $<$<NOT:$<CONFIG:Debug>>:-Qstrip_debug>
+                -Fo "${OUTFILE}"
+                -I "${CMAKE_SOURCE_DIR}/shaders"
+                "${SRC}"
+        DEPENDS "${SRC}"
+        COMMENT "DXC ${PROFILE} ${SRC} -> ${OUTFILE}"
+        VERBATIM
+      )
+      list(APPEND _BUILT_CSOS "${OUTFILE}")
+    endforeach()
+
+    if(_BUILT_CSOS)
+      add_custom_target(shaders ALL DEPENDS ${_BUILT_CSOS})
+      set_property(TARGET shaders PROPERTY FOLDER "assets")
+      # Make compiled shaders easy to find from the debugger and install step
+      # (Install section below already prefers ${CMAKE_BINARY_DIR}/shaders if it exists)
+    else()
+      message(STATUS "No HLSL shaders compiled (no matching *.hlsl with stage suffix).")
+    endif()
+  endif()
+endif()
 
 # ===========================
 #   Main game sources / target
@@ -269,7 +364,7 @@ if(TARGET ColonyGame)
   # Let the game know where to look for runtime-compiled / precompiled shaders
   target_compile_definitions(ColonyGame PRIVATE SHADER_DIR=L\"shaders/\")
 
-  # If a 'shaders' build target is defined by cmake/shaders.cmake, build it before the game
+  # If a 'shaders' build target exists, build it before the game
   if(TARGET shaders)
     add_dependencies(ColonyGame shaders)
   endif()
@@ -296,8 +391,13 @@ if(WIN32 AND TARGET ColonyGame)
                 "${CMAKE_SOURCE_DIR}/res" "${STAGE_DIR}/res")
   endif()
 
+  # Copy precompiled shaders if present; otherwise copy source shaders.
   set(_STAGE_COPY_SHADERS_CMD "")
-  if(EXISTS "${CMAKE_SOURCE_DIR}/shaders")
+  if(EXISTS "${CMAKE_BINARY_DIR}/shaders")
+    set(_STAGE_COPY_SHADERS_CMD
+        COMMAND ${CMAKE_COMMAND} -E copy_directory
+                "${CMAKE_BINARY_DIR}/shaders" "${STAGE_DIR}/shaders")
+  elseif(EXISTS "${CMAKE_SOURCE_DIR}/shaders")
     set(_STAGE_COPY_SHADERS_CMD
         COMMAND ${CMAKE_COMMAND} -E copy_directory
                 "${CMAKE_SOURCE_DIR}/shaders" "${STAGE_DIR}/shaders")
