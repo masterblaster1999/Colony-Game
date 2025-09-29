@@ -1,10 +1,12 @@
 #include "game/WorldSeed.h"
+#include <cstdint>
 #include <cstdlib>             // std::getenv
 #include <filesystem>
 #include <fstream>
 #include <string>
 #include <chrono>
 #include <random>
+#include <optional>
 
 using namespace std;
 
@@ -82,12 +84,12 @@ uint64_t randomSeed() {
 Streams derive(uint64_t root) {
     Streams out{};
     // Namespace constants to keep streams stable if you insert new ones later.
-    constexpr uint64_t N_TERRAIN = 0x01D1CEAA1ull;
-    constexpr uint64_t N_BIOME   = 0x01B10ME001ull;
-    constexpr uint64_t N_SCATTER = 0x05CA773Rull;
-    constexpr uint64_t N_PATHING = 0x0PA7H1N61ull;
-    constexpr uint64_t N_LOOT    = 0x10A0AD11ull;
-    constexpr uint64_t N_AUDIO   = 0x0AUD10A1ull;
+    constexpr uint64_t N_TERRAIN = 0x01D1CEAA1ull;           // (kept existing valid value)
+    constexpr uint64_t N_BIOME   = 0x42494F4D4531ull;        // "BIOME1"
+    constexpr uint64_t N_SCATTER = 0x5343415454455231ull;    // "SCATTER1"
+    constexpr uint64_t N_PATHING = 0x50415448494E4731ull;    // "PATHING1"
+    constexpr uint64_t N_LOOT    = 0x10A0AD11ull;            // (kept existing valid value)
+    constexpr uint64_t N_AUDIO   = 0x415544494F31ull;        // "AUDIO1"
 
     out.terrain = rnd::mix(root, N_TERRAIN);
     out.biome   = rnd::mix(root, N_BIOME);
