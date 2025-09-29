@@ -28,7 +28,6 @@ jobs:
         run: |
           $invalid = @()
           git ls-tree -r --name-only HEAD | ForEach-Object {
-            # Invalid characters or reserved device names on Windows
             if ($_ -match '[:<>\"|?*]' -or $_ -match '(^|[\\/])(CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])(\.|[\\/]|$)') {
               $invalid += $_
             }
@@ -41,41 +40,67 @@ jobs:
             Write-Host "✅ All file names are Windows-safe."
           }
 
-      - name: Setup CMake 3.31.0
+      - name: Setup CMake (latest)
         uses: lukka/get-cmake@latest
-        with:
-          cmakeVersion: 3.31.0
 
-      - name: Cache vcpkg artifacts (if repo uses vcpkg)
+      - name: Locate preinstalled vcpkg & export VCPKG_ROOT
+        id: vcpkgroot
+        shell: pwsh
+        run: |
+          $candidates = @(
+            $env:VCPKG_INSTALLATION_ROOT,                   # if image provides it
+            "C:\vcpkg",
+            "${env:ProgramFiles}\Microsoft Visual Studio\2022\Enterprise\VC\vcpkg",
+            "${env:ProgramFiles}\Microsoft Visual Studio\2022\Professional\VC\vcpkg",
+            "${env:ProgramFiles}\Microsoft Visual Studio\2022\Community\VC\vcpkg"
+          ) | Where-Object { $_ -and (Test-Path $_) }
+          if ($candidates.Count -eq 0) {
+            throw "vcpkg not found on runner. Consider adding lukka/run-vcpkg@v11 or checking the image notes."
+          }
+          $root = $candidates[0]
+          "VCPKG_ROOT=$root" | Out-File -FilePath $env:GITHUB_ENV -Append
+          Write-Host "Using VCPKG_ROOT=$root"
+
+      - name: Cache vcpkg artifacts (manifest mode)
         if: ${{ hashFiles('vcpkg.json', 'vcpkg-configuration.json') != '' }}
         uses: actions/cache@v4
         with:
           path: |
-            C:\vcpkg\installed
+            ${{ env.VCPKG_ROOT }}\installed
             C:\Users\runneradmin\AppData\Local\vcpkg\archives
           key: vcpkg-${{ runner.os }}-${{ hashFiles('vcpkg.json', 'vcpkg-configuration.json') }}
 
-      - name: Configure CMake (MSVC)
-        run: cmake -S . -B build -G "Visual Studio 17 2022" -A x64
+      - name: Configure CMake (MSVC + vcpkg toolchain)
+        shell: pwsh
+        run: >
+          cmake -S . -B build
+          -G "Visual Studio 17 2022" -A x64
+          -DCMAKE_TOOLCHAIN_FILE="${env:VCPKG_ROOT}\scripts\buildsystems\vcpkg.cmake"
+          -DVCPKG_MANIFEST_MODE=ON
+          -DBUILD_TESTING=ON
+          -DCOLONY_LTO=OFF
 
       - name: Build (Release)
         run: cmake --build build --config Release --parallel
 
       - name: Stage (Release)
-        # requires the 'stage_win' custom target to be defined in CMake
+        # requires 'stage_win' target in your CMake (see snippet below)
         run: cmake --build build --config Release --target stage_win --parallel
-
-      - name: Compute artifact name
-        id: names
-        shell: pwsh
-        run: |
-          $short = "${env:GITHUB_SHA}".Substring(0,7)
-          echo "short_sha=$short" >> $env:GITHUB_OUTPUT
 
       - name: Upload staged artifact
         uses: actions/upload-artifact@v4
         with:
-          name: ColonyGame-win64-${{ steps.names.outputs.short_sha }}
+          name: ColonyGame-win64-${{ github.sha.substr(0,7) }}
           path: build/stage/bin/**
           if-no-files-found: error
           retention-days: 7
+
+      - name: Always upload vcpkg/CMake logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: logs
+          path: |
+            build/**/CMakeOutput.log
+            build/**/CMakeError.log
+            build/vcpkg-manifest-install.log
