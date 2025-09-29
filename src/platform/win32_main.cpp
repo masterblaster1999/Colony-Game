@@ -320,7 +320,7 @@ static void draw_sdf_circle(Backbuffer& bb,float cx,float cy,float r,uint32_t rg
     for(int y=minY; y<maxY; ++y){
         uint32_t* row=(uint32_t*)rowptr(bb,y);
         float fy=(float)y+0.5f;
-        for(int x=minX; x<maxX; ++x){
+        for(int x=0;x<bb.w && x<maxX; ++x){
             float fx=(float)x+0.5f;
             float d=sqrtf((fx-cx)*(fx-cx)+(fy-cy)*(fy-cy))-r;
             uint8_t a=aa_from_distance(d/borderPx); if(!a) continue;
@@ -452,8 +452,12 @@ struct InputState; // fwd
 struct GameAPI{
     void (*init)(void** user, int w, int h)=nullptr;
     void (*resize)(void* user, int w, int h)=nullptr;
+    // Legacy combined path (fallback)
     void (*update_and_render)(void* user, float dt, uint32_t* pixels, int w, int h, const InputState* input)=nullptr;
     void (*bind_platform)(PlatformAPI* plat, int version)=nullptr;
+    // New optional decoupled path (preferred for fixed-step)
+    void (*update_fixed)(void* user, float dt)=nullptr; // simulate only
+    void (*render)(void* user, float alpha, uint32_t* pixels, int w, int h, const InputState* input)=nullptr; // render once with interpolation alpha
 };
 struct HotReload{
     HMODULE dll=nullptr; FILETIME lastWrite{}; GameAPI api{}; void* userState=nullptr; bool active=false;
@@ -467,8 +471,15 @@ static bool load_game(HotReload& hr, const char* dllName){
     auto resize=(void(*)(void*,int,int))GetProcAddress(dll,"game_resize");
     auto step=(void(*)(void*,float,uint32_t*,int,int,const InputState*))GetProcAddress(dll,"game_update_and_render");
     auto bind=(void(*)(PlatformAPI*,int))GetProcAddress(dll,"game_bind_platform");
-    if(!step){ FreeLibrary(dll); DeleteFileA(tmp); return false; }
-    hr.dll=dll; hr.api={}; hr.api.init=init; hr.api.resize=resize; hr.api.update_and_render=step; hr.api.bind_platform=bind; hr.active=true; return true;
+    // New optional decoupled entry points
+    auto upf =(void(*)(void*,float))GetProcAddress(dll,"game_update_fixed");
+    auto rend=(void(*)(void*,float,uint32_t*,int,int,const InputState*))GetProcAddress(dll,"game_render");
+
+    if(!step && !upf && !rend){ FreeLibrary(dll); DeleteFileA(tmp); return false; }
+    hr.dll=dll; hr.api={};
+    hr.api.init=init; hr.api.resize=resize; hr.api.update_and_render=step; hr.api.bind_platform=bind;
+    hr.api.update_fixed=upf; hr.api.render=rend;
+    hr.active=true; return true;
 }
 static void unload_game(HotReload& hr){ if(hr.dll){ FreeLibrary(hr.dll); hr.dll=nullptr; } hr.api={}; hr.userState=nullptr; hr.active=false; }
 
@@ -719,9 +730,10 @@ static void draw_magnifier(Backbuffer& bb, int srcX,int srcY,int radiusPx,int sc
 }
 
 // --------------------------------------------------------
-// Demo (when no game.dll)
+// Demo (decoupled: simulate + render)
 // --------------------------------------------------------
-struct DemoCtx{ float t=0; } g_demo;
+struct DemoCtx{ float t=0.f, prev_t=0.f; } g_demo;
+
 static void demo_tile_job(void*,int y0,int y1){
     const int tile=16;
     for(int y=y0;y<y1;y++){
@@ -731,21 +743,34 @@ static void demo_tile_job(void*,int y0,int y1){
         }
     }
 }
-static void demo_overlay(float dt){
-    (void)dt;
-    // Panel + icon
+
+static void demo_simulate(float dt){
+    g_demo.prev_t = g_demo.t;
+    g_demo.t += dt;
+}
+
+static void demo_render(float alpha){
+    const int tileRows=32;
+    // MT tile background render
+    std::vector<TileJob> jobs; for(int y=0;y<g_bb.h;y+=tileRows) jobs.push_back({ y,clampi(y+tileRows,0,g_bb.h), demo_tile_job,nullptr });
+    g_pool.dispatch(jobs); g_pool.wait();
+
+    // UI panel + icon
     draw_soft_shadow(g_bb, 24,24, 220,64, 8, 80, pack_rgb(0,0,0));
     draw_sdf_roundrect(g_bb, 20,20, 220,64, 10.f, pack_rgb(38,40,48), 1.0f);
     draw_sdf_circle(g_bb, 50.f,52.f, 14.5f, pack_rgb(250,230,90), 1.25f);
-    // Moving circle marker
-    static float tt=0; tt+=dt;
-    float cx=(sinf(tt*0.7f)*0.5f+0.5f)*(g_bb.w-80);
-    float cy=(sinf(tt*1.1f+1.57f)*0.5f+0.5f)*(g_bb.h-80);
+
+    // Interpolated moving circle marker
+    float t = g_demo.prev_t + (g_demo.t - g_demo.prev_t) * clampf(alpha,0.f,1.f);
+    float cx=(sinf(t*0.7f)*0.5f+0.5f)*(g_bb.w-80);
+    float cy=(sinf(t*1.1f+1.57f)*0.5f+0.5f)*(g_bb.h-80);
     draw_sdf_circle(g_bb, cx,cy, 14.5f, pack_rgb(232,85,120), 1.25f);
+
     // Grid
     uint32_t grid=rgb8(0,0,0); const int step=16;
     for(int x=0;x<g_bb.w;x+=step) line(g_bb,x,0,x,g_bb.h-1,grid);
     for(int y=0;y<g_bb.h;y+=step) line(g_bb,0,y,g_bb.w-1,y,grid);
+
     // Input info
     char info[160];
     _snprintf_s(info,sizeof(info),"Mouse (%d,%d) d(%d,%d) wheel %.1f  Pad0 lx %.2f ly %.2f",
@@ -843,7 +868,6 @@ int APIENTRY wWinMain(HINSTANCE hInst,HINSTANCE,LPWSTR,int){
     crc32_init();
 
     bool paused=false, slowmo=false, useDither=false, gamma=false, magnify=false, useDirty=true;
-    const int tileRows=32;
 
     while(g_win.running){
         // Hot reload
@@ -891,49 +915,93 @@ int APIENTRY wWinMain(HINSTANCE hInst,HINSTANCE,LPWSTR,int){
 
         // Timing
         uint64_t tNow=now_qpc(); double dt=(double)(tNow-tPrev)*invFreq; tPrev=tNow; if(slowmo) dt*=0.25;
-        if(g_win.fixedTimestep){ acc+=dt; } else { acc=dt; }
 
-        // Replay/Record
+        // Replay/Record feed (overrides dt/inputs if playing)
         if(g_rec.playing){
             if(g_rec.idx<g_rec.frames.size()){
-                g_in = g_rec.frames[g_rec.idx].in; acc=g_rec.frames[g_rec.idx].dt; g_rec.idx++;
+                g_in = g_rec.frames[g_rec.idx].in; dt = g_rec.frames[g_rec.idx].dt; g_rec.idx++;
             } else { g_rec.playing=false; }
         }
 
-        // Update/Render step(s)
+        if(g_win.fixedTimestep){ acc += dt; } else { acc = dt; }
+
+        // -----------------------------
+        // Simulate (0..N times), Render once with alpha
+        // -----------------------------
+        bool rendered_by_fallback = false;
         g_dirty.clear();
-        auto do_frame = [&](float fdt){
-            uint64_t tR0=tic();
-            if(hot.active && hot.api.update_and_render){
-                hot.api.update_and_render(hot.userState, fdt, (uint32_t*)g_bb.pixels, g_bb.w, g_bb.h, &g_in);
-                useDirty=false; // unless your game fills g_dirty; expose via PlatformAPI if desired
-            }else{
-                // Demo: MT tile background
-                std::vector<TileJob> jobs; for(int y=0;y<g_bb.h;y+=tileRows) jobs.push_back({ y,clampi(y+tileRows,0,g_bb.h), demo_tile_job,nullptr });
-                g_pool.dispatch(jobs); g_pool.wait();
-                demo_overlay(fdt);
-                useDirty=false;
-            }
-            g_micro.tRender=toc(tR0);
 
-            // Post
-            uint64_t tP0=tic();
-            if(useDither) apply_dither_gamma(g_bb, gamma);
-            if(magnify) draw_magnifier(g_bb, g_in.mouseX,g_in.mouseY, 10,8,true);
-            g_perf.frameMS=(float)(fdt*1000.0); // approx
-            draw_perf_hud(g_bb);
-            g_micro.tPost=toc(tP0);
-
-            if(g_rec.recording){ g_rec.frames.push_back(FrameRec{ g_in, fdt }); }
-        };
+        const double step = g_win.fixedDT;
+        float alpha = 1.0f;
 
         if(g_win.fixedTimestep){
-            double step=g_win.fixedDT; if(!paused){ while(acc>=step){ do_frame((float)step); simTime+=step; acc-=step; } }
+            if(!paused){
+                int safety = 0;
+                // Clamp catch-up (implicit via iteration cap or add an explicit clamp if desired)
+                while(acc >= step && safety < 16){
+                    // --- Simulation-only path preferred
+                    if(hot.active && hot.api.update_fixed){
+                        hot.api.update_fixed(hot.userState, (float)step);
+                    } else if(hot.active && hot.api.update_and_render){
+                        // Fallback: legacy combined step renders each update
+                        hot.api.update_and_render(hot.userState, (float)step, (uint32_t*)g_bb.pixels, g_bb.w, g_bb.h, &g_in);
+                        rendered_by_fallback = true;
+                    } else {
+                        // Demo simulate
+                        demo_simulate((float)step);
+                    }
+                    simTime += step; acc -= step; safety++;
+                    if(g_rec.recording){ g_rec.frames.push_back(FrameRec{ g_in, (float)step }); }
+                }
+            }
+            alpha = (float)clampf((float)(acc/step), 0.f, 1.f);
         }else{
-            if(!paused){ do_frame((float)acc); simTime+=acc; acc=0.0; }
+            // Variable step
+            if(!paused){
+                if(hot.active && hot.api.update_fixed){
+                    hot.api.update_fixed(hot.userState, (float)acc);
+                } else if(hot.active && hot.api.update_and_render){
+                    hot.api.update_and_render(hot.userState, (float)acc, (uint32_t*)g_bb.pixels, g_bb.w, g_bb.h, &g_in);
+                    rendered_by_fallback = true;
+                } else {
+                    demo_simulate((float)acc);
+                }
+                simTime += acc; if(g_rec.recording){ g_rec.frames.push_back(FrameRec{ g_in, (float)acc }); }
+            }
+            alpha = 1.0f;
+            acc = 0.0;
         }
 
-        // Present
+        // ---- Render once (decoupled), unless the legacy fallback already rendered
+        uint64_t tR0=tic();
+        if(!rendered_by_fallback){
+            if(hot.active && hot.api.render){
+                hot.api.render(hot.userState, alpha, (uint32_t*)g_bb.pixels, g_bb.w, g_bb.h, &g_in);
+                useDirty=false;
+            } else if(!hot.active){
+                // Demo single render with interpolation
+                demo_render(alpha);
+                useDirty=false;
+            } else {
+                // Legacy combined API but no steps ran (acc < step): draw a zero-dt frame
+                if(hot.api.update_and_render){
+                    hot.api.update_and_render(hot.userState, 0.0f, (uint32_t*)g_bb.pixels, g_bb.w, g_bb.h, &g_in);
+                    useDirty=false;
+                }
+            }
+        }
+        g_micro.tRender=toc(tR0);
+
+        // ---- Post (dither, magnifier, HUD)
+        uint64_t tP0=tic();
+        if(useDither) apply_dither_gamma(g_bb, gamma);
+        if(magnify)   draw_magnifier(g_bb, g_in.mouseX,g_in.mouseY, 10,8,true);
+        // Show HUD using wall-clock delta for smoother UX
+        g_perf.frameMS = (float)(dt*1000.0);
+        draw_perf_hud(g_bb);
+        g_micro.tPost=toc(tP0);
+
+        // ---- Present
         uint64_t tPr0=tic();
         if(useDirty) present_dirty(hwnd,hdc,g_bb,g_dirty); else present_full(hwnd,hdc,g_bb);
         if(g_win.useVsync){ BOOL comp=FALSE; DwmIsCompositionEnabled(&comp); if(comp) DwmFlush(); }
