@@ -253,6 +253,71 @@ if(TARGET ColonyGame)
 endif()
 
 # ===========================
+#       Stage (Windows)
+# ===========================
+# Produces a self-contained staging folder under ${CMAKE_BINARY_DIR}/stage
+# with the built game, resources, shaders, and (when available) vcpkg runtime DLLs.
+if(WIN32 AND TARGET ColonyGame)
+  set(STAGE_DIR "${CMAKE_BINARY_DIR}/stage")
+
+  # Optional resource/shader copy commands (only if source dirs exist)
+  set(_STAGE_COPY_RES_CMD "")
+  if(EXISTS "${CMAKE_SOURCE_DIR}/res")
+    set(_STAGE_COPY_RES_CMD
+        COMMAND ${CMAKE_COMMAND} -E copy_directory
+                "${CMAKE_SOURCE_DIR}/res" "${STAGE_DIR}/res")
+  endif()
+
+  set(_STAGE_COPY_SHADERS_CMD "")
+  if(EXISTS "${CMAKE_SOURCE_DIR}/shaders")
+    set(_STAGE_COPY_SHADERS_CMD
+        COMMAND ${CMAKE_COMMAND} -E copy_directory
+                "${CMAKE_SOURCE_DIR}/shaders" "${STAGE_DIR}/shaders")
+  endif()
+
+  # Try to copy vcpkg runtime DLLs (Release + Debug) if the common locations exist.
+  set(_STAGE_COPY_VCPKG_RELEASE_CMD "")
+  set(_STAGE_COPY_VCPKG_DEBUG_CMD "")
+  if(DEFINED ENV{VCPKG_INSTALLATION_ROOT})
+    if(EXISTS "$ENV{VCPKG_INSTALLATION_ROOT}/installed/x64-windows/bin")
+      set(_STAGE_COPY_VCPKG_RELEASE_CMD
+          COMMAND ${CMAKE_COMMAND} -E copy_directory
+                  "$ENV{VCPKG_INSTALLATION_ROOT}/installed/x64-windows/bin" "${STAGE_DIR}/bin")
+    endif()
+    if(EXISTS "$ENV{VCPKG_INSTALLATION_ROOT}/installed/x64-windows/debug/bin")
+      set(_STAGE_COPY_VCPKG_DEBUG_CMD
+          COMMAND ${CMAKE_COMMAND} -E copy_directory
+                  "$ENV{VCPKG_INSTALLATION_ROOT}/installed/x64-windows/debug/bin" "${STAGE_DIR}/bin")
+    endif()
+  elseif(DEFINED ENV{VCPKG_ROOT})
+    if(EXISTS "$ENV{VCPKG_ROOT}/installed/x64-windows/bin")
+      set(_STAGE_COPY_VCPKG_RELEASE_CMD
+          COMMAND ${CMAKE_COMMAND} -E copy_directory
+                  "$ENV{VCPKG_ROOT}/installed/x64-windows/bin" "${STAGE_DIR}/bin")
+    endif()
+    if(EXISTS "$ENV{VCPKG_ROOT}/installed/x64-windows/debug/bin")
+      set(_STAGE_COPY_VCPKG_DEBUG_CMD
+          COMMAND ${CMAKE_COMMAND} -E copy_directory
+                  "$ENV{VCPKG_ROOT}/installed/x64-windows/debug/bin" "${STAGE_DIR}/bin")
+    endif()
+  endif()
+
+  add_custom_target(stage_win
+    COMMAND ${CMAKE_COMMAND} -E rm -rf "${STAGE_DIR}"
+    COMMAND ${CMAKE_COMMAND} -E make_directory "${STAGE_DIR}/bin"
+    COMMAND ${CMAKE_COMMAND} -E make_directory "${STAGE_DIR}/res"
+    COMMAND ${CMAKE_COMMAND} -E make_directory "${STAGE_DIR}/shaders"
+    ${_STAGE_COPY_RES_CMD}
+    ${_STAGE_COPY_SHADERS_CMD}
+    COMMAND ${CMAKE_COMMAND} -E copy "$<TARGET_FILE:ColonyGame>" "${STAGE_DIR}/bin/"
+    ${_STAGE_COPY_VCPKG_RELEASE_CMD}
+    ${_STAGE_COPY_VCPKG_DEBUG_CMD}
+    VERBATIM
+  )
+  add_dependencies(stage_win ColonyGame)
+endif()
+
+# ===========================
 #  Compute-shader erosion demo
 # ===========================
 option(BUILD_COLONY_COMPUTE_EROSION "Build the compute-shader erosion demo tool" ON)
