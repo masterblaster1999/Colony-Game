@@ -2,7 +2,7 @@
 #pragma once
 #include <cstdint>
 #include <limits>
-#include "SeedHash.hpp"
+#include "worldgen/SeedHash.hpp"
 
 namespace colony::worldgen {
 
@@ -49,7 +49,7 @@ struct Pcg32 {
     if (bound == 0u) return 0u;
     uint64_t m = static_cast<uint64_t>(next()) * static_cast<uint64_t>(bound);
     uint32_t l = static_cast<uint32_t>(m);
-    const uint32_t thresh = static_cast<uint32_t>(-bound) % bound;
+    const uint32_t thresh = (0u - bound) % bound; // avoid unary minus on unsigned warning
     if (l < thresh) {
       do {
         m = static_cast<uint64_t>(next()) * static_cast<uint64_t>(bound);
