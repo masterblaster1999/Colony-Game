@@ -51,6 +51,7 @@
 #include "worldgen/Random.hpp"       // Pcg32 API
 #include "worldgen/Noise.hpp"        // noise::* declarations/definitions
 #include "worldgen/Math.hpp"         // lerp/smoothstep, etc.
+#include "worldgen/SeedHash.hpp"     // splitmix64/hash helpers centralized
 #include "Fields.hpp"                // Grid<T> or equivalent project type
 
 namespace colony::worldgen {
@@ -86,6 +87,7 @@ inline float smootherstep(float a, float b, float x) noexcept {
 }
 
 // =================================================================================================
+—
 // Coordinates, hashing, deterministic mixing
 // =================================================================================================
 struct ChunkCoord { std::int32_t x = 0, y = 0; };
@@ -103,23 +105,8 @@ struct ChunkCoordHash {
 };
 
 namespace detail {
-// splitmix64 seed mixer (public-domain style)
-inline std::uint64_t splitmix64(std::uint64_t x) noexcept {
-    x += 0x9e3779b97f4a7c15ULL;
-    x = (x ^ (x >> 30)) * 0xbf58476d1ce4e5b9ULL;
-    x = (x ^ (x >> 27)) * 0x94d049bb133111ebULL;
-    return x ^ (x >> 31);
-}
-inline std::uint64_t hash_combine64(std::uint64_t a, std::uint64_t b) noexcept {
-    return splitmix64(a ^ splitmix64(b + 0x9e3779b97f4a7c15ULL));
-}
-inline std::uint64_t hash_u32(std::uint32_t v) noexcept { return splitmix64(v); }
-inline std::uint64_t hash_str(std::string_view s) noexcept {
-    // FNV-1a then splitmix64 to decorrelate size & low bits
-    std::uint64_t h = 14695981039346656037ull; // 64-bit FNV offset basis
-    for (unsigned char c : s) { h ^= c; h *= 1099511628211ull; }
-    return splitmix64(h);
-}
+// Keep only helpers that don't collide with centralized hashing in SeedHash.hpp
+
 inline int wrapi(int i, int period) noexcept {
     if (period <= 0) return i;
     int r = i % period; return r < 0 ? r + period : r;
