@@ -1,4 +1,4 @@
- // src/worldgen/StageContext.hpp
+// src/worldgen/StageContext.hpp
 #pragma once
 #include <cstdint>
 #include <type_traits>
@@ -9,7 +9,7 @@ namespace colony::worldgen {
 // Forward declarations to avoid heavy includes and cycles here.
 struct GeneratorSettings;
 struct WorldChunk;
-struct Coord;
+struct ChunkCoord;
 
 // Interface-only context passed to worldgen stages.
 // NOTE: No code here should touch WorldChunk's internals; keep all such logic in the .cpp.
@@ -34,8 +34,8 @@ struct StageContext {
   // Some call sites reference ctx.chunk; make it an alias of `out`.
   WorldChunk& chunk;
 
-  // Declaration only; the definition lives in StageContext.cpp where Coord/WorldChunk are fully known.
-  StageContext(const GeneratorSettings& s, const Coord& coord, Pcg32 r, WorldChunk& o) noexcept;
+  // Declaration only; the definition lives in StageContext.cpp where ChunkCoord/WorldChunk are fully known.
+  StageContext(const GeneratorSettings& s, const ChunkCoord& coord, Pcg32 r, WorldChunk& o) noexcept;
 
   // Deterministic child streams (sugar).
   inline Pcg32 sub_rng(std::uint64_t salt) const noexcept { return colony::worldgen::sub_rng(rng, salt); }
@@ -43,8 +43,8 @@ struct StageContext {
   inline Pcg32 sub_rng(int a, int b, int c) const noexcept { return colony::worldgen::sub_rng(rng, a, b, c); }
 
   // Back-compat with any call sites that might use the old names.
-  inline Pcg32 sub_rng2(int a, int b) const noexcept       { return colony::worldgen::sub_rng(rng, a, b); }
-  inline Pcg32 sub_rng3(int a, int b, int c) const noexcept{ return colony::worldgen::sub_rng(rng, a, b, c); }
+  inline Pcg32 sub_rng2(int a, int b) const noexcept        { return colony::worldgen::sub_rng(rng, a, b); }
+  inline Pcg32 sub_rng3(int a, int b, int c) const noexcept { return colony::worldgen::sub_rng(rng, a, b, c); }
 
   // Overload that accepts a strongly-typed stage enum + ASCII tag without depending on its definition here.
   // Works for any scoped or unscoped enum type.
