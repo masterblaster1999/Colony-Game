@@ -76,6 +76,7 @@ struct Pcg32 {
 
   // ---------- Backward-compatibility aliases (keep existing callers happy) ----------
   inline uint32_t nextUInt() noexcept { return next(); }
+  inline uint32_t nextUInt32() noexcept { return next(); } // added alias
   inline uint32_t nextBounded(uint32_t bound) noexcept { return next_bounded(bound); }
   inline float    nextFloat01() noexcept { return next_float01(); }
   inline double   nextDouble01() noexcept { return next_double01(); }
