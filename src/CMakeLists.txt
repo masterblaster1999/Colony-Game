@@ -64,15 +64,17 @@ endif()
 # Define COLONY_USE_SDL only when building the SDL frontend.
 target_compile_definitions(ColonyGame PRIVATE
   $<$<STREQUAL:${FRONTEND},sdl>:COLONY_USE_SDL=1>
-  $<$<BOOL:${ENABLE_IMGUI}>:CG_ENABLE_IMGUI>
-  $<$<BOOL:${ENABLE_TRACY}>:TRACY_ENABLE>
+  $<$<BOOL:${ENABLE_IMGUI}>:CG_ENABLE_IMGUI=1>
+  $<$<BOOL:${ENABLE_TRACY}>:TRACY_ENABLE=1>
 )
 
-# Link libs (propagate Windows flags/defs/libs from interface target)
+# Link libs (propagate Windows flags/defs from interface target)
+# Note: link SDL2 only for the SDL frontend; make SDL2main optional if the package doesn't provide it.
 target_link_libraries(ColonyGame
   PRIVATE
     colony_build_options
-    "$<$<STREQUAL:${FRONTEND},sdl>:SDL2::SDL2;SDL2::SDL2main>"
+    $<$<STREQUAL:${FRONTEND},sdl>:$<TARGET_NAME_IF_EXISTS:SDL2::SDL2main>>
+    $<$<STREQUAL:${FRONTEND},sdl>:SDL2::SDL2>
 )
 
 # Add Windows platform resources and helpers (manifest, version info, crash handler, GPU preference)
@@ -94,11 +96,8 @@ if(WIN32)
   target_link_libraries(ColonyGame PRIVATE dbghelp shell32 ole32)
 endif()
 
-# Make the game the startup project in Visual Studio and set a sane working directory
+# Make the game the startup project in Visual Studio
 set_property(DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}" PROPERTY VS_STARTUP_PROJECT ColonyGame)
-set_target_properties(ColonyGame PROPERTIES
-  VS_DEBUGGER_WORKING_DIRECTORY "${CMAKE_BINARY_DIR}/bin/$(Configuration)"
-)
 
 # Output directories per configuration (for multi-config generators like VS)
 if(CMAKE_CONFIGURATION_TYPES)
@@ -109,14 +108,22 @@ if(CMAKE_CONFIGURATION_TYPES)
   endforeach()
 endif()
 
-# Stage assets next to the EXE after build
-add_custom_command(TARGET ColonyGame POST_BUILD
-  COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:ColonyGame>/res"
-  COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:ColonyGame>/shaders"
-  COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/res"     "$<TARGET_FILE_DIR:ColonyGame>/res"
-  COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/shaders" "$<TARGET_FILE_DIR:ColonyGame>/shaders"
-  VERBATIM
-)
+# Stage assets next to the EXE after build (only if the source dirs exist)
+if(EXISTS "${CMAKE_SOURCE_DIR}/res")
+  add_custom_command(TARGET ColonyGame POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:ColonyGame>/res"
+    COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/res" "$<TARGET_FILE_DIR:ColonyGame>/res"
+    VERBATIM
+  )
+endif()
+
+if(EXISTS "${CMAKE_SOURCE_DIR}/shaders")
+  add_custom_command(TARGET ColonyGame POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:ColonyGame>/shaders"
+    COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/shaders" "$<TARGET_FILE_DIR:ColonyGame>/shaders"
+    VERBATIM
+  )
+endif()
 
 # ------------------------------------------------------------------------------
 # OPTIONAL (when you’re ready to bring back the real CrashDumpWin.cpp):
