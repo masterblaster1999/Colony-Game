@@ -2,6 +2,7 @@
 #pragma once
 #include <cstdint>
 #include <limits>
+#include "SeedHash.hpp"
 
 namespace colony::worldgen {
 
@@ -92,17 +93,10 @@ inline int randi(Pcg32& rng, int lo, int hi) noexcept {
   return lo + static_cast<int>(rng.next_bounded(span));
 }
 
-// SplitMix64 scrambler (good bit-mixer for seeds)
-static inline uint64_t splitmix64(uint64_t x) noexcept {
-  x += 0x9E3779B97F4A7C15ULL;
-  x = (x ^ (x >> 30)) * 0xBF58476D1CE4E5B9ULL;
-  x = (x ^ (x >> 27)) * 0x94D049BB133111EBULL;
-  return x ^ (x >> 31);
-}
-
 // Derive a deterministic sub-RNG from a parent stream + salt.
 // Useful to shard randomness per-task/tile without cross-correlation.
 inline Pcg32 sub_rng(const Pcg32& parent, uint64_t salt) noexcept {
+  using colony::worldgen::detail::splitmix64;
   // Mix both the parent's state and stream with the salt to form new seed/seq.
   const uint64_t seed = splitmix64(parent.state ^ (salt + 0x9E3779B97F4A7C15ULL));
   const uint64_t seq  = splitmix64(parent.inc   ^ (salt ^ 0xBF58476D1CE4E5B9ULL));
