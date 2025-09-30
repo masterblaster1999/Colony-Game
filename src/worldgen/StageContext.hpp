@@ -2,7 +2,8 @@
 #pragma once
 #include <cstdint>
 #include <type_traits>
-#include "worldgen/Random.hpp" // Pcg32 + sub_rng helpers
+#include <span>                 // added: for std::span
+#include "worldgen/Random.hpp"  // Pcg32 + sub_rng helpers
 
 namespace colony::worldgen {
 
@@ -10,6 +11,10 @@ namespace colony::worldgen {
 struct GeneratorSettings;
 struct WorldChunk;
 struct ChunkCoord;
+
+// Forward-declare the cell payload type used by stages; the concrete
+// definition lives in the worldgen implementation units.
+struct Cell;
 
 // Interface-only context passed to worldgen stages.
 // NOTE: No code here should touch WorldChunk's internals; keep all such logic in the .cpp.
@@ -33,6 +38,37 @@ struct StageContext {
 
   // Some call sites reference ctx.chunk; make it an alias of `out`.
   WorldChunk& chunk;
+
+  // -------------------------------------------------------------------
+  // Added to resolve Stages.hpp ↔ StageContext name mismatches:
+  //   - chunk_origin_world
+  //   - cellSize
+  //   - cells
+  //   - sub_seed
+  //   - chunk_seed
+  //
+  // Keep these lightweight and header-only to preserve fast includes.
+  // -------------------------------------------------------------------
+
+  // Minimal 2D float vector without introducing heavy math headers.
+  struct Float2 {
+    float x{};
+    float y{};
+  };
+
+  // World-space origin of the current chunk (meters/units).
+  Float2 chunk_origin_world{};
+
+  // Cell size in world units (e.g., meters per grid cell).
+  std::uint32_t cellSize = 0;
+
+  // Borrowed view of the chunk's cell buffer (row-major).
+  // The exact Cell definition is provided in implementation headers.
+  std::span<Cell> cells{};
+
+  // Deterministic seeds for sub-stages and per-chunk variation.
+  std::uint64_t sub_seed  = 0;
+  std::uint64_t chunk_seed = 0;
 
   // Declaration only; the definition lives in StageContext.cpp where ChunkCoord/WorldChunk are fully known.
   StageContext(const GeneratorSettings& s, const ChunkCoord& coord, Pcg32 r, WorldChunk& o) noexcept;
