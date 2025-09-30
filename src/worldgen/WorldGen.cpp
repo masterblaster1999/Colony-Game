@@ -2,6 +2,7 @@
 #include "WorldGen.hpp"
 #include "Hash.hpp"
 #include "RNG.hpp"
+#include "Math.hpp"               // <-- use inline lerp/smoothstep from header
 #include <cmath>
 #include <algorithm> // std::clamp
 #include <array>
@@ -32,11 +33,8 @@ namespace {
 }
 
 // -------------------- tiny helpers --------------------
-static inline float lerp(float a, float b, float t)  { return a + (b - a) * t; }
-static inline float smoothstep(float a, float b, float x) {
-    float t = std::clamp((x - a) / (b - a), 0.f, 1.f);
-    return t * t * (3.f - 2.f * t);
-}
+// NOTE: Local lerp/smoothstep removed to avoid ODR/linkage clashes.
+// Use the inline/constexpr implementations declared in Math.hpp.
 
 // Hash-based value noise (no external deps). Deterministic & tileable via seeds.
 static inline std::uint32_t hash32(std::uint32_t x) {
@@ -133,7 +131,6 @@ WorldChunk WorldGenerator::generate(ChunkCoord coord, std::uint64_t altWorldSeed
 // 1) Base elevation (fBm on a large scale + domain-like warp via secondary fbm)
 void BaseElevationStage::generate(StageContext& ctx) {
     const int N = ctx.out.height.width();
-    const float invN = 1.0f / static_cast<float>(N);
     // Scale world coordinates so each chunk stitches nicely without visible seams
     // (Seams are mainly avoided by using deterministic seeds and continuous fbm.)
     const float baseScale = 0.005f; // lower = wider landmasses
@@ -196,8 +193,6 @@ void HydrologyStage::generate(StageContext& ctx) {
     auto& H = ctx.out.height;
     auto& F = ctx.out.flow;
     F.fill(0.f);
-
-    auto idx = [N](int x, int y){ return y*N + x; };
 
     // Single-pass "downslope" accumulation (approximate)
     // For more realism you can do multi-iteration with priority queues, but this is a start.
