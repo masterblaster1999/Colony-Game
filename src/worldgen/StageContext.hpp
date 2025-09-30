@@ -27,11 +27,14 @@ struct StageContext {
   // Writable reference to the chunk payload being generated.
   WorldChunk& out;
 
+  // Some call sites reference ctx.chunk; make it an alias of `out`.
+  WorldChunk& chunk;
+
   // Templated ctor avoids requiring complete types at header-parse time.
   // It will be instantiated only where Coord/WorldChunk are defined (e.g., WorldGen.cpp).
   template <class Coord>
   StageContext(const GeneratorSettings& s, const Coord& coord, Pcg32 r, WorldChunk& o) noexcept
-    : settings(s), chunkX(coord.x), chunkY(coord.y), rng(r), out(o)
+    : settings(s), chunkX(coord.x), chunkY(coord.y), rng(r), out(o), chunk(o)
   {
     // Infer dimensions from the chunk's height grid.
     // (Fields.hpp defines Grid::width()/height().)
