@@ -3,8 +3,11 @@
 #include "Hash.hpp"
 #include "RNG.hpp"
 #include <cmath>
-#include <algorithm>
+#include <algorithm> // std::clamp
 #include <array>
+#include <vector>
+#include <utility>
+#include <cstdint>
 
 namespace colony::worldgen {
 
@@ -142,8 +145,8 @@ void BaseElevationStage::generate(StageContext& ctx) {
     for (int y=0; y<N; ++y) {
         for (int x=0; x<N; ++x) {
             // Worldspace (continuous across chunks)
-            const float wx = (ctx.chunk.x * N + x) * ctx.settings.cellSizeMeters * baseScale;
-            const float wy = (ctx.chunk.y * N + y) * ctx.settings.cellSizeMeters * baseScale;
+            const float wx = (ctx.chunkX * N + x) * ctx.settings.cellSizeMeters * baseScale;
+            const float wy = (ctx.chunkY * N + y) * ctx.settings.cellSizeMeters * baseScale;
 
             // subtle warp
             const float warpX = fbm2D(wx, wy, sB, 3, 2.03f, 0.5f) * 2.f - 1.f;
@@ -171,7 +174,7 @@ void ClimateStage::generate(StageContext& ctx) {
 
     for (int y=0; y<N; ++y) {
         for (int x=0; x<N; ++x) {
-            const float lat = ((ctx.chunk.y * N + y) / 8192.0f);     // fake "latitude" wrap
+            const float lat = ((ctx.chunkY * N + y) / 8192.0f);     // fake "latitude" wrap
             const float latT = lerp(tempSeaLevelEquator, tempSeaLevelPole, std::fmod(std::abs(lat), 1.0f));
             const float elev = ctx.out.height.at(x,y);                // 0..1
 
