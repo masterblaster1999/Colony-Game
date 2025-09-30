@@ -239,9 +239,11 @@ if(BUILD_SHADERS AND NOT TARGET shaders)
     message(WARNING "DXC not found on PATH or SDK; set DXC_EXE or install the DirectX Shader Compiler. Shaders will not be compiled.")
   endif()
 
-  if(DXC_EXE AND EXISTS "${CMAKE_SOURCE_DIR}/shaders")
+  if(DXC_EXE AND (EXISTS "${CMAKE_SOURCE_DIR}/shaders" OR EXISTS "${CMAKE_SOURCE_DIR}/src/pcg/shaders"))
+    # Compile from both the root shaders/ and the PCG shaders/ folders
     file(GLOB_RECURSE HLSL_SOURCES CONFIGURE_DEPENDS
       "${CMAKE_SOURCE_DIR}/shaders/*.hlsl"
+      "${CMAKE_SOURCE_DIR}/src/pcg/shaders/*.hlsl"
     )
     set(SHADER_BIN_DIR "${CMAKE_BINARY_DIR}/shaders")
     file(MAKE_DIRECTORY "${SHADER_BIN_DIR}")
@@ -292,6 +294,12 @@ if(BUILD_SHADERS AND NOT TARGET shaders)
       endif()
 
       get_filename_component(NAME_WE "${SRC}" NAME_WE)
+
+      # Per-file overrides (PCG compute shader uses 'main' entry)
+      if("${NAME_WE}" STREQUAL "noise_fbm_cs")
+        set(ENTRY "main")
+      endif()
+
       set(OUTFILE "${SHADER_BIN_DIR}/${NAME_WE}.cso")
 
       # Build command:
@@ -305,6 +313,7 @@ if(BUILD_SHADERS AND NOT TARGET shaders)
                 $<$<NOT:$<CONFIG:Debug>>:-Qstrip_debug>
                 -Fo "${OUTFILE}"
                 -I "${CMAKE_SOURCE_DIR}/shaders"
+                -I "${CMAKE_SOURCE_DIR}/src/pcg/shaders"
                 "${SRC}"
         DEPENDS "${SRC}"
         COMMENT "DXC ${PROFILE} ${SRC} -> ${OUTFILE}"
@@ -317,11 +326,57 @@ if(BUILD_SHADERS AND NOT TARGET shaders)
       add_custom_target(shaders ALL DEPENDS ${_BUILT_CSOS})
       set_property(TARGET shaders PROPERTY FOLDER "assets")
       # Make compiled shaders easy to find from the debugger and install step
-      # (Install section below already prefers ${CMAKE_BINARY_DIR}/shaders if it exists)
     else()
       message(STATUS "No HLSL shaders compiled (no matching *.hlsl with stage suffix).")
     endif()
   endif()
+endif()
+
+# ===========================
+#   PCG library & demo (NEW)
+# ===========================
+option(PCG_USE_YAML   "Enable YAML storylets in the pcg library" OFF)
+option(BUILD_PCG_DEMO "Build the PCG demo tool"                  ON)
+
+# ---- PCG static library ----
+set(PCG_SRC
+    src/pcg/SeededRng.cpp
+    src/pcg/Noise.cpp
+    src/pcg/TerrainGen.cpp
+    src/pcg/Rivers.cpp
+    src/pcg/Biomes.cpp
+    src/pcg/WfcLayout.cpp
+    src/pcg/Weather.cpp
+    src/pcg/NoiseCS.cpp
+)
+add_library(pcg STATIC ${PCG_SRC})
+target_include_directories(pcg PUBLIC ${CMAKE_SOURCE_DIR}/src)
+set_property(TARGET pcg PROPERTY FOLDER "libs")
+
+if(PCG_USE_YAML)
+  find_package(yaml-cpp CONFIG REQUIRED)  # vcpkg: yaml-cpp
+  target_compile_definitions(pcg PUBLIC PCG_USE_YAML)
+  target_link_libraries(pcg PUBLIC yaml-cpp)
+  target_sources(pcg PRIVATE src/pcg/Storylets.cpp)
+endif()
+
+# ---- PCG demo tool ----
+if(BUILD_PCG_DEMO AND EXISTS "${CMAKE_SOURCE_DIR}/src/tools/main_pcg_demo.cpp")
+  add_executable(pcg_demo src/tools/main_pcg_demo.cpp)
+  target_link_libraries(pcg_demo PRIVATE pcg)
+  target_include_directories(pcg_demo PRIVATE ${CMAKE_SOURCE_DIR}/src)
+  if(TARGET colony_build_options)
+    target_link_libraries(pcg_demo PRIVATE colony_build_options)
+  endif()
+  if(TARGET shaders)
+    add_dependencies(pcg_demo shaders)
+  endif()
+  # Let the demo find compiled shaders next to the exe (same convention as main app)
+  target_compile_definitions(pcg_demo PRIVATE SHADER_DIR=L\"shaders/\")
+  if(MSVC)
+    set_target_properties(pcg_demo PROPERTIES VS_DEBUGGER_WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}")
+  endif()
+  set_property(TARGET pcg_demo PROPERTY FOLDER "tools")
 endif()
 
 # ===========================
@@ -337,6 +392,9 @@ if(TARGET ColonyGame)
   if(COLONY_THIRDPARTY_LIBS)
     target_link_libraries(ColonyGame PRIVATE ${COLONY_THIRDPARTY_LIBS})
   endif()
+
+  # Link in the PCG library
+  target_link_libraries(ColonyGame PRIVATE pcg)
 
   # Apply centralized Windows compile definitions to the main target
   if(TARGET colony_build_options)
