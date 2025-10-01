@@ -162,8 +162,8 @@ private:
     OneShotSchedule wolvesNight_;
     OneShotSchedule thunder_;
 
-    // RNG
-    std::mt19937 rng_{std::random_device{}()};
+    // RNG (used by const selection helpers; distributions require non-const URNG references)
+    mutable std::mt19937 rng_{std::random_device{}()};
 
     // Last frame state to detect changes
     WorldState lastState_{};
