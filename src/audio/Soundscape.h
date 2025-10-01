@@ -76,8 +76,10 @@ private:
     Soundscape& operator=(const Soundscape&) = delete;
 
     // Internal helpers and structures
+public: // Make Category usable from Soundscape.cpp and other TUs
     enum class Category : uint8_t { Bed, Wind, Water, Wildlife, Rain, Event, Thunder, Count };
 
+private:
     struct Group {
         ma_sound_group handle{};
         bool initialized = false;
