@@ -1,4 +1,4 @@
-// VerticalSlice.cpp - build as "ColonySlice"
+// / VerticalSlice.cpp - build as "ColonySlice"
 // Compile: MSVC, C++17. Link: d3d11.lib dxgi.lib d3dcompiler.lib
 //
 // Upgrades included:
@@ -47,6 +47,10 @@
 
 // >>> Added: vertical-slice objective system glue
 #include "slice/ObjectiveTracker.h"
+// <<<
+
+// >>> PATCH 12: Forward declaration so inline members can reference the global
+extern slice::ObjectiveTracker g_slice;
 // <<<
 
 #pragma comment(lib, "d3d11.lib")
@@ -926,7 +930,8 @@ struct Slice {
 // --------------------------------------------------------------------------------------
 // Added: global objective tracker instance + basic localization
 // --------------------------------------------------------------------------------------
-static slice::ObjectiveTracker g_slice =
+// PATCH 12: provide the single global definition (matches the 'extern' above)
+slice::ObjectiveTracker g_slice =
     slice::ObjectiveTracker::MakeDefault(/*surviveSeconds*/ 600.0,
                                          /*structuresToBuild*/ 2,
                                          /*itemsToCraft*/ 1,
