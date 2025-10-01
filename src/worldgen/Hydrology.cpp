@@ -9,6 +9,7 @@
 #include <queue>
 #include <utility>
 #include <vector>
+#include <type_traits>
 
 // ================================================================
 // Build toggles (safe defaults). You can override in CMake:
@@ -33,6 +34,87 @@
 namespace cg {
 
 // ---------------------------------------------------------------
+// Member detection helpers (compat with renamed params)
+// ---------------------------------------------------------------
+template<typename T, typename = void> struct has_tempLatGradient   : std::false_type {};
+template<typename T> struct has_tempLatGradient<T,   std::void_t<decltype(std::declval<const T&>().tempLatGradient)>>   : std::true_type {};
+
+template<typename T, typename = void> struct has_tempLapseRate     : std::false_type {};
+template<typename T> struct has_tempLapseRate<T,     std::void_t<decltype(std::declval<const T&>().tempLapseRate)>>     : std::true_type {};
+
+template<typename T, typename = void> struct has_tempSeaLevel      : std::false_type {};
+template<typename T> struct has_tempSeaLevel<T,      std::void_t<decltype(std::declval<const T&>().tempSeaLevel)>>      : std::true_type {};
+
+template<typename T, typename = void> struct has_climateSeaLevel   : std::false_type {};
+template<typename T> struct has_climateSeaLevel<T,   std::void_t<decltype(std::declval<const T&>().seaLevel)>>          : std::true_type {};
+
+template<typename T, typename = void> struct has_hydroSeaLevel     : std::false_type {};
+template<typename T> struct has_hydroSeaLevel<T,     std::void_t<decltype(std::declval<const T&>().seaLevel)>>          : std::true_type {};
+
+template<typename T, typename = void> struct has_hydroSeaLevelM    : std::false_type {};
+template<typename T> struct has_hydroSeaLevelM<T,    std::void_t<decltype(std::declval<const T&>().seaLevelMeters)>>    : std::true_type {};
+
+template<typename T, typename = void> struct has_incision_m        : std::false_type {};
+template<typename T> struct has_incision_m<T,        std::void_t<decltype(std::declval<const T&>().incision_m)>>        : std::true_type {};
+
+template<typename T, typename = void> struct has_incision_m_exp    : std::false_type {};
+template<typename T> struct has_incision_m_exp<T,    std::void_t<decltype(std::declval<const T&>().incisionExp_m)>>     : std::true_type {};
+
+template<typename T, typename = void> struct has_incision_n        : std::false_type {};
+template<typename T> struct has_incision_n<T,        std::void_t<decltype(std::declval<const T&>().incision_n)>>        : std::true_type {};
+
+template<typename T, typename = void> struct has_incision_n_exp    : std::false_type {};
+template<typename T> struct has_incision_n_exp<T,    std::void_t<decltype(std::declval<const T&>().incisionExp_n)>>     : std::true_type {};
+
+template<typename T, typename = void> struct has_smoothIterations  : std::false_type {};
+template<typename T> struct has_smoothIterations<T,  std::void_t<decltype(std::declval<const T&>().smoothIterations)>>  : std::true_type {};
+
+template<typename T, typename = void> struct has_smoothIters       : std::false_type {};
+template<typename T> struct has_smoothIters<T,       std::void_t<decltype(std::declval<const T&>().smoothIters)>>       : std::true_type {};
+
+template<typename T>
+static float tempLatGradient_of(const T& c) {
+    if constexpr (has_tempLatGradient<T>::value) return static_cast<float>(c.tempLatGradient);
+    else                                         return static_cast<float>(c.latGradientKPerDeg);
+}
+template<typename T>
+static float tempLapseRate_of(const T& c) {
+    if constexpr (has_tempLapseRate<T>::value) return static_cast<float>(c.tempLapseRate);
+    else                                       return static_cast<float>(c.lapseRateKPerKm);
+}
+template<typename T>
+static float tempSeaLevel_of(const T& c) {
+    if constexpr (has_tempSeaLevel<T>::value) return static_cast<float>(c.tempSeaLevel);
+    else                                       return static_cast<float>(c.seaLevelTempK);
+}
+template<typename T>
+static float seaLevelClimate_of(const T& c) {
+    if constexpr (has_climateSeaLevel<T>::value) return static_cast<float>(c.seaLevel);
+    else                                          return 0.0f; // fallback if climate sea-level not modeled
+}
+template<typename T>
+static float seaLevel_of(const T& h) {
+    if constexpr (has_hydroSeaLevel<T>::value)  return static_cast<float>(h.seaLevel);
+    else if constexpr (has_hydroSeaLevelM<T>::value) return static_cast<float>(h.seaLevelMeters);
+    else return 0.0f;
+}
+template<typename T>
+static float incision_m_of(const T& h) {
+    if constexpr (has_incision_m<T>::value)     return static_cast<float>(h.incision_m);
+    else                                        return static_cast<float>(h.incisionExp_m);
+}
+template<typename T>
+static float incision_n_of(const T& h) {
+    if constexpr (has_incision_n<T>::value)     return static_cast<float>(h.incision_n);
+    else                                        return static_cast<float>(h.incisionExp_n);
+}
+template<typename T>
+static int smoothIterations_of(const T& h) {
+    if constexpr (has_smoothIterations<T>::value) return h.smoothIterations;
+    else                                           return h.smoothIters;
+}
+
+// ---------------------------------------------------------------
 // Small utilities and constants
 // ---------------------------------------------------------------
 static inline int idx(int x, int y, int W) { return y * W + x; }
@@ -53,14 +135,19 @@ static inline bool inBounds(int x,int y,int W,int H){ return (x>=0 && x<W && y>=
 static HeightField computeTemperature(const HeightField& H, const ClimateParams& C)
 {
     HeightField T(H.w, H.h);
+    const float cGrad   = tempLatGradient_of(C);
+    const float cLapse  = tempLapseRate_of(C);
+    const float cT0     = tempSeaLevel_of(C);
+    const float seaEL   = seaLevelClimate_of(C);
+
     for (int y=0; y<H.h; ++y) {
         // Positive y is "south" in our grid; apply a simple north-south gradient
-        float latTerm = C.tempLatGradient * float(y - H.h/2);
+        float latTerm = cGrad * float(y - H.h/2);
         for (int x=0; x<H.w; ++x) {
             float z = H.at(x,y);
-            float elev = z - C.seaLevel;
-            float lapse = C.tempLapseRate * std::max(0.0f, elev);
-            T.at(x,y) = C.tempSeaLevel + latTerm - lapse;
+            float elev = z - seaEL;
+            float lapse = cLapse * std::max(0.0f, elev);
+            T.at(x,y) = cT0 + latTerm - lapse;
         }
     }
     return T;
@@ -72,7 +159,7 @@ static HeightField computeTemperature(const HeightField& H, const ClimateParams&
 static std::vector<int> distanceToCoast(const HeightField& H, float seaLevel)
 {
     const int W=H.w, HH=H.h, N=W*HH;
-    std::vector<int> dist(N, INT32_MAX);
+    std::vector<int> dist(N, std::numeric_limits<int>::max());
     std::queue<int> q;
 
     // Initialize queue with ocean cells and their immediate land neighbors
@@ -147,15 +234,14 @@ static void addPrecipOnePass(const HeightField& H,
     if (axisMajor == 0) { // x-major: sweep rows along x
         for (int y=0; y<HH; ++y) {
             float humidity = 0.0f;
-            int x0 = sx; int prevx = sx;
-            float prevh = H.at(prevx,y);
+            float prevh = H.at(sx,y);
             for (int t=0; t<W; ++t) {
                 int x = sx + t*stepx; if (x < 0 || x >= W) break;
                 float h = H.at(x,y);
 
                 // Evaporation source scaled by coast proximity and submergence
                 float nearCoast = coastBoost(x,y);
-                float evap = C.baseEvaporation * nearCoast * clamp(1.0f - (h - C.seaLevel) * 0.01f, 0.0f, 1.0f);
+                float evap = C.baseEvaporation * nearCoast * clamp(1.0f - (h - seaLevelClimate_of(C)) * 0.01f, 0.0f, 1.0f);
                 humidity = clamp(humidity + evap, 0.0f, 4.0f);
 
                 // Orographic uplift on upslope
@@ -176,20 +262,19 @@ static void addPrecipOnePass(const HeightField& H,
                 humidity -= br;
                 Paccum.at(x,y) += weight * br;
 
-                prevx = x; prevh = h;
+                prevh = h;
             }
         }
     } else { // y-major: sweep columns along y
         for (int x=0; x<W; ++x) {
             float humidity = 0.0f;
-            int y0 = sy; int prevy = sy;
-            float prevh = H.at(x,prevy);
+            float prevh = H.at(x,sy);
             for (int t=0; t<HH; ++t) {
                 int y = sy + t*stepy; if (y < 0 || y >= HH) break;
                 float h = H.at(x,y);
 
                 float nearCoast = coastBoost(x,y);
-                float evap = C.baseEvaporation * nearCoast * clamp(1.0f - (h - C.seaLevel) * 0.01f, 0.0f, 1.0f);
+                float evap = C.baseEvaporation * nearCoast * clamp(1.0f - (h - seaLevelClimate_of(C)) * 0.01f, 0.0f, 1.0f);
                 humidity = clamp(humidity + evap, 0.0f, 4.0f);
 
                 float dh = h - prevh;
@@ -207,7 +292,7 @@ static void addPrecipOnePass(const HeightField& H,
                 humidity -= br;
                 Paccum.at(x,y) += weight * br;
 
-                prevy = y; prevh = h;
+                prevh = h;
             }
         }
     }
@@ -216,7 +301,7 @@ static void addPrecipOnePass(const HeightField& H,
 static HeightField computePrecipMultiWind(const HeightField& H, const ClimateParams& C)
 {
     HeightField P(H.w, H.h);
-    auto coastDist = distanceToCoast(H, C.seaLevel);
+    auto coastDist = distanceToCoast(H, seaLevelClimate_of(C));
 
     // Decompose wind into cardinal passes with nonnegative weights
     float wE = std::max(0.f,  C.windX);
@@ -227,8 +312,8 @@ static HeightField computePrecipMultiWind(const HeightField& H, const ClimatePar
     if (wsum <= 1e-6f) { wE = 1.0f; wsum = 1.0f; }
     wE/=wsum; wW/=wsum; wS/=wsum; wN/=wsum;
 
-    // Repeat passes to mimic seasonality (C.passes)
-    for (int pass=0; pass<std::max(1, C.passes); ++pass) {
+    const int passCount = std::max(1, static_cast<int>(C.passes));
+    for (int pass=0; pass<passCount; ++pass) {
         // East wind: x-major left->right
         addPrecipOnePass(H, coastDist, C, 0, /*sx*/0, +1, /*sy*/0, +1, wE, P);
         // West wind: x-major right->left
@@ -627,6 +712,7 @@ static HeightField carveChannels(const HeightField& base,
                                  std::vector<uint8_t>& outLakeMask)
 {
     const int W=base.w, H=base.h, N=W*H;
+    const float sea = seaLevel_of(Hpar);
 
     // Lakes where fill-depth exceeds threshold
     outLakeMask.assign(N, 0);
@@ -646,17 +732,20 @@ static HeightField carveChannels(const HeightField& base,
 
     // Base incision field from stream power E = K A^m S^n
     std::vector<float> incision(N, 0.0f);
+    const float mExp = incision_m_of(Hpar);
+    const float nExp = incision_n_of(Hpar);
+
     for (int y=0;y<H;++y){
         for (int x=0;x<W;++x){
             int i = idx(x,y,W);
             if (!outRiverMask[i]) continue;
-            if (filled.at(x,y) <= Hpar.seaLevel) continue; // ocean excluded
-            if (outLakeMask[i]) continue;                  // lake surfaces excluded
+            if (filled.at(x,y) <= sea) continue; // ocean excluded
+            if (outLakeMask[i]) continue;        // lake surfaces excluded
 
             float A = accum[i];
             float S = localSteepestSlope(filled, x,y);
-            float E = Hpar.incisionK * std::pow(std::max(0.0f,A), Hpar.incision_m)
-                                   * std::pow(std::max(HYDRO_MIN_SLOPE,S), Hpar.incision_n);
+            float E = Hpar.incisionK * std::pow(std::max(0.0f,A), mExp)
+                                   * std::pow(std::max(HYDRO_MIN_SLOPE,S), nExp);
 
             // Scale by order to widen/deepen higher-order channels
             float ord = std::max<uint8_t>(1, order[i]);
@@ -673,11 +762,12 @@ static HeightField carveChannels(const HeightField& base,
 
     // Apply incision, clamp to sea level
     for (int i=0;i<N;++i){
-        carved.data[i] = std::max(Hpar.seaLevel, carved.data[i] - incision[i]);
+        carved.data[i] = std::max(sea, carved.data[i] - incision[i]);
     }
 
     // Light smoothing along river cells to remove small terracing artifacts
-    for (int it=0; it<Hpar.smoothIterations; ++it){
+    const int smoothIters = smoothIterations_of(Hpar);
+    for (int it=0; it<smoothIters; ++it){
         std::vector<float> tmp = carved.data;
         for (int y=0;y<H;++y){
             for (int x=0;x<W;++x){
@@ -700,10 +790,10 @@ static HeightField carveChannels(const HeightField& base,
     for (int y=0;y<H;++y){
         for (int x=0;x<W;++x){
             int i = idx(x,y,W);
-            if (filled.at(x,y) <= Hpar.seaLevel) {
-                outWaterLevel.at(x,y) = Hpar.seaLevel;         // ocean
+            if (filled.at(x,y) <= sea) {
+                outWaterLevel.at(x,y) = sea;            // ocean
             } else if (outLakeMask[i]) {
-                outWaterLevel.at(x,y) = filled.at(x,y);        // lake surface at spill level
+                outWaterLevel.at(x,y) = filled.at(x,y); // lake surface at spill level
             } else if (outRiverMask[i]) {
                 outWaterLevel.at(x,y) = carved.at(x,y) + 0.12f; // shallow skim over channel
             } else {
@@ -723,16 +813,17 @@ HydroOutputs buildHydrology(const HeightField& baseHeight,
                             const HydroParams& hydro)
 {
     const int W=baseHeight.w, H=baseHeight.h;
+    const float sea = seaLevel_of(hydro);
 
     // 1) Climate fields
     HeightField temperature = computeTemperature(baseHeight, climate);
     HeightField precip      = computePrecipMultiWind(baseHeight, climate);
 
     // 2) Fill depressions to guarantee drainage (to sea/lake spillways)
-    HeightField filled = priorityFloodFill(baseHeight, hydro.seaLevel);
+    HeightField filled = priorityFloodFill(baseHeight, sea);
 
     // 3) Flow routing (Tarboton D∞ recipients + D8 diagnostic)
-    FlowRecipients G = computeFlowRecipientsDInf(filled, hydro.seaLevel);
+    FlowRecipients G = computeFlowRecipientsDInf(filled, sea);
     std::vector<uint8_t> d8Primary = G.primaryDir; // for diagnostics, orders, and mask topology
 
     // 4) Flow accumulation (rain-weighted)
