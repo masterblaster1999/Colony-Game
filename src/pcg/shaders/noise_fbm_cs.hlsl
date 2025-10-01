@@ -1,60 +1,123 @@
-// Compute fBm into an R32_FLOAT texture
-// Threadgroup = 8x8
+// src/pcg/shaders/noise_fbm_cs.hlsl
+// SM 6.7 compute: fBM from value noise with a 32-bit integer hash.
+// Windows / DXC only.
 
+// ----------------------------------------
+// Thread group configuration
+// ----------------------------------------
+#ifndef NOISE_THREADS_X
+  #define NOISE_THREADS_X 8
+#endif
+#ifndef NOISE_THREADS_Y
+  #define NOISE_THREADS_Y 8
+#endif
+
+// ----------------------------------------
+// Resources
+// ----------------------------------------
 RWTexture2D<float> OutTex : register(u0);
 
-cbuffer Params : register(b0)
+// Keep 16-byte packing rules in mind for cbuffers.
+// 4 * 4B scalars per 16B register.
+cbuffer NoiseParams : register(b0)
 {
-    float2  InvDim;      // 1/width, 1/height
-    float   Scale;       // base frequency scale
-    int     Octaves;
-    float   Lacunarity;
-    float   Gain;
-    float   Z;           // 3D z slice
-    uint    Seed;        // 32-bit seed
-};
+    uint2  OutputSize;    // xy
+    float2 InvOutputSize; // 1/size, 1/size
 
-[numthreads(8,8,1)]
-void main(uint3 id : SV_DispatchThreadID)
+    float  BaseFreq;      // e.g., 1.0
+    float  Lacunarity;    // e.g., 2.0
+    float  Gain;          // e.g., 0.5
+    uint   Octaves;       // e.g., 6
+
+    uint   Seed;          // base seed
+    uint   _pad0;         // padding to keep 16B alignment
+    float2 Offset;        // uv offset in noise domain
+}
+
+// ----------------------------------------
+// Declarations (so usage can precede definitions)
+// ----------------------------------------
+uint  hash32(uint x);
+float n2(float2 p, uint s);
+
+// ----------------------------------------
+// Definitions
+// ----------------------------------------
+
+// "wyhash"/PCG-style avalanching integer hash (32-bit)
+uint hash32(uint x)
 {
-    uint2 dim;
-    OutTex.GetDimensions(dim.x, dim.y);
-    if (id.x >= dim.x || id.y >= dim.y) return;
+    x ^= x >> 16;
+    x *= 0x7feb352d;
+    x ^= x >> 15;
+    x *= 0x846ca68b;
+    x ^= x >> 16;
+    return x;
+}
 
-    float2 uv = float2(id.x * InvDim.x, id.y * InvDim.y);
+// Map a 32-bit hash to [0,1)
+float hash01(uint x)
+{
+    // Take the upper 24 bits (uniform mantissa) for float precision
+    return (float)(hash32(x) >> 8) * (1.0 / 16777216.0);
+}
 
-    // hash helpers
-    uint hash(uint x){ x ^= x>>16; x*=0x7feb352d; x^=x>>15; x*=0x846ca68b; x^=x>>16; return x; }
-    float n2(float2 p, uint s) {
-        // simple gradient noise
-        uint i = hash(asuint(p.x) ^ (hash(asuint(p.y)) + s));
-        float2 g = normalize(float2((i & 0xffu)/255.0-0.5, ((i>>8)&0xffu)/255.0-0.5));
-        float2 f = frac(p) - 0.5;
-        float2 ip = floor(p);
-        // 2x2 quad blend
-        float v = 0;
-        [unroll] for(int oy=0;oy<2;++oy)
-        [unroll] for(int ox=0;ox<2;++ox) {
-            float2 pp = f - float2(ox,oy);
-            float2 gg = normalize(float2(hash(asuint(ip.x+ox) ^ (hash(asuint(ip.y+oy))+s)) & 1023u,
-                                         hash(asuint(ip.y+oy) ^ (hash(asuint(ip.x+ox))+s)) & 1023u) - 512.0) / 512.0;
-            float w = smoothstep(0,1,1-abs(pp.x)) * smoothstep(0,1,1-abs(pp.y));
-            v += dot(gg, pp) * w;
-        }
-        return v;
-    }
+// 2D value noise in [-1,1] with smooth interpolation.
+// 'p' is in noise-space (continuous); 's' is a salt/seed.
+float n2(float2 p, uint s)
+{
+    int2  ip = (int2)floor(p);
+    float2 f = frac(p);
 
-    float amp = 0.5;
-    float freq = 1.0;
-    float val = 0.0;
-    float2 p = uv / Scale;
+    // Hash lattice corners (use distinct large primes for mixing).
+    // asuint(int2) keeps tiling stable for negative coords.
+    uint2 u = asuint(ip);
+    uint h00 = (u.x * 73856093u)  ^ (u.y * 19349663u)  ^ s;
+    uint h10 = ((u.x + 1u) * 73856093u) ^ (u.y * 19349663u)  ^ s;
+    uint h01 = (u.x * 73856093u)  ^ ((u.y + 1u) * 19349663u) ^ s;
+    uint h11 = ((u.x + 1u) * 73856093u) ^ ((u.y + 1u) * 19349663u) ^ s;
 
+    float v00 = hash01(h00);
+    float v10 = hash01(h10);
+    float v01 = hash01(h01);
+    float v11 = hash01(h11);
+
+    // Smoothstep-like fade
+    float2 t = f * f * (3.0 - 2.0 * f);
+    float v0 = lerp(v00, v10, t.x);
+    float v1 = lerp(v01, v11, t.x);
+    float v  = lerp(v0,  v1,  t.y);
+
+    // Map [0,1) -> [-1,1]
+    return v * 2.0 - 1.0;
+}
+
+// ----------------------------------------
+// Entry point
+// ----------------------------------------
+[numthreads(NOISE_THREADS_X, NOISE_THREADS_Y, 1)]
+void main(uint3 tid : SV_DispatchThreadID)
+{
+    if (tid.x >= OutputSize.x || tid.y >= OutputSize.y)
+        return;
+
+    // Normalized coords (center of texel) with user offset
+    float2 uv = (float2(tid.xy) + 0.5) * InvOutputSize + Offset;
+
+    float freq = BaseFreq;
+    float amp  = 1.0;
+    float val  = 0.0;
+
+    // Fractal Brownian Motion
     [loop]
-    for (int o=0;o<Octaves;++o) {
-        val += amp * n2(p * freq, Seed + o * 1619u);
+    for (uint o = 0; o < Octaves; ++o)
+    {
+        val += amp * n2(uv * freq, Seed + o * 1619u);
         freq *= Lacunarity;
         amp  *= Gain;
     }
 
-    OutTex[id.xy] = val; // approx [-1,1] scaled by amp sum
+    // Remap from ~[-OctaveSum, OctaveSum] to [0,1]; keep simple here
+    // Caller can re-normalize as desired.
+    OutTex[tid.xy] = saturate(val * 0.5 + 0.5);
 }
