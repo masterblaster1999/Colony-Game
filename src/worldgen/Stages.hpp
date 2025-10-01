@@ -87,7 +87,6 @@ inline float smootherstep(float a, float b, float x) noexcept {
 }
 
 // =================================================================================================
-—
 // Coordinates, hashing, deterministic mixing
 // =================================================================================================
 struct ChunkCoord { std::int32_t x = 0, y = 0; };
@@ -218,12 +217,12 @@ struct GeneratorSettings {
 };
 
 // =================================================================================================
-// Noise lives in worldgen/Noise.hpp — do not provide bodies here.
+// Noise lives in worldgen/Noise.hpp - do not provide bodies here.
 // =================================================================================================
 
 // =================================================================================================
-// Alias table for O(1) discrete sampling (Walker 1974; Vose 1991)
-// =================================================================================================
+/* Alias table for O(1) discrete sampling (Walker 1974; Vose 1991).
+   References: Walker (1974, 1977), Vose (1991), PBR Book (4e) Appendix A.1. */
 class AliasTable {
 public:
     AliasTable() = default;
@@ -361,10 +360,12 @@ scatter_objects(const StageContext& ctx, StageId sid, float minDistanceMeters,
                 std::uint32_t kindId, std::uint32_t tags, int maxCount = -1,
                 std::function<float(Vec2)> maskOrDensity = {}) {
     Vec2 org = ctx.chunk_origin_world();
-    const float span = ctx.cellSize() * (float)ctx.cells();
+    const float tileSpanMeters = ctx.cellSize() * static_cast<float>(ctx.cells());
     auto localRng = ctx.sub_rng(sid, "scatter");
     auto pts = PoissonDiskSampler::generate(
-        std::max(0.01f, minDistanceMeters), org, {org.x+span, org.y+span}, localRng, 30, std::move(maskOrDensity));
+        std::max(0.01f, minDistanceMeters), org,
+        Vec2{org.x + tileSpanMeters, org.y + tileSpanMeters},
+        localRng, 30, std::move(maskOrDensity));
 
     std::vector<ObjectInstance> out;
     out.reserve(pts.size());
@@ -422,7 +423,7 @@ inline void box_blur_v(float* dst, const float* src, int w, int h, int r) {
         }
     }
 }
-// three-pass “almost Gaussian” (sigma in pixels); tmp and buf must be w*h
+// three-pass "almost Gaussian" (sigma in pixels); tmp and buf must be w*h
 inline std::array<int,3> radii_for_sigma(float sigma) {
     // Three equal boxes approximate Gaussian; radius roughly sigma*sqrt(3)
     int r = std::max(1, int(std::floor(sigma * 1.7320508f)));
@@ -641,7 +642,7 @@ inline void thermal_step(float* height, int w, int h, float talusAngleDeg=30.f, 
     for (size_t i=0;i<(size_t)w*h;i++) height[i] += delta[i];
 }
 
-// Extremely simple hydraulic “rain & drain” step.
+// Extremely simple hydraulic "rain & drain" step.
 inline void hydraulic_step(float* height, float* water, float* sediment,
                            int w, int h, float rain=0.01f, float evap=0.002f,
                            float erodeK=0.03f, float depositK=0.03f) {
