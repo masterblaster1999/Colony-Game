@@ -1,5 +1,6 @@
 // Game.cpp — SDL version (defensive include & future-proofing)
 //
+//
 // Notes (merged improvements):
 // - Deterministic fixed-timestep loop now *bounds catch-up frames* to avoid hitches.
 // - Pause-on-focus-loss so the simulation doesn’t “jump” when you alt-tab.
@@ -55,6 +56,11 @@
 
 // --- Pathfinding module wrapper ---
 #include "ai/Pathfinding.hpp"
+
+// Unshadow global namespace: pick symbols explicitly from ::cg::pf
+using ::cg::pf::GridView;
+using ::cg::pf::Point;
+using ::cg::pf::Result;
 
 // --- Windows atomic save helpers (mini patch #3) ---
 #include "io/AtomicFile.h"
@@ -284,19 +290,19 @@ static constexpr int kPathNodesPerStep = 2048;
     if (!w.inBounds(start.x,start.y) || !w.inBounds(goal.x,goal.y)) return false;
     if (!w.at(start.x,start.y).walkable || !w.at(goal.x,goal.y).walkable) return false;
 
-    cg::pf::GridView grid{
+    GridView grid{
         w.W, w.H,
         [&](int x, int y) { return w.inBounds(x,y) && w.at(x,y).walkable; },
         [&](int x, int y) { return int(w.at(x,y).cost); }
     };
 
-    std::vector<cg::pf::Point> path;
-    const auto res = cg::pf::aStar(grid,
-                                   {start.x, start.y},
-                                   {goal.x,  goal.y},
-                                   path,
-                                   /*maxExpandedNodes*/ kPathNodesPerStep);
-    if (res != cg::pf::Result::Found || path.empty()) return false;
+    std::vector<Point> path;
+    const auto res = ::cg::pf::aStar(grid,
+                                     {start.x, start.y},
+                                     {goal.x,  goal.y},
+                                     path,
+                                     /*maxExpandedNodes*/ kPathNodesPerStep);
+    if (res != Result::Found || path.empty()) return false;
 
     // Preserve previous behavior: skip the start tile (current position)
     out.clear();
@@ -1664,3 +1670,4 @@ int Game::Run() {
     GameImpl impl(window_, renderer_, opts_);
     return impl.run();
 }
+
