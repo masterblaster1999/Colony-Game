@@ -86,6 +86,12 @@ inline float smootherstep(float a, float b, float x) noexcept {
     float t = clamp01((x - a) / (b - a)); return t*t*t*(t*(t*6.f - 15.f) + 10.f);
 }
 
+// Distinctly named utility to compute span in meters from cell size and count,
+// to avoid name collisions with any similarly named helpers elsewhere.
+[[nodiscard]] constexpr float tile_span_meters_of(float cellSizeMeters, int cellsPerChunk) noexcept {
+    return cellSizeMeters * static_cast<float>(cellsPerChunk);
+}
+
 // =================================================================================================
 // Coordinates, hashing, deterministic mixing
 // =================================================================================================
@@ -360,11 +366,12 @@ scatter_objects(const StageContext& ctx, StageId sid, float minDistanceMeters,
                 std::uint32_t kindId, std::uint32_t tags, int maxCount = -1,
                 std::function<float(Vec2)> maskOrDensity = {}) {
     Vec2 org = ctx.chunk_origin_world();
-    const float tileSpanMeters = ctx.cellSize() * static_cast<float>(ctx.cells());
+    // Renamed and clearly a VALUE (not a function) to avoid accidental calls.
+    const float tile_span_meters = tile_span_meters_of(ctx.cellSize(), ctx.cells());
     auto localRng = ctx.sub_rng(sid, "scatter");
     auto pts = PoissonDiskSampler::generate(
         std::max(0.01f, minDistanceMeters), org,
-        Vec2{org.x + tileSpanMeters, org.y + tileSpanMeters},
+        Vec2{org.x + tile_span_meters, org.y + tile_span_meters},
         localRng, 30, std::move(maskOrDensity));
 
     std::vector<ObjectInstance> out;
