@@ -6,6 +6,11 @@
 #endif
 #include <Windows.h> // GetPrivateProfileStringW, GetPrivateProfileIntW, GetModuleFileNameW
 #include <stdexcept>
+#include <filesystem>
+#include <string>
+#include <cwchar>   // wcstof, _snwprintf_s
+#include <cwctype>  // towlower
+#include <iterator> // std::size
 
 using namespace std::string_literals;
 
@@ -18,8 +23,8 @@ static inline std::wstring read_wstr(const wchar_t* section,
                                      const std::wstring& def,
                                      const std::wstring& path)
 {
-    // Buffer large enough for numeric/text keys; Profile API limits are big,
-    // but we only expect small values here. (Docs: up to 65535 chars). :contentReference[oaicite:2]{index=2}
+    // Buffer large enough for numeric/text keys; Profile API limits are large,
+    // but we only expect small values here.
     wchar_t buf[512]{};
     const DWORD n = ::GetPrivateProfileStringW(
         section, key, def.c_str(), buf, static_cast<DWORD>(std::size(buf)), path.c_str());
@@ -91,36 +96,36 @@ bool StagesConfig::try_load(const std::wstring& iniPath, StagesRuntimeConfig& ou
 {
     // It's okay if the file is missing; we will use defaults embedded in structs.
     // If you want to hard-fail when missing, check file existence here.
-    // Note: Profile API may map to the Registry if IniFileMapping is configured. :contentReference[oaicite:3]{index=3}
+    // Note: Profile API may map to the Registry if IniFileMapping is configured.
 
     // [stage]
-    out.stage.params.tileSizeMeters  = read_float(L"stage", L"tile_size_meters", 2.0f, iniPath);
-    out.stage.params.mapUnitsPerMeter= read_float(L"stage", L"map_units_per_meter", 1.0f, iniPath);
-    out.stage.params.grid.width      = read_int  (L"stage", L"grid_width",  512, iniPath);
-    out.stage.params.grid.height     = read_int  (L"stage", L"grid_height", 512, iniPath);
+    out.stage.params.tileSizeMeters   = read_float(L"stage", L"tile_size_meters",      2.0f, iniPath);
+    out.stage.params.mapUnitsPerMeter = read_float(L"stage", L"map_units_per_meter",   1.0f, iniPath);
+    out.stage.params.grid.width       = read_int  (L"stage", L"grid_width",             512, iniPath);
+    out.stage.params.grid.height      = read_int  (L"stage", L"grid_height",            512, iniPath);
 
 #if CG_HAS_HYDROLOGY
     // [climate]
-    out.climate.lapseRateKPerKm     = read_float(L"climate", L"lapse_rate_k_per_km",   6.5f,   iniPath);
-    out.climate.latGradientKPerDeg  = read_float(L"climate", L"lat_gradient_k_per_deg",0.5f,   iniPath);
-    out.climate.seaLevelTempK       = read_float(L"climate", L"sea_level_temp_k",      288.15f,iniPath);
+    out.climate.lapseRateKPerKm    = read_float(L"climate", L"lapse_rate_k_per_km",     6.5f,    iniPath);
+    out.climate.latGradientKPerDeg = read_float(L"climate", L"lat_gradient_k_per_deg",  0.5f,    iniPath);
+    out.climate.seaLevelTempK      = read_float(L"climate", L"sea_level_temp_k",     288.15f,    iniPath);
 
     // [hydrology]
-    out.hydro.incisionExp_m         = read_float(L"hydrology", L"incision_exp_m", 0.5f, iniPath);
-    out.hydro.incisionExp_n         = read_float(L"hydrology", L"incision_exp_n", 1.0f, iniPath);
-    out.hydro.smoothIters           = read_int  (L"hydrology", L"smooth_iters",   3,    iniPath);
+    out.hydrology.incisionExpM       = read_float(L"hydrology", L"incision_exp_m",        0.5f, iniPath);
+    out.hydrology.incisionExpN       = read_float(L"hydrology", L"incision_exp_n",        1.0f, iniPath);
+    out.hydrology.smoothIterations   = read_int  (L"hydrology", L"smooth_iters",             3, iniPath);
 #endif
 
     // [noise]
-    out.noise.fbmOctaves            = read_int  (L"noise", L"fbm_octaves",         5,    iniPath);
-    out.noise.fbmGain               = read_float(L"noise", L"fbm_gain",            0.5f, iniPath);
-    out.noise.fbmLacunarity         = read_float(L"noise", L"fbm_lacunarity",      2.0f, iniPath);
-    out.noise.domainWarpStrength    = read_float(L"noise", L"domain_warp_strength",0.75f,iniPath);
+    out.noise.fbmOctaves           = read_int  (L"noise", L"fbm_octaves",                 5,    iniPath);
+    out.noise.fbmGain              = read_float(L"noise", L"fbm_gain",                  0.5f,   iniPath);
+    out.noise.fbmLacunarity        = read_float(L"noise", L"fbm_lacunarity",            2.0f,   iniPath);
+    out.noise.domainWarpStrength   = read_float(L"noise", L"domain_warp_strength",      0.75f,  iniPath);
 
     // [debug]
-    out.debug.drawTileGrid          = read_bool (L"debug", L"draw_tile_grid",     false, iniPath);
-    out.debug.exportDebugMaps       = read_bool (L"debug", L"export_debug_maps",  false, iniPath);
-    out.debug.seed                  = read_int  (L"debug", L"seed",               42,    iniPath);
+    out.debug.drawTileGrid         = read_bool (L"debug", L"draw_tile_grid",          false,    iniPath);
+    out.debug.exportDebugMaps      = read_bool (L"debug", L"export_debug_maps",       false,    iniPath);
+    out.debug.seed                 = read_int  (L"debug", L"seed",                        42,    iniPath);
 
     return true;
 }
