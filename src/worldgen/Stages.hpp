@@ -23,19 +23,10 @@ namespace colony::worldgen {
 using colony::worldgen::tile_span_meters_of;
 using colony::worldgen::meters_to_map_units;
 
-// Assist migration: if a call-site already has `ctx`, this overload resolves.
-[[nodiscard]] inline constexpr float tile_span_meters_of(const StageContext& ctx);
-
-// If a call-site wants to chain, allow: meters_to_map_units(x, ctx)
-[[nodiscard]] inline constexpr float meters_to_map_units(float meters, const StageContext& ctx);
-
-// ---- Implementations simply forward to the StageParams forms ----
-inline constexpr float tile_span_meters_of(const StageContext& ctx) {
-    return tile_span_meters_of(ctx.params);
-}
-inline constexpr float meters_to_map_units(float meters, const StageContext& ctx) {
-    return meters_to_map_units(meters, ctx.params);
-}
+// Assist migration: if a call-site already has `ctx`, these overloads resolve.
+// Declarations only — definitions live in a single header/implementation unit.
+[[nodiscard]] float tile_span_meters_of(const StageContext& ctx);
+[[nodiscard]] float meters_to_map_units(float meters, const StageContext& ctx);
 
 // Intentionally NO zero-arg versions here. If you *must* keep them compiling
 // temporarily, create a TU-local wrapper that fetches params from your
