@@ -4,9 +4,12 @@
 #include <memory>
 #include <vector>
 
+// Ensure complete type for GeneratorSettings (member + return by ref)
+#include "worldgen/GeneratorSettings.hpp"
+
 // Keep this header self-sufficient after the Stages refactor:
 //  - StagesApi: StageId + IWorldGenStage interface + StagePtr
-//  - StageContext: StageContext & GeneratorSettings definitions
+//  - StageContext: StageContext (uses GeneratorSettings by reference)
 #include "StagesApi.hpp"
 #include "StageContext.hpp"
 
