@@ -27,12 +27,8 @@ struct StageParams {
     GridDims grid{};
 };
 
-// Minimal context shim many call sites already have.
-// Add fields as needed; keep it a *light* façade around params.
-struct StageContext {
-    StageParams params{};
-    // Future: RNG streams, noise settings, biome tables, etc.
-};
+// NOTE: The real StageContext lives in worldgen/StageContext.hpp.
+// Do not define a second StageContext here; it causes ODR/type mismatches.
 
 // Utility for constexpr-safe division.
 [[nodiscard]] inline constexpr float safe_div(float num, float den, float fallback = 0.0f) {
