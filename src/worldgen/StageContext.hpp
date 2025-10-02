@@ -3,12 +3,12 @@
 #include <cstdint>
 #include <type_traits>
 #include <span>                 // added: for std::span
+#include "worldgen/GeneratorSettings.hpp"  // ensure full type available when included first
 #include "worldgen/Random.hpp"  // Pcg32 + sub_rng helpers
 
 namespace colony::worldgen {
 
-// Forward declarations to avoid heavy includes and cycles here.
-struct GeneratorSettings;
+// Forward declarations to avoid heavy includes and cycles here (keep light).
 struct WorldChunk;
 struct ChunkCoord;
 
