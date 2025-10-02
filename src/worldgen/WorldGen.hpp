@@ -1,18 +1,20 @@
 #pragma once
 
-#include <vector>
-#include <memory>
 #include <cstdint>
+#include <memory>
+#include <vector>
 
 // Keep this header self-sufficient after the Stages refactor:
-//  - WorldGenFwd: forward declarations + StagePtr
-//  - StagesTypes: StageId + IWorldGenStage interface
+//  - StagesApi: StageId + IWorldGenStage interface + StagePtr
 //  - StageContext: StageContext & GeneratorSettings definitions
-#include "WorldGenFwd.hpp"
-#include "StagesTypes.hpp"
+#include "StagesApi.hpp"
 #include "StageContext.hpp"
 
 namespace colony::worldgen {
+
+// Forward declarations needed by this header (definitions are provided elsewhere)
+struct WorldChunk;
+struct ChunkCoord;
 
 class WorldGenerator {
 public:
