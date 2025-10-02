@@ -9,6 +9,7 @@
 #include <vector>
 #include <utility>
 #include <cstdint>
+#include <memory>
 
 namespace colony::worldgen {
 
