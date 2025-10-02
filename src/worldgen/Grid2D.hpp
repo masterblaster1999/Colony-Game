@@ -31,6 +31,19 @@ public:
     T*       data()       noexcept { return data_.data(); }
     const T* data() const noexcept { return data_.data(); }
 
+    // --- Added: API used by worldgen to (re)size grids ---
+    void resize(int w, int h) {
+        if (w < 0 || h < 0) { w_ = h_ = 0; data_.clear(); return; }
+        w_ = w; h_ = h;
+        data_.resize(static_cast<std::size_t>(w_) * static_cast<std::size_t>(h_));
+    }
+
+    void resize(int w, int h, const T& init) {
+        if (w < 0 || h < 0) { w_ = h_ = 0; data_.clear(); return; }
+        w_ = w; h_ = h;
+        data_.assign(static_cast<std::size_t>(w_) * static_cast<std::size_t>(h_), init);
+    }
+
     // Pointer to the start of a row (fast path for tight loops).
     T* rowPtr(int y) noexcept {
 #ifndef NDEBUG
