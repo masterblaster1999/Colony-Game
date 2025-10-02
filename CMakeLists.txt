@@ -47,6 +47,9 @@ if(COLONY_LTO)
   endif()
 endif()
 
+# Optional: turn warnings into errors (handy for CI)
+option(COLONY_WARNINGS_AS_ERRORS "Treat all warnings as errors (/WX on MSVC)" OFF)
+
 # ---- Build info (optional) ----
 execute_process(
   COMMAND git rev-parse --short=12 HEAD
@@ -78,7 +81,10 @@ if(MSVC)
   endif()
 
   # UTF-8, high warnings, modern conformance.  No /MP here (avoid PCH oddities).
-  add_compile_options(/utf-8 /W4 /permissive- /Zc:__cplusplus /Zc:throwingNew /Zc:preprocessor /EHsc)
+  add_compile_options(/utf-8 /W4 /permissive- /Zc:__cplusplus /Zc:throwingNew /Zc:preprocessor /Zc:inline /EHsc)
+  if(COLONY_WARNINGS_AS_ERRORS)
+    add_compile_options(/WX)
+  endif()
   add_link_options(/DEBUG:FULL)
 endif()
 
