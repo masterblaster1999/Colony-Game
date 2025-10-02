@@ -54,6 +54,14 @@ if(TARGET colony_build_options)
   target_link_libraries(colony_smoke PRIVATE colony_build_options)
 endif()
 
+# --- Link the worldgen library so StageContext & stages resolve (fixes LNK2019) ---
+# The pcg target is produced by the worldgen/pcg project and builds pcg.lib on Windows.
+if(TARGET pcg)
+  target_link_libraries(colony_smoke PRIVATE pcg)
+else()
+  message(FATAL_ERROR "Required target 'pcg' not found. Ensure the 'pcg' library target is defined before adding tests.")
+endif()
+
 # Link doctest if available; otherwise fetch the header-only variant
 if(doctest_FOUND)
   target_link_libraries(colony_smoke PRIVATE doctest::doctest)
