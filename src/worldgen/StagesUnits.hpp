@@ -38,7 +38,7 @@ namespace colony::worldgen {
 
 // Convert map units back to meters.
 [[nodiscard]] inline constexpr float map_units_to_meters(float mu, const StageParams& p) {
-    return safe_div(mu, p.mapUnitsPerMeter, /*fallback*/0.0f);
+    return (p.mapUnitsPerMeter != 0.0f) ? (mu / p.mapUnitsPerMeter) : 0.0f;
 }
 [[nodiscard]] inline constexpr float map_units_to_meters(float mu, const StageContext& ctx) {
     return map_units_to_meters(mu, ctx.params);
@@ -46,7 +46,7 @@ namespace colony::worldgen {
 
 // Number of tiles per meter and meters per tile (explicit names)
 [[nodiscard]] inline constexpr float tiles_per_meter(const StageParams& p) {
-    return safe_div(1.0f, p.tileSizeMeters, 0.0f);
+    return (p.tileSizeMeters != 0.0f) ? (1.0f / p.tileSizeMeters) : 0.0f;
 }
 [[nodiscard]] inline constexpr float meters_per_tile(const StageParams& p) {
     return tile_span_meters_of(p);
@@ -75,13 +75,15 @@ namespace colony::worldgen {
 // Small numeric helpers commonly used in stages (keep header-only).
 // -----------------------------------------------------------------------------
 
-[[nodiscard]] inline float lerp(float a, float b, float t) {
-    return std::fma((b - a), t, a);
+[[nodiscard]] inline constexpr float lerp(float a, float b, float t) {
+    return a + (b - a) * t;
 }
 
-[[nodiscard]] inline float remap(float v, float inMin, float inMax, float outMin, float outMax) {
-    const float t = safe_div(v - inMin, (inMax - inMin), 0.0f);
-    return lerp(outMin, outMax, std::clamp(t, 0.0f, 1.0f));
+[[nodiscard]] inline constexpr float remap(float v, float inMin, float inMax, float outMin, float outMax) {
+    const float denom = (inMax - inMin);
+    const float t = (denom != 0.0f) ? ((v - inMin) / denom) : 0.0f;
+    const float t01 = (t < 0.0f ? 0.0f : (t > 1.0f ? 1.0f : t));
+    return lerp(outMin, outMax, t01);
 }
 
 // Convert from "tiles" to meters and map units (handy overloads).
