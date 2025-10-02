@@ -1,5 +1,6 @@
 // src/worldgen/WorldGen.cpp
 #include "WorldGen.hpp"
+#include "WorldChunk.hpp"        // <-- bring full definitions for WorldChunk/ChunkCoord
 #include "Hash.hpp"
 #include "RNG.hpp"
 #include "Math.hpp"               // <-- use inline lerp/smoothstep from header
