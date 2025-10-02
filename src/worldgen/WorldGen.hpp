@@ -1,11 +1,16 @@
 #pragma once
+
 #include <vector>
 #include <memory>
-#include <unordered_map>
-#include <mutex>
-#include <shared_mutex>
-#include <optional>
-#include "Stages.hpp"
+#include <cstdint>
+
+// Keep this header self-sufficient after the Stages refactor:
+//  - WorldGenFwd: forward declarations + StagePtr
+//  - StagesTypes: StageId + IWorldGenStage interface
+//  - StageContext: StageContext & GeneratorSettings definitions
+#include "WorldGenFwd.hpp"
+#include "StagesTypes.hpp"
+#include "StageContext.hpp"
 
 namespace colony::worldgen {
 
@@ -27,7 +32,7 @@ public:
     [[nodiscard]] const GeneratorSettings& settings() const noexcept { return settings_; }
 
 private:
-    WorldChunk makeEmptyChunk_(ChunkCoord coord) const;
+    [[nodiscard]] WorldChunk makeEmptyChunk_(ChunkCoord coord) const;
     void run_(WorldChunk& chunk, std::uint64_t worldSeed) const;
 
 private:
