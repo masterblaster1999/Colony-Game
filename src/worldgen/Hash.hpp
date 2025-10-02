@@ -19,4 +19,10 @@ derive_pcg_seed(std::uint64_t worldSeed, std::int64_t cx, std::int64_t cy, std::
     return { state, stream };
 }
 
+// Back-compat shim: treat “no coords” as (0,0)
+inline std::pair<std::uint64_t, std::uint64_t>
+derive_pcg_seed(std::uint64_t worldSeed, std::uint64_t stageId) noexcept {
+    return derive_pcg_seed(worldSeed, /*cx*/0, /*cy*/0, stageId);
+}
+
 } // namespace colony::worldgen
