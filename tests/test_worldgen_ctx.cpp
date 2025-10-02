@@ -1,5 +1,6 @@
 // tests/test_worldgen_ctx.cpp
 #include "worldgen/WorldGen.hpp"
+#include "worldgen/StageContext.hpp"
 #include <cassert>
 
 using namespace colony::worldgen;
