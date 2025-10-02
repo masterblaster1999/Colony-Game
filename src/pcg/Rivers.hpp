@@ -9,7 +9,7 @@ void compute_flow_accumulation(const std::vector<float>& height, int W, int H, s
 // Carve channels where flow exceeds threshold; mark river cells
 void carve_rivers(std::vector<float>& height,
                   const std::vector<float>& flow,
-                  int W, int H, float cellSize,
+                  int W, int H, [[maybe_unused]] float cellSize,
                   float flowThreshold,
                   std::vector<uint8_t>& outRiverMask);
 
