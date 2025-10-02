@@ -1,5 +1,7 @@
 // src/worldgen/stages/Climate.cpp
+// Make this TU self‑sufficient like the other stages.
 #include "worldgen/WorldGen.hpp"
+#include "worldgen/StageContext.hpp"   // ensure WorldChunk is fully defined for ctx.out.*
 #include "worldgen/Math.hpp"
 #include <algorithm>
 #include <cmath>
