@@ -67,6 +67,9 @@ typedef HANDLE DPI_AWARENESS_CONTEXT;
 // NEW: Minimal wiring for a fixed‑timestep loop (optional embedded mode)
 #include "core/FixedTimestep.h"
 
+// NEW: Crash handler (minidumps) — initialize at process start in wWinMain.
+#include "platform/win/CrashHandlerWin.h"
+
 namespace fs = std::filesystem;
 
 // ---------- Utilities ----------
@@ -354,6 +357,9 @@ static void AttachParentConsoleOrAlloc() {
 
 // ---------- Entry point ----------
 int APIENTRY wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
+    // NEW: Initialize crash dumps as early as possible (Saved Games\Colony Game\Crashes).
+    wincrash::InitCrashHandler(L"Colony Game");
+
     // NEW: Enable fail-fast behavior on heap corruption as early as possible.
     EnableHeapTerminationOnCorruption();
 
