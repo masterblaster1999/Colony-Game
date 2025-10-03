@@ -7,30 +7,48 @@ endif()
 
 # --- Locate FXC (DXBC compiler, SM 2..5.1) ---
 # Escape ProgramFiles(x86) in CMake: $ENV{ProgramFiles\(x86\)}
+# Prefer WindowsSdkDir, then common Program Files roots.
 set(_FXC_HINTS
-  "$ENV{ProgramFiles\\(x86\\)}/Windows Kits/11/bin"
-  "$ENV{ProgramFiles\\(x86\\)}/Windows Kits/10/bin"
+  "$ENV{WindowsSdkDir}/bin"
+  "$ENV{ProgramFiles}/Windows Kits/11/bin"
+  "$ENV{ProgramFiles}/Windows Kits/10/bin"
   "$ENV{ProgramW6432}/Windows Kits/11/bin"
   "$ENV{ProgramW6432}/Windows Kits/10/bin"
-  "$ENV{WindowsSdkDir}/bin"
+  "$ENV{ProgramFiles\(x86\)}/Windows Kits/11/bin"
+  "$ENV{ProgramFiles\(x86\)}/Windows Kits/10/bin"
 )
 
 find_program(FXC_EXE NAMES fxc.exe
   HINTS ${_FXC_HINTS}
-  PATH_SUFFIXES x64 10.0.22621.0/x64 10.0.22000.0/x64
+  PATH_SUFFIXES x64
   NO_CACHE
 )
 
 if(NOT FXC_EXE)
-  # Fallback: search PATH (SDK often adds fxc there)
-  find_program(FXC_EXE NAMES fxc.exe)
+  # Glob versioned SDK subfolders like .../bin/10.0.xxxxx.x/x64/fxc.exe
+  set(_fxc_candidates)
+  foreach(_binroot IN LISTS _FXC_HINTS)
+    if(EXISTS "${_binroot}")
+      file(GLOB _found_fxc "${_binroot}/*/x64/fxc.exe")
+      list(APPEND _fxc_candidates ${_found_fxc})
+    endif()
+  endforeach()
+  if(_fxc_candidates)
+    list(SORT _fxc_candidates DESCENDING)
+    list(GET _fxc_candidates 0 FXC_EXE)
+  endif()
+endif()
+
+if(NOT FXC_EXE)
+  # Fallback: search PATH (SDK sometimes adds fxc there)
+  find_program(FXC_EXE NAMES fxc.exe NO_CACHE)
 endif()
 
 if(NOT FXC_EXE)
   message(FATAL_ERROR
-    "fxc.exe not found. Install Windows 10/11 SDK (HLSL Tools). "
-    "Searched:\n  ${_FXC_HINTS}\n"
-    "Or ensure fxc.exe is on PATH.")
+    "fxc.exe not found. Install the Windows 10/11 SDK (HLSL tools) or ensure fxc.exe is on PATH.")
+else()
+  message(STATUS "Using FXC: ${FXC_EXE}")
 endif()
 
 # Output root (multi-config aware)
@@ -95,19 +113,14 @@ function(cg_compile_hlsl CG_SRC)
     /Fc "${_asm}"
   )
 
-  # Debug/Dev friendly flags; Release optimized (/O3 is valid for FXC)
-  set(_fxc_flags_debug "/Zi" "/Od")
-  set(_fxc_flags_release "/O3")
-
   add_custom_command(
     OUTPUT "${_out}"
     BYPRODUCTS "${_pdb}" "${_asm}"
     COMMAND ${CMAKE_COMMAND} -E make_directory "${COLONY_SHADER_OUT_DIR}"
-    # Use source dir as working dir so relative #includes behave intuitively
     COMMAND "${FXC_EXE}" ${_fxc_flags}
-            $<$<CONFIG:Debug>:${_fxc_flags_debug}>
-            $<$<CONFIG:RelWithDebInfo>:${_fxc_flags_debug}>
-            $<$<CONFIG:Release>:${_fxc_flags_release}>
+            $<$<CONFIG:Debug>:/Zi> $<$<CONFIG:Debug>:/Od>
+            $<$<CONFIG:RelWithDebInfo>:/Zi> $<$<CONFIG:RelWithDebInfo>:/Od>
+            $<$<CONFIG:Release>:/O3>
             "${_src_norm}"
     COMMAND ${CMAKE_COMMAND} -E echo "FXC OK: ${_srcname} -> ${_out}"
     DEPENDS "${CG_SRC}"
