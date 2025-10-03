@@ -233,6 +233,68 @@ endif()
 # Keep existing optional include (project-local override)
 include(cmake/shaders.cmake OPTIONAL)
 
+# ================================
+# Explicit shader build (preferred)
+# ================================
+# If 'cg_compile_hlsl' is available (from cmake/shaders.cmake), explicitly compile
+# the shaders you already have; this defines a 'shaders' target so the fallback
+# logic below won't run.
+if(COMMAND cg_compile_hlsl)
+  set(COMPILED_SHADERS)
+  # Choose profiles based on renderer selection
+  if(COLONY_RENDERER STREQUAL "d3d12")
+    set(_VS_PROF "vs_6_7")
+    set(_PS_PROF "ps_6_7")
+    set(_CS_PROF "cs_6_7")
+  else()
+    set(_VS_PROF "vs_5_0")
+    set(_PS_PROF "ps_5_0")
+    set(_CS_PROF "cs_5_0")
+  endif()
+
+  set(_SHADER_DIRS
+    "${CMAKE_SOURCE_DIR}/src/pcg/shaders"
+    "${CMAKE_SOURCE_DIR}/shaders"
+  )
+
+  foreach(_dir IN LISTS _SHADER_DIRS)
+    if(EXISTS "${_dir}/noise_fbm_cs.hlsl")
+      cg_compile_hlsl(NAME noise_fbm_cs
+        SRC "${_dir}/noise_fbm_cs.hlsl"
+        ENTRY "main"              # pcg compute shader uses 'main'
+        PROFILE "${_CS_PROF}"
+        INCLUDEDIRS "${_dir}"
+        OUTVAR NOISE_FBM_CS_CSO)
+      list(APPEND COMPILED_SHADERS "${NOISE_FBM_CS_CSO}")
+    endif()
+
+    if(EXISTS "${_dir}/quad_vs.hlsl")
+      cg_compile_hlsl(NAME quad_vs
+        SRC "${_dir}/quad_vs.hlsl"
+        ENTRY "VSMain"
+        PROFILE "${_VS_PROF}"
+        INCLUDEDIRS "${_dir}"
+        OUTVAR QUAD_VS_CSO)
+      list(APPEND COMPILED_SHADERS "${QUAD_VS_CSO}")
+    endif()
+
+    if(EXISTS "${_dir}/quad_ps.hlsl")
+      cg_compile_hlsl(NAME quad_ps
+        SRC "${_dir}/quad_ps.hlsl"
+        ENTRY "PSMain"
+        PROFILE "${_PS_PROF}"
+        INCLUDEDIRS "${_dir}"
+        OUTVAR QUAD_PS_CSO)
+      list(APPEND COMPILED_SHADERS "${QUAD_PS_CSO}")
+    endif()
+  endforeach()
+
+  if(COMPILED_SHADERS)
+    add_custom_target(shaders ALL DEPENDS ${COMPILED_SHADERS})
+    set_property(TARGET shaders PROPERTY FOLDER "assets")
+  endif()
+endif()
+
 # ---- Renderer-driven built-in shader compilation routing ----
 # If cmake/shaders.cmake didn't define a 'shaders' target, build one here based on COLONY_RENDERER.
 
@@ -274,7 +336,7 @@ if(COLONY_RENDERER STREQUAL "d3d11")
       set(SHADER_BIN_DIR "${CMAKE_BINARY_DIR}/shaders")
       file(MAKE_DIRECTORY "${SHADER_BIN_DIR}")
 
-      # Infer stage/profile/entry for FXC (SM5.x). Skip unsupported FX12 stages (MS/AS).
+      # Infer stage/profile/entry for FXC (SM5.x). Skip unsupported SM6-only stages (MS/AS).
       function(_cg_infer_profile_and_entry_fxc SRC OUT_PROFILE OUT_ENTRY OUT_SKIP)
         get_filename_component(_name_we "${SRC}" NAME_WE)
         string(TOLOWER "${_name_we}" _lower)
