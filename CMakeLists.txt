@@ -145,13 +145,15 @@ set(COLONY_THIRDPARTY_INCLUDE_DIRS "" CACHE INTERNAL "")
 
 # --- SDL2 (only if FRONTEND is sdl) ---
 if(FRONTEND STREQUAL "sdl")
-  find_package(SDL2 CONFIG REQUIRED)  # vcpkg: provides SDL2::SDL2 and optionally SDL2::SDL2main
+  find_package(SDL2 CONFIG REQUIRED)  # vcpkg: provides SDL2::SDL2 and SDL2::SDL2main
   # Define both macros for compatibility with existing source guards.
   add_compile_definitions(COLONY_WITH_SDL2=1 COLONY_WITH_SDL=1 SDL_MAIN_HANDLED=1)
-  list(APPEND COLONY_THIRDPARTY_LIBS
-    $<TARGET_NAME_IF_EXISTS:SDL2::SDL2main>
-    $<IF:$<TARGET_EXISTS:SDL2::SDL2>,SDL2::SDL2,SDL2::SDL2-static>
-  )
+  # Prefer SDL2main when available; otherwise link core SDL2 only.
+  if(TARGET SDL2::SDL2main)
+    list(APPEND COLONY_THIRDPARTY_LIBS SDL2::SDL2 SDL2::SDL2main)
+  else()
+    list(APPEND COLONY_THIRDPARTY_LIBS SDL2::SDL2)
+  endif()
 endif()
 
 # --- ImGui (optional overlay) ---
@@ -252,13 +254,16 @@ if(COMMAND cg_compile_hlsl)
     set(_CS_PROF "cs_5_0")
   endif()
 
-  set(_SHADER_DIRS
-    "${CMAKE_SOURCE_DIR}/src/pcg/shaders"
-    "${CMAKE_SOURCE_DIR}/shaders"
-  )
+  # Only include PCG SM6 shaders when targeting D3D12/DXC.
+  if(COLONY_RENDERER STREQUAL "d3d12")
+    set(_SHADER_DIRS "${CMAKE_SOURCE_DIR}/src/pcg/shaders" "${CMAKE_SOURCE_DIR}/shaders")
+  else()
+    set(_SHADER_DIRS "${CMAKE_SOURCE_DIR}/shaders")
+  endif()
 
   foreach(_dir IN LISTS _SHADER_DIRS)
-    if(EXISTS "${_dir}/noise_fbm_cs.hlsl")
+    # PCG compute shader is SM6+/DXC-only; do not try to compile it for D3D11.
+    if(COLONY_RENDERER STREQUAL "d3d12" AND EXISTS "${_dir}/noise_fbm_cs.hlsl")
       cg_compile_hlsl(NAME noise_fbm_cs
         SRC "${_dir}/noise_fbm_cs.hlsl"
         ENTRY "main"              # pcg compute shader uses 'main'
@@ -328,10 +333,10 @@ if(COLONY_RENDERER STREQUAL "d3d11")
       message(WARNING "FXC not found on PATH or Windows SDK; set FXC_EXE or install the Windows SDK. Shaders will not be compiled.")
     endif()
 
-    if(FXC_EXE AND (EXISTS "${CMAKE_SOURCE_DIR}/shaders" OR EXISTS "${CMAKE_SOURCE_DIR}/src/pcg/shaders"))
+    # IMPORTANT: only compile generic SM5 shaders here; exclude SM6-only PCG shaders.
+    if(FXC_EXE AND (EXISTS "${CMAKE_SOURCE_DIR}/shaders"))
       file(GLOB_RECURSE HLSL_SOURCES CONFIGURE_DEPENDS
         "${CMAKE_SOURCE_DIR}/shaders/*.hlsl"
-        "${CMAKE_SOURCE_DIR}/src/pcg/shaders/*.hlsl"
       )
       set(SHADER_BIN_DIR "${CMAKE_BINARY_DIR}/shaders")
       file(MAKE_DIRECTORY "${SHADER_BIN_DIR}")
