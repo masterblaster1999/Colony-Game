@@ -86,4 +86,12 @@ private:
 
 } // namespace cg
 
+// -----------------------------------------------------------------------------
+// Backward-compatibility alias: allow legacy core::FixedTimestep without
+// breaking existing code that includes this header and uses core::FixedTimestep.
+// -----------------------------------------------------------------------------
+namespace core {
+  using FixedTimestep = cg::FixedTimestep;
+}
+
 #endif // CG_FIXED_TIMESTEP_H
