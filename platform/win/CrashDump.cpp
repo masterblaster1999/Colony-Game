@@ -1,9 +1,15 @@
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
 #include <DbgHelp.h>
+#include <shlobj.h>        // SHGetKnownFolderPath
+#include <KnownFolders.h>  // FOLDERID_LocalAppData
+#include <combaseapi.h>    // CoTaskMemFree
 #include <filesystem>
 #include <fstream>
+
 #pragma comment(lib, "Dbghelp.lib")
+#pragma comment(lib, "Ole32.lib")    // for CoTaskMemFree
+#pragma comment(lib, "Shell32.lib")  // for SHGetKnownFolderPath
 
 namespace fs = std::filesystem;
 
