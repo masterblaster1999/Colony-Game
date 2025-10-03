@@ -248,6 +248,20 @@ if(COLONY_RENDERER STREQUAL "d3d11")
       "$ENV{WindowsSdkDir}/bin/x64"
       "$ENV{WindowsSdkDir}/bin"
     )
+    # Fallback glob search across common Windows SDK locations (helps CI/dev PCs)
+    if(NOT FXC_EXE)
+      file(GLOB _fxc_cands
+        "$ENV{WindowsSdkDir}/bin/*/x64/fxc.exe"
+        "C:/Program Files (x86)/Windows Kits/10/bin/*/x64/fxc.exe"
+        "C:/Program Files/Windows Kits/10/bin/*/x64/fxc.exe"
+      )
+      if(_fxc_cands)
+        list(SORT _fxc_cands DESC)
+        list(GET _fxc_cands 0 FXC_EXE)
+        message(STATUS "FXC resolved via glob: ${FXC_EXE}")
+      endif()
+    endif()
+
     if(NOT FXC_EXE)
       message(WARNING "FXC not found on PATH or Windows SDK; set FXC_EXE or install the Windows SDK. Shaders will not be compiled.")
     endif()
@@ -319,7 +333,8 @@ if(COLONY_RENDERER STREQUAL "d3d11")
           COMMAND ${CMAKE_COMMAND} -E make_directory "${SHADER_BIN_DIR}"
           COMMAND "${FXC_EXE}" /nologo
                   /T ${PROFILE} /E ${ENTRY}
-                  $<$<CONFIG:Debug>:/Zi /Od>
+                  $<$<CONFIG:Debug>:/Zi>
+                  $<$<CONFIG:Debug>:/Od>
                   /Fo "${OUTFILE}"
                   /I "${CMAKE_SOURCE_DIR}/shaders"
                   /I "${CMAKE_SOURCE_DIR}/src/pcg/shaders"
@@ -425,7 +440,8 @@ elseif(COLONY_RENDERER STREQUAL "d3d12")
           COMMAND ${CMAKE_COMMAND} -E make_directory "${SHADER_BIN_DIR}"
           COMMAND "${DXC_EXE}" -nologo
                   -T ${PROFILE} -E ${ENTRY}
-                  $<$<CONFIG:Debug>:-Zi> $<$<CONFIG:Debug>:-Qembed_debug>
+                  $<$<CONFIG:Debug>:-Zi>
+                  $<$<CONFIG:Debug>:-Qembed_debug>
                   $<$<NOT:$<CONFIG:Debug>>:-Qstrip_debug>
                   -Fo "${OUTFILE}"
                   -I "${CMAKE_SOURCE_DIR}/shaders"
