@@ -15,20 +15,29 @@
 //  - Safer DLL search path (SetDefaultDllDirectories if available)
 //  - Optional sleep prevention while waiting for the game to exit
 //  - Win32 crash handlers for the launcher (purecall/invalid-parameter/signals -> minidump)
+//  - NEW: Detect DXGI tearing support and expose non-invasive engine *environment hints*
+//         so the game can opt into flip-model + tearing and a fixed-step sim if it wants.
 //
 // Notes:
 //  - This launcher has NO external dependencies beyond Win32 + C++17.
 //  - Build as a WIN32 subsystem app (no console).
-//  - Link: Dbghelp, Shell32, Ole32, Shcore, Advapi32, User32
+//  - Link: Dbghelp, Shell32, Ole32, Shcore, Advapi32, User32, DXGI
 //
 // Recognized launcher-only flags (they are filtered and NOT forwarded to the game):
-//   --launcher-detach           Start the game and exit the launcher immediately (do not wait).
-//   --launcher-no-single-instance   Allow multiple instances (disables mutex check).
-//   --launcher-no-dumps         Do not enable WER LocalDumps for the child process.
-//   --launcher-prevent-sleep    Keep system awake while the child is running.
+//   --launcher-detach                Start the game and exit the launcher immediately (do not wait).
+//   --launcher-no-single-instance    Allow multiple instances (disables mutex check).
+//   --launcher-no-dumps              Do not enable WER LocalDumps for the child process.
+//   --launcher-prevent-sleep         Keep system awake while the child is running.
+//   --launcher-no-engine-hints       Do not set env hints (flip-model/tearing/fixed-step) for the game.
 //
 // Environment overrides:
-//   COLONY_GAME_EXE             Absolute or relative path to the game exe (overrides search).
+//   COLONY_GAME_EXE                  Absolute or relative path to the game exe (overrides search).
+//
+// Environment hints exported to the *child* (only if not already defined):
+//   COLONY_PRESENT_MODE=flip_discard
+//   COLONY_PRESENT_ALLOW_TEARING=0|1
+//   COLONY_SIM_FIXED_DT_MS=16.6667
+//   COLONY_SIM_MAX_FRAME_MS=250
 //
 // Search order for the game exe (if COLONY_GAME_EXE not set and config not provided):
 //   1) .\ColonyGame.exe
@@ -51,6 +60,8 @@
 #include <dbghelp.h>    // MiniDumpWriteDump
 #include <tlhelp32.h>   // CreateToolhelp32Snapshot (bring-to-front helper)
 #include <winreg.h>     // Registry (WER LocalDumps)
+#include <dxgi1_6.h>    // DXGI factory + tearing detection
+#include <wrl/client.h> // ComPtr
 #include <filesystem>
 #include <fstream>
 #include <string>
@@ -73,6 +84,7 @@
 #pragma comment(lib, "Shcore.lib")
 #pragma comment(lib, "Advapi32.lib")
 #pragma comment(lib, "User32.lib")
+#pragma comment(lib, "DXGI.lib")
 
 // Fallback for older SDKs that may not define this constant at compile time.
 #ifndef DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2
@@ -80,6 +92,7 @@
 #endif
 
 namespace fs = std::filesystem;
+using Microsoft::WRL::ComPtr;
 
 // ------------------------------------------------------------
 // Utilities
@@ -339,12 +352,14 @@ static void InstallLauncherCrashHandlers(const fs::path& dumpDir) {
 // ------------------------------------------------------------
 
 static void EnableDPI() {
-    // Try PerMonitorV2 (User32), then SHCore Per-Monitor (Win 8.1), then legacy
+    // Prefer PerMonitorV2 via user32 SetProcessDpiAwarenessContext, then SHCore Per-Monitor, then legacy.
+    // MS guidance: manifest is preferred where possible; runtime API is a valid fallback. (See docs.)
+    // https://learn.microsoft.com/windows/win32/hidpi/setting-the-default-dpi-awareness-for-a-process
     using SetDpiCtxFn = BOOL (WINAPI *)(DPI_AWARENESS_CONTEXT);
     HMODULE hUser = GetModuleHandleW(L"user32.dll");
     if (hUser) {
         auto p = reinterpret_cast<SetDpiCtxFn>(GetProcAddress(hUser, "SetProcessDpiAwarenessContext"));
-        if (p && p(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2)) return;
+        if (p && p(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2)) return; // PMv2 succeed
     }
     // SHCore fallback (Win 8.1+)
     if (SUCCEEDED(SetProcessDpiAwareness(PROCESS_PER_MONITOR_DPI_AWARE))) return;
@@ -519,6 +534,7 @@ struct LaunchOptions {
     bool noSingleInstance = false;
     bool noDumps = false;
     bool preventSleep = false;
+    bool noEngineHints = false; // NEW: do not set env hints for engine
     std::vector<std::wstring> forwardedArgs; // to the child
 };
 
@@ -537,14 +553,15 @@ static LaunchOptions ParseLaunchOptions() {
         auto ieq = [](const std::wstring& s1, const std::wstring& s2) {
             return _wcsicmp(s1.c_str(), s2.c_str()) == 0;
         };
-        if (ieq(a, L"--launcher-detach"))            { L.detach = true; continue; }
-        if (ieq(a, L"--launcher-no-single-instance")){ L.noSingleInstance = true; continue; }
-        if (ieq(a, L"--launcher-no-dumps"))          { L.noDumps = true; continue; }
-        if (ieq(a, L"--launcher-prevent-sleep"))     { L.preventSleep = true; continue; }
+        if (ieq(a, L"--launcher-detach"))                { L.detach = true; continue; }
+        if (ieq(a, L"--launcher-no-single-instance"))    { L.noSingleInstance = true; continue; }
+        if (ieq(a, L"--launcher-no-dumps"))              { L.noDumps = true; continue; }
+        if (ieq(a, L"--launcher-prevent-sleep"))         { L.preventSleep = true; continue; }
+        if (ieq(a, L"--launcher-no-engine-hints"))       { L.noEngineHints = true; continue; }
         // Unknown -> forward to child
         L.forwardedArgs.push_back(std::move(a));
     }
-    LocalFree(argv);
+    if (argv) LocalFree(argv);
     return L;
 }
 
@@ -666,6 +683,59 @@ static fs::path FindGameExe(Logger& log) {
 }
 
 // ------------------------------------------------------------
+// DXGI Present/Tearing capability detection and engine env hints
+// ------------------------------------------------------------
+
+// Query DXGI for tearing support using IDXGIFactory5::CheckFeatureSupport(DXGI_FEATURE_PRESENT_ALLOW_TEARING).
+// See: https://learn.microsoft.com/windows/win32/api/dxgi1_5/nf-dxgi1_5-idxgifactory5-checkfeaturesupport
+static bool DxgiSupportsTearing() {
+    BOOL allow = FALSE;
+    ComPtr<IDXGIFactory1> factory1;
+    if (FAILED(CreateDXGIFactory1(IID_PPV_ARGS(&factory1)))) {
+        return false;
+    }
+    ComPtr<IDXGIFactory5> factory5;
+    if (FAILED(factory1.As(&factory5))) {
+        return false; // older DXGI runtime; assume no tearing
+    }
+    if (FAILED(factory5->CheckFeatureSupport(DXGI_FEATURE_PRESENT_ALLOW_TEARING,
+                                             &allow, sizeof(allow)))) {
+        return false;
+    }
+    return allow == TRUE;
+}
+
+static void SetEnvIfMissing(const wchar_t* name, const std::wstring& value, Logger& logger) {
+    SetLastError(0);
+    DWORD n = GetEnvironmentVariableW(name, nullptr, 0);
+    if (n == 0 && GetLastError() == ERROR_ENVVAR_NOT_FOUND) {
+        SetEnvironmentVariableW(name, value.c_str());
+        logger.line(L"Engine hint set: " + std::wstring(name) + L"=" + value);
+    } else {
+        logger.line(L"Engine hint preserved (already set): " + std::wstring(name));
+    }
+}
+
+// Export non-invasive engine hints so the game can opt into flip-model/tearing/fixed-step.
+// If users don't want this from the launcher, they can pass --launcher-no-engine-hints.
+static void SetDefaultEngineEnvHints(Logger& logger, bool disabled) {
+    if (disabled) {
+        logger.line(L"Engine hints: disabled by --launcher-no-engine-hints");
+        return;
+    }
+    const bool tearing = DxgiSupportsTearing(); // DXGI factory query
+    // Hints: only set if not already defined in the environment.
+    SetEnvIfMissing(L"COLONY_PRESENT_MODE", L"flip_discard", logger);           // nudge engine to flip model
+    SetEnvIfMissing(L"COLONY_PRESENT_ALLOW_TEARING", tearing ? L"1" : L"0", logger); // reflect capability
+    SetEnvIfMissing(L"COLONY_SIM_FIXED_DT_MS", L"16.6667", logger);             // fixed 60 Hz
+    SetEnvIfMissing(L"COLONY_SIM_MAX_FRAME_MS", L"250", logger);                // clamp large frames
+    // References:
+    // DXGI flip-model & tearing guidance:
+    // https://learn.microsoft.com/windows/win32/direct3ddxgi/for-best-performance--use-dxgi-flip-model
+    // https://learn.microsoft.com/windows/win32/api/dxgi1_5/ne-dxgi1_5-dxgi_feature
+}
+
+// ------------------------------------------------------------
 // WinMain
 // ------------------------------------------------------------
 
@@ -673,7 +743,7 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR /*lpCmdLine*/, int) {
     // Make DLL search slightly safer early
     TightenDllSearchPath();
 
-    EnableDPI();
+    EnableDPI(); // PMv2 -> SHCore Per-Monitor -> legacy DPI aware
 
     // Data roots
     fs::path dataRoot = DataRoot();
@@ -695,7 +765,8 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR /*lpCmdLine*/, int) {
     logger.line(std::wstring(L"Options: detach=") + (opt.detach?L"true":L"false")
                 + L", noSingleInstance=" + (opt.noSingleInstance?L"true":L"false")
                 + L", noDumps=" + (opt.noDumps?L"true":L"false")
-                + L", preventSleep=" + (opt.preventSleep?L"true":L"false"));
+                + L", preventSleep=" + (opt.preventSleep?L"true":L"false")
+                + L", noEngineHints=" + (opt.noEngineHints?L"true":L"false"));
 
     // Locate game exe
     fs::path gameExe = FindGameExe(logger);
@@ -739,6 +810,9 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR /*lpCmdLine*/, int) {
             logger.line(L"WARNING: Failed to configure WER LocalDumps (child crash dumps may be unavailable).");
         }
     }
+
+    // NEW: Export engine env hints (flip-model/tearing/fixed-step) unless disabled by flag.
+    SetDefaultEngineEnvHints(logger, opt.noEngineHints);
 
     // Launch child
     DWORD exitCode = 0;
