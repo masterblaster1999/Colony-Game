@@ -1,89 +1,122 @@
-# cmake/shaders.cmake  -- Windows-only HLSL toolchain for Colony-Game
-
-# Ensure sane parsing for $ENV{ProgramFiles\(x86\)} on older 3.x CMake.
-if(POLICY CMP0053)
-  cmake_policy(SET CMP0053 NEW)
-endif()
+# cmake/shaders.cmake  (Windows only)
+include_guard(GLOBAL)
 
 if(NOT WIN32)
-  return()
+  message(FATAL_ERROR "This shaders.cmake is Windows-only by design.")
 endif()
 
-# --- Optional DXC (for future D3D12 / SM6). vcpkg defines DIRECTX_DXC_TOOL.
-find_package(directx-dxc CONFIG QUIET)
-if(directx-dxc_FOUND AND NOT DEFINED DXC_EXE)
-  set(DXC_EXE "${DIRECTX_DXC_TOOL}" CACHE FILEPATH "DXC compiler")
-  message(STATUS "Using DXC: ${DXC_EXE}")
-endif()
+# --- Locate FXC (DXBC compiler, SM 2..5.1) ---
+# Escape ProgramFiles(x86) in CMake: $ENV{ProgramFiles\(x86\)}
+set(_FXC_HINTS
+  "$ENV{ProgramFiles\\(x86\\)}/Windows Kits/11/bin"
+  "$ENV{ProgramFiles\\(x86\\)}/Windows Kits/10/bin"
+  "$ENV{ProgramW6432}/Windows Kits/11/bin"
+  "$ENV{ProgramW6432}/Windows Kits/10/bin"
+  "$ENV{WindowsSdkDir}/bin"
+)
 
-# --- FXC is required for D3D11 (SM5.x → DXBC).
-# Use SDK-aware hints: CMAKE_VS_WINDOWS_TARGET_PLATFORM_VERSION + Windows SDK dirs.
-set(_fxc_hint_dirs)
-if(DEFINED CMAKE_VS_WINDOWS_TARGET_PLATFORM_VERSION AND CMAKE_VS_WINDOWS_TARGET_PLATFORM_VERSION)
-  list(APPEND _fxc_hint_dirs
-    "$ENV{WindowsSdkDir}/bin/${CMAKE_VS_WINDOWS_TARGET_PLATFORM_VERSION}/x64"
-    "$ENV{ProgramFiles\(x86\)}/Windows Kits/10/bin/${CMAKE_VS_WINDOWS_TARGET_PLATFORM_VERSION}/x64"
-    "$ENV{ProgramFiles\(x86\)}/Windows Kits/11/bin/${CMAKE_VS_WINDOWS_TARGET_PLATFORM_VERSION}/x64")
-endif()
-list(APPEND _fxc_hint_dirs
-  "$ENV{WindowsSdkDir}/bin/x64"
-  "$ENV{ProgramFiles\(x86\)}/Windows Kits/10/bin/x64"
-  "$ENV{ProgramFiles\(x86\)}/Windows Kits/11/bin/x64"
-  )
+find_program(FXC_EXE NAMES fxc.exe
+  HINTS ${_FXC_HINTS}
+  PATH_SUFFIXES x64 10.0.22621.0/x64 10.0.22000.0/x64
+  NO_CACHE
+)
 
-find_program(FXC_EXE NAMES fxc.exe HINTS ${_fxc_hint_dirs} DOC "Legacy HLSL compiler for D3D11 (SM5.x)")
 if(NOT FXC_EXE)
-  message(FATAL_ERROR "fxc.exe not found. Install the Windows 10/11 SDK or add fxc.exe to PATH.")
-else()
-  message(STATUS "Using FXC: ${FXC_EXE}")
+  # Fallback: search PATH (SDK often adds fxc there)
+  find_program(FXC_EXE NAMES fxc.exe)
 endif()
 
-# Helper: compile one HLSL -> .cso
+if(NOT FXC_EXE)
+  message(FATAL_ERROR
+    "fxc.exe not found. Install Windows 10/11 SDK (HLSL Tools). "
+    "Searched:\n  ${_FXC_HINTS}\n"
+    "Or ensure fxc.exe is on PATH.")
+endif()
+
+# Output root (multi-config aware)
+set(COLONY_SHADER_OUT_DIR "${CMAKE_BINARY_DIR}/shaders/$<CONFIG>")
+
+# Compile one HLSL source to a .cso using FXC.
 # Usage:
-#   cg_compile_hlsl(NAME MyVS SRC ${CMAKE_SOURCE_DIR}/shaders/fullscreen.hlsl
-#                   ENTRY main PROFILE vs_5_0 OUTVAR out_blob
-#                   DEFS FOO=1;BAR INCLUDEDIRS ${CMAKE_SOURCE_DIR}/shaders/inc)
-function(cg_compile_hlsl)
+#   cg_compile_hlsl(<src> ENTRY <E> PROFILE <P> [DEFINES k=v ...] [INCLUDEDIRS dir1 ...])
+function(cg_compile_hlsl CG_SRC)
   set(options)
-  set(oneValueArgs NAME SRC ENTRY PROFILE OUTVAR)
-  set(multiValueArgs DEFS INCLUDEDIRS)
+  set(oneValueArgs ENTRY PROFILE)
+  set(multiValueArgs DEFINES INCLUDEDIRS)
   cmake_parse_arguments(CG "${options}" "${oneValueArgs}" "${multiValueArgs}" ${ARGN})
 
-  if(NOT CG_NAME OR NOT CG_SRC OR NOT CG_ENTRY OR NOT CG_PROFILE OR NOT CG_OUTVAR)
-    message(FATAL_ERROR "cg_compile_hlsl: NAME,SRC,ENTRY,PROFILE,OUTVAR are required")
+  if(NOT EXISTS "${CG_SRC}")
+    message(FATAL_ERROR "cg_compile_hlsl: source not found: ${CG_SRC}")
+  endif()
+  if(NOT CG_ENTRY)
+    message(FATAL_ERROR "cg_compile_hlsl: ENTRY is required (e.g. VSMain/PSMain/CSMain).")
+  endif()
+  if(NOT CG_PROFILE)
+    message(FATAL_ERROR "cg_compile_hlsl: PROFILE is required (e.g. vs_5_0, ps_5_0, cs_5_0).")
   endif()
 
-  get_filename_component(_stem "${CG_SRC}" NAME_WE)
-  set(_outdir "${CMAKE_BINARY_DIR}/shaders/${CMAKE_CFG_INTDIR}")
-  set(_out    "${_outdir}/${_stem}.${CG_PROFILE}.cso")
-  file(MAKE_DIRECTORY "${_outdir}")
+  file(TO_CMAKE_PATH "${CG_SRC}" _src_norm)
+  cmake_path(GET _src_norm FILENAME _srcname)
+  cmake_path(GET _src_norm PARENT_PATH _srcdir)
 
-  if(CG_PROFILE MATCHES "_5_") # D3D11 path: FXC → DXBC
-    add_custom_command(
-      OUTPUT "${_out}"
-      MAIN_DEPENDENCY "${CG_SRC}"
-      COMMAND "${FXC_EXE}" /nologo /E ${CG_ENTRY} /T ${CG_PROFILE}
-              /Fo "${_out}"
-              $<$<BOOL:${CG_DEFS}>:/D$<JOIN:${CG_DEFS},\;/D>>
-              $<$<BOOL:${CG_INCLUDEDIRS}>:/I$<JOIN:${CG_INCLUDEDIRS},\;/I>>
-              $<$<CONFIG:Debug>:/Od /Zi> $<$<CONFIG:RelWithDebInfo>:/Zi>
-      COMMENT "FXC ${_stem} (${CG_PROFILE}) → ${_out}"
-      VERBATIM)
-  else() # future SM6 path: DXC → DXIL (D3D12)
-    if(NOT DXC_EXE)
-      message(FATAL_ERROR "DXC required for profile ${CG_PROFILE} but dxcompiler not found")
-    endif()
-    add_custom_command(
-      OUTPUT "${_out}"
-      MAIN_DEPENDENCY "${CG_SRC}"
-      COMMAND "${DXC_EXE}" -nologo -E ${CG_ENTRY} -T ${CG_PROFILE}
-              -Fo "${_out}"
-              $<$<BOOL:${CG_DEFS}>:-D$<JOIN:${CG_DEFS},;-D>>
-              $<$<BOOL:${CG_INCLUDEDIRS}>:-I$<JOIN:${CG_INCLUDEDIRS},;-I>>
-              $<$<CONFIG:Debug>:-Od -Zi -Qembed_debug>
-      COMMENT "DXC ${_stem} (${CG_PROFILE}) → ${_out}"
-      VERBATIM)
+  set(_out "${COLONY_SHADER_OUT_DIR}/${_srcname}.cso")
+  set(_pdb "${COLONY_SHADER_OUT_DIR}/${_srcname}.pdb")
+  set(_asm "${COLONY_SHADER_OUT_DIR}/${_srcname}.asm")
+
+  # Always include the source's own directory + common shader dirs you use.
+  set(_incs "${_srcdir};${CMAKE_SOURCE_DIR}/src;${CMAKE_SOURCE_DIR}/src/pcg/shaders")
+  if(CG_INCLUDEDIRS)
+    list(APPEND _incs ${CG_INCLUDEDIRS})
   endif()
+  list(REMOVE_DUPLICATES _incs)
 
-  set(${CG_OUTVAR} "${_out}" PARENT_SCOPE)
+  # Construct /I flags in native form
+  set(_inc_flags "")
+  foreach(d IN LISTS _incs)
+    file(TO_NATIVE_PATH "${d}" _nd)
+    list(APPEND _inc_flags "/I\"${_nd}\"")
+  endforeach()
+
+  # Defines -> /D
+  set(_def_flags "")
+  foreach(kv IN LISTS CG_DEFINES)
+    list(APPEND _def_flags "/D${kv}")
+  endforeach()
+
+  # Base FXC flags
+  set(_fxc_flags
+    /nologo
+    /E "${CG_ENTRY}"
+    /T "${CG_PROFILE}"
+    ${_def_flags}
+    ${_inc_flags}
+    /Fo "${_out}"
+    /Fd "${_pdb}"
+    /Fc "${_asm}"
+  )
+
+  # Debug/Dev friendly flags; Release optimized (/O3 is valid for FXC)
+  set(_fxc_flags_debug "/Zi" "/Od")
+  set(_fxc_flags_release "/O3")
+
+  add_custom_command(
+    OUTPUT "${_out}"
+    BYPRODUCTS "${_pdb}" "${_asm}"
+    COMMAND ${CMAKE_COMMAND} -E make_directory "${COLONY_SHADER_OUT_DIR}"
+    # Use source dir as working dir so relative #includes behave intuitively
+    COMMAND "${FXC_EXE}" ${_fxc_flags}
+            $<$<CONFIG:Debug>:${_fxc_flags_debug}>
+            $<$<CONFIG:RelWithDebInfo>:${_fxc_flags_debug}>
+            $<$<CONFIG:Release>:${_fxc_flags_release}>
+            "${_src_norm}"
+    COMMAND ${CMAKE_COMMAND} -E echo "FXC OK: ${_srcname} -> ${_out}"
+    DEPENDS "${CG_SRC}"
+    WORKING_DIRECTORY "${_srcdir}"
+    VERBATIM
+    USES_TERMINAL
+    COMMENT "FXC ${CG_PROFILE} ${CG_SRC} -> ${_out}"
+  )
+
+  # return path to .cso to the caller
+  set(CG_OUT "${_out}" PARENT_SCOPE)
 endfunction()
