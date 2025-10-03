@@ -1,6 +1,6 @@
 // src/pcg/shaders/noise_fbm_cs.hlsl
-// SM 6.7 compute: fBM from value noise with a 32-bit integer hash.
-// Windows / DXC only.
+// fBM from value noise with a 32-bit integer hash.
+// Compiles on SM 5.0 (FXC / D3D11) and SM 6.x (DXC / D3D12).
 
 #include "noise_lib.hlsli"
 
@@ -17,6 +17,7 @@
 // ----------------------------------------
 // Resources
 // ----------------------------------------
+// FXC requires a typed UAV; we're writing a scalar [0..1].
 RWTexture2D<float> OutTex : register(u0);
 
 // Keep 16-byte packing rules in mind for cbuffers.
@@ -61,7 +62,6 @@ void main(uint3 tid : SV_DispatchThreadID)
         amp  *= Gain;
     }
 
-    // Remap from ~[-OctaveSum, OctaveSum] to [0,1]; keep simple here
-    // Caller can re-normalize as desired.
+    // Remap to [0,1]
     OutTex[tid.xy] = saturate(val * 0.5 + 0.5);
 }
