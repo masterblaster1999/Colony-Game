@@ -1,4 +1,5 @@
 #pragma once
+#include <Windows.h>  // For FormatMessageA, HRESULT helpers
 #include <wrl/client.h>
 #include <d3d11.h>
 #include <d3dcompiler.h>
@@ -9,15 +10,65 @@
 #include <sstream>  // for HR_CHECK message formatting
 #include <cstring>  // for std::memcpy
 
+// Robust HRESULT -> exception helper with rich diagnostics.
+namespace d3d
+{
+    inline std::runtime_error HrError(HRESULT hr, const char* expr, const char* file, int line)
+    {
+        // Prefer Win32 facility codes as raw DWORDs for FormatMessageA.
+        DWORD code = (HRESULT_FACILITY(hr) == FACILITY_WIN32)
+            ? static_cast<DWORD>(HRESULT_CODE(hr))
+            : static_cast<DWORD>(hr);
+
+        char sys[512] = {};
+        DWORD flags = FORMAT_MESSAGE_FROM_SYSTEM | FORMAT_MESSAGE_IGNORE_INSERTS;
+        DWORD len = FormatMessageA(flags,
+                                   nullptr,
+                                   code,
+                                   MAKELANGID(LANG_NEUTRAL, SUBLANG_DEFAULT),
+                                   sys,
+                                   static_cast<DWORD>(sizeof(sys)),
+                                   nullptr);
+
+        // If that failed, try again using the raw HRESULT in case it maps differently.
+        if (len == 0)
+        {
+            len = FormatMessageA(flags,
+                                 nullptr,
+                                 static_cast<DWORD>(hr),
+                                 MAKELANGID(LANG_NEUTRAL, SUBLANG_DEFAULT),
+                                 sys,
+                                 static_cast<DWORD>(sizeof(sys)),
+                                 nullptr);
+        }
+
+        // Trim trailing CR/LF/space/dot that FormatMessage often appends.
+        while (len && (sys[len - 1] == '\r' || sys[len - 1] == '\n' || sys[len - 1] == ' ' || sys[len - 1] == '.'))
+        {
+            sys[--len] = '\0';
+        }
+        if (len == 0)
+        {
+            strcpy_s(sys, "Unrecognized error");
+        }
+
+        std::ostringstream oss;
+        oss << expr
+            << " failed. hr=0x"
+            << std::hex << std::uppercase << static_cast<unsigned long>(hr)
+            << " (" << std::dec << static_cast<long>(hr) << "): "
+            << sys
+            << " at " << file << ":" << line;
+        return std::runtime_error(oss.str());
+    }
+}
+
 #ifndef HR_CHECK
-#define HR_CHECK(x) do { \
-    HRESULT _hr = (x); \
-    if (FAILED(_hr)) { \
-        std::ostringstream _oss; \
-        _oss << "HRESULT 0x" << std::hex << std::uppercase << static_cast<unsigned long>(_hr) \
-             << " at " << __FILE__ << ":" << std::dec << __LINE__; \
-        throw std::runtime_error(_oss.str()); \
-    } \
+#define HR_CHECK(x) do {                                     \
+    HRESULT _hr = (x);                                       \
+    if (FAILED(_hr)) {                                       \
+        throw d3d::HrError(_hr, #x, __FILE__, __LINE__);     \
+    }                                                        \
 } while(0)
 #endif
 
