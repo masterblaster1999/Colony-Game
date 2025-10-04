@@ -1,7 +1,2 @@
-diff --git a/platform/win/Manifest.rc b/platform/win/Manifest.rc
-new file mode 100644
---- /dev/null
-+++ b/platform/win/Manifest.rc
-@@ -0,0 +1,2 @@
-+// Embed application manifest
-+1 RT_MANIFEST "platform/win/ColonyGame.manifest"
+// Embed application manifest
+1 RT_MANIFEST "platform/win/ColonyGame.manifest"
