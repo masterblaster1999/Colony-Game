@@ -1,19 +1,25 @@
 {
   "version": 6,
+  "cmakeMinimumRequired": { "major": 3, "minor": 25 },
   "configurePresets": [
     {
-      "name": "win-vs2022-vcpkg",
-      "generator": "Visual Studio 17 2022",
-      "architecture": "x64",
-      "binaryDir": "${sourceDir}/build",
+      "name": "win-msvc-x64-debug",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/out/build/win-msvc-x64-debug",
       "cacheVariables": {
-        "CMAKE_TOOLCHAIN_FILE": "$env{VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake",
-        "VCPKG_TARGET_TRIPLET": "x64-windows",
-        "CMAKE_MSVC_RUNTIME_LIBRARY": "MultiThreaded$<$<CONFIG:Debug>:Debug>DLL",
-        "BUILD_TESTING": "ON"
+        "CMAKE_BUILD_TYPE": "Debug",
+        "CMAKE_CXX_STANDARD": "20",
+        "VCPKG_MANIFEST_MODE": "ON"
       }
+    },
+    {
+      "name": "win-msvc-x64-relwithdebinfo",
+      "inherits": "win-msvc-x64-debug",
+      "cacheVariables": { "CMAKE_BUILD_TYPE": "RelWithDebInfo" }
     }
   ],
-  "buildPresets": [{ "name": "win-debug", "configurePreset": "win-vs2022-vcpkg", "configuration": "Debug" }],
-  "testPresets": [{ "name": "win-test", "configurePreset": "win-vs2022-vcpkg" }]
+  "buildPresets": [
+    { "name": "build-debug", "configurePreset": "win-msvc-x64-debug" },
+    { "name": "build-rel", "configurePreset": "win-msvc-x64-relwithdebinfo" }
+  ]
 }
