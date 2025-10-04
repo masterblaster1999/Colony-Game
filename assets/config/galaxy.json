@@ -1,0 +1,26 @@
+{
+  "seed": "0xFEEDFACECAFEBEEF",
+  "galaxy": {
+    "arm_count": 4,
+    "arm_pitch_deg": 15.0,
+    "arm_noise_amplitude": 0.35,
+    "disk_scale_length": 12000.0,
+    "core_radius": 2500.0,
+    "thickness_scale_height": 300.0
+  },
+  "star_type_weights": {
+    "O": 0.0003,
+    "B": 0.0010,
+    "A": 0.0060,
+    "F": 0.0300,
+    "G": 0.0800,
+    "K": 0.1200,
+    "M": 0.7627
+  },
+  "starfield": {
+    "spawn": 0.12,
+    "layers": [40.0, 120.0, 300.0],
+    "jitter": 0.35,
+    "exposure": 1.6
+  }
+}
