@@ -21,7 +21,7 @@
 //  - SetDefaultDllDirectories / SetDllDirectoryW: https://learn.microsoft.com/windows/win32/api/libloaderapi/nf-libloaderapi-setdefaultdlldirectories
 //  - DPI awareness APIs: https://learn.microsoft.com/windows/win32/api/winuser/nf-winuser-setprocessdpiawarenesscontext
 //                        https://learn.microsoft.com/windows/win32/hidpi/setting-the-default-dpi-awareness-for-a-process
-//  - HeapSetInformation (HeapEnableTerminationOnCorruption): https://learn.microsoft.com/windows/win32/api/heapapi/nf-heapapi-heapsetinformation
+//  - HeapSetInformation (HeapEnableTerminationOnCorruption): https://learn.microsoft.com/previous-versions/windows/desktop/cc307399(v=msdn.10)
 //  - AttachConsole(ATTACH_PARENT_PROCESS): https://learn.microsoft.com/windows/console/attachconsole
 
 #ifndef UNICODE
@@ -390,38 +390,39 @@ int APIENTRY wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
     auto log = OpenLogFile();
     log << L"[Launcher] started in: " << exeDir.wstring() << L"\n";
 
+    // Always require a valid res/ directory; offer embedded fallback when available.
+    if (!VerifyResources()) {
+        MsgBox(L"Colony Game",
+               L"Missing or invalid 'res' folder next to the executable.\n"
+               L"Make sure the game is installed correctly.");
+        log << L"[Launcher] res/ check failed\n";
 #if defined(COLONY_EMBED_GAME_LOOP)
-    // Optional single-binary mode: run the game loop in-process instead of spawning a child.
-    log << L"[Launcher] COLONY_EMBED_GAME_LOOP defined; running embedded loop.\n";
-    if (!VerifyResources()) {
-        MsgBox(L"Colony Game",
-               L"Missing or invalid 'res' folder next to the executable.\n"
-               L"Make sure the game is installed correctly.");
-        log << L"[Launcher] res/ check failed\n";
-        return 1;
-    }
-    return RunEmbeddedGameLoop(log);
+        log << L"[Launcher] Entering embedded safe mode due to missing res/.\n";
+        return RunEmbeddedGameLoop(log);
 #else
-    if (!VerifyResources()) {
-        MsgBox(L"Colony Game",
-               L"Missing or invalid 'res' folder next to the executable.\n"
-               L"Make sure the game is installed correctly.");
-        log << L"[Launcher] res/ check failed\n";
         return 1;
+#endif
     }
 
     // Resolve child game EXE
     auto gameExe = ResolveGameExe(exeDir);
+
+    // If we can't find the child, fall back to embedded loop if compiled in.
     if (gameExe.empty()) {
+        log << L"[Launcher] No child EXE found. Tried res/launcher.cfg and default names.\n";
+#if defined(COLONY_EMBED_GAME_LOOP)
+        log << L"[Launcher] Entering embedded safe mode.\n";
+        return RunEmbeddedGameLoop(log);
+#else
         MsgBox(L"Colony Game",
                L"Could not find the game executable next to the launcher.\n"
                L"Looked for 'ColonyGame.exe', 'Colony-Game.exe', or 'Game.exe'.\n"
                L"You can override via 'res/launcher.cfg'.");
-        log << L"[Launcher] no child EXE found\n";
-        return 1;
+        return 2;
+#endif
     }
 
-    // Build arguments *without* embedding exe path (pass exe via lpApplicationName).
+    // Build arguments; include the quoted exe path for robust argv[0] in the child.
     int argc = 0;
     LPWSTR* argv = CommandLineToArgvW(GetCommandLineW(), &argc); // see docs
     std::wstring tail = BuildCmdLineTail(argc, argv);
@@ -429,7 +430,7 @@ int APIENTRY wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
 
     STARTUPINFOW si{}; si.cb = sizeof(si);
     PROCESS_INFORMATION pi{};
-    std::wstring cmdline = tail; // mutable buffer for CreateProcessW
+    std::wstring cmdline = L"\"" + gameExe.wstring() + L"\"" + (tail.empty() ? L"" : L" " + tail);
 
     log << L"[Launcher] launching: " << gameExe.wstring() << L" args: " << tail << L"\n";
 
@@ -437,28 +438,40 @@ int APIENTRY wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
                         | CREATE_DEFAULT_ERROR_MODE; // child does not inherit our error mode
 
     BOOL ok = CreateProcessW(
-        gameExe.wstring().c_str(),                    // lpApplicationName (no quotes here)
-        cmdline.empty() ? nullptr : cmdline.data(),   // lpCommandLine (only args, properly quoted)
+        gameExe.wstring().c_str(),            // lpApplicationName (no quotes here)
+        cmdline.data(),                        // lpCommandLine (exe + args; mutable)
         nullptr, nullptr, FALSE,
         creationFlags,
         nullptr,
-        exeDir.wstring().c_str(),                     // ensure correct CWD for assets
+        exeDir.wstring().c_str(),             // ensure correct CWD for assets
         &si, &pi);
 
     if (!ok) {
         DWORD err = GetLastError();
+        log << L"[Launcher] CreateProcessW failed (" << err << L"): " << LastErrorMessage(err) << L"\n";
+#if defined(COLONY_EMBED_GAME_LOOP)
+        log << L"[Launcher] Falling back to embedded safe mode.\n";
+        return RunEmbeddedGameLoop(log);
+#else
         std::wstring msg = L"Failed to start game process.\n\nError "
                          + std::to_wstring(err) + L": " + LastErrorMessage(err);
         MsgBox(L"Colony Game", msg);
-        log << L"[Launcher] CreateProcessW failed: " << err
-            << L" : " << LastErrorMessage(err) << L"\n";
-        return 2;
+        return 3;
+#endif
     }
 
-    // Clean up; let the game own the lifetime
+    // Wait for the child to finish so we can report exit code in logs (and optionally UI).
     CloseHandle(pi.hThread);
+    WaitForSingleObject(pi.hProcess, INFINITE);
+    DWORD code = 0;
+    GetExitCodeProcess(pi.hProcess, &code);
     CloseHandle(pi.hProcess);
-    log << L"[Launcher] success; exiting.\n";
-    return 0;
-#endif
+
+    log << L"[Launcher] Child exit code: " << code << L"\n";
+    if (code != 0) {
+        std::wstringstream ss;
+        ss << L"The game exited with code " << code << L".";
+        MsgBox(L"Colony Game", ss.str());
+    }
+    return static_cast<int>(code);
 }
