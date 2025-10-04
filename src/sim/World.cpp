@@ -1,14 +1,16 @@
-#include "sim/World.h"
-#include <algorithm>
-#include <random>    // if you used RNG
-#include <cassert>
+#include "World.h"
 
-// === MOVE FROM GAME.CPP: exact enum/struct/function bodies ===
-//
-// enum class TileType : ...
-// struct Tile { ... }
-// struct World { ... }
-// void worldGenerate(...){...}
-// bool worldInBounds(...){...}
-// TileType worldGet(...){...}
-// void worldSet(...){...}
+namespace sim {
+
+bool World::Init() {
+    m_tick = 0;
+    return true;
+}
+
+void World::Shutdown() {}
+
+void World::Update(double) {
+    ++m_tick;
+}
+
+} // namespace sim
