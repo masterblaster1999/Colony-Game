@@ -238,9 +238,7 @@ include(cmake/shaders.cmake OPTIONAL)
 # ================================
 # Explicit shader build (preferred)
 # ================================
-# If 'cg_compile_hlsl' is available (from cmake/shaders.cmake), explicitly compile
-# the shaders you already have; this defines a 'shaders' target so the fallback
-# logic below won't run.
+# If 'cg_compile_hlsl' exists (older helper), use it to make a 'shaders' target.
 if(COMMAND cg_compile_hlsl)
   set(COMPILED_SHADERS)
   # Choose profiles based on renderer selection
@@ -301,235 +299,239 @@ if(COMMAND cg_compile_hlsl)
 endif()
 
 # ---- Renderer-driven built-in shader compilation routing ----
-# If cmake/shaders.cmake didn't define a 'shaders' target, build one here based on COLONY_RENDERER.
+# If we are NOT using the Visual Studio HLSL source integration (colony_add_hlsl),
+# fall back to explicit FXC/DXC shader compilation and a 'shaders' target.
+if(NOT COMMAND colony_add_hlsl)
 
-# D3D11 path -> FXC + Shader Model 5.x (DXBC)
-if(COLONY_RENDERER STREQUAL "d3d11")
-  option(BUILD_SHADERS_FXC "Compile HLSL shaders with FXC (SM5) for D3D11" ON)
-  set(FXC_DEFAULT_SM "5_0" CACHE STRING "Default Shader Model for FXC (e.g. 5_0, 5_1)")
-  set_property(CACHE FXC_DEFAULT_SM PROPERTY STRINGS 5_0 5_1)
+  # D3D11 path -> FXC + Shader Model 5.x (DXBC)
+  if(COLONY_RENDERER STREQUAL "d3d11")
+    option(BUILD_SHADERS_FXC "Compile HLSL shaders with FXC (SM5) for D3D11" ON)
+    set(FXC_DEFAULT_SM "5_0" CACHE STRING "Default Shader Model for FXC (e.g. 5_0, 5_1)")
+    set_property(CACHE FXC_DEFAULT_SM PROPERTY STRINGS 5_0 5_1)
 
-  if(BUILD_SHADERS_FXC AND NOT TARGET shaders)
-    # Locate fxc.exe from the Windows SDK (user can also pass -DFXC_EXE=C:/path/to/fxc.exe)
-    find_program(FXC_EXE NAMES fxc HINTS
-      "$ENV{WindowsSdkDir}/bin/x64"
-      "$ENV{WindowsSdkDir}/bin"
-    )
-    # Fallback glob search across common Windows SDK locations (helps CI/dev PCs)
-    if(NOT FXC_EXE)
-      file(GLOB _fxc_cands
-        "$ENV{WindowsSdkDir}/bin/*/x64/fxc.exe"
-        "C:/Program Files (x86)/Windows Kits/10/bin/*/x64/fxc.exe"
-        "C:/Program Files/Windows Kits/10/bin/*/x64/fxc.exe"
+    if(BUILD_SHADERS_FXC AND NOT TARGET shaders)
+      # Locate fxc.exe from the Windows SDK (user can also pass -DFXC_EXE=C:/path/to/fxc.exe)
+      find_program(FXC_EXE NAMES fxc HINTS
+        "$ENV{WindowsSdkDir}/bin/x64"
+        "$ENV{WindowsSdkDir}/bin"
       )
-      if(_fxc_cands)
-        list(SORT _fxc_cands DESC)
-        list(GET _fxc_cands 0 FXC_EXE)
-        message(STATUS "FXC resolved via glob: ${FXC_EXE}")
-      endif()
-    endif()
-
-    if(NOT FXC_EXE)
-      message(WARNING "FXC not found on PATH or Windows SDK; set FXC_EXE or install the Windows SDK. Shaders will not be compiled.")
-    endif()
-
-    # IMPORTANT: only compile generic SM5 shaders here; exclude SM6-only PCG shaders.
-    if(FXC_EXE AND (EXISTS "${CMAKE_SOURCE_DIR}/shaders"))
-      file(GLOB_RECURSE HLSL_SOURCES CONFIGURE_DEPENDS
-        "${CMAKE_SOURCE_DIR}/shaders/*.hlsl"
-      )
-      set(SHADER_BIN_DIR "${CMAKE_BINARY_DIR}/shaders")
-      file(MAKE_DIRECTORY "${SHADER_BIN_DIR}")
-
-      # Infer stage/profile/entry for FXC (SM5.x). Skip unsupported SM6-only stages (MS/AS).
-      function(_cg_infer_profile_and_entry_fxc SRC OUT_PROFILE OUT_ENTRY OUT_SKIP)
-        get_filename_component(_name_we "${SRC}" NAME_WE)
-        string(TOLOWER "${_name_we}" _lower)
-        set(_prof "")
-        set(_entry "")
-        set(_skip FALSE)
-        if(_lower MATCHES "(_|\\.)vs$|^vs_")
-          set(_prof "vs_${FXC_DEFAULT_SM}")
-          set(_entry "VSMain")
-        elseif(_lower MATCHES "(_|\\.)ps$|^ps_")
-          set(_prof "ps_${FXC_DEFAULT_SM}")
-          set(_entry "PSMain")
-        elseif(_lower MATCHES "(_|\\.)cs$|^cs_")
-          set(_prof "cs_${FXC_DEFAULT_SM}")
-          set(_entry "CSMain")
-        elseif(_lower MATCHES "(_|\\.)gs$|^gs_")
-          set(_prof "gs_${FXC_DEFAULT_SM}")
-          set(_entry "GSMain")
-        elseif(_lower MATCHES "(_|\\.)hs$|^hs_")
-          set(_prof "hs_${FXC_DEFAULT_SM}")
-          set(_entry "HSMain")
-        elseif(_lower MATCHES "(_|\\.)ds$|^ds_")
-          set(_prof "ds_${FXC_DEFAULT_SM}")
-          set(_entry "DSMain")
-        elseif(_lower MATCHES "(_|\\.)ms$|^ms_" OR _lower MATCHES "(_|\\.)as$|^as_")
-          # Mesh/Amplification shaders are SM6+ (DX12). Skip in D3D11.
-          set(_skip TRUE)
-        endif()
-        set(${OUT_PROFILE} "${_prof}" PARENT_SCOPE)
-        set(${OUT_ENTRY}   "${_entry}" PARENT_SCOPE)
-        set(${OUT_SKIP}    "${_skip}" PARENT_SCOPE)
-      endfunction()
-
-      set(_BUILT_CSOS "")
-      foreach(SRC IN LISTS HLSL_SOURCES)
-        _cg_infer_profile_and_entry_fxc("${SRC}" PROFILE ENTRY SKIP_THIS)
-        if(SKIP_THIS)
-          message(STATUS "Skipping DX12-only shader for D3D11/FXC: ${SRC}")
-          continue()
-        endif()
-        if(NOT PROFILE)
-          message(STATUS "Skipping shader (stage not inferred): ${SRC}  [Use suffix _vs/_ps/_cs/_gs/_hs/_ds]")
-          continue()
-        endif()
-
-        get_filename_component(NAME_WE "${SRC}" NAME_WE)
-        # Per-file overrides
-        if("${NAME_WE}" STREQUAL "noise_fbm_cs")
-          set(ENTRY "main")
-        endif()
-
-        set(OUTFILE "${SHADER_BIN_DIR}/${NAME_WE}.cso")
-
-        add_custom_command(
-          OUTPUT "${OUTFILE}"
-          COMMAND ${CMAKE_COMMAND} -E make_directory "${SHADER_BIN_DIR}"
-          COMMAND "${FXC_EXE}" /nologo
-                  /T ${PROFILE} /E ${ENTRY}
-                  $<$<CONFIG:Debug>:/Zi>
-                  $<$<CONFIG:Debug>:/Od>
-                  /Fo "${OUTFILE}"
-                  /I "${CMAKE_SOURCE_DIR}/shaders"
-                  /I "${CMAKE_SOURCE_DIR}/src/pcg/shaders"
-                  "${SRC}"
-          DEPENDS "${SRC}"
-          COMMENT "FXC ${PROFILE} ${SRC} -> ${OUTFILE}"
-          VERBATIM
+      # Fallback glob search across common Windows SDK locations (helps CI/dev PCs)
+      if(NOT FXC_EXE)
+        file(GLOB _fxc_cands
+          "$ENV{WindowsSdkDir}/bin/*/x64/fxc.exe"
+          "C:/Program Files (x86)/Windows Kits/10/bin/*/x64/fxc.exe"
+          "C:/Program Files/Windows Kits/10/bin/*/x64/fxc.exe"
         )
-        list(APPEND _BUILT_CSOS "${OUTFILE}")
-      endforeach()
-
-      if(_BUILT_CSOS)
-        add_custom_target(shaders ALL DEPENDS ${_BUILT_CSOS})
-        set_property(TARGET shaders PROPERTY FOLDER "assets")
-      else()
-        message(STATUS "No HLSL shaders compiled for D3D11 (no matching *.hlsl with stage suffix).")
+        if(_fxc_cands)
+          list(SORT _fxc_cands DESC)
+          list(GET _fxc_cands 0 FXC_EXE)
+          message(STATUS "FXC resolved via glob: ${FXC_EXE}")
+        endif()
       endif()
-    endif()
-  endif()
 
-# D3D12 path -> DXC + Shader Model 6.x (DXIL)
-elseif(COLONY_RENDERER STREQUAL "d3d12")
-  option(BUILD_SHADERS_DXC "Compile HLSL shaders with DXC (SM6) for D3D12" ON)
-  set(DXC_DEFAULT_SM "6_7" CACHE STRING "Default Shader Model version (e.g. 6_6, 6_7)")
-  set_property(CACHE DXC_DEFAULT_SM PROPERTY STRINGS 6_6 6_7)
+      if(NOT FXC_EXE)
+        message(WARNING "FXC not found on PATH or Windows SDK; set FXC_EXE or install the Windows SDK. Shaders will not be compiled.")
+      endif()
 
-  if(BUILD_SHADERS_DXC AND NOT TARGET shaders)
-    # Locate dxc.exe (user can also pass -DDXC_EXE=C:/path/to/dxc.exe)
-    find_program(DXC_EXE NAMES dxc HINTS
-      "$ENV{VCToolsInstallDir}/bin/Hostx64/x64"
-      "$ENV{WindowsSdkDir}/bin/x64"
-      "$ENV{WindowsSdkDir}/bin"
-    )
-    if(NOT DXC_EXE)
-      message(WARNING "DXC not found on PATH or SDK; set DXC_EXE or install the DirectX Shader Compiler. Shaders will not be compiled.")
-    endif()
-
-    if(DXC_EXE AND (EXISTS "${CMAKE_SOURCE_DIR}/shaders" OR EXISTS "${CMAKE_SOURCE_DIR}/src/pcg/shaders"))
-      # Compile from both the root shaders/ and the PCG shaders/ folders
-      file(GLOB_RECURSE HLSL_SOURCES CONFIGURE_DEPENDS
-        "${CMAKE_SOURCE_DIR}/shaders/*.hlsl"
-        "${CMAKE_SOURCE_DIR}/src/pcg/shaders/*.hlsl"
-      )
-      set(SHADER_BIN_DIR "${CMAKE_BINARY_DIR}/shaders")
-      file(MAKE_DIRECTORY "${SHADER_BIN_DIR}")
-
-      # Infer stage/profile/entry for DXC (SM6.x). Includes MS/AS stages.
-      function(_cg_infer_profile_and_entry_dxc SRC OUT_PROFILE OUT_ENTRY)
-        get_filename_component(_name_we "${SRC}" NAME_WE)
-        string(TOLOWER "${_name_we}" _lower)
-        set(_prof "")
-        set(_entry "")
-        if(_lower MATCHES "(_|\\.)vs$|^vs_")
-          set(_prof "vs_${DXC_DEFAULT_SM}")
-          set(_entry "VSMain")
-        elseif(_lower MATCHES "(_|\\.)ps$|^ps_")
-          set(_prof "ps_${DXC_DEFAULT_SM}")
-          set(_entry "PSMain")
-        elseif(_lower MATCHES "(_|\\.)cs$|^cs_")
-          set(_prof "cs_${DXC_DEFAULT_SM}")
-          set(_entry "CSMain")
-        elseif(_lower MATCHES "(_|\\.)gs$|^gs_")
-          set(_prof "gs_${DXC_DEFAULT_SM}")
-          set(_entry "GSMain")
-        elseif(_lower MATCHES "(_|\\.)hs$|^hs_")
-          set(_prof "hs_${DXC_DEFAULT_SM}")
-          set(_entry "HSMain")
-        elseif(_lower MATCHES "(_|\\.)ds$|^ds_")
-          set(_prof "ds_${DXC_DEFAULT_SM}")
-          set(_entry "DSMain")
-        elseif(_lower MATCHES "(_|\\.)ms$|^ms_")
-          set(_prof "ms_${DXC_DEFAULT_SM}")
-          set(_entry "MSMain")
-        elseif(_lower MATCHES "(_|\\.)as$|^as_")
-          set(_prof "as_${DXC_DEFAULT_SM}")
-          set(_entry "ASMain")
-        endif()
-        set(${OUT_PROFILE} "${_prof}" PARENT_SCOPE)
-        set(${OUT_ENTRY}   "${_entry}" PARENT_SCOPE)
-      endfunction()
-
-      set(_BUILT_CSOS "")
-      foreach(SRC IN LISTS HLSL_SOURCES)
-        _cg_infer_profile_and_entry_dxc("${SRC}" PROFILE ENTRY)
-        if(NOT PROFILE)
-          message(STATUS "Skipping shader (stage not inferred): ${SRC}  [Use suffix _vs/_ps/_cs/_gs/_hs/_ds/_ms/_as]")
-          continue()
-        endif()
-
-        get_filename_component(NAME_WE "${SRC}" NAME_WE)
-
-        # Per-file overrides (PCG compute shader uses 'main' entry)
-        if("${NAME_WE}" STREQUAL "noise_fbm_cs")
-          set(ENTRY "main")
-        endif()
-
-        set(OUTFILE "${SHADER_BIN_DIR}/${NAME_WE}.cso")
-
-        # Build command:
-        #   dxc -T <profile> -E <entry> -Fo <out> [-Zi -Qembed_debug | -Qstrip_debug] -I shaders <src>
-        add_custom_command(
-          OUTPUT "${OUTFILE}"
-          COMMAND ${CMAKE_COMMAND} -E make_directory "${SHADER_BIN_DIR}"
-          COMMAND "${DXC_EXE}" -nologo
-                  -T ${PROFILE} -E ${ENTRY}
-                  $<$<CONFIG:Debug>:-Zi>
-                  $<$<CONFIG:Debug>:-Qembed_debug>
-                  $<$<NOT:$<CONFIG:Debug>>:-Qstrip_debug>
-                  -Fo "${OUTFILE}"
-                  -I "${CMAKE_SOURCE_DIR}/shaders"
-                  -I "${CMAKE_SOURCE_DIR}/src/pcg/shaders"
-                  "${SRC}"
-          DEPENDS "${SRC}"
-          COMMENT "DXC ${PROFILE} ${SRC} -> ${OUTFILE}"
-          VERBATIM
+      # IMPORTANT: only compile generic SM5 shaders here; exclude SM6-only PCG shaders.
+      if(FXC_EXE AND (EXISTS "${CMAKE_SOURCE_DIR}/shaders"))
+        file(GLOB_RECURSE HLSL_SOURCES CONFIGURE_DEPENDS
+          "${CMAKE_SOURCE_DIR}/shaders/*.hlsl"
         )
-        list(APPEND _BUILT_CSOS "${OUTFILE}")
-      endforeach()
+        set(SHADER_BIN_DIR "${CMAKE_BINARY_DIR}/shaders")
+        file(MAKE_DIRECTORY "${SHADER_BIN_DIR}")
 
-      if(_BUILT_CSOS)
-        add_custom_target(shaders ALL DEPENDS ${_BUILT_CSOS})
-        set_property(TARGET shaders PROPERTY FOLDER "assets")
-      else()
-        message(STATUS "No HLSL shaders compiled for D3D12 (no matching *.hlsl with stage suffix).")
+        # Infer stage/profile/entry for FXC (SM5.x). Skip unsupported SM6-only stages (MS/AS).
+        function(_cg_infer_profile_and_entry_fxc SRC OUT_PROFILE OUT_ENTRY OUT_SKIP)
+          get_filename_component(_name_we "${SRC}" NAME_WE)
+          string(TOLOWER "${_name_we}" _lower)
+          set(_prof "")
+          set(_entry "")
+          set(_skip FALSE)
+          if(_lower MATCHES "(_|\\.)vs$|^vs_")
+            set(_prof "vs_${FXC_DEFAULT_SM}")
+            set(_entry "VSMain")
+          elseif(_lower MATCHES "(_|\\.)ps$|^ps_")
+            set(_prof "ps_${FXC_DEFAULT_SM}")
+            set(_entry "PSMain")
+          elseif(_lower MATCHES "(_|\\.)cs$|^cs_")
+            set(_prof "cs_${FXC_DEFAULT_SM}")
+            set(_entry "CSMain")
+          elseif(_lower MATCHES "(_|\\.)gs$|^gs_")
+            set(_prof "gs_${FXC_DEFAULT_SM}")
+            set(_entry "GSMain")
+          elseif(_lower MATCHES "(_|\\.)hs$|^hs_")
+            set(_prof "hs_${FXC_DEFAULT_SM}")
+            set(_entry "HSMain")
+          elseif(_lower MATCHES "(_|\\.)ds$|^ds_")
+            set(_prof "ds_${FXC_DEFAULT_SM}")
+            set(_entry "DSMain")
+          elseif(_lower MATCHES "(_|\\.)ms$|^ms_" OR _lower MATCHES "(_|\\.)as$|^as_")
+            # Mesh/Amplification shaders are SM6+ (DX12). Skip in D3D11.
+            set(_skip TRUE)
+          endif()
+          set(${OUT_PROFILE} "${_prof}" PARENT_SCOPE)
+          set(${OUT_ENTRY}   "${_entry}" PARENT_SCOPE)
+          set(${OUT_SKIP}    "${_skip}" PARENT_SCOPE)
+        endfunction()
+
+        set(_BUILT_CSOS "")
+        foreach(SRC IN LISTS HLSL_SOURCES)
+          _cg_infer_profile_and_entry_fxc("${SRC}" PROFILE ENTRY SKIP_THIS)
+          if(SKIP_THIS)
+            message(STATUS "Skipping DX12-only shader for D3D11/FXC: ${SRC}")
+            continue()
+          endif()
+          if(NOT PROFILE)
+            message(STATUS "Skipping shader (stage not inferred): ${SRC}  [Use suffix _vs/_ps/_cs/_gs/_hs/_ds]")
+            continue()
+          endif()
+
+          get_filename_component(NAME_WE "${SRC}" NAME_WE)
+          # Per-file overrides
+          if("${NAME_WE}" STREQUAL "noise_fbm_cs")
+            set(ENTRY "main")
+          endif()
+
+          set(OUTFILE "${SHADER_BIN_DIR}/${NAME_WE}.cso")
+
+          add_custom_command(
+            OUTPUT "${OUTFILE}"
+            COMMAND ${CMAKE_COMMAND} -E make_directory "${SHADER_BIN_DIR}"
+            COMMAND "${FXC_EXE}" /nologo
+                    /T ${PROFILE} /E ${ENTRY}
+                    $<$<CONFIG:Debug>:/Zi>
+                    $<$<CONFIG:Debug>:/Od>
+                    /Fo "${OUTFILE}"
+                    /I "${CMAKE_SOURCE_DIR}/shaders"
+                    /I "${CMAKE_SOURCE_DIR}/src/pcg/shaders"
+                    "${SRC}"
+            DEPENDS "${SRC}"
+            COMMENT "FXC ${PROFILE} ${SRC} -> ${OUTFILE}"
+            VERBATIM
+          )
+          list(APPEND _BUILT_CSOS "${OUTFILE}")
+        endforeach()
+
+        if(_BUILT_CSOS)
+          add_custom_target(shaders ALL DEPENDS ${_BUILT_CSOS})
+          set_property(TARGET shaders PROPERTY FOLDER "assets")
+        else()
+          message(STATUS "No HLSL shaders compiled for D3D11 (no matching *.hlsl with stage suffix).")
+        endif()
       endif()
     endif()
-  endif()
-endif()
+
+  # D3D12 path -> DXC + Shader Model 6.x (DXIL)
+  elseif(COLONY_RENDERER STREQUAL "d3d12")
+    option(BUILD_SHADERS_DXC "Compile HLSL shaders with DXC (SM6) for D3D12" ON)
+    set(DXC_DEFAULT_SM "6_7" CACHE STRING "Default Shader Model version (e.g. 6_6, 6_7)")
+    set_property(CACHE DXC_DEFAULT_SM PROPERTY STRINGS 6_6 6_7)
+
+    if(BUILD_SHADERS_DXC AND NOT TARGET shaders)
+      # Locate dxc.exe (user can also pass -DDXC_EXE=C:/path/to/dxc.exe)
+      find_program(DXC_EXE NAMES dxc HINTS
+        "$ENV{VCToolsInstallDir}/bin/Hostx64/x64"
+        "$ENV{WindowsSdkDir}/bin/x64"
+        "$ENV{WindowsSdkDir}/bin"
+      )
+      if(NOT DXC_EXE)
+        message(WARNING "DXC not found on PATH or SDK; set DXC_EXE or install the DirectX Shader Compiler. Shaders will not be compiled.")
+      endif()
+
+      if(DXC_EXE AND (EXISTS "${CMAKE_SOURCE_DIR}/shaders" OR EXISTS "${CMAKE_SOURCE_DIR}/src/pcg/shaders"))
+        # Compile from both the root shaders/ and the PCG shaders/ folders
+        file(GLOB_RECURSE HLSL_SOURCES CONFIGURE_DEPENDS
+          "${CMAKE_SOURCE_DIR}/shaders/*.hlsl"
+          "${CMAKE_SOURCE_DIR}/src/pcg/shaders/*.hlsl"
+        )
+        set(SHADER_BIN_DIR "${CMAKE_BINARY_DIR}/shaders")
+        file(MAKE_DIRECTORY "${SHADER_BIN_DIR}")
+
+        # Infer stage/profile/entry for DXC (SM6.x). Includes MS/AS stages.
+        function(_cg_infer_profile_and_entry_dxc SRC OUT_PROFILE OUT_ENTRY)
+          get_filename_component(_name_we "${SRC}" NAME_WE)
+          string(TOLOWER "${_name_we}" _lower)
+          set(_prof "")
+          set(_entry "")
+          if(_lower MATCHES "(_|\\.)vs$|^vs_")
+            set(_prof "vs_${DXC_DEFAULT_SM}")
+            set(_entry "VSMain")
+          elseif(_lower MATCHES "(_|\\.)ps$|^ps_")
+            set(_prof "ps_${DXC_DEFAULT_SM}")
+            set(_entry "PSMain")
+          elseif(_lower MATCHES "(_|\\.)cs$|^cs_")
+            set(_prof "cs_${DXC_DEFAULT_SM}")
+            set(_entry "CSMain")
+          elseif(_lower MATCHES "(_|\\.)gs$|^gs_")
+            set(_prof "gs_${DXC_DEFAULT_SM}")
+            set(_entry "GSMain")
+          elseif(_lower MATCHES "(_|\\.)hs$|^hs_")
+            set(_prof "hs_${DXC_DEFAULT_SM}")
+            set(_entry "HSMain")
+          elseif(_lower MATCHES "(_|\\.)ds$|^ds_")
+            set(_prof "ds_${DXC_DEFAULT_SM}")
+            set(_entry "DSMain")
+          elseif(_lower MATCHES "(_|\\.)ms$|^ms_")
+            set(_prof "ms_${DXC_DEFAULT_SM}")
+            set(_entry "MSMain")
+          elseif(_lower MATCHES "(_|\\.)as$|^as_")
+            set(_prof "as_${DXC_DEFAULT_SM}")
+            set(_entry "ASMain")
+          endif()
+          set(${OUT_PROFILE} "${_prof}" PARENT_SCOPE)
+          set(${OUT_ENTRY}   "${_entry}" PARENT_SCOPE)
+        endfunction()
+
+        set(_BUILT_CSOS "")
+        foreach(SRC IN LISTS HLSL_SOURCES)
+          _cg_infer_profile_and_entry_dxc("${SRC}" PROFILE ENTRY)
+          if(NOT PROFILE)
+            message(STATUS "Skipping shader (stage not inferred): ${SRC}  [Use suffix _vs/_ps/_cs/_gs/_hs/_ds/_ms/_as]")
+            continue()
+          endif()
+
+          get_filename_component(NAME_WE "${SRC}" NAME_WE)
+
+          # Per-file overrides (PCG compute shader uses 'main' entry)
+          if("${NAME_WE}" STREQUAL "noise_fbm_cs")
+            set(ENTRY "main")
+          endif()
+
+          set(OUTFILE "${SHADER_BIN_DIR}/${NAME_WE}.cso")
+
+          # Build command:
+          #   dxc -T <profile> -E <entry> -Fo <out> [-Zi -Qembed_debug | -Qstrip_debug] -I shaders <src>
+          add_custom_command(
+            OUTPUT "${OUTFILE}"
+            COMMAND ${CMAKE_COMMAND} -E make_directory "${SHADER_BIN_DIR}"
+            COMMAND "${DXC_EXE}" -nologo
+                    -T ${PROFILE} -E ${ENTRY}
+                    $<$<CONFIG:Debug>:-Zi>
+                    $<$<CONFIG:Debug>:-Qembed_debug>
+                    $<$<NOT:$<CONFIG:Debug>>:-Qstrip_debug>
+                    -Fo "${OUTFILE}"
+                    -I "${CMAKE_SOURCE_DIR}/shaders"
+                    -I "${CMAKE_SOURCE_DIR}/src/pcg/shaders"
+                    "${SRC}"
+            DEPENDS "${SRC}"
+            COMMENT "DXC ${PROFILE} ${SRC} -> ${OUTFILE}"
+            VERBATIM
+          )
+          list(APPEND _BUILT_CSOS "${OUTFILE}")
+        endforeach()
+
+        if(_BUILT_CSOS)
+          add_custom_target(shaders ALL DEPENDS ${_BUILT_CSOS})
+          set_property(TARGET shaders PROPERTY FOLDER "assets")
+        else()
+          message(STATUS "No HLSL shaders compiled for D3D12 (no matching *.hlsl with stage suffix).")
+        endif()
+      endif()
+    endif()
+  endif()  # renderer select
+
+endif()   # NOT COMMAND colony_add_hlsl
 
 # ===========================
 #   PCG library & demo (NEW)
@@ -637,6 +639,19 @@ if(TARGET ColonyGame)
   # Make VS debugger start in the source root so relative paths (res/, shaders/) resolve
   if(MSVC)
     set_target_properties(ColonyGame PROPERTIES VS_DEBUGGER_WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}")
+  endif()
+
+  # ===========================
+  # Visual Studio HLSL integration (PATCH ADDED HERE)
+  # ===========================
+  # If colony_add_hlsl() is available (from cmake/shaders.cmake), attach HLSL sources
+  # directly to the target so MSBuild compiles them using VS_SHADER_* properties.
+  # Compiled .cso files are emitted under ${CMAKE_BINARY_DIR}/shaders/<Config>/.
+  if(COMMAND colony_add_hlsl)
+    colony_add_hlsl(ColonyGame
+      "${CMAKE_SOURCE_DIR}/shaders/quad_vs.hlsl"
+      "${CMAKE_SOURCE_DIR}/shaders/quad_ps.hlsl"
+    )
   endif()
 endif()
 
