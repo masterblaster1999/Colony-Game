@@ -19,15 +19,22 @@ static LONG WINAPI UnhandledFilter(EXCEPTION_POINTERS* ep) {
   fs::path dumpPath = dir / name;
 
   HANDLE hFile = CreateFileW(dumpPath.c_str(), GENERIC_WRITE, FILE_SHARE_READ,
-                             nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+                             nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL | FILE_FLAG_WRITE_THROUGH, nullptr);
   if (hFile != INVALID_HANDLE_VALUE) {
     MINIDUMP_EXCEPTION_INFORMATION mei{};
     mei.ThreadId = GetCurrentThreadId();
     mei.ExceptionPointers = ep;
     mei.ClientPointers = FALSE;
 
+    const MINIDUMP_TYPE type = static_cast<MINIDUMP_TYPE>(
+        MiniDumpWithIndirectlyReferencedMemory |
+        MiniDumpWithProcessThreadData |
+        MiniDumpWithFullMemoryInfo |
+        MiniDumpWithThreadInfo |
+        MiniDumpWithUnloadedModules);
+
     MiniDumpWriteDump(GetCurrentProcess(), GetCurrentProcessId(),
-      hFile, MiniDumpWithIndirectlyReferencedMemory, &mei, nullptr, nullptr);
+                      hFile, type, &mei, nullptr, nullptr);
     CloseHandle(hFile);
   }
   return EXCEPTION_EXECUTE_HANDLER; // let the process die; dump is written
