@@ -1,135 +1,138 @@
-# cmake/shaders.cmake  (Windows only)
+# cmake/shaders.cmake  (Windows Visual Studio HLSL integration)
 include_guard(GLOBAL)
 
 if(NOT WIN32)
   message(FATAL_ERROR "This shaders.cmake is Windows-only by design.")
 endif()
 
-# --- Locate FXC (DXBC compiler, SM 2..5.1) ---
-# Escape ProgramFiles(x86) in CMake: $ENV{ProgramFiles\(x86\)}
-# Prefer WindowsSdkDir, then common Program Files roots.
-set(_FXC_HINTS
-  "$ENV{WindowsSdkDir}/bin"
-  "$ENV{ProgramFiles}/Windows Kits/11/bin"
-  "$ENV{ProgramFiles}/Windows Kits/10/bin"
-  "$ENV{ProgramW6432}/Windows Kits/11/bin"
-  "$ENV{ProgramW6432}/Windows Kits/10/bin"
-  "$ENV{ProgramFiles\(x86\)}/Windows Kits/11/bin"
-  "$ENV{ProgramFiles\(x86\)}/Windows Kits/10/bin"
-)
-
-find_program(FXC_EXE NAMES fxc.exe
-  HINTS ${_FXC_HINTS}
-  PATH_SUFFIXES x64
-  NO_CACHE
-)
-
-if(NOT FXC_EXE)
-  # Glob versioned SDK subfolders like .../bin/10.0.xxxxx.x/x64/fxc.exe
-  set(_fxc_candidates)
-  foreach(_binroot IN LISTS _FXC_HINTS)
-    if(EXISTS "${_binroot}")
-      file(GLOB _found_fxc "${_binroot}/*/x64/fxc.exe")
-      list(APPEND _fxc_candidates ${_found_fxc})
-    endif()
-  endforeach()
-  if(_fxc_candidates)
-    list(SORT _fxc_candidates DESCENDING)
-    list(GET _fxc_candidates 0 FXC_EXE)
-  endif()
+# Note: The VS HLSL source properties below are honored by the
+# Visual Studio generators. Other generators may ignore them.
+if (NOT CMAKE_GENERATOR MATCHES "Visual Studio")
+  message(STATUS
+    "shaders.cmake: Visual Studio generator not detected. "
+    "VS_SHADER_* properties may be ignored by this generator.")
 endif()
 
-if(NOT FXC_EXE)
-  # Fallback: search PATH (SDK sometimes adds fxc there)
-  find_program(FXC_EXE NAMES fxc.exe NO_CACHE)
-endif()
+# Default object (.cso) output path for shaders:
+# $(IntDir) is per-config (e.g. build/<cfg>/). %(Filename) is the VS item macro.
+set(COLONY_DEFAULT_SHADER_OBJECT "$(IntDir)%(Filename).cso")
 
-if(NOT FXC_EXE)
-  message(FATAL_ERROR
-    "fxc.exe not found. Install the Windows 10/11 SDK (HLSL tools) or ensure fxc.exe is on PATH.")
-else()
-  message(STATUS "Using FXC: ${FXC_EXE}")
-endif()
-
-# Output root (multi-config aware)
-set(COLONY_SHADER_OUT_DIR "${CMAKE_BINARY_DIR}/shaders/$<CONFIG>")
-
-# Compile one HLSL source to a .cso using FXC.
-# Usage:
-#   cg_compile_hlsl(<src> ENTRY <E> PROFILE <P> [DEFINES k=v ...] [INCLUDEDIRS dir1 ...])
-function(cg_compile_hlsl CG_SRC)
+# ---------------------------------------------------------------------------
+# cg_add_hlsl
+#
+# Register a single HLSL source file on a target and set the Visual Studio
+# HLSL properties so VS compiles it during the normal C++ build.
+#
+# Required:
+#   TARGET <target>     -- existing CMake target (executable or library)
+#   SOURCE <file.hlsl>  -- shader source file
+#   TYPE   <Vertex|Pixel|Geometry|Compute|Domain|Hull|Mesh|Amplification>
+#   ENTRY  <entrypoint> -- e.g. 'main'
+#   MODEL  <5.0|5.1|6.0|6.6|...> -- shader model; VS picks FXC (≤5.1) or DXC (6.x)
+#
+# Optional:
+#   DEFINES       name[=value] ...     -- adds /D for each
+#   INCLUDE_DIRS  dir1 dir2 ...        -- adds /I"dir" for each
+#   FLAGS         <raw additional options passed to the shader compiler>
+#   OUTPUT        <custom .cso path>   -- defaults to $(IntDir)%(Filename).cso
+#
+# Example:
+#   cg_add_hlsl(TARGET MyGame SOURCE shaders/lighting_ps.hlsl
+#               TYPE Pixel ENTRY main MODEL 6.6
+#               INCLUDE_DIRS "${CMAKE_SOURCE_DIR}/shaders/inc"
+#               DEFINES "USE_PCF=1" FLAGS "/Ges")
+#
+# Properties used (CMake):
+#   VS_SHADER_TYPE, VS_SHADER_ENTRYPOINT, VS_SHADER_MODEL, VS_SHADER_OBJECT_FILE_NAME
+# ---------------------------------------------------------------------------
+function(cg_add_hlsl)
   set(options)
-  set(oneValueArgs ENTRY PROFILE)
-  set(multiValueArgs DEFINES INCLUDEDIRS)
+  set(oneValueArgs TARGET SOURCE TYPE ENTRY MODEL OUTPUT)
+  set(multiValueArgs DEFINES INCLUDE_DIRS FLAGS)
   cmake_parse_arguments(CG "${options}" "${oneValueArgs}" "${multiValueArgs}" ${ARGN})
 
-  if(NOT EXISTS "${CG_SRC}")
-    message(FATAL_ERROR "cg_compile_hlsl: source not found: ${CG_SRC}")
+  if (NOT CG_TARGET)
+    message(FATAL_ERROR "cg_add_hlsl: TARGET is required.")
   endif()
-  if(NOT CG_ENTRY)
-    message(FATAL_ERROR "cg_compile_hlsl: ENTRY is required (e.g. VSMain/PSMain/CSMain).")
+  if (NOT TARGET ${CG_TARGET})
+    message(FATAL_ERROR "cg_add_hlsl: TARGET '${CG_TARGET}' does not exist.")
   endif()
-  if(NOT CG_PROFILE)
-    message(FATAL_ERROR "cg_compile_hlsl: PROFILE is required (e.g. vs_5_0, ps_5_0, cs_5_0).")
+  if (NOT CG_SOURCE)
+    message(FATAL_ERROR "cg_add_hlsl: SOURCE is required.")
+  endif()
+  if (NOT EXISTS "${CG_SOURCE}")
+    message(FATAL_ERROR "cg_add_hlsl: SOURCE not found: ${CG_SOURCE}")
+  endif()
+  if (NOT CG_TYPE)
+    message(FATAL_ERROR "cg_add_hlsl: TYPE is required (Vertex|Pixel|Geometry|Compute|Domain|Hull|Mesh|Amplification).")
+  endif()
+  if (NOT CG_ENTRY)
+    message(FATAL_ERROR "cg_add_hlsl: ENTRY is required (e.g. 'main').")
+  endif()
+  if (NOT CG_MODEL)
+    message(FATAL_ERROR "cg_add_hlsl: MODEL is required (e.g. 5.0, 6.6).")
   endif()
 
-  file(TO_CMAKE_PATH "${CG_SRC}" _src_norm)
-  cmake_path(GET _src_norm FILENAME _srcname)
-  cmake_path(GET _src_norm PARENT_PATH _srcdir)
+  # Add the shader file to the target's sources so VS knows to build it.
+  target_sources(${CG_TARGET} PRIVATE "${CG_SOURCE}")
 
-  set(_out "${COLONY_SHADER_OUT_DIR}/${_srcname}.cso")
-  set(_pdb "${COLONY_SHADER_OUT_DIR}/${_srcname}.pdb")
-  set(_asm "${COLONY_SHADER_OUT_DIR}/${_srcname}.asm")
-
-  # Always include the source's own directory + common shader dirs you use.
-  set(_incs "${_srcdir};${CMAKE_SOURCE_DIR}/src;${CMAKE_SOURCE_DIR}/src/pcg/shaders")
-  if(CG_INCLUDEDIRS)
-    list(APPEND _incs ${CG_INCLUDEDIRS})
-  endif()
-  list(REMOVE_DUPLICATES _incs)
-
-  # Construct /I flags in native form
-  set(_inc_flags "")
-  foreach(d IN LISTS _incs)
-    file(TO_NATIVE_PATH "${d}" _nd)
-    list(APPEND _inc_flags "/I\"${_nd}\"")
-  endforeach()
-
-  # Defines -> /D
-  set(_def_flags "")
-  foreach(kv IN LISTS CG_DEFINES)
-    list(APPEND _def_flags "/D${kv}")
-  endforeach()
-
-  # Base FXC flags
-  set(_fxc_flags
-    /nologo
-    /E "${CG_ENTRY}"
-    /T "${CG_PROFILE}"
-    ${_def_flags}
-    ${_inc_flags}
-    /Fo "${_out}"
-    /Fd "${_pdb}"
-    /Fc "${_asm}"
+  # Core Visual Studio HLSL properties (CMake source file properties).
+  # Docs: VS_SHADER_TYPE, VS_SHADER_ENTRYPOINT, VS_SHADER_MODEL, VS_SHADER_OBJECT_FILE_NAME
+  set_source_files_properties("${CG_SOURCE}" PROPERTIES
+    VS_SHADER_TYPE       "${CG_TYPE}"
+    VS_SHADER_ENTRYPOINT "${CG_ENTRY}"
+    VS_SHADER_MODEL      "${CG_MODEL}"
   )
 
-  add_custom_command(
-    OUTPUT "${_out}"
-    BYPRODUCTS "${_pdb}" "${_asm}"
-    COMMAND ${CMAKE_COMMAND} -E make_directory "${COLONY_SHADER_OUT_DIR}"
-    COMMAND "${FXC_EXE}" ${_fxc_flags}
-            $<$<CONFIG:Debug>:/Zi> $<$<CONFIG:Debug>:/Od>
-            $<$<CONFIG:RelWithDebInfo>:/Zi> $<$<CONFIG:RelWithDebInfo>:/Od>
-            $<$<CONFIG:Release>:/O3>
-            "${_src_norm}"
-    COMMAND ${CMAKE_COMMAND} -E echo "FXC OK: ${_srcname} -> ${_out}"
-    DEPENDS "${CG_SRC}"
-    WORKING_DIRECTORY "${_srcdir}"
-    VERBATIM
-    USES_TERMINAL
-    COMMENT "FXC ${CG_PROFILE} ${CG_SRC} -> ${_out}"
+  # Output object (.cso): either user-supplied or default to $(IntDir)%(Filename).cso
+  if (CG_OUTPUT)
+    set(_shader_out "${CG_OUTPUT}")
+  else()
+    set(_shader_out "${COLONY_DEFAULT_SHADER_OBJECT}")
+  endif()
+  set_source_files_properties("${CG_SOURCE}" PROPERTIES
+    VS_SHADER_OBJECT_FILE_NAME "${_shader_out}"
   )
 
-  # return path to .cso to the caller
-  set(CG_OUT "${_out}" PARENT_SCOPE)
+  # Compose additional flags: /I "dir" and /D NAME[=VAL], plus any raw FLAGS.
+  set(_extra_flags "")
+  foreach(_inc IN LISTS CG_INCLUDE_DIRS)
+    # Quote to handle spaces in paths.
+    string(APPEND _extra_flags " /I\"${_inc}\"")
+  endforeach()
+  foreach(_def IN LISTS CG_DEFINES)
+    string(APPEND _extra_flags " /D${_def}")
+  endforeach()
+  foreach(_f IN LISTS CG_FLAGS)
+    string(APPEND _extra_flags " ${_f}")
+  endforeach()
+
+  if (_extra_flags)
+    # VS_SHADER_FLAGS adds options to the HLSL compiler invocation.
+    set_source_files_properties("${CG_SOURCE}" PROPERTIES
+      VS_SHADER_FLAGS "${_extra_flags}"
+    )
+  endif()
+
+  # Friendly status for configure logs.
+  get_filename_component(_srcname "${CG_SOURCE}" NAME)
+  message(STATUS "HLSL (VS) -> ${CG_TARGET}: ${_srcname}  [${CG_TYPE}, SM ${CG_MODEL}, entry=${CG_ENTRY}]")
 endfunction()
+
+# ---------------------------------------------------------------------------
+# NOTE:
+# Previous custom macro 'cg_compile_hlsl(...)' (which shell-called FXC) has
+# been removed in favor of Visual Studio's native HLSL integration via
+# source file properties. If you still have calls to cg_compile_hlsl in
+# your build, replace them with either:
+#
+#  1) Direct properties (no helper):
+#     target_sources(ColonyGame PRIVATE "${CMAKE_SOURCE_DIR}/shaders/terrain_ps.hlsl")
+#     set_source_files_properties("${CMAKE_SOURCE_DIR}/shaders/terrain_ps.hlsl" PROPERTIES
+#       VS_SHADER_TYPE Pixel
+#       VS_SHADER_ENTRYPOINT main
+#       VS_SHADER_MODEL 5.0
+#       VS_SHADER_OBJECT_FILE_NAME "$(IntDir)%(Filename).cso")
+#
+#  2) Or the helper function 'cg_add_hlsl(...)' defined above.
+# ---------------------------------------------------------------------------
