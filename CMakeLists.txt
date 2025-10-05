@@ -620,6 +620,20 @@ if(BUILD_PCG_DEMO AND EXISTS "${CMAKE_SOURCE_DIR}/src/tools/main_pcg_demo.cpp")
 endif()
 
 # ===========================
+#   Factions module (NEW)
+# ===========================
+add_library(Factions STATIC
+    src/sim/factions/FactionGen.cpp
+)
+target_include_directories(Factions PUBLIC ${CMAKE_SOURCE_DIR}/src)
+set_property(TARGET Factions PROPERTY FOLDER "libs")
+
+# Optional JSON loader (comment this block out if you don't want JSON)
+find_package(nlohmann_json CONFIG REQUIRED) # vcpkg: nlohmann-json
+target_sources(Factions PRIVATE src/sim/factions/FactionConfigLoader.hpp)
+target_link_libraries(Factions PUBLIC nlohmann_json::nlohmann_json)
+
+# ===========================
 #   Main game sources / target
 # ===========================
 # Only add the game's 'src' dir if it has its own CMakeLists.txt
@@ -635,6 +649,9 @@ if(TARGET ColonyGame)
 
   # Link in the PCG library
   target_link_libraries(ColonyGame PRIVATE pcg)
+
+  # Link in the Factions module (NEW)
+  target_link_libraries(ColonyGame PRIVATE Factions)
 
   # Apply centralized Windows compile definitions to the main target
   if(TARGET colony_build_options)
