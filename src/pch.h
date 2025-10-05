@@ -1,4 +1,94 @@
 #pragma once
+
+// [Colony Game PCH] Windows/DX11/SDL2 + common STL
+// This block defines platform tuning macros BEFORE <Windows.h> and groups headers
+// used widely across the codebase. It is MSVC/Win32 only.
+
+#ifndef NOMINMAX
+#  define NOMINMAX 1
+#endif
+#ifndef WIN32_LEAN_AND_MEAN
+#  define WIN32_LEAN_AND_MEAN 1
+#endif
+#ifndef STRICT
+#  define STRICT 1
+#endif
+#ifndef _CRT_SECURE_NO_WARNINGS
+#  define _CRT_SECURE_NO_WARNINGS 1
+#endif
+
+// --- C++ standard library (keep stable/commonly used headers here) ---
+#include <cassert>
+#include <cstdint>
+#include <cstddef>
+#include <cmath>
+#include <cstring>
+#include <string>
+#include <string_view>
+#include <vector>
+#include <array>
+#include <deque>
+#include <queue>
+#include <stack>
+#include <set>
+#include <map>
+#include <unordered_set>
+#include <unordered_map>
+#include <algorithm>
+#include <functional>
+#include <memory>
+#include <optional>
+#include <variant>
+#include <span>
+#include <filesystem>
+#include <chrono>
+#include <limits>
+
+// --- Win32 / COM / DPI ---
+#include <Windows.h>
+#include <wrl/client.h>       // Microsoft::WRL::ComPtr
+#include <shellscalingapi.h>  // PROCESS_DPI_AWARENESS, etc. (link Shcore.lib)
+
+// --- DirectX 11 / DXGI / Math ---
+#include <d3d11.h>
+#include <dxgi1_6.h>
+#include <d3dcompiler.h>      // for runtime shader compile paths (if used)
+#include <DirectXMath.h>
+#include <DirectXColors.h>
+
+// --- SDL2 ---
+#if __has_include(<SDL.h>)
+#  include <SDL.h>
+#elif __has_include(<SDL2/SDL.h>)
+#  include <SDL2/SDL.h>
+#endif
+
+// --- ImGui core (keep backend impl headers in .cpp files) ---
+#include <imgui.h>
+
+// --- fmt / spdlog ---
+#ifndef SPDLOG_ACTIVE_LEVEL
+#  ifdef NDEBUG
+#    define SPDLOG_ACTIVE_LEVEL SPDLOG_LEVEL_INFO
+#  else
+#    define SPDLOG_ACTIVE_LEVEL SPDLOG_LEVEL_DEBUG
+#  endif
+#endif
+#include <fmt/core.h>
+#include <fmt/format.h>
+#include <spdlog/spdlog.h>
+#include <spdlog/fmt/ostr.h>
+
+// --- EnTT ECS ---
+#include <entt/entt.hpp>
+
+// --- Short-hands used pervasively ---
+#define CG_NODISCARD [[nodiscard]]
+#define CG_UNUSED(x) (void)(x)
+
+template <class T>
+using ComPtr = Microsoft::WRL::ComPtr<T>;
+
 //
 // Colony-Game — Windows-only precompiled header (PCH)
 // Massive utility pack: header-only RAII + helpers for Win32 / D3D11 / DXGI / XAudio2.
