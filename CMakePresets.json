@@ -16,10 +16,44 @@
       "name": "win-msvc-x64-relwithdebinfo",
       "inherits": "win-msvc-x64-debug",
       "cacheVariables": { "CMAKE_BUILD_TYPE": "RelWithDebInfo" }
+    },
+
+    {
+      "name": "vs-hlsl",
+      "displayName": "VS (HLSL) - x64",
+      "description": "Visual Studio 2022 generator; enables MSBuild HLSL integration gated in CMakeLists.",
+      "generator": "Visual Studio 17 2022",
+      "architecture": { "value": "x64" },
+      "binaryDir": "${sourceDir}/out/build/vs-hlsl",
+      "cacheVariables": {
+        "VCPKG_MANIFEST_MODE": "ON",
+        "FRONTEND": "win32",
+        "COLONY_STATIC_CRT": "OFF"
+      }
+    },
+    {
+      "name": "ninja-dxc",
+      "displayName": "Ninja (DXC/FXC) - RelWithDebInfo",
+      "description": "Single-config Ninja build. Defaults to D3D12 + DXC path; set COLONY_RENDERER=d3d11 if you want FXC.",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/out/build/ninja-dxc-relwithdebinfo",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "RelWithDebInfo",
+        "CMAKE_CXX_STANDARD": "20",
+        "VCPKG_MANIFEST_MODE": "ON",
+        "COLONY_RENDERER": "d3d12",
+        "BUILD_SHADERS_DXC": "ON",
+        "BUILD_SHADERS_FXC": "OFF"
+      }
     }
   ],
   "buildPresets": [
     { "name": "build-debug", "configurePreset": "win-msvc-x64-debug" },
-    { "name": "build-rel", "configurePreset": "win-msvc-x64-relwithdebinfo" }
+    { "name": "build-rel", "configurePreset": "win-msvc-x64-relwithdebinfo" },
+
+    { "name": "vs-hlsl-debug", "displayName": "Build VS (HLSL) — Debug", "configurePreset": "vs-hlsl", "configuration": "Debug" },
+    { "name": "vs-hlsl-release", "displayName": "Build VS (HLSL) — Release", "configurePreset": "vs-hlsl", "configuration": "Release" },
+
+    { "name": "ninja-dxc-build", "displayName": "Build Ninja (DXC/FXC)", "configurePreset": "ninja-dxc", "targets": [ "all" ] }
   ]
 }
