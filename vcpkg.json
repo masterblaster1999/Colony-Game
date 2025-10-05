@@ -28,6 +28,9 @@
       "name": "directx-dxc",
       "host": true
     },
+    {
+      "name": "directx-dxc"
+    },
 
     {
       "name": "directxtex",
