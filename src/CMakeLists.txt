@@ -72,37 +72,44 @@ endif()
 # which fixes FXC/DXC looking for a default 'main'.
 if(COMMAND colony_add_hlsl)
   # Where compiled CSO/DXIL land during the build (mirrors the copy step below)
-  set(_SHADER_OUT "${CMAKE_BINARY_DIR}/res/shaders/$<IF:$<BOOL:${CMAKE_CONFIGURATION_TYPES}>,$<CONFIG>,.>")
+  set(_SHADER_OUT "${CMAKE_BINARY_DIR}/res/shaders/$<CONFIG>")
 
-  # Shader model preference: D3D12 -> SM 6.7, otherwise SM 5.0 (FXC path)
+  # Stage-specific HLSL profiles based on renderer
   if(COLONY_RENDERER STREQUAL "d3d12")
-    set(_MODEL "6.7")
+    set(_VS_PROF "vs_6_7")
+    set(_PS_PROF "ps_6_7")
+    set(_CS_PROF "cs_6_7")
   else()
-    set(_MODEL "5.0")
+    set(_VS_PROF "vs_5_0")
+    set(_PS_PROF "ps_5_0")
+    set(_CS_PROF "cs_5_0")
   endif()
 
   # Vertex + Pixel shaders (entrypoints VSMain / PSMain)
   if(EXISTS "${CMAKE_SOURCE_DIR}/shaders/quad_vs.hlsl")
-    colony_add_hlsl(ColonyGame
+    colony_add_hlsl(
+      TARGET  ColonyGame
       SOURCES "${CMAKE_SOURCE_DIR}/shaders/quad_vs.hlsl"
-      MODEL   "${_MODEL}"
+      PROFILE "${_VS_PROF}"
       ENTRY   "VSMain"
       OUTDIR  "${_SHADER_OUT}")
   endif()
 
   if(EXISTS "${CMAKE_SOURCE_DIR}/shaders/quad_ps.hlsl")
-    colony_add_hlsl(ColonyGame
+    colony_add_hlsl(
+      TARGET  ColonyGame
       SOURCES "${CMAKE_SOURCE_DIR}/shaders/quad_ps.hlsl"
-      MODEL   "${_MODEL}"
+      PROFILE "${_PS_PROF}"
       ENTRY   "PSMain"
       OUTDIR  "${_SHADER_OUT}")
   endif()
 
   # Compute shader: entrypoint is 'main'
   if(EXISTS "${CMAKE_SOURCE_DIR}/src/pcg/shaders/noise_fbm_cs.hlsl")
-    colony_add_hlsl(ColonyGame
+    colony_add_hlsl(
+      TARGET  ColonyGame
       SOURCES "${CMAKE_SOURCE_DIR}/src/pcg/shaders/noise_fbm_cs.hlsl"
-      MODEL   "${_MODEL}"
+      PROFILE "${_CS_PROF}"
       ENTRY   "main"
       OUTDIR  "${_SHADER_OUT}")
   endif()
@@ -182,11 +189,11 @@ if(EXISTS "${CMAKE_SOURCE_DIR}/shaders/common/common.hlsli")
 endif()
 
 # A6: Stage compiled shader blobs into the runtime res/shaders folder next to the EXE.
-# All toolchains (VS HLSL, FXC, DXC) now emit *.cso under ${CMAKE_BINARY_DIR}/res/shaders[/<cfg>].
+# All toolchains (VS HLSL, FXC, DXC) now emit *.cso under ${CMAKE_BINARY_DIR}/res/shaders/<cfg>.
 add_custom_command(TARGET ColonyGame POST_BUILD
   COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:ColonyGame>/res/shaders"
   COMMAND ${CMAKE_COMMAND} -E copy_directory
-          "${CMAKE_BINARY_DIR}/res/shaders/$<IF:$<BOOL:${CMAKE_CONFIGURATION_TYPES}>,$<CONFIG>,.>"
+          "${CMAKE_BINARY_DIR}/res/shaders/$<CONFIG>"
           "$<TARGET_FILE_DIR:ColonyGame>/res/shaders"
   VERBATIM
 )
