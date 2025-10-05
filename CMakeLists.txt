@@ -307,9 +307,10 @@ if(COMMAND cg_compile_hlsl)
 endif()
 
 # ---- Renderer-driven built-in shader compilation routing ----
-# If we are NOT using the Visual Studio HLSL source integration (colony_add_hlsl),
-# fall back to explicit FXC/DXC shader compilation and a 'shaders' target.
-if(NOT COMMAND colony_add_hlsl)
+# Use Visual Studio's native HLSL integration only when:
+#   (a) the helper exists AND (b) we're using a VS generator.
+# Otherwise, fall back to explicit FXC/DXC compilation.
+if(NOT (COMMAND colony_add_hlsl AND CMAKE_GENERATOR MATCHES "Visual Studio"))
 
   # D3D11 path -> FXC + Shader Model 5.x (DXBC)
   if(COLONY_RENDERER STREQUAL "d3d11")
@@ -539,7 +540,7 @@ if(NOT COMMAND colony_add_hlsl)
     endif()
   endif()  # renderer select
 
-endif()   # NOT COMMAND colony_add_hlsl
+endif()   # NOT (colony_add_hlsl && Visual Studio generator)
 
 # ===========================
 #   PCG library & demo (NEW)
@@ -650,15 +651,16 @@ if(TARGET ColonyGame)
   endif()
 
   # ===========================
-  # Visual Studio HLSL integration (PATCH ADDED HERE)
+  # Visual Studio HLSL integration (only with VS generator)
   # ===========================
-  # If colony_add_hlsl() is available (from cmake/shaders.cmake), attach HLSL sources
-  # directly to the target so MSBuild compiles them using VS_SHADER_* properties.
-  # Compiled .cso files are emitted under ${CMAKE_BINARY_DIR}/shaders/<Config>/.
-  if(COMMAND colony_add_hlsl)
-    colony_add_hlsl(ColonyGame
-      "${CMAKE_SOURCE_DIR}/shaders/quad_vs.hlsl"
-      "${CMAKE_SOURCE_DIR}/shaders/quad_ps.hlsl"
+  # If colony_add_hlsl() is available, attach HLSL sources so MSBuild compiles them
+  # using VS_SHADER_* properties. Compiled .cso -> ${CMAKE_BINARY_DIR}/shaders/<Config>/.
+  if(COMMAND colony_add_hlsl AND CMAKE_GENERATOR MATCHES "Visual Studio")
+    colony_add_hlsl(
+      TARGET ColonyGame
+      FILES
+        "${CMAKE_SOURCE_DIR}/shaders/quad_vs.hlsl"
+        "${CMAKE_SOURCE_DIR}/shaders/quad_ps.hlsl"
     )
   endif()
 endif()
