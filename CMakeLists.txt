@@ -142,7 +142,7 @@ function(_cg_sanitize VAR)
     string(REGEX REPLACE "[ \t]+" " " _v "${_v}")
     string(STRIP "${_v}" _v)
     if(NOT "${_v}" STREQUAL "${${VAR}}")
-      message(WARNING "Sanitized ${VAR}: '${${VAR}}' -> '${_v}'")
+      message(STATUS "Sanitized ${VAR}: '${${VAR}}' -> '${_v}'")
       set(${VAR} "${_v}" CACHE STRING "Sanitized by top-level CMakeLists" FORCE)
     endif()
   endif()
@@ -566,8 +566,11 @@ else()
   set(_HLSL_TOOLCHAIN "Visual Studio HLSL (MSBuild)")
 endif()
 
-# Friendly summary of which HLSL path we're using
-message(STATUS "HLSL toolchain: ${_HLSL_TOOLCHAIN}")
+# Friendly summary of which HLSL path we're using (print once)
+if(NOT DEFINED CG_HLSL_STATUS_PRINTED)
+  set(CG_HLSL_STATUS_PRINTED ON CACHE INTERNAL "Printed HLSL toolchain status once")
+  message(STATUS "HLSL toolchain: ${_HLSL_TOOLCHAIN}")
+endif()
 
 # ===========================
 #   PCG library & demo (NEW)
