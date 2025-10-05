@@ -55,9 +55,14 @@ if(MSVC)
   target_compile_options(ColonyGame PRIVATE /utf-8)
 endif()
 
-# Precompiled header (optional)
-if(EXISTS "${CMAKE_SOURCE_DIR}/src/pch.h")
+# A4: Precompiled header (optional, gated by COLONY_USE_PCH)
+if(COLONY_USE_PCH AND EXISTS "${CMAKE_SOURCE_DIR}/src/pch.h")
   target_precompile_headers(ColonyGame PRIVATE "${CMAKE_SOURCE_DIR}/src/pch.h")
+endif()
+
+# A4: Unity builds (opt‑in; speeds up large translation units)
+if(COLONY_UNITY_BUILD)
+  set_target_properties(ColonyGame PROPERTIES UNITY_BUILD ON UNITY_BUILD_BATCH_SIZE 16)
 endif()
 
 # Compile-time defines for optional systems + deterministic frontend switch
@@ -117,12 +122,19 @@ if(EXISTS "${CMAKE_SOURCE_DIR}/res")
   )
 endif()
 
-if(EXISTS "${CMAKE_SOURCE_DIR}/shaders")
-  add_custom_command(TARGET ColonyGame POST_BUILD
-    COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:ColonyGame>/shaders"
-    COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/shaders" "$<TARGET_FILE_DIR:ColonyGame>/shaders"
-    VERBATIM
-  )
+# A6: Stage compiled shader blobs into the runtime res/shaders folder next to the EXE.
+# All toolchains (VS HLSL, FXC, DXC) now emit *.cso under ${CMAKE_BINARY_DIR}/res/shaders[/<cfg>].
+add_custom_command(TARGET ColonyGame POST_BUILD
+  COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:ColonyGame>/res/shaders"
+  COMMAND ${CMAKE_COMMAND} -E copy_directory
+          "${CMAKE_BINARY_DIR}/res/shaders/$<IF:$<BOOL:${CMAKE_CONFIGURATION_TYPES}>,$<CONFIG>,.>"
+          "$<TARGET_FILE_DIR:ColonyGame>/res/shaders"
+  VERBATIM
+)
+
+# Ensure shaders are built before we copy (when a 'shaders' target exists)
+if(TARGET shaders)
+  add_dependencies(ColonyGame shaders)
 endif()
 
 # ------------------------------------------------------------------------------
