@@ -66,16 +66,16 @@ function(colony_add_hlsl)
   endif()
 
   # ------------------------------------------------------------
-  # Visual Studio MSBuild HLSL path:
-  # Put MSBuild-compiled CSO into ${CMAKE_BINARY_DIR}/res/shaders/<cfg>
+  # Visual Studio MSBuild HLSL path (directory-agnostic):
+  # Put MSBuild-compiled CSO into ${CMAKE_BINARY_DIR}/res/shaders/$(Configuration)
   # ------------------------------------------------------------
   if(WIN32 AND CMAKE_GENERATOR MATCHES "Visual Studio")
     # Ensure the target knows about the shader sources so MSBuild compiles them.
     target_sources(${CAH_TARGET} PRIVATE ${CAH_SOURCES})
     source_group("Shaders" FILES ${CAH_SOURCES})
 
-    # Output directory for CSO under the build tree, per-config.
-    set(_msbuild_outdir "${CMAKE_BINARY_DIR}/res/shaders/$<CONFIG>")
+    # Use MSBuild variable for per-config output directory (avoids CMake PRE_BUILD).
+    set(_msbuild_outdir "${CMAKE_BINARY_DIR}/res/shaders/$(Configuration)")
 
     foreach(src IN LISTS CAH_SOURCES)
       get_filename_component(_name "${src}" NAME_WE)
@@ -134,7 +134,7 @@ function(colony_add_hlsl)
         set(_flags "${_flags};/I;${i}")
       endforeach()
 
-      # Force object file under ${build}/res/shaders/<cfg>/ with a stable .cso name.
+      # Force object file under ${build}/res/shaders/$(Configuration)/ with a stable .cso name.
       set(_obj "${_msbuild_outdir}/${_name}.cso")
 
       set_source_files_properties("${src}" PROPERTIES
@@ -146,9 +146,14 @@ function(colony_add_hlsl)
       )
     endforeach()
 
-    # Make sure the per-config output directory exists at build time.
-    add_custom_command(TARGET ${CAH_TARGET} PRE_BUILD
-      COMMAND ${CMAKE_COMMAND} -E make_directory "${CMAKE_BINARY_DIR}/res/shaders/$<CONFIG>")
+    # Create output folders at configure time so MSBuild can write .cso without PRE_BUILD.
+    if(CMAKE_CONFIGURATION_TYPES)
+      foreach(_cfg IN LISTS CMAKE_CONFIGURATION_TYPES)
+        file(MAKE_DIRECTORY "${CMAKE_BINARY_DIR}/res/shaders/${_cfg}")
+      endforeach()
+    else()
+      file(MAKE_DIRECTORY "${CMAKE_BINARY_DIR}/res/shaders")
+    endif()
 
     # MSBuild handles compilation; no explicit custom target/products required here.
     return()
@@ -197,10 +202,21 @@ function(colony_add_hlsl)
     endforeach()
   else()
     # ---- DX12 path (DXC, DXIL/SM6.x) -----------------------------------------
-    find_package(directx-dxc CONFIG REQUIRED)  # provides Microsoft::DirectXShaderCompiler
+    # Prefer vcpkg-provided tool, but fall back to common locations if unset.
+    find_package(directx-dxc CONFIG QUIET)  # may define toolchain targets
     if(NOT DEFINED DIRECTX_DXC_TOOL)
+      find_program(DIRECTX_DXC_TOOL NAMES dxc
+        HINTS
+          "$ENV{VCPKG_INSTALLATION_ROOT}/installed/x64-windows/tools/directx-dxc"
+          "$ENV{VCPKG_ROOT}/installed/x64-windows/tools/directx-dxc"
+          "$ENV{WindowsSdkDir}/bin/x64"
+          "C:/Program Files (x86)/Windows Kits/10/bin/x64"
+          "C:/Program Files/Windows Kits/10/bin/x64")
+    endif()
+    if(NOT DIRECTX_DXC_TOOL)
       message(FATAL_ERROR
-        "directx-dxc found, but DIRECTX_DXC_TOOL is not set; cannot run dxc.exe")
+        "DirectX Shader Compiler (dxc.exe) not found. "
+        "Install 'directx-dxc' via vcpkg or set DIRECTX_DXC_TOOL to the dxc.exe path.")
     endif()
 
     foreach(src IN LISTS CAH_SOURCES)
