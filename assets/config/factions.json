@@ -1,0 +1,62 @@
+{
+  "minFactions": 3,
+  "maxFactions": 6,
+  "minBaseSpacing": 128,
+  "palette": [
+    [214, 93, 14],
+    [94, 129, 172],
+    [163, 190, 140],
+    [208, 135, 112],
+    [180, 142, 173]
+  ],
+  "archetypes": [
+    {
+      "id": "traders",
+      "ethos": "Traders",
+      "weight": 1.0,
+      "tech": [0.5, 0.9],
+      "aggression": [0.05, 0.35],
+      "hospitality": [0.6, 1.0]
+    },
+    {
+      "id": "raiders",
+      "ethos": "Raiders",
+      "weight": 0.8,
+      "tech": [0.3, 0.7],
+      "aggression": [0.6, 1.0],
+      "hospitality": [0.0, 0.3]
+    },
+    {
+      "id": "settlers",
+      "ethos": "Settlers",
+      "weight": 1.0,
+      "tech": [0.3, 0.8],
+      "aggression": [0.2, 0.6],
+      "hospitality": [0.3, 0.8]
+    },
+    {
+      "id": "nomads",
+      "ethos": "Nomads",
+      "weight": 0.8,
+      "tech": [0.2, 0.7],
+      "aggression": [0.2, 0.6],
+      "hospitality": [0.2, 0.7]
+    },
+    {
+      "id": "scholars",
+      "ethos": "Scholars",
+      "weight": 0.6,
+      "tech": [0.6, 1.0],
+      "aggression": [0.0, 0.3],
+      "hospitality": [0.2, 0.7]
+    },
+    {
+      "id": "cultists",
+      "ethos": "Cultists",
+      "weight": 0.4,
+      "tech": [0.2, 0.8],
+      "aggression": [0.3, 0.8],
+      "hospitality": [0.0, 0.5]
+    }
+  ]
+}
