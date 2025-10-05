@@ -15,6 +15,7 @@
     "fmt",
     "spdlog",
     "entt",
+    "nlohmann-json",
 
     {
       "name": "imgui",
