@@ -32,7 +32,8 @@ void compute_flow_accumulation(const std::vector<float>& h, int W, int H, std::v
 }
 
 void carve_rivers(std::vector<float>& h, const std::vector<float>& flow,
-                  int W,int H,float cellSize, float flowThresh, std::vector<uint8_t>& river) {
+                  int W,int H, [[maybe_unused]] float cellSize, float flowThresh, std::vector<uint8_t>& river) {
+    (void)cellSize; // keep signature; not used (yet)
     river.assign(W*H, 0u);
     for (int y=0;y<H;++y) for (int x=0;x<W;++x) {
         int i = idx(x,y,W);
