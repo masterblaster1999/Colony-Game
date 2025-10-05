@@ -38,7 +38,12 @@ set(COLONY_RENDERER "d3d11" CACHE STRING "Renderer backend: d3d11 or d3d12")
 set_property(CACHE COLONY_RENDERER PROPERTY STRINGS d3d11 d3d12)
 
 # Choose CRT: default dynamic (/MD,/MDd) for parity with vcpkg bin artifacts
-option(MSVC_STATIC_RUNTIME "Use static MSVC runtime (/MT,/MTd)" OFF)
+# New option (preferred) + back-compat alias
+option(COLONY_STATIC_CRT "Link the MSVC runtime statically (/MT,/MTd)" OFF)
+option(MSVC_STATIC_RUNTIME "DEPRECATED: use COLONY_STATIC_CRT instead" OFF)
+if(MSVC_STATIC_RUNTIME)
+  set(COLONY_STATIC_CRT ON)
+endif()
 
 # Optional IPO/LTO (use -DCOLONY_LTO=ON)
 option(COLONY_LTO "Enable IPO/LTO for Release" OFF)
@@ -79,11 +84,14 @@ endif()
 
 # ---- Compiler / linker defaults ----
 if(MSVC)
-  if(MSVC_STATIC_RUNTIME)
-    set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>" CACHE STRING "" FORCE)   # /MT or /MTd
+  if(COLONY_STATIC_CRT)
+    set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")   # /MT or /MTd
+    set(_crt_kind "static (/MT,/MTd)")
   else()
-    set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>DLL" CACHE STRING "" FORCE) # /MD or /MDd
+    set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>DLL") # /MD or /MDd
+    set(_crt_kind "dynamic (/MD,/MDd)")
   endif()
+  message(STATUS "MSVC runtime selected: ${CMAKE_MSVC_RUNTIME_LIBRARY}  [${_crt_kind}]")
 
   # UTF-8, high warnings, modern conformance.  No /MP here (avoid PCH oddities).
   add_compile_options(/utf-8 /W4 /permissive- /Zc:__cplusplus /Zc:throwingNew /Zc:preprocessor /Zc:inline /EHsc)
