@@ -686,14 +686,87 @@ if(TARGET ColonyGame)
   # Visual Studio HLSL integration (only with VS generator)
   # ===========================
   # If colony_add_hlsl() is available, attach HLSL sources so MSBuild compiles them
-  # using VS_SHADER_* properties. Compiled .cso -> ${CMAKE_BINARY_DIR}/res/shaders/<Config>/ (staged/copied).
+  # using VS_SHADER_* properties. Compiled .cso -> ${CMAKE_BINARY_DIR}/res/shaders/$(Configuration).
   if(COMMAND colony_add_hlsl AND CMAKE_GENERATOR MATCHES "Visual Studio")
-    colony_add_hlsl(
-      TARGET ColonyGame
-      FILES
-        "${CMAKE_SOURCE_DIR}/shaders/quad_vs.hlsl"
-        "${CMAKE_SOURCE_DIR}/shaders/quad_ps.hlsl"
-    )
+    message(STATUS "HLSL toolchain: Visual Studio HLSL (MSBuild)")
+
+    # Shader roots
+    set(_SHADERS_DIR "${CMAKE_SOURCE_DIR}/shaders")
+    set(_PCG_DIR     "${CMAKE_SOURCE_DIR}/src/pcg/shaders")
+
+    # Gather by stage so each call has a single PROFILE/ENTRY
+    file(GLOB _VS_SHADERS CONFIGURE_DEPENDS "${_SHADERS_DIR}/*_vs.hlsl")
+    file(GLOB _PS_SHADERS CONFIGURE_DEPENDS "${_SHADERS_DIR}/*_ps.hlsl")
+    file(GLOB _CS_SHADERS CONFIGURE_DEPENDS
+         "${_SHADERS_DIR}/*_cs.hlsl"
+         "${_PCG_DIR}/*_cs.hlsl")
+
+    # Pick shader models from selected renderer
+    if(COLONY_RENDERER STREQUAL "d3d12")
+      set(_SM_VS "vs_6_7")
+      set(_SM_PS "ps_6_7")
+      set(_SM_CS "cs_6_7")
+    else()
+      set(_SM_VS "vs_5_0")
+      set(_SM_PS "ps_5_0")
+      set(_SM_CS "cs_5_0")
+    endif()
+
+    # Vertex
+    if(_VS_SHADERS)
+      colony_add_hlsl(
+        TARGET  ColonyGame
+        OUTDIR  "res/shaders"
+        SOURCES ${_VS_SHADERS}
+        PROFILE ${_SM_VS}
+        ENTRY   "VSMain"
+        INCLUDES ${_SHADERS_DIR} ${_PCG_DIR}
+      )
+    endif()
+
+    # Pixel
+    if(_PS_SHADERS)
+      colony_add_hlsl(
+        TARGET  ColonyGame
+        OUTDIR  "res/shaders"
+        SOURCES ${_PS_SHADERS}
+        PROFILE ${_SM_PS}
+        ENTRY   "PSMain"
+        INCLUDES ${_SHADERS_DIR} ${_PCG_DIR}
+      )
+    endif()
+
+    # Compute: split general CS and the PCG CS (entrypoint 'main')
+    set(_CS_GENERAL "")
+    foreach(_cs ${_CS_SHADERS})
+      if(_cs MATCHES ".*/noise_fbm_cs\\.hlsl$")
+        set(_HAS_NOISE_FBM_CS TRUE)
+      else()
+        list(APPEND _CS_GENERAL "${_cs}")
+      endif()
+    endforeach()
+
+    if(_CS_GENERAL)
+      colony_add_hlsl(
+        TARGET  ColonyGame
+        OUTDIR  "res/shaders"
+        SOURCES ${_CS_GENERAL}
+        PROFILE ${_SM_CS}
+        ENTRY   "CSMain"
+        INCLUDES ${_SHADERS_DIR} ${_PCG_DIR}
+      )
+    endif()
+
+    if(_HAS_NOISE_FBM_CS)
+      colony_add_hlsl(
+        TARGET  ColonyGame
+        OUTDIR  "res/shaders"
+        SOURCES "${_PCG_DIR}/noise_fbm_cs.hlsl"
+        PROFILE ${_SM_CS}
+        ENTRY   "main"         # pcg compute uses 'main'
+        INCLUDES ${_SHADERS_DIR} ${_PCG_DIR}
+      )
+    endif()
   endif()
 endif()
 
@@ -714,19 +787,20 @@ if(WIN32 AND TARGET ColonyGame)
   endif()
 
   # Copy precompiled shaders if present; otherwise copy source shaders.
+  # Prefer MSBuild output path used by colony_add_hlsl() (res/shaders).
   set(_STAGE_COPY_SHADERS_CMD "")
   if(EXISTS "${CMAKE_BINARY_DIR}/res/shaders")
     set(_STAGE_COPY_SHADERS_CMD
         COMMAND ${CMAKE_COMMAND} -E copy_directory
-                "${CMAKE_BINARY_DIR}/res/shaders" "${STAGE_DIR}/res/shaders")
+                "${CMAKE_BINARY_DIR}/res/shaders" "${STAGE_DIR}/shaders")
   elseif(EXISTS "${CMAKE_BINARY_DIR}/shaders")
     set(_STAGE_COPY_SHADERS_CMD
         COMMAND ${CMAKE_COMMAND} -E copy_directory
-                "${CMAKE_BINARY_DIR}/shaders" "${STAGE_DIR}/res/shaders")
+                "${CMAKE_BINARY_DIR}/shaders" "${STAGE_DIR}/shaders")
   elseif(EXISTS "${CMAKE_SOURCE_DIR}/shaders")
     set(_STAGE_COPY_SHADERS_CMD
         COMMAND ${CMAKE_COMMAND} -E copy_directory
-                "${CMAKE_SOURCE_DIR}/shaders" "${STAGE_DIR}/res/shaders")
+                "${CMAKE_SOURCE_DIR}/shaders" "${STAGE_DIR}/shaders")
   endif()
 
   # Try to copy vcpkg runtime DLLs (Release + Debug) if the common locations exist.
@@ -777,13 +851,13 @@ if(WIN32 AND TARGET ColonyGame)
   if(EXISTS "${CMAKE_SOURCE_DIR}/res")
     install(DIRECTORY "${CMAKE_SOURCE_DIR}/res" DESTINATION .)
   endif()
-  # Prefer compiled blobs; fall back to compiled (old path) or source if necessary.
+  # Always install into a top-level 'shaders' directory next to the exe.
   if(EXISTS "${CMAKE_BINARY_DIR}/res/shaders")
-    install(DIRECTORY "${CMAKE_BINARY_DIR}/res/shaders" DESTINATION "res")
+    install(DIRECTORY "${CMAKE_BINARY_DIR}/res/shaders/" DESTINATION "shaders")
   elseif(EXISTS "${CMAKE_BINARY_DIR}/shaders")
-    install(DIRECTORY "${CMAKE_BINARY_DIR}/shaders" DESTINATION "res/shaders")
+    install(DIRECTORY "${CMAKE_BINARY_DIR}/shaders/" DESTINATION "shaders")
   elseif(EXISTS "${CMAKE_SOURCE_DIR}/shaders")
-    install(DIRECTORY "${CMAKE_SOURCE_DIR}/shaders" DESTINATION "res/shaders")
+    install(DIRECTORY "${CMAKE_SOURCE_DIR}/shaders/" DESTINATION "shaders")
   endif()
   set(CPACK_GENERATOR "ZIP")
   include(CPack)
