@@ -165,6 +165,22 @@ if(EXISTS "${CMAKE_SOURCE_DIR}/res")
   )
 endif()
 
+# ---- 3.1: Stage shared shader header (common.hlsli) next to shipped shaders ----
+# Creates "<exe>/res/shaders/common" and copies the shared header there if it changed.
+# Uses generator expressions so it works with multi-config (VS) and single-config generators.
+if(EXISTS "${CMAKE_SOURCE_DIR}/shaders/common/common.hlsli")
+  set(COLONY_SHADER_SRC_DIR "${CMAKE_SOURCE_DIR}/shaders")
+  set(COLONY_SHADER_DST_DIR "$<TARGET_FILE_DIR:ColonyGame>/res/shaders")
+
+  add_custom_command(TARGET ColonyGame POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E make_directory "${COLONY_SHADER_DST_DIR}/common"
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "${COLONY_SHADER_SRC_DIR}/common/common.hlsli"
+            "${COLONY_SHADER_DST_DIR}/common/common.hlsli"
+    VERBATIM
+  )
+endif()
+
 # A6: Stage compiled shader blobs into the runtime res/shaders folder next to the EXE.
 # All toolchains (VS HLSL, FXC, DXC) now emit *.cso under ${CMAKE_BINARY_DIR}/res/shaders[/<cfg>].
 add_custom_command(TARGET ColonyGame POST_BUILD
