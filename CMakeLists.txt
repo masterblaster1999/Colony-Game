@@ -22,6 +22,15 @@ endif()
 
 project(ColonyGame LANGUAGES CXX)
 
+# ---- [FAST FIX] Discover & (optionally) load HLSL helper ----
+# This makes cmake/ColonyHLSL.cmake discoverable and loads it if present,
+# so colony_add_hlsl() exists on VS generators; otherwise we fall back cleanly.
+list(APPEND CMAKE_MODULE_PATH "${CMAKE_SOURCE_DIR}/cmake")
+include(ColonyHLSL OPTIONAL RESULT_VARIABLE _colony_hlsl_loaded)
+if(_colony_hlsl_loaded)
+  message(STATUS "ColonyHLSL.cmake loaded; Visual Studio HLSL integration available.")
+endif()
+
 # ---- Language standard ----
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
