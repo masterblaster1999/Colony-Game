@@ -65,6 +65,49 @@ if(COLONY_UNITY_BUILD)
   set_target_properties(ColonyGame PROPERTIES UNITY_BUILD ON UNITY_BUILD_BATCH_SIZE 16)
 endif()
 
+# ---- HLSL shader compilation (VS/FXC/DXC) with explicit entrypoints ----
+# We use a project helper (cmake/ColonyHLSL.cmake) when available to
+# add .hlsl files to the target and set the proper per-file properties.
+# On Visual Studio generators this maps to VS_SHADER_* (entrypoint/type),
+# which fixes FXC/DXC looking for a default 'main'.
+if(COMMAND colony_add_hlsl)
+  # Where compiled CSO/DXIL land during the build (mirrors the copy step below)
+  set(_SHADER_OUT "${CMAKE_BINARY_DIR}/res/shaders/$<IF:$<BOOL:${CMAKE_CONFIGURATION_TYPES}>,$<CONFIG>,.>")
+
+  # Shader model preference: D3D12 -> SM 6.7, otherwise SM 5.0 (FXC path)
+  if(COLONY_RENDERER STREQUAL "d3d12")
+    set(_MODEL "6.7")
+  else()
+    set(_MODEL "5.0")
+  endif()
+
+  # Vertex + Pixel shaders (entrypoints VSMain / PSMain)
+  if(EXISTS "${CMAKE_SOURCE_DIR}/shaders/quad_vs.hlsl")
+    colony_add_hlsl(ColonyGame
+      SOURCES "${CMAKE_SOURCE_DIR}/shaders/quad_vs.hlsl"
+      MODEL   "${_MODEL}"
+      ENTRY   "VSMain"
+      OUTDIR  "${_SHADER_OUT}")
+  endif()
+
+  if(EXISTS "${CMAKE_SOURCE_DIR}/shaders/quad_ps.hlsl")
+    colony_add_hlsl(ColonyGame
+      SOURCES "${CMAKE_SOURCE_DIR}/shaders/quad_ps.hlsl"
+      MODEL   "${_MODEL}"
+      ENTRY   "PSMain"
+      OUTDIR  "${_SHADER_OUT}")
+  endif()
+
+  # Compute shader: entrypoint is 'main'
+  if(EXISTS "${CMAKE_SOURCE_DIR}/src/pcg/shaders/noise_fbm_cs.hlsl")
+    colony_add_hlsl(ColonyGame
+      SOURCES "${CMAKE_SOURCE_DIR}/src/pcg/shaders/noise_fbm_cs.hlsl"
+      MODEL   "${_MODEL}"
+      ENTRY   "main"
+      OUTDIR  "${_SHADER_OUT}")
+  endif()
+endif()
+
 # Compile-time defines for optional systems + deterministic frontend switch
 # Define COLONY_USE_SDL only when building the SDL frontend.
 target_compile_definitions(ColonyGame PRIVATE
