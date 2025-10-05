@@ -43,7 +43,7 @@ endfunction()
 #   SOURCES  <.hlsl files>
 #   PROFILE  <vs_5_0|ps_5_0|cs_6_7 ...>
 #   ENTRY    <entry point, defaults to main>
-#   DEFINES  <HLSL#defines>
+#   DEFINES  <HLSL #defines>
 #   INCLUDES <include dirs>
 # )
 function(colony_add_hlsl)
@@ -65,6 +65,98 @@ function(colony_add_hlsl)
     set(CAH_ENTRY "main")
   endif()
 
+  # ------------------------------------------------------------
+  # Visual Studio MSBuild HLSL path:
+  # Put MSBuild-compiled CSO into ${CMAKE_BINARY_DIR}/res/shaders/<cfg>
+  # ------------------------------------------------------------
+  if(WIN32 AND CMAKE_GENERATOR MATCHES "Visual Studio")
+    # Ensure the target knows about the shader sources so MSBuild compiles them.
+    target_sources(${CAH_TARGET} PRIVATE ${CAH_SOURCES})
+    source_group("Shaders" FILES ${CAH_SOURCES})
+
+    # Output directory for CSO under the build tree, per-config.
+    set(_msbuild_outdir "${CMAKE_BINARY_DIR}/res/shaders/$<CONFIG>")
+
+    foreach(src IN LISTS CAH_SOURCES)
+      get_filename_component(_name "${src}" NAME_WE)
+
+      # Derive shader type from PROFILE first, then fall back to filename suffixes.
+      set(_stage "")
+      if(CAH_PROFILE)
+        string(REGEX MATCH "^[a-z]+" _stage "${CAH_PROFILE}") # e.g. 'vs' from 'vs_5_0'
+      endif()
+      if(NOT _stage)
+        if(_name MATCHES "_vs$")       # ..._vs.hlsl
+          set(_stage "vs")
+        elseif(_name MATCHES "_ps$")
+          set(_stage "ps")
+        elseif(_name MATCHES "_cs$")
+          set(_stage "cs")
+        elseif(_name MATCHES "_gs$")
+          set(_stage "gs")
+        elseif(_name MATCHES "_hs$")
+          set(_stage "hs")
+        elseif(_name MATCHES "_ds$")
+          set(_stage "ds")
+        endif()
+      endif()
+
+      set(_type "")
+      if(_stage STREQUAL "vs")
+        set(_type "Vertex")
+      elseif(_stage STREQUAL "ps")
+        set(_type "Pixel")
+      elseif(_stage STREQUAL "cs")
+        set(_type "Compute")
+      elseif(_stage STREQUAL "gs")
+        set(_type "Geometry")
+      elseif(_stage STREQUAL "hs")
+        set(_type "Hull")
+      elseif(_stage STREQUAL "ds")
+        set(_type "Domain")
+      else()
+        message(WARNING "colony_add_hlsl: Could not infer shader type for ${src}; defaulting to Pixel.")
+        set(_type "Pixel")
+      endif()
+
+      # Derive shader model "M.N" from PROFILE (e.g., vs_5_0 -> "5.0", vs_6_7 -> "6.7")
+      set(_model "5.0")
+      if(CAH_PROFILE MATCHES "^[a-z]+_([0-9]+)_([0-9]+)$")
+        string(REGEX REPLACE "^[a-z]+_([0-9]+)_([0-9]+)$" "\\1.\\2" _model "${CAH_PROFILE}")
+      endif()
+
+      # Compose extra flags for MSBuild HLSL tool (defines/includes + per-config opts)
+      set(_flags "$<$<CONFIG:Debug>:/Zi;/Od>;$<$<CONFIG:Release>:/O3>")
+      foreach(d IN LISTS CAH_DEFINES)
+        set(_flags "${_flags};/D;${d}")
+      endforeach()
+      foreach(i IN LISTS CAH_INCLUDES)
+        set(_flags "${_flags};/I;${i}")
+      endforeach()
+
+      # Force object file under ${build}/res/shaders/<cfg>/ with a stable .cso name.
+      set(_obj "${_msbuild_outdir}/${_name}.cso")
+
+      set_source_files_properties("${src}" PROPERTIES
+        VS_SHADER_TYPE               "${_type}"
+        VS_SHADER_MODEL              "${_model}"
+        VS_SHADER_ENTRYPOINT         "${CAH_ENTRY}"
+        VS_SHADER_OBJECT_FILE_NAME   "${_obj}"
+        VS_SHADER_FLAGS              "${_flags}"
+      )
+    endforeach()
+
+    # Make sure the per-config output directory exists at build time.
+    add_custom_command(TARGET ${CAH_TARGET} PRE_BUILD
+      COMMAND ${CMAKE_COMMAND} -E make_directory "${CMAKE_BINARY_DIR}/res/shaders/$<CONFIG>")
+
+    # MSBuild handles compilation; no explicit custom target/products required here.
+    return()
+  endif()
+
+  # ------------------------------------------------------------
+  # Non-VS generators: explicit FXC/DXC custom commands (original path)
+  # ------------------------------------------------------------
   set(_outdir "${CMAKE_CURRENT_BINARY_DIR}/${CAH_OUTDIR}")
   file(MAKE_DIRECTORY "${_outdir}")
 
