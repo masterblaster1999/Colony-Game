@@ -52,6 +52,20 @@ function(colony_add_hlsl)
   set(multiValueArgs SOURCES DEFINES INCLUDES)
   cmake_parse_arguments(CAH "${options}" "${oneValueArgs}" "${multiValueArgs}" ${ARGN})
 
+  # --------------------------------------------------------------------------
+  # Back-compat shim: allow legacy call style
+  #   colony_add_hlsl(<target> SOURCES ... PROFILE ... ENTRY ... )
+  # If TARGET wasn't provided as a keyword but the first unparsed argument is a
+  # known CMake target, treat it as the target and remove it from unparsed args.
+  # --------------------------------------------------------------------------
+  if(NOT CAH_TARGET AND CAH_UNPARSED_ARGUMENTS)
+    list(GET CAH_UNPARSED_ARGUMENTS 0 _maybe_target)
+    if(TARGET "${_maybe_target}")
+      set(CAH_TARGET "${_maybe_target}")
+      list(REMOVE_AT CAH_UNPARSED_ARGUMENTS 0)
+    endif()
+  endif()
+
   if(NOT CAH_TARGET)
     message(FATAL_ERROR "colony_add_hlsl: TARGET is required")
   endif()
