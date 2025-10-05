@@ -17,7 +17,25 @@
       "inherits": "win-msvc-x64-debug",
       "cacheVariables": { "CMAKE_BUILD_TYPE": "RelWithDebInfo" }
     },
-
+    {
+      "name": "vs-2022-x64-relwithdebinfo",
+      "displayName": "Visual Studio 2022 (x64) — RelWithDebInfo",
+      "description": "VS generator for easy F5 debugging with MSBuild HLSL integration.",
+      "generator": "Visual Studio 17 2022",
+      "architecture": { "value": "x64" },
+      "binaryDir": "${sourceDir}/out/build/vs-2022-x64-relwithdebinfo",
+      "cacheVariables": {
+        "VCPKG_MANIFEST_MODE": "ON",
+        "FRONTEND": "win32",
+        "COLONY_STATIC_CRT": "OFF"
+      }
+    },
+    {
+      "name": "vs-2022-x64-debug",
+      "displayName": "Visual Studio 2022 (x64) — Debug",
+      "inherits": "vs-2022-x64-relwithdebinfo",
+      "binaryDir": "${sourceDir}/out/build/vs-2022-x64-debug"
+    },
     {
       "name": "vs-hlsl",
       "displayName": "VS (HLSL) - x64",
@@ -50,10 +68,10 @@
   "buildPresets": [
     { "name": "build-debug", "configurePreset": "win-msvc-x64-debug" },
     { "name": "build-rel", "configurePreset": "win-msvc-x64-relwithdebinfo" },
-
+    { "name": "vs-2022-debug-build", "displayName": "Build — VS 2022 Debug", "configurePreset": "vs-2022-x64-debug", "configuration": "Debug" },
+    { "name": "vs-2022-relwithdebinfo-build", "displayName": "Build — VS 2022 RelWithDebInfo", "configurePreset": "vs-2022-x64-relwithdebinfo", "configuration": "RelWithDebInfo" },
     { "name": "vs-hlsl-debug", "displayName": "Build VS (HLSL) — Debug", "configurePreset": "vs-hlsl", "configuration": "Debug" },
     { "name": "vs-hlsl-release", "displayName": "Build VS (HLSL) — Release", "configurePreset": "vs-hlsl", "configuration": "Release" },
-
     { "name": "ninja-dxc-build", "displayName": "Build Ninja (DXC/FXC)", "configurePreset": "ninja-dxc", "targets": [ "all" ] }
   ]
 }
