@@ -1,4 +1,4 @@
-; Minimal installer for Colony-Game (Windows)
+ ; Minimal installer for Colony-Game (Windows)
 ; Place this file in: <repo>\installer\ColonyGame.iss
 
 #define MyScriptDir __DIR__
@@ -29,6 +29,21 @@ SetupIconFile={#SetupIcon}
 Compression=lzma2
 SolidCompression=yes
 
+; --- Code signing (Inno Setup) ---
+; We use a named Sign Tool "signtool". Its actual command line is supplied by CI
+; via the iscc.exe /S switch (see .github/workflows/windows.yml in this patch).
+; When set, Inno will sign the setup EXE and (with SignedUninstaller=yes) the
+; uninstaller too. Docs: SignTool, SignedUninstaller, retries/backoff.
+; https://jrsoftware.org/ishelp/topic_setup_signtool.htm
+; https://jrsoftware.org/ishelp/topic_setup_signeduninstaller.htm
+; https://jrsoftware.org/ishelp/topic_setup_signtoolretrycount.htm
+; https://jrsoftware.org/ishelp/topic_setup_signtoolminimumtimebetween.htm
+SignTool=signtool
+SignedUninstaller=yes
+SignToolRetryCount=3
+SignToolMinimumTimeBetween=5000
+SignToolRunMinimized=yes
+
 [Files]
 ; Main EXE + DLLs
 Source: "{#BinDir}\{#MainExeName}"; DestDir: "{app}"; Flags: ignoreversion
@@ -41,6 +56,12 @@ Source: "{#ShadersDir}\*"; DestDir: "{app}\shaders"; Flags: ignoreversion recurs
 
 ; Optional: ship PDBs for dev builds
 ; Source: "{#BinDir}\*.pdb"; DestDir: "{app}"; Flags: ignoreversion
+
+; Optional: ask the compiler to sign installed binaries if not already signed.
+; Requires [Setup] SignTool above. Uncomment and adapt if you want Inno to sign
+; the EXEs/DLLs it installs (instead of signing them earlier in the pipeline):
+;Source: "{#BinDir}\*.exe"; DestDir: "{app}"; Flags: ignoreversion signonce recursesubdirs
+;Source: "{#BinDir}\*.dll"; DestDir: "{app}"; Flags: ignoreversion signonce recursesubdirs
 
 [Icons]
 ; Start Menu shortcut + optional desktop shortcut
