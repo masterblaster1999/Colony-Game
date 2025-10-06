@@ -9,9 +9,23 @@ file(GLOB_RECURSE SRC_ALL
 )
 list(FILTER SRC_ALL EXCLUDE REGEX ".*/third_party/imgui/.*")
 
-if(EXISTS "${CMAKE_SOURCE_DIR}/WinLauncher.cpp")
-  list(APPEND SRC_ALL "${CMAKE_SOURCE_DIR}/WinLauncher.cpp")
-endif()
+# --- IMPORTANT: do NOT compile the standalone Windows launcher into the game EXE ---
+#   The launcher has its own entry point; including it here would conflict with the
+#   game's wWinMain now provided by src/app/EntryWinMain.cpp.
+# (Old behavior removed)
+# if(EXISTS "${CMAKE_SOURCE_DIR}/WinLauncher.cpp")
+#   list(APPEND SRC_ALL "${CMAKE_SOURCE_DIR}/WinLauncher.cpp")
+# endif()
+
+# --- Remove legacy entry points and refactored code now added at top level ---
+#   - Drop the old src/main.cpp to avoid duplicate main/wWinMain.
+#   - Exclude src/app, src/render, src/terrain, src/core because these are now
+#     injected by the top-level CMake via target_sources(ColonyGame ...).
+list(FILTER SRC_ALL EXCLUDE REGEX ".*/src/main\\.cpp$")
+list(FILTER SRC_ALL EXCLUDE REGEX ".*/src/app/.*\\.(c|cc|cxx|cpp)$")
+list(FILTER SRC_ALL EXCLUDE REGEX ".*/src/render/.*\\.(c|cc|cxx|cpp)$")
+list(FILTER SRC_ALL EXCLUDE REGEX ".*/src/terrain/.*\\.(c|cc|cxx|cpp)$")
+list(FILTER SRC_ALL EXCLUDE REGEX ".*/src/core/.*\\.(c|cc|cxx|cpp)$")
 
 # --- BEGIN: Stabilize crash-dump TU for MSVC (C2712) ---
 # The TU 'platform/win/CrashDumpWin.cpp' uses __try/__except in functions
