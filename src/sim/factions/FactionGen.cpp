@@ -5,6 +5,9 @@
 #include <cctype>
 #include <fstream>
 #include <sstream>
+#include <functional>  // std::invoke
+#include <cassert>
+#include <type_traits>
 
 namespace colony
 {
@@ -41,12 +44,17 @@ namespace colony
         return d(rng);
     }
 
-    template <class T>
-    static const T& weighted_pick(std::mt19937_64& rng, const std::vector<T>& items,
-                                  const std::function<float(const T&)>& weight_of)
+    // Accept any callable for weights; faster than std::function and allows lambdas without allocation.
+    template <class T, class WeightFn>
+    static const T& weighted_pick(std::mt19937_64& rng,
+                                  const std::vector<T>& items,
+                                  WeightFn&& weight_of)
     {
+        assert(!items.empty() && "weighted_pick: empty items");
+
         float total = 0.f;
-        for (auto& it : items) total += std::max(0.f, weight_of(it));
+        for (auto& it : items)
+            total += std::max(0.f, static_cast<float>(std::invoke(weight_of, it)));
         if (total <= 0.f) return items.front();
 
         std::uniform_real_distribution<float> d(0.f, total);
@@ -54,7 +62,7 @@ namespace colony
         float acc = 0.f;
         for (auto& it : items)
         {
-            acc += std::max(0.f, weight_of(it));
+            acc += std::max(0.f, static_cast<float>(std::invoke(weight_of, it)));
             if (r <= acc) return it;
         }
         return items.back();
@@ -166,7 +174,7 @@ namespace colony
         // local lambdas
         auto pick_archetype = [&]()->const FactionArchetype&
         {
-            return weighted_pick(rng, P.archetypes, [](auto& a){ return a.weight; });
+            return weighted_pick(rng, P.archetypes, [](const auto& a){ return a.weight; });
         };
 
         auto pick_color = [&]()->Color
