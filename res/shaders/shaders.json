@@ -1,0 +1,27 @@
+{
+  "defaults": {
+    "compiler": "AUTO",
+    "dxc_sm": "6_6",
+    "fxc_sm": "5_0",
+    "defines": [],
+    "includes": []
+  },
+  "globs": [
+    {
+      "patterns": [
+        "shaders/**/*.hlsl",
+        "renderer/Shaders/**/*.hlsl"
+      ],
+      "map": [
+        { "regex": ".*_cs\\.hlsl$", "stage": "cs", "entry": "main", "profile": "cs_6_6", "compiler": "DXC" },
+        { "regex": ".*_CS\\.hlsl$", "stage": "cs", "entry": "main", "profile": "cs_6_6", "compiler": "DXC" },
+
+        { "regex": ".*_vs\\.hlsl$", "stage": "vs", "entry": "main", "profile": "vs_5_0", "compiler": "FXC" },
+        { "regex": ".*_VS\\.hlsl$", "stage": "vs", "entry": "main", "profile": "vs_5_0", "compiler": "FXC" },
+
+        { "regex": ".*_ps\\.hlsl$", "stage": "ps", "entry": "main", "profile": "ps_5_0", "compiler": "FXC" },
+        { "regex": ".*_PS\\.hlsl$", "stage": "ps", "entry": "main", "profile": "ps_5_0", "compiler": "FXC" }
+      ]
+    }
+  ]
+}
