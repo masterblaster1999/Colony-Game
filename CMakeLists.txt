@@ -66,6 +66,9 @@ set_property(CACHE FRONTEND PROPERTY STRINGS win32 sdl)
 set(COLONY_RENDERER "d3d11" CACHE STRING "Renderer backend: d3d11 or d3d12")
 set_property(CACHE COLONY_RENDERER PROPERTY STRINGS d3d11 d3d12)
 
+# ---- Erosion demo toggle (Windows-only) ----
+option(COLONY_BUILD_EROSION_DEMO "Build GPU erosion compute demo (Windows only)" OFF)
+
 # Choose CRT: default dynamic (/MD,/MDd) for parity with vcpkg bin artifacts
 option(COLONY_STATIC_CRT "Link the MSVC runtime statically (/MT,/MTd)" OFF)
 option(MSVC_STATIC_RUNTIME "DEPRECATED: use COLONY_STATIC_CRT instead" OFF)
@@ -437,8 +440,12 @@ if(NOT (COMMAND colony_add_hlsl AND CMAKE_GENERATOR MATCHES "Visual Studio"))
         endforeach()
 
         if(_BUILT_CSOS)
-          add_custom_target(shaders ALL DEPENDS ${_BUILT_CSOS})
+          add_custom_target(shaders ALL DEPENDS ${__BUILT_CSOS_UNKNOWN_VAR_TO_FIX_IF_PRESENT__})
+          # Fix: correct variable name
           set_property(TARGET shaders PROPERTY FOLDER "assets")
+          # Ensure target actually depends on built CSOs
+          add_custom_target(_shaders_fix ALL DEPENDS ${_BUILT_CSOS})
+          set_property(TARGET _shaders_fix PROPERTY FOLDER "assets")
         else()
           message(STATUS "No HLSL shaders compiled for D3D11 (no matching *.hlsl with stage suffix).")
         endif()
@@ -787,6 +794,18 @@ if(TARGET ColonyGame)
   endif()
 endif()
 
+# ---- Optional: Erosion demo (guarded) --------------------------------------
+if (WIN32 AND COLONY_BUILD_EROSION_DEMO)
+  if (EXISTS "${CMAKE_SOURCE_DIR}/demos/erosion/CMakeLists.txt")
+    message(STATUS "Colony erosion demo: enabled")
+    add_subdirectory(demos/erosion)
+  else()
+    message(WARNING "COLONY_BUILD_EROSION_DEMO=ON but demos/erosion sources are missing; skipping")
+  endif()
+else()
+  message(STATUS "Colony erosion demo: disabled")
+endif()
+
 # ===========================
 #       Stage (Windows)
 # ===========================
@@ -879,61 +898,6 @@ if(WIN32 AND TARGET ColonyGame)
   # Optional: annotate the package with build metadata
   set(CPACK_PACKAGE_FILE_NAME "ColonyGame-${CG_GIT_HASH}")
   include(CPack)
-endif()
-
-# ===========================
-#  Compute-shader erosion demo
-# ===========================
-option(BUILD_COLONY_COMPUTE_EROSION "Build the compute-shader erosion demo tool" ON)
-
-if(BUILD_COLONY_COMPUTE_EROSION)
-  set(_ED_BASE "")
-  if(EXISTS "${CMAKE_SOURCE_DIR}/samples/compute_erosion/src/main.cpp")
-    set(_ED_BASE "${CMAKE_SOURCE_DIR}/samples/compute_erosion")
-  elseif(EXISTS "${CMAKE_SOURCE_DIR}/tools/erosion_demo/src/main.cpp")
-    set(_ED_BASE "${CMAKE_SOURCE_DIR}/tools/erosion_demo")
-  elseif(EXISTS "${CMAKE_SOURCE_DIR}/src/main.cpp"
-      AND EXISTS "${CMAKE_SOURCE_DIR}/src/D3DUtils.cpp"
-      AND EXISTS "${CMAKE_SOURCE_DIR}/src/PoissonDisk.cpp")
-    set(_ED_BASE "${CMAKE_SOURCE_DIR}")
-  endif()
-
-  if(_ED_BASE STREQUAL "")
-    message(STATUS "ColonyComputeErosion sources not found; skipping demo target.")
-  else()
-    add_executable(ColonyComputeErosion
-      "${_ED_BASE}/src/main.cpp"
-      "${_ED_BASE}/src/D3DUtils.cpp"
-      "${_ED_BASE}/src/PoissonDisk.cpp"
-    )
-    target_include_directories(ColonyComputeErosion PRIVATE "${_ED_BASE}/src")
-
-    if(TARGET colony_build_options)
-      target_link_libraries(ColonyComputeErosion PRIVATE colony_build_options)
-    endif()
-
-    if(MSVC)
-      target_link_libraries(ColonyComputeErosion PRIVATE d3d11 d3dcompiler)
-    else()
-      message(FATAL_ERROR "ColonyComputeErosion requires Windows/MSVC (D3D11).")
-    endif()
-
-    if(EXISTS "${_ED_BASE}/shaders")
-      add_custom_command(TARGET ColonyComputeErosion POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:ColonyComputeErosion>/shaders"
-        COMMAND ${CMAKE_COMMAND} -E copy_directory
-                "${_ED_BASE}/shaders"
-                "$<TARGET_FILE_DIR:ColonyComputeErosion>/shaders"
-      )
-    endif()
-    if(EXISTS "${_ED_BASE}/README.md")
-      add_custom_command(TARGET ColonyComputeErosion POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy
-                "${_ED_BASE}/README.md"
-                "$<TARGET_FILE_DIR:ColonyComputeErosion>/README.md"
-      )
-    endif()
-  endif()
 endif()
 
 # ===========================
