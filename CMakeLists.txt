@@ -1,4 +1,4 @@
-cmake_minimum_required(VERSION 3.26)
+cmake_minimum_required(VERSION 3.27)
 
 # ---- Policies / UX ----
 # Honor MSVC runtime selection and modern option() behavior,
@@ -47,9 +47,9 @@ if(CMAKE_SIZEOF_VOID_P EQUAL 4)
 endif()
 
 # ====================================================================================
-# 3.1 — Enforce C++20 globally (applies to ALL targets: app, libs, tests)
+# 3.1 — Enforce C++23 globally (applies to ALL targets: app, libs, tests)
 # ====================================================================================
-set(CMAKE_CXX_STANDARD 20)
+set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
@@ -115,7 +115,7 @@ endif()
 
 # ---- Compiler / linker defaults ----
 if(MSVC)
-  # Require VS 2022+ toolset (v19.30+) for full C++20 library coverage.
+  # Require VS 2022+ toolset (v19.30+) for full C++20/23 library coverage.
   if(MSVC_VERSION LESS 1930)
     message(FATAL_ERROR "MSVC v19.30+ (Visual Studio 2022) required.")
   endif()
@@ -440,12 +440,9 @@ if(NOT (COMMAND colony_add_hlsl AND CMAKE_GENERATOR MATCHES "Visual Studio"))
         endforeach()
 
         if(_BUILT_CSOS)
-          add_custom_target(shaders ALL DEPENDS ${__BUILT_CSOS_UNKNOWN_VAR_TO_FIX_IF_PRESENT__})
-          # Fix: correct variable name
+          # FIXED: make shaders target depend on the actual outputs
+          add_custom_target(shaders ALL DEPENDS ${_BUILT_CSOS})
           set_property(TARGET shaders PROPERTY FOLDER "assets")
-          # Ensure target actually depends on built CSOs
-          add_custom_target(_shaders_fix ALL DEPENDS ${_BUILT_CSOS})
-          set_property(TARGET _shaders_fix PROPERTY FOLDER "assets")
         else()
           message(STATUS "No HLSL shaders compiled for D3D11 (no matching *.hlsl with stage suffix).")
         endif()
@@ -459,8 +456,14 @@ if(NOT (COMMAND colony_add_hlsl AND CMAKE_GENERATOR MATCHES "Visual Studio"))
     set_property(CACHE DXC_DEFAULT_SM PROPERTY STRINGS 6_6 6_7)
 
     if(BUILD_SHADERS_DXC AND NOT TARGET shaders)
+      # Improved DXC discovery: env var, Vulkan SDK, VS locations, Windows SDK
       find_program(DXC_EXE NAMES dxc HINTS
+        "$ENV{DXC_PATH}"
+        "$ENV{VULKAN_SDK}/Bin"
         "$ENV{VCToolsInstallDir}/bin/Hostx64/x64"
+        "C:/Program Files/Microsoft Visual Studio/2022/Community/VC/Tools/Llvm/x64/bin"
+        "C:/Program Files/Microsoft Visual Studio/2022/Professional/VC/Tools/Llvm/x64/bin"
+        "C:/Program Files/Microsoft Visual Studio/2022/Enterprise/VC/Tools/Llvm/x64/bin"
         "$ENV{WindowsSdkDir}/bin/x64"
         "$ENV{WindowsSdkDir}/bin"
       )
