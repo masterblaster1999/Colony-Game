@@ -65,6 +65,28 @@ endif()
 # Link doctest if available; otherwise fetch the header-only variant
 if(doctest_FOUND)
   target_link_libraries(colony_smoke PRIVATE doctest::doctest)
+
+  # Ensure both include styles work:
+  #   - <doctest/doctest.h>  (standard)
+  #   - "doctest.h"          (legacy form)
+  #
+  # We locate the root include dir that contains 'doctest/doctest.h' and add both that
+  # directory and its 'doctest' subdir so either include path resolves.
+  find_path(DOCTEST_ROOT_DIR doctest/doctest.h
+            HINTS ${CMAKE_PREFIX_PATH}
+            PATH_SUFFIXES include
+            NO_DEFAULT_PATH)
+  # Also allow CMake default paths (covers local toolchains)
+  if(NOT DOCTEST_ROOT_DIR)
+    find_path(DOCTEST_ROOT_DIR doctest/doctest.h PATH_SUFFIXES include)
+  endif()
+
+  if(DOCTEST_ROOT_DIR)
+    target_include_directories(colony_smoke PRIVATE
+      "${DOCTEST_ROOT_DIR}"
+      "${DOCTEST_ROOT_DIR}/doctest"
+    )
+  endif()
 else()
   include(FetchContent)
   set(FETCHCONTENT_UPDATES_DISCONNECTED ON)
@@ -74,7 +96,11 @@ else()
     GIT_SHALLOW TRUE
   )
   FetchContent_Populate(doctest)
-  target_include_directories(colony_smoke PRIVATE "${doctest_SOURCE_DIR}")
+  # Support both include styles for header-only fallback as well
+  target_include_directories(colony_smoke PRIVATE
+    "${doctest_SOURCE_DIR}"
+    "${doctest_SOURCE_DIR}/doctest"
+  )
 endif()
 
 enable_testing()
