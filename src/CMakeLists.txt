@@ -161,12 +161,19 @@ list(FILTER SRC_ALL EXCLUDE REGEX ".*/src/render/.*\\.(c|cc|cxx|cpp)$")
 list(FILTER SRC_ALL EXCLUDE REGEX ".*/src/terrain/.*\\.(c|cc|cxx|cpp)$")
 list(FILTER SRC_ALL EXCLUDE REGEX ".*/src/core/.*\\.(c|cc|cxx|cpp)$")
 
-# --- BEGIN: Stabilize crash-dump TU for MSVC (C2712) ---
-list(FILTER SRC_ALL EXCLUDE REGEX ".*/platform/win/CrashDumpWin\\.cpp$")
-if(EXISTS "${CMAKE_SOURCE_DIR}/platform/win/CrashDumpWin.h")
-  list(APPEND SRC_ALL "${CMAKE_SOURCE_DIR}/platform/win/CrashDumpStub.cpp")
+# --- BEGIN: Enable crash-dump TU with per-file /EHa (fixes MSVC C2712) ---
+# We keep /EHsc globally, but allow SEH + C++ unwinding just for CrashDumpWin.cpp.
+if(EXISTS "${CMAKE_SOURCE_DIR}/platform/win/CrashDumpWin.cpp")
+  # Make sure the stub isn't compiled.
+  list(FILTER SRC_ALL EXCLUDE REGEX ".*/platform/win/CrashDumpStub\\.cpp$")
+
+  # Compile the real implementation with /EHa to support __try/__except.
+  if(MSVC)
+    set_source_files_properties("${CMAKE_SOURCE_DIR}/platform/win/CrashDumpWin.cpp"
+      PROPERTIES COMPILE_OPTIONS "/EHa")
+  endif()
 endif()
-# --- END: Stabilize crash-dump TU for MSVC (C2712) ---
+# --- END: Enable crash-dump TU with per-file /EHa (fixes MSVC C2712) ---
 
 # --- Frontend gating: build either the native Win32 frontend (default) or the SDL one ---
 if(FRONTEND STREQUAL "sdl")
