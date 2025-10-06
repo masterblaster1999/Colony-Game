@@ -1,14 +1,31 @@
 #pragma once
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+#include <d3d11.h>
+#include <d3dcompiler.h>
+#include <wrl/client.h>
 #include <string>
 #include <vector>
 
-namespace render {
+#pragma comment(lib, "d3dcompiler.lib")
 
-struct CompiledShader {
-    std::vector<uint8_t> bytecode;
-};
+namespace render
+{
+    struct Define { std::string Name; std::string Value; };
 
-bool CompileHLSL(const std::wstring& file, const std::wstring& entry,
-                 const std::wstring& profile, CompiledShader& out);
+    Microsoft::WRL::ComPtr<ID3DBlob>
+    CompileFromFile(const std::wstring& path,
+                    const char* entry,
+                    const char* target,
+                    const std::vector<Define>& defines = {},
+                    UINT compileFlags = 0);
 
-} // namespace render
+    Microsoft::WRL::ComPtr<ID3D11ComputeShader>
+    CreateCS(ID3D11Device* device,
+             const std::wstring& path,
+             const char* entry,
+             const std::vector<Define>& defines = {},
+             UINT compileFlags = 0);
+}
