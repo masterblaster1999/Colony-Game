@@ -1,11 +1,28 @@
 cmake_minimum_required(VERSION 3.26)
 
 # ---- Policies / UX ----
+# Honor MSVC runtime selection and modern option() behavior,
+# and make MSVC debug-info format controllable via CMAKE_MSVC_DEBUG_INFORMATION_FORMAT.
 if(POLICY CMP0091)
   cmake_policy(SET CMP0091 NEW)  # honor CMAKE_MSVC_RUNTIME_LIBRARY
 endif()
+if(POLICY CMP0077)
+  cmake_policy(SET CMP0077 NEW)  # option() honors normal variables
+endif()
+if(POLICY CMP0141)
+  cmake_policy(SET CMP0141 NEW)  # MSVC debug info format via property
+  # Default to PDBs for Debug/RelWithDebInfo (nice for VS + crash dumps)
+  set(CMAKE_MSVC_DEBUG_INFORMATION_FORMAT
+      "$<$<CONFIG:Debug,RelWithDebInfo>:ProgramDatabase>")
+endif()
+
+# Prefer config packages (matches vcpkg behavior)
+set(CMAKE_FIND_PACKAGE_PREFER_CONFIG ON)
+
+# Developer quality-of-life
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 set_property(GLOBAL PROPERTY USE_FOLDERS ON)
+set_property(GLOBAL PROPERTY PREDEFINED_TARGETS_FOLDER "_cmake")
 
 # ---- Global feature toggles (opt-in) ----
 option(COLONY_USE_PCH     "Enable precompiled headers when a PCH header is present" ON)
@@ -20,18 +37,18 @@ if(NOT DEFINED CMAKE_TOOLCHAIN_FILE)
   endif()
 endif()
 
+# ---- Project (Windows-only configuration) ----
 project(ColonyGame LANGUAGES CXX)
-
-# ---- [FAST FIX] Discover & (optionally) load HLSL helper ----
-# This makes cmake/ColonyHLSL.cmake discoverable and loads it if present,
-# so colony_add_hlsl() exists on VS generators; otherwise we fall back cleanly.
-list(APPEND CMAKE_MODULE_PATH "${CMAKE_SOURCE_DIR}/cmake")
-include(ColonyHLSL OPTIONAL RESULT_VARIABLE _colony_hlsl_loaded)
-if(_colony_hlsl_loaded)
-  message(STATUS "ColonyHLSL.cmake loaded; Visual Studio HLSL integration available.")
+if(NOT WIN32)
+  message(FATAL_ERROR "This build is configured for Windows/MSVC only.")
+endif()
+if(CMAKE_SIZEOF_VOID_P EQUAL 4)
+  message(FATAL_ERROR "32-bit builds are not supported. Please build x64.")
 endif()
 
-# ---- Language standard ----
+# ====================================================================================
+# 3.1 — Enforce C++20 globally (applies to ALL targets: app, libs, tests)
+# ====================================================================================
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
@@ -46,12 +63,10 @@ set(FRONTEND "win32" CACHE STRING "Frontend to build: win32 or sdl")
 set_property(CACHE FRONTEND PROPERTY STRINGS win32 sdl)
 
 # ---- Renderer backend (Windows-only) ----
-# Select graphics backend and route shader compilation accordingly.
 set(COLONY_RENDERER "d3d11" CACHE STRING "Renderer backend: d3d11 or d3d12")
 set_property(CACHE COLONY_RENDERER PROPERTY STRINGS d3d11 d3d12)
 
 # Choose CRT: default dynamic (/MD,/MDd) for parity with vcpkg bin artifacts
-# New option (preferred) + back-compat alias
 option(COLONY_STATIC_CRT "Link the MSVC runtime statically (/MT,/MTd)" OFF)
 option(MSVC_STATIC_RUNTIME "DEPRECATED: use COLONY_STATIC_CRT instead" OFF)
 if(MSVC_STATIC_RUNTIME)
@@ -97,6 +112,12 @@ endif()
 
 # ---- Compiler / linker defaults ----
 if(MSVC)
+  # Require VS 2022+ toolset (v19.30+) for full C++20 library coverage.
+  if(MSVC_VERSION LESS 1930)
+    message(FATAL_ERROR "MSVC v19.30+ (Visual Studio 2022) required.")
+  endif()
+
+  # MSVC runtime selection via CMP0091
   if(COLONY_STATIC_CRT)
     set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")   # /MT or /MTd
     set(_crt_kind "static (/MT,/MTd)")
@@ -106,17 +127,19 @@ if(MSVC)
   endif()
   message(STATUS "MSVC runtime selected: ${CMAKE_MSVC_RUNTIME_LIBRARY}  [${_crt_kind}]")
 
-  # UTF-8, high warnings, modern conformance.  No /MP here (avoid PCH oddities).
+  # UTF-8, high warnings, modern conformance.
   add_compile_options(/utf-8 /W4 /permissive- /Zc:__cplusplus /Zc:throwingNew /Zc:preprocessor /Zc:inline /EHsc)
+  # Reduce noise from external headers (VS 2019 16.6+ / VS 2022)
+  add_compile_options(/external:anglebrackets /external:W3)
   if(COLONY_WARNINGS_AS_ERRORS)
     add_compile_options(/WX)
+    set(CMAKE_COMPILE_WARNING_AS_ERROR ON)  # also affect non-MSVC, if enabled there
   endif()
+  # Better debug info by default (PDBs handled by CMP0141 above)
   add_link_options(/DEBUG:FULL)
 endif()
 
 # ---- Build options interface (centralized Windows macros) ----
-#   - Defines are provided via an INTERFACE target and linked to all binaries,
-#     avoiding per-file #define spam and macro redefinitions.
 if(WIN32)
   add_library(colony_build_options INTERFACE)
   target_compile_definitions(colony_build_options INTERFACE
@@ -158,18 +181,13 @@ endforeach()
 # Third-party deps (vcpkg-friendly): SDL2 (optional), ImGui (optional), Tracy headers
 # ====================================================================================
 
-# We do discovery in the top-level so subdirs can rely on imported targets.
-# We'll link everything to the main app target after add_subdirectory(src).
-
 set(COLONY_THIRDPARTY_LIBS         "" CACHE INTERNAL "")
 set(COLONY_THIRDPARTY_INCLUDE_DIRS "" CACHE INTERNAL "")
 
 # --- SDL2 (only if FRONTEND is sdl) ---
 if(FRONTEND STREQUAL "sdl")
-  find_package(SDL2 CONFIG REQUIRED)  # vcpkg: provides SDL2::SDL2 and SDL2::SDL2main
-  # Define both macros for compatibility with existing source guards.
+  find_package(SDL2 CONFIG REQUIRED)  # vcpkg: SDL2::SDL2 and SDL2::SDL2main
   add_compile_definitions(COLONY_WITH_SDL2=1 COLONY_WITH_SDL=1 SDL_MAIN_HANDLED=1)
-  # Prefer SDL2main when available; otherwise link core SDL2 only.
   if(TARGET SDL2::SDL2main)
     list(APPEND COLONY_THIRDPARTY_LIBS SDL2::SDL2 SDL2::SDL2main)
   else()
@@ -179,20 +197,16 @@ endif()
 
 # --- ImGui (optional overlay) ---
 if(ENABLE_IMGUI)
-  # 1) Prefer a proper package (vcpkg) providing imgui::imgui.
   find_package(imgui CONFIG QUIET)
   if(TARGET imgui::imgui)
     add_compile_definitions(COLONY_WITH_IMGUI=1)
     list(APPEND COLONY_THIRDPARTY_LIBS imgui::imgui)
-
-  # 2) Fallback: build from vendored submodule with Win32 + D3D11 backends.
   elseif(EXISTS "${CMAKE_SOURCE_DIR}/externals/imgui/imgui.cpp")
     add_library(imgui STATIC
       externals/imgui/imgui.cpp
       externals/imgui/imgui_draw.cpp
       externals/imgui/imgui_tables.cpp
       externals/imgui/imgui_widgets.cpp
-      # backends for Win32 + D3D11
       externals/imgui/backends/imgui_impl_win32.cpp
       externals/imgui/backends/imgui_impl_dx11.cpp
     )
@@ -207,13 +221,9 @@ endif()
 # --- Tracy (headers for profiler UI + optional client lib) ---
 if(ENABLE_TRACY)
   add_compile_definitions(TRACY_ENABLE=1)
-
-  # 1) Prefer vcpkg-provided imported target (Tracy::TracyClient).
   find_package(Tracy CONFIG QUIET)
   if(TARGET Tracy::TracyClient)
     list(APPEND COLONY_THIRDPARTY_LIBS Tracy::TracyClient)
-
-  # 2) Fallback: Fetch Tracy sources and build a local client lib.
   elseif(TRACY_FETCH)
     include(FetchContent)
     FetchContent_Declare(tracy
@@ -221,25 +231,20 @@ if(ENABLE_TRACY)
       GIT_TAG v0.11
       GIT_SHALLOW TRUE
     )
-    # Only populate (don't add_subdirectory) to avoid pulling in extras we don't need.
     FetchContent_GetProperties(tracy)
     if(NOT tracy_POPULATED)
       FetchContent_Populate(tracy)
     endif()
-
-    # Build the client library from the canonical source file.
     if(NOT TARGET tracy_client)
+      add_library(tricy_client_missing_name_fix INTERFACE) # safeguard if old cache kept a stale target name
       add_library(tracy_client STATIC "${tracy_SOURCE_DIR}/public/TracyClient.cpp")
       target_include_directories(tracy_client PUBLIC
-        "${tracy_SOURCE_DIR}/public"         # for <tracy/Tracy.hpp>
-        "${tracy_SOURCE_DIR}/public/tracy"   # for <Tracy.hpp>
+        "${tracy_SOURCE_DIR}/public"
+        "${tracy_SOURCE_DIR}/public/tracy"
       )
       target_compile_definitions(tracy_client PUBLIC TRACY_ENABLE=1)
     endif()
-
     list(APPEND COLONY_THIRDPARTY_LIBS tracy_client)
-
-    # Also expose include dirs globally so any TU can #include <Tracy.hpp>.
     list(APPEND COLONY_THIRDPARTY_INCLUDE_DIRS
       "${tracy_SOURCE_DIR}/public" "${tracy_SOURCE_DIR}/public/tracy")
   else()
@@ -253,19 +258,21 @@ if(COLONY_THIRDPARTY_INCLUDE_DIRS)
 endif()
 
 # ---- HLSL shaders helper (DXC/FXC) ----
-# Keep existing optional include (project-local override)
+list(APPEND CMAKE_MODULE_PATH "${CMAKE_SOURCE_DIR}/cmake")
+include(ColonyHLSL OPTIONAL RESULT_VARIABLE _colony_hlsl_loaded)
+if(_colony_hlsl_loaded)
+  message(STATUS "ColonyHLSL.cmake loaded; Visual Studio HLSL integration available.")
+endif()
 include(cmake/shaders.cmake OPTIONAL)
 
 # Initialize friendly status for shader route
 set(_HLSL_TOOLCHAIN "unknown")
 
 # ================================
-# Explicit shader build (preferred)
+# Explicit shader build (preferred if helper exists)
 # ================================
-# If 'cg_compile_hlsl' exists (older helper), use it to make a 'shaders' target.
 if(COMMAND cg_compile_hlsl)
   set(COMPILED_SHADERS)
-  # Choose profiles based on renderer selection
   if(COLONY_RENDERER STREQUAL "d3d12")
     set(_VS_PROF "vs_6_7")
     set(_PS_PROF "ps_6_7")
@@ -276,7 +283,6 @@ if(COMMAND cg_compile_hlsl)
     set(_CS_PROF "cs_5_0")
   endif()
 
-  # Only include PCG SM6 shaders when targeting D3D12/DXC.
   if(COLONY_RENDERER STREQUAL "d3d12")
     set(_SHADER_DIRS "${CMAKE_SOURCE_DIR}/src/pcg/shaders" "${CMAKE_SOURCE_DIR}/shaders")
   else()
@@ -284,11 +290,10 @@ if(COMMAND cg_compile_hlsl)
   endif()
 
   foreach(_dir IN LISTS _SHADER_DIRS)
-    # PCG compute shader is SM6+/DXC-only; do not try to compile it for D3D11.
     if(COLONY_RENDERER STREQUAL "d3d12" AND EXISTS "${_dir}/noise_fbm_cs.hlsl")
       cg_compile_hlsl(NAME noise_fbm_cs
         SRC "${_dir}/noise_fbm_cs.hlsl"
-        ENTRY "main"              # pcg compute shader uses 'main'
+        ENTRY "main"
         PROFILE "${_CS_PROF}"
         INCLUDEDIRS "${_dir}"
         OUTVAR NOISE_FBM_CS_CSO)
@@ -324,9 +329,6 @@ if(COMMAND cg_compile_hlsl)
 endif()
 
 # ---- Renderer-driven built-in shader compilation routing ----
-# Use Visual Studio's native HLSL integration only when:
-#   (a) the helper exists AND (b) we're using a VS generator.
-# Otherwise, fall back to explicit FXC/DXC compilation.
 if(NOT (COMMAND colony_add_hlsl AND CMAKE_GENERATOR MATCHES "Visual Studio"))
 
   # D3D11 path -> FXC + Shader Model 5.x (DXBC)
@@ -336,12 +338,10 @@ if(NOT (COMMAND colony_add_hlsl AND CMAKE_GENERATOR MATCHES "Visual Studio"))
     set_property(CACHE FXC_DEFAULT_SM PROPERTY STRINGS 5_0 5_1)
 
     if(BUILD_SHADERS_FXC AND NOT TARGET shaders)
-      # Locate fxc.exe from the Windows SDK (user can also pass -DFXC_EXE=C:/path/to/fxc.exe)
       find_program(FXC_EXE NAMES fxc HINTS
         "$ENV{WindowsSdkDir}/bin/x64"
         "$ENV{WindowsSdkDir}/bin"
       )
-      # Fallback glob search across common Windows SDK locations (helps CI/dev PCs)
       if(NOT FXC_EXE)
         file(GLOB _fxc_cands
           "$ENV{WindowsSdkDir}/bin/*/x64/fxc.exe"
@@ -359,17 +359,14 @@ if(NOT (COMMAND colony_add_hlsl AND CMAKE_GENERATOR MATCHES "Visual Studio"))
         message(WARNING "FXC not found on PATH or Windows SDK; set FXC_EXE or install the Windows SDK. Shaders will not be compiled.")
       endif()
 
-      # IMPORTANT: only compile generic SM5 shaders here; exclude SM6-only PCG shaders.
       if(FXC_EXE AND (EXISTS "${CMAKE_SOURCE_DIR}/shaders"))
         file(GLOB_RECURSE HLSL_SOURCES CONFIGURE_DEPENDS
           "${CMAKE_SOURCE_DIR}/shaders/*.hlsl"
         )
-        # A6: unify outputs under ${build}/res/shaders
         set(SHADER_BIN_DIR "${CMAKE_BINARY_DIR}/res/shaders")
         file(MAKE_DIRECTORY "${SHADER_BIN_DIR}")
         set(_HLSL_TOOLCHAIN "FXC (SM5) -> ${SHADER_BIN_DIR}")
 
-        # Infer stage/profile/entry for FXC (SM5.x). Skip unsupported SM6-only stages (MS/AS).
         function(_cg_infer_profile_and_entry_fxc SRC OUT_PROFILE OUT_ENTRY OUT_SKIP)
           get_filename_component(_name_we "${SRC}" NAME_WE)
           string(TOLOWER "${_name_we}" _lower)
@@ -395,8 +392,7 @@ if(NOT (COMMAND colony_add_hlsl AND CMAKE_GENERATOR MATCHES "Visual Studio"))
             set(_prof "ds_${FXC_DEFAULT_SM}")
             set(_entry "DSMain")
           elseif(_lower MATCHES "(_|\\.)ms$|^ms_" OR _lower MATCHES "(_|\\.)as$|^as_")
-            # Mesh/Amplification shaders are SM6+ (DX12). Skip in D3D11.
-            set(_skip TRUE)
+            set(_skip TRUE) # SM6-only
           endif()
           set(${OUT_PROFILE} "${_prof}" PARENT_SCOPE)
           set(${OUT_ENTRY}   "${_entry}" PARENT_SCOPE)
@@ -416,7 +412,6 @@ if(NOT (COMMAND colony_add_hlsl AND CMAKE_GENERATOR MATCHES "Visual Studio"))
           endif()
 
           get_filename_component(NAME_WE "${SRC}" NAME_WE)
-          # Per-file overrides
           if("${NAME_WE}" STREQUAL "noise_fbm_cs")
             set(ENTRY "main")
           endif()
@@ -457,7 +452,6 @@ if(NOT (COMMAND colony_add_hlsl AND CMAKE_GENERATOR MATCHES "Visual Studio"))
     set_property(CACHE DXC_DEFAULT_SM PROPERTY STRINGS 6_6 6_7)
 
     if(BUILD_SHADERS_DXC AND NOT TARGET shaders)
-      # Locate dxc.exe (user can also pass -DDXC_EXE=C:/path/to/dxc.exe)
       find_program(DXC_EXE NAMES dxc HINTS
         "$ENV{VCToolsInstallDir}/bin/Hostx64/x64"
         "$ENV{WindowsSdkDir}/bin/x64"
@@ -468,17 +462,14 @@ if(NOT (COMMAND colony_add_hlsl AND CMAKE_GENERATOR MATCHES "Visual Studio"))
       endif()
 
       if(DXC_EXE AND (EXISTS "${CMAKE_SOURCE_DIR}/shaders" OR EXISTS "${CMAKE_SOURCE_DIR}/src/pcg/shaders"))
-        # Compile from both the root shaders/ and the PCG shaders/ folders
         file(GLOB_RECURSE HLSL_SOURCES CONFIGURE_DEPENDS
           "${CMAKE_SOURCE_DIR}/shaders/*.hlsl"
           "${CMAKE_SOURCE_DIR}/src/pcg/shaders/*.hlsl"
         )
-        # A6: unify outputs under ${build}/res/shaders
         set(SHADER_BIN_DIR "${CMAKE_BINARY_DIR}/res/shaders")
         file(MAKE_DIRECTORY "${SHADER_BIN_DIR}")
         set(_HLSL_TOOLCHAIN "DXC (SM6) -> ${SHADER_BIN_DIR}")
 
-        # Infer stage/profile/entry for DXC (SM6.x). Includes MS/AS stages.
         function(_cg_infer_profile_and_entry_dxc SRC OUT_PROFILE OUT_ENTRY)
           get_filename_component(_name_we "${SRC}" NAME_WE)
           string(TOLOWER "${_name_we}" _lower)
@@ -522,16 +513,12 @@ if(NOT (COMMAND colony_add_hlsl AND CMAKE_GENERATOR MATCHES "Visual Studio"))
           endif()
 
           get_filename_component(NAME_WE "${SRC}" NAME_WE)
-
-          # Per-file overrides (PCG compute shader uses 'main' entry)
           if("${NAME_WE}" STREQUAL "noise_fbm_cs")
             set(ENTRY "main")
           endif()
 
           set(OUTFILE "${SHADER_BIN_DIR}/${NAME_WE}.cso")
 
-          # Build command:
-          #   dxc -T <profile> -E <entry> -Fo <out> [-Zi -Qembed_debug | -Qstrip_debug] -I shaders <src>
           add_custom_command(
             OUTPUT "${OUTFILE}"
             COMMAND ${CMAKE_COMMAND} -E make_directory "${SHADER_BIN_DIR}"
@@ -578,7 +565,6 @@ endif()
 option(PCG_USE_YAML   "Enable YAML storylets in the pcg library" OFF)
 option(BUILD_PCG_DEMO "Build the PCG demo tool"                  ON)
 
-# ---- PCG static library ----
 set(PCG_SRC
     src/pcg/SeededRng.cpp
     src/pcg/Noise.cpp
@@ -594,7 +580,7 @@ target_include_directories(pcg PUBLIC ${CMAKE_SOURCE_DIR}/src)
 set_property(TARGET pcg PROPERTY FOLDER "libs")
 
 if(PCG_USE_YAML)
-  find_package(yaml-cpp CONFIG REQUIRED)  # vcpkg: yaml-cpp
+  find_package(yaml-cpp CONFIG REQUIRED)
   target_compile_definitions(pcg PUBLIC PCG_USE_YAML)
   target_link_libraries(pcg PUBLIC yaml-cpp)
   target_sources(pcg PRIVATE src/pcg/Storylets.cpp)
@@ -611,7 +597,6 @@ if(BUILD_PCG_DEMO AND EXISTS "${CMAKE_SOURCE_DIR}/src/tools/main_pcg_demo.cpp")
   if(TARGET shaders)
     add_dependencies(pcg_demo shaders)
   endif()
-  # Let the demo find compiled shaders next to the exe (same convention as main app)
   target_compile_definitions(pcg_demo PRIVATE SHADER_DIR=L\"res/shaders/\")
   if(MSVC)
     set_target_properties(pcg_demo PROPERTIES VS_DEBUGGER_WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}")
@@ -628,49 +613,39 @@ add_library(Factions STATIC
 target_include_directories(Factions PUBLIC ${CMAKE_SOURCE_DIR}/src)
 set_property(TARGET Factions PROPERTY FOLDER "libs")
 
-# Optional JSON loader (comment this block out if you don't want JSON)
-find_package(nlohmann_json CONFIG REQUIRED) # vcpkg: nlohmann-json
+find_package(nlohmann_json CONFIG REQUIRED)
 target_sources(Factions PRIVATE src/sim/factions/FactionConfigLoader.hpp)
 target_link_libraries(Factions PUBLIC nlohmann_json::nlohmann_json)
 
 # ===========================
 #   Main game sources / target
 # ===========================
-# Only add the game's 'src' dir if it has its own CMakeLists.txt
 if(EXISTS "${CMAKE_SOURCE_DIR}/src/CMakeLists.txt")
   add_subdirectory(src)
 endif()
 
-# Link third-party libs to the main app if the target exists
 if(TARGET ColonyGame)
   if(COLONY_THIRDPARTY_LIBS)
     target_link_libraries(ColonyGame PRIVATE ${COLONY_THIRDPARTY_LIBS})
   endif()
 
-  # Link in the PCG library
   target_link_libraries(ColonyGame PRIVATE pcg)
-
-  # Link in the Factions module (NEW)
   target_link_libraries(ColonyGame PRIVATE Factions)
 
-  # Apply centralized Windows compile definitions to the main target
   if(TARGET colony_build_options)
     target_link_libraries(ColonyGame PRIVATE colony_build_options)
   endif()
 
-  # Frontend toggles
   if(FRONTEND STREQUAL "win32")
     target_compile_definitions(ColonyGame PRIVATE CG_FRONTEND_WIN32=1)
   elseif(FRONTEND STREQUAL "sdl")
     target_compile_definitions(ColonyGame PRIVATE CG_FRONTEND_SDL=1)
   endif()
 
-  # Prefer GUI subsystem on Windows unless SHOW_CONSOLE=ON
   if(WIN32 AND NOT SHOW_CONSOLE)
     set_target_properties(ColonyGame PROPERTIES WIN32_EXECUTABLE ON)
   endif()
 
-  # ---- Integrations and quality-of-life ----
   # Precompiled headers, if present and allowed
   if(COLONY_USE_PCH AND EXISTS "${CMAKE_SOURCE_DIR}/src/common/pch.hpp")
     target_precompile_headers(ColonyGame PRIVATE src/common/pch.hpp)
@@ -681,7 +656,6 @@ if(TARGET ColonyGame)
     set_target_properties(ColonyGame PROPERTIES UNITY_BUILD ON UNITY_BUILD_BATCH_SIZE 16)
   endif()
 
-  # Expose generated build info include dir and version resource if they exist
   if(EXISTS "${CMAKE_BINARY_DIR}/generated/build_info.h")
     target_include_directories(ColonyGame PRIVATE "${CMAKE_BINARY_DIR}/generated")
   endif()
@@ -689,15 +663,12 @@ if(TARGET ColonyGame)
     target_sources(ColonyGame PRIVATE "${CMAKE_BINARY_DIR}/generated/Version.rc")
   endif()
 
-  # Let the game know where to look for runtime-compiled / precompiled shaders
   target_compile_definitions(ColonyGame PRIVATE SHADER_DIR=L\"res/shaders/\")
 
-  # If a 'shaders' build target exists, build it before the game
   if(TARGET shaders)
     add_dependencies(ColonyGame shaders)
   endif()
 
-  # Make VS debugger start in the source root so relative paths (res/, shaders/) resolve
   if(MSVC)
     set_target_properties(ColonyGame PROPERTIES VS_DEBUGGER_WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}")
   endif()
@@ -705,23 +676,18 @@ if(TARGET ColonyGame)
   # ===========================
   # Visual Studio HLSL integration (only with VS generator)
   # ===========================
-  # If colony_add_hlsl() is available, attach HLSL sources so MSBuild compiles them
-  # using VS_SHADER_* properties. Compiled .cso -> ${CMAKE_BINARY_DIR}/res/shaders/$(Configuration).
   if(COMMAND colony_add_hlsl AND CMAKE_GENERATOR MATCHES "Visual Studio")
     message(STATUS "HLSL toolchain: Visual Studio HLSL (MSBuild)")
 
-    # Shader roots
     set(_SHADERS_DIR "${CMAKE_SOURCE_DIR}/shaders")
     set(_PCG_DIR     "${CMAKE_SOURCE_DIR}/src/pcg/shaders")
 
-    # Gather by stage so each call has a single PROFILE/ENTRY
     file(GLOB _VS_SHADERS CONFIGURE_DEPENDS "${_SHADERS_DIR}/*_vs.hlsl")
     file(GLOB _PS_SHADERS CONFIGURE_DEPENDS "${_SHADERS_DIR}/*_ps.hlsl")
     file(GLOB _CS_SHADERS CONFIGURE_DEPENDS
          "${_SHADERS_DIR}/*_cs.hlsl"
          "${_PCG_DIR}/*_cs.hlsl")
 
-    # Pick shader models from selected renderer
     if(COLONY_RENDERER STREQUAL "d3d12")
       set(_SM_VS "vs_6_7")
       set(_SM_PS "ps_6_7")
@@ -732,7 +698,6 @@ if(TARGET ColonyGame)
       set(_SM_CS "cs_5_0")
     endif()
 
-    # Vertex
     if(_VS_SHADERS)
       colony_add_hlsl(
         TARGET  ColonyGame
@@ -744,7 +709,6 @@ if(TARGET ColonyGame)
       )
     endif()
 
-    # Pixel
     if(_PS_SHADERS)
       colony_add_hlsl(
         TARGET  ColonyGame
@@ -756,7 +720,6 @@ if(TARGET ColonyGame)
       )
     endif()
 
-    # Compute: split general CS and the PCG CS (entrypoint 'main')
     set(_CS_GENERAL "")
     foreach(_cs ${_CS_SHADERS})
       if(_cs MATCHES ".*/noise_fbm_cs\\.hlsl$")
@@ -783,7 +746,7 @@ if(TARGET ColonyGame)
         OUTDIR  "res/shaders"
         SOURCES "${_PCG_DIR}/noise_fbm_cs.hlsl"
         PROFILE ${_SM_CS}
-        ENTRY   "main"         # pcg compute uses 'main'
+        ENTRY   "main"
         INCLUDES ${_SHADERS_DIR} ${_PCG_DIR}
       )
     endif()
@@ -793,12 +756,9 @@ endif()
 # ===========================
 #       Stage (Windows)
 # ===========================
-# Produces a self-contained staging folder under ${CMAKE_BINARY_DIR}/stage
-# with the built game, resources, shaders, and (when available) vcpkg runtime DLLs.
 if(WIN32 AND TARGET ColonyGame)
   set(STAGE_DIR "${CMAKE_BINARY_DIR}/stage")
 
-  # Optional resource/shader copy commands (only if source dirs exist)
   set(_STAGE_COPY_RES_CMD "")
   if(EXISTS "${CMAKE_SOURCE_DIR}/res")
     set(_STAGE_COPY_RES_CMD
@@ -806,8 +766,6 @@ if(WIN32 AND TARGET ColonyGame)
                 "${CMAKE_SOURCE_DIR}/res" "${STAGE_DIR}/res")
   endif()
 
-  # Copy precompiled shaders if present; otherwise copy source shaders.
-  # Prefer MSBuild output path used by colony_add_hlsl() (res/shaders).
   set(_STAGE_COPY_SHADERS_CMD "")
   if(EXISTS "${CMAKE_BINARY_DIR}/res/shaders")
     set(_STAGE_COPY_SHADERS_CMD
@@ -867,6 +825,9 @@ endif()
 
 # ---- Install & CPack (portable ZIP) ----
 if(WIN32 AND TARGET ColonyGame)
+  # Bundle the VC++ runtime where appropriate
+  include(InstallRequiredSystemLibraries)
+
   install(TARGETS ColonyGame RUNTIME DESTINATION .)
   if(EXISTS "${CMAKE_SOURCE_DIR}/res")
     install(DIRECTORY "${CMAKE_SOURCE_DIR}/res" DESTINATION .)
@@ -879,7 +840,10 @@ if(WIN32 AND TARGET ColonyGame)
   elseif(EXISTS "${CMAKE_SOURCE_DIR}/shaders")
     install(DIRECTORY "${CMAKE_SOURCE_DIR}/shaders/" DESTINATION "shaders")
   endif()
+
   set(CPACK_GENERATOR "ZIP")
+  # Optional: annotate the package with build metadata
+  set(CPACK_PACKAGE_FILE_NAME "ColonyGame-${CG_GIT_HASH}")
   include(CPack)
 endif()
 
@@ -889,7 +853,6 @@ endif()
 option(BUILD_COLONY_COMPUTE_EROSION "Build the compute-shader erosion demo tool" ON)
 
 if(BUILD_COLONY_COMPUTE_EROSION)
-  # Try a few common layouts for the demo sources:
   set(_ED_BASE "")
   if(EXISTS "${CMAKE_SOURCE_DIR}/samples/compute_erosion/src/main.cpp")
     set(_ED_BASE "${CMAKE_SOURCE_DIR}/samples/compute_erosion")
@@ -898,7 +861,6 @@ if(BUILD_COLONY_COMPUTE_EROSION)
   elseif(EXISTS "${CMAKE_SOURCE_DIR}/src/main.cpp"
       AND EXISTS "${CMAKE_SOURCE_DIR}/src/D3DUtils.cpp"
       AND EXISTS "${CMAKE_SOURCE_DIR}/src/PoissonDisk.cpp")
-    # Fallback to top-level src/ (use with caution if your game also lives in src/)
     set(_ED_BASE "${CMAKE_SOURCE_DIR}")
   endif()
 
@@ -912,7 +874,6 @@ if(BUILD_COLONY_COMPUTE_EROSION)
     )
     target_include_directories(ColonyComputeErosion PRIVATE "${_ED_BASE}/src")
 
-    # Apply centralized Windows compile definitions to the demo target
     if(TARGET colony_build_options)
       target_link_libraries(ColonyComputeErosion PRIVATE colony_build_options)
     endif()
@@ -923,7 +884,6 @@ if(BUILD_COLONY_COMPUTE_EROSION)
       message(FATAL_ERROR "ColonyComputeErosion requires Windows/MSVC (D3D11).")
     endif()
 
-    # Copy shaders and README next to the binary after build (if present)
     if(EXISTS "${_ED_BASE}/shaders")
       add_custom_command(TARGET ColonyComputeErosion POST_BUILD
         COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:ColonyComputeErosion>/shaders"
@@ -949,3 +909,18 @@ include(CTest)
 if(BUILD_TESTING AND EXISTS "${CMAKE_SOURCE_DIR}/tests/CMakeLists.txt")
   add_subdirectory(tests)
 endif()
+
+# ===========================
+#   Configuration Summary
+# ===========================
+message(STATUS "================ ColonyGame Configuration ================")
+message(STATUS "C++ Standard          : C++${CMAKE_CXX_STANDARD}")
+message(STATUS "Renderer              : ${COLONY_RENDERER}")
+message(STATUS "Frontend              : ${FRONTEND}")
+message(STATUS "PCH enabled           : ${COLONY_USE_PCH}")
+message(STATUS "Unity build           : ${COLONY_UNITY_BUILD}")
+message(STATUS "Warnings as errors    : ${COLONY_WARNINGS_AS_ERRORS}")
+message(STATUS "LTO/IPO (Release)     : ${CMAKE_INTERPROCEDURAL_OPTIMIZATION_RELEASE}")
+message(STATUS "HLSL toolchain        : ${_HLSL_TOOLCHAIN}")
+message(STATUS "Git revision          : ${CG_GIT_HASH}")
+message(STATUS "==========================================================")
