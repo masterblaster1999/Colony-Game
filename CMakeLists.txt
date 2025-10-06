@@ -187,6 +187,11 @@ endforeach()
 set(COLONY_THIRDPARTY_LIBS         "" CACHE INTERNAL "")
 set(COLONY_THIRDPARTY_INCLUDE_DIRS "" CACHE INTERNAL "")
 
+# --- DirectX Shader Compiler (DXC) via vcpkg (for runtime DXC API usage) ---
+# Exposes imported target: Microsoft::DirectXShaderCompiler
+find_package(directx-dxc CONFIG REQUIRED)  # requires 'directx-dxc' in your vcpkg.json
+list(APPEND COLONY_THIRDPARTY_LIBS Microsoft::DirectXShaderCompiler)  # link later with ColonyGame
+
 # --- SDL2 (only if FRONTEND is sdl) ---
 if(FRONTEND STREQUAL "sdl")
   find_package(SDL2 CONFIG REQUIRED)  # vcpkg: SDL2::SDL2 and SDL2::SDL2main
@@ -669,6 +674,14 @@ if(TARGET ColonyGame)
       src/terrain/ThermalErosion.cpp
   )
 
+  # --- NEW: DXC wrapper + thread-pool/job adapters ---
+  target_sources(ColonyGame PRIVATE
+      src/engine/Renderer/ShaderCompiler.cpp
+      src/common/ThreadPool.hpp
+      src/pathfinding/PathJobs.hpp
+      src/worldgen/WorldgenJobs.hpp
+  )
+
   # Include root/src (for the headers above)
   target_include_directories(ColonyGame PRIVATE
       ${CMAKE_SOURCE_DIR}/src
@@ -678,7 +691,6 @@ if(TARGET ColonyGame)
   if(MSVC)
     target_link_libraries(ColonyGame PRIVATE d3d11 dxgi d3dcompiler)
   endif()
-  # ---------------------------
 
   if(FRONTEND STREQUAL "win32")
     target_compile_definitions(ColonyGame PRIVATE CG_FRONTEND_WIN32=1)
