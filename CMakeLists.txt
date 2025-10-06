@@ -636,6 +636,40 @@ if(TARGET ColonyGame)
     target_link_libraries(ColonyGame PRIVATE colony_build_options)
   endif()
 
+  # ---------------------------
+  # Option A — add sources directly to your game target (Refactor)
+  # ---------------------------
+  target_sources(ColonyGame PRIVATE
+      src/app/EntryWinMain.cpp
+      src/app/App.h
+      src/app/App.cpp
+
+      src/core/FixedTimestep.h
+      src/core/FixedTimestep.cpp
+
+      src/render/HrCheck.h
+      src/render/DeviceD3D11.h
+      src/render/DeviceD3D11.cpp
+      src/render/Shaders.h
+      src/render/Shaders.cpp
+      src/render/Textures.h
+      src/render/Textures.cpp
+
+      src/terrain/ThermalErosion.h
+      src/terrain/ThermalErosion.cpp
+  )
+
+  # Include root/src (for the headers above)
+  target_include_directories(ColonyGame PRIVATE
+      ${CMAKE_SOURCE_DIR}/src
+  )
+
+  # Link core D3D11/FXC/DXGI libs for the new render/terrain sources
+  if(MSVC)
+    target_link_libraries(ColonyGame PRIVATE d3d11 dxgi d3dcompiler)
+  endif()
+  # ---------------------------
+
   if(FRONTEND STREQUAL "win32")
     target_compile_definitions(ColonyGame PRIVATE CG_FRONTEND_WIN32=1)
   elseif(FRONTEND STREQUAL "sdl")
