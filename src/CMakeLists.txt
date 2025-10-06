@@ -1,5 +1,139 @@
 # src/CMakeLists.txt
 
+cmake_minimum_required(VERSION 3.16) # needs VS_SHADER_OBJECT_FILE_NAME (3.12+) and ENABLE_DEBUG (3.11+)
+# ------------------------------------------------------------------------------
+
+# ---------------- HLSL helper (inline) ----------------
+# Adds .hlsl to a target and tags per-file Visual Studio shader properties.
+# Example:
+#   colony_add_hlsl(
+#     TARGET  ColonyGame
+#     SOURCES "${CMAKE_SOURCE_DIR}/shaders/quad_vs.hlsl"
+#     PROFILE "vs_5_0"
+#     ENTRY   "VSMain"
+#     OUTDIR  "${CMAKE_BINARY_DIR}/res/shaders/${CMAKE_CFG_INTDIR}"
+#   )
+#
+# PROFILE:  [vs|ps|cs|gs|hs|ds]_[major]_[minor]  e.g., vs_5_0, ps_6_7
+# ENTRY:    shader entry point (e.g., main, VSMain, PSMain)
+# OUTDIR:   where to emit the .cso (defaults to build/res/shaders/$(Configuration))
+#
+# Notes:
+# - Uses VS source-file properties: VS_SHADER_TYPE, VS_SHADER_MODEL, VS_SHADER_ENTRYPOINT,
+#   VS_SHADER_FLAGS, VS_SHADER_OBJECT_FILE_NAME, VS_SHADER_OUTPUT_HEADER_FILE, VS_SHADER_VARIABLE_NAME.
+#   These are officially documented CMake properties for Visual Studio generators. 
+#   (See CMake docs for VS_SHADER_*).  MSBuild compiles one shader per file automatically. 
+# ------------------------------------------------------------------------------
+
+function(colony_add_hlsl)
+  set(_opts)
+  set(_one  TARGET PROFILE ENTRY OUTDIR)
+  set(_many SOURCES FLAGS DEFINES INCLUDE_DIRS)
+  cmake_parse_arguments(CAH "${_opts}" "${_one}" "${_many}" ${ARGN})
+
+  if(NOT CAH_TARGET)
+    message(FATAL_ERROR "colony_add_hlsl: TARGET is required")
+  endif()
+  if(NOT CAH_SOURCES)
+    message(FATAL_ERROR "colony_add_hlsl: SOURCES is required")
+  endif()
+
+  # defaults
+  if(NOT CAH_ENTRY)
+    set(CAH_ENTRY "main")
+  endif()
+  if(NOT CAH_OUTDIR)
+    # Multi-config safe (expands to $(Configuration) on VS). Do not use $<CONFIG> here.
+    # CMAKE_CFG_INTDIR behavior is documented by CMake. 
+    set(CAH_OUTDIR "${CMAKE_BINARY_DIR}/res/shaders/${CMAKE_CFG_INTDIR}")
+  endif()
+
+  # derive shader type and model from PROFILE (e.g. vs_5_0 -> Vertex, 5.0)
+  if(NOT (CAH_PROFILE MATCHES "^([a-z]+)_([0-9]+)_([0-9]+)$"))
+    message(FATAL_ERROR "colony_add_hlsl: PROFILE must look like vs_5_0 / ps_6_7 / cs_5_0, got: '${CAH_PROFILE}'")
+  endif()
+  set(_kind "${CMAKE_MATCH_1}")
+  set(_sm_major "${CMAKE_MATCH_2}")
+  set(_sm_minor "${CMAKE_MATCH_3}")
+
+  set(_stype "Vertex")
+  if(_kind STREQUAL "ps")
+    set(_stype "Pixel")
+  elseif(_kind STREQUAL "cs")
+    set(_stype "Compute")
+  elseif(_kind STREQUAL "gs")
+    set(_stype "Geometry")
+  elseif(_kind STREQUAL "hs")
+    set(_stype "Hull")
+  elseif(_kind STREQUAL "ds")
+    set(_stype "Domain")
+  elseif(NOT _kind STREQUAL "vs")
+    message(FATAL_ERROR "colony_add_hlsl: unknown shader kind '${_kind}' in PROFILE '${CAH_PROFILE}'")
+  endif()
+
+  set(_smodel "${_sm_major}.${_sm_minor}") # e.g. "5.0" or "6.7" for VS property
+
+  # Build up additional flags (defines, include dirs)
+  set(_extra_flags "")
+  if(CAH_DEFINES)
+    # transform NAME or NAME=VALUE -> /DNAME or /DNAME=VALUE (FXC/DXC understand both -D and /D)
+    foreach(_d IN LISTS CAH_DEFINES)
+      list(APPEND _extra_flags "/D${_d}")
+    endforeach()
+  endif()
+  if(CAH_INCLUDE_DIRS)
+    foreach(_inc IN LISTS CAH_INCLUDE_DIRS)
+      list(APPEND _extra_flags "/I\"${_inc}\"")
+    endforeach()
+  endif()
+  if(CAH_FLAGS)
+    list(APPEND _extra_flags ${CAH_FLAGS})
+  endif()
+  if(_extra_flags)
+    string(REPLACE ";" " " _extra_flags "${_extra_flags}")
+  endif()
+
+  # Ensure OUTDIR exists at build time (before shader compile runs)
+  # PRE_BUILD runs early in VS; path contains $(Configuration) via CMAKE_CFG_INTDIR.
+  if(TARGET ${CAH_TARGET})
+    add_custom_command(TARGET ${CAH_TARGET} PRE_BUILD
+      COMMAND ${CMAKE_COMMAND} -E make_directory "${CAH_OUTDIR}"
+      VERBATIM
+    )
+  endif()
+
+  foreach(_sh IN LISTS CAH_SOURCES)
+    get_filename_component(_abs "${_sh}" ABSOLUTE)
+    if(NOT EXISTS "${_abs}")
+      message(FATAL_ERROR "colony_add_hlsl: source not found: ${_abs}")
+    endif()
+    get_filename_component(_namewe "${_abs}" NAME_WE)
+
+    # Per-file Visual Studio shader properties (CMake -> MSBuild HLSL toolchain)
+    set_source_files_properties("${_abs}" PROPERTIES
+      VS_SHADER_TYPE              "${_stype}"       # Vertex/Pixel/Compute/...
+      VS_SHADER_MODEL             "${_smodel}"      # "5.0" / "6.7" etc
+      VS_SHADER_ENTRYPOINT        "${CAH_ENTRY}"    # entry point symbol
+      VS_SHADER_OBJECT_FILE_NAME  "${CAH_OUTDIR}/${_namewe}.cso"  # final .cso path
+    )
+    if(_extra_flags)
+      # Extra flags (defines, include dirs, misc) go via VS_SHADER_FLAGS property.
+      set_source_files_properties("${_abs}" PROPERTIES VS_SHADER_FLAGS "${_extra_flags}")
+    endif()
+
+    # Optional: emit a header that embeds bytecode (handy for no‑IO startup).
+    # Toggle by defining COLONY_HLSL_EMIT_HEADERS at configure time.
+    if(COLONY_HLSL_EMIT_HEADERS)
+      set_source_files_properties("${_abs}" PROPERTIES
+        VS_SHADER_OUTPUT_HEADER_FILE "${CAH_OUTDIR}/${_namewe}.h"
+        VS_SHADER_VARIABLE_NAME      "${_namewe}_bytecode"
+      )
+    endif()
+
+    target_sources(${CAH_TARGET} PRIVATE "${_abs}")
+  endforeach()
+endfunction()
+
 # -------- Discover sources (exclude vendored imgui if present) --------
 file(GLOB_RECURSE SRC_ALL
   CONFIGURE_DEPENDS
@@ -28,13 +162,7 @@ list(FILTER SRC_ALL EXCLUDE REGEX ".*/src/terrain/.*\\.(c|cc|cxx|cpp)$")
 list(FILTER SRC_ALL EXCLUDE REGEX ".*/src/core/.*\\.(c|cc|cxx|cpp)$")
 
 # --- BEGIN: Stabilize crash-dump TU for MSVC (C2712) ---
-# The TU 'platform/win/CrashDumpWin.cpp' uses __try/__except in functions
-# that currently trigger C2712 under /EHsc. We:
-#   - exclude it from this build
-#   - add a tiny stub that exports the same API so linking succeeds
-#   - leave a one-line switch to bring it back (compiled with /EHa) once refactored.
 list(FILTER SRC_ALL EXCLUDE REGEX ".*/platform/win/CrashDumpWin\\.cpp$")
-
 if(EXISTS "${CMAKE_SOURCE_DIR}/platform/win/CrashDumpWin.h")
   list(APPEND SRC_ALL "${CMAKE_SOURCE_DIR}/platform/win/CrashDumpStub.cpp")
 endif()
@@ -80,15 +208,15 @@ if(COLONY_UNITY_BUILD)
 endif()
 
 # ---- HLSL shader compilation (VS/FXC/DXC) with explicit entrypoints ----
-# We use a project helper (cmake/ColonyHLSL.cmake) when available to
-# add .hlsl files to the target and set the proper per-file properties.
-# On Visual Studio generators this maps to VS_SHADER_* (entrypoint/type),
-# which fixes FXC/DXC looking for a default 'main'.
+# Uses the inline helper above to tag shaders with VS_SHADER_* properties.
+# CMake docs: VS_SHADER_TYPE, MODEL, ENTRYPOINT, FLAGS, OBJECT_FILE_NAME, OUTPUT_HEADER_FILE, VARIABLE_NAME. 
+# These properties drive one-file-per-invocation HLSL compilation under MSBuild/VS. 
+# (See official CMake properties reference.) :contentReference[oaicite:3]{index=3}
 if(COMMAND colony_add_hlsl)
-  # Where compiled CSO/DXIL land during the build (mirrors the copy step below)
-  set(_SHADER_OUT "${CMAKE_BINARY_DIR}/res/shaders/$<CONFIG>")
+  # Location for compiled CSO/DXIL at build time (per-config).
+  set(_SHADER_OUT "${CMAKE_BINARY_DIR}/res/shaders/${CMAKE_CFG_INTDIR}")
 
-  # Stage-specific HLSL profiles based on renderer
+  # Pick shader profile set based on renderer
   if(COLONY_RENDERER STREQUAL "d3d12")
     set(_VS_PROF "vs_6_7")
     set(_PS_PROF "ps_6_7")
@@ -99,7 +227,7 @@ if(COMMAND colony_add_hlsl)
     set(_CS_PROF "cs_5_0")
   endif()
 
-  # Vertex + Pixel shaders (entrypoints VSMain / PSMain)
+  # Examples: Vertex + Pixel shaders (entrypoints VSMain / PSMain)
   if(EXISTS "${CMAKE_SOURCE_DIR}/shaders/quad_vs.hlsl")
     colony_add_hlsl(
       TARGET  ColonyGame
@@ -186,13 +314,10 @@ if(EXISTS "${CMAKE_SOURCE_DIR}/res")
   )
 endif()
 
-# ---- 3.1: Stage shared shader header (common.hlsli) next to shipped shaders ----
-# Creates "<exe>/res/shaders/common" and copies the shared header there if it changed.
-# Uses generator expressions so it works with multi-config (VS) and single-config generators.
+# ---- Copy shared shader header (common.hlsli) next to shipped shaders ----
 if(EXISTS "${CMAKE_SOURCE_DIR}/shaders/common/common.hlsli")
   set(COLONY_SHADER_SRC_DIR "${CMAKE_SOURCE_DIR}/shaders")
   set(COLONY_SHADER_DST_DIR "$<TARGET_FILE_DIR:ColonyGame>/res/shaders")
-
   add_custom_command(TARGET ColonyGame POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E make_directory "${COLONY_SHADER_DST_DIR}/common"
     COMMAND ${CMAKE_COMMAND} -E copy_if_different
@@ -202,8 +327,8 @@ if(EXISTS "${CMAKE_SOURCE_DIR}/shaders/common/common.hlsli")
   )
 endif()
 
-# A6: Stage compiled shader blobs into the runtime res/shaders folder next to the EXE.
-# All toolchains (VS HLSL, FXC, DXC) now emit *.cso under ${CMAKE_BINARY_DIR}/res/shaders/<cfg>.
+# Stage compiled shader blobs into the runtime res/shaders folder next to the EXE.
+# We compiled to ${CMAKE_BINARY_DIR}/res/shaders/$(Configuration); copy that to the side of the exe.
 add_custom_command(TARGET ColonyGame POST_BUILD
   COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:ColonyGame>/res/shaders"
   COMMAND ${CMAKE_COMMAND} -E copy_directory
@@ -217,14 +342,16 @@ if(TARGET shaders)
   add_dependencies(ColonyGame shaders)
 endif()
 
-# ------------------------------------------------------------------------------
-# OPTIONAL (when you’re ready to bring back the real CrashDumpWin.cpp):
-#   1) Remove the EXCLUDE + Stub block above
-#   2) Add this per-source flag to allow SEH+C++ in that TU:
-# if(MSVC AND EXISTS "${CMAKE_SOURCE_DIR}/platform/win/CrashDumpWin.cpp")
-#   set_source_files_properties("${CMAKE_SOURCE_DIR}/platform/win/CrashDumpWin.cpp"
-#     PROPERTIES COMPILE_OPTIONS "/EHa")
-# endif()
-#   3) In CrashDumpWin.cpp, make PresetFor take CrashDumpWin::DumpLevel and
-#      add static_casts where you assign between enum types.
-# ------------------------------------------------------------------------------
+# ---------------- Quality/security toggles you can enable upstream ----------------
+# For faster debugging, consider MSVC AddressSanitizer in Debug builds:
+#   target_compile_options(ColonyGame PRIVATE $<$<CONFIG:Debug>:/fsanitize=address>)
+#   target_link_options(ColonyGame    PRIVATE $<$<CONFIG:Debug>:/INFERASANLIBS>)
+# (/fsanitize=address available since VS 16.9; official docs here.) :contentReference[oaicite:4]{index=4}
+#
+# For hardened Release builds, enable Control Flow Guard:
+#   target_compile_options(ColonyGame PRIVATE $<$<CONFIG:Release>:/guard:cf>)
+#   target_link_options(ColonyGame    PRIVATE $<$<CONFIG:Release>:/guard:cf>)
+# (Official MSVC CFG docs.) :contentReference[oaicite:5]{index=5}
+
+# ------------------------------------------------------------------------------ 
+# End of file
