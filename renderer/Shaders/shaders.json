@@ -1,0 +1,15 @@
+[
+  {
+    "file": "mesh_vs.hlsl",
+    "entry": "main",
+    "profile": "vs_5_0",
+    "includes": ["include"]
+  },
+  {
+    "file": "mesh_ps.hlsl",
+    "entry": "main",
+    "profile": "ps_5_0",
+    "defines": ["USE_FOG=1"],
+    "includes": ["include"]
+  }
+]
