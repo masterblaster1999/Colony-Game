@@ -96,20 +96,21 @@ function(colony_add_hlsl target)
     return()
   endif()
 
-  # Utility: stage inference from file name
+  # Utility: stage inference from file name (case-insensitive)
   function(_colony_guess_stage in out_var)
+    string(TOUPPER "${in}" _UP)
     set(stage "Pixel")
-    if("${in}" MATCHES "_VS\\.hlsl$")       # vertex
+    if("${_UP}" MATCHES "_VS\\.HLSL$")
       set(stage "Vertex")
-    elseif("${in}" MATCHES "_PS\\.hlsl$")   # pixel
+    elseif("${_UP}" MATCHES "_PS\\.HLSL$")
       set(stage "Pixel")
-    elseif("${in}" MATCHES "_CS\\.hlsl$")   # compute
+    elseif("${_UP}" MATCHES "_CS\\.HLSL$")
       set(stage "Compute")
-    elseif("${in}" MATCHES "_GS\\.hlsl$")   # geometry
+    elseif("${_UP}" MATCHES "_GS\\.HLSL$")
       set(stage "Geometry")
-    elseif("${in}" MATCHES "_HS\\.hlsl$")   # hull
+    elseif("${_UP}" MATCHES "_HS\\.HLSL$")
       set(stage "Hull")
-    elseif("${in}" MATCHES "_DS\\.hlsl$")   # domain
+    elseif("${_UP}" MATCHES "_DS\\.HLSL$")
       set(stage "Domain")
     endif()
     set(${out_var} "${stage}" PARENT_SCOPE)
@@ -132,7 +133,8 @@ function(colony_add_hlsl target)
     else()
       set(pfx "ps")
     endif()
-    set(${out_var} "${pfx}_${model}" PARENT_SCOPE)
+    string(REPLACE "." "_" _m "${model}")   # <-- fxc expects underscores
+    set(${out_var} "${pfx}_${_m}" PARENT_SCOPE)
   endfunction()
 
   # Utility: DXC profile from stage+model (e.g., vs_6_7)
@@ -210,7 +212,7 @@ function(colony_add_hlsl target)
     # CMake source-file properties driving VS HLSL build:
     # VS_SHADER_TYPE / VS_SHADER_MODEL / VS_SHADER_ENTRYPOINT /
     # VS_SHADER_OBJECT_FILE_NAME / VS_SHADER_OUTPUT_HEADER_FILE /
-    # VS_SHADER_ENABLE_DEBUG / VS_SHADER_DISABLE_OPTIMIZATIONS
+    # VS_SHADER_ENABLE_DEBUG / VS_SHADER_DISABLE_OPTIMIZATIONS / VS_SHADER_FLAGS
     foreach(f IN LISTS HLSL_FILES)
       get_filename_component(_abs "${f}" ABSOLUTE)
       get_filename_component(_namewe "${f}" NAME_WE)
@@ -228,8 +230,7 @@ function(colony_add_hlsl target)
 
       # Emit object/header as requested
       if(CAH_EMIT STREQUAL "object" OR CAH_EMIT STREQUAL "both")
-        # Note: VS_SHADER_OBJECT_FILE_NAME does not support generator expressions.
-        # We place outputs under a fixed location in the binary tree.
+        # Note: VS_SHADER_OBJECT_FILE_NAME does not support generator expressions. :contentReference[oaicite:3]{index=3}
         list(APPEND _props
           VS_SHADER_OBJECT_FILE_NAME "${CAH_OUTDIR}/objects/${_namewe}.cso")
       endif()
@@ -240,21 +241,21 @@ function(colony_add_hlsl target)
           VS_SHADER_VARIABLE_NAME       "${CAH_VARIABLE_PREFIX}${_namewe}")
       endif()
 
-      # Optional includes/defines
-      if(CAH_INCLUDES)
-        # Generic CMake source-file property to pass include dirs to the tool.
-        set_source_files_properties("${_abs}" PROPERTIES
-          INCLUDE_DIRECTORIES "${CAH_INCLUDES}")
-      endif()
+      # Defines and include paths via VS_SHADER_FLAGS
+      set(_fxcflags "")
       if(CAH_DEFINES)
-        # Convert to FXC flags for VS tool: /DNAME or /DNAME=VALUE
-        set(_fxcflags "")
         foreach(_d IN LISTS CAH_DEFINES)
           list(APPEND _fxcflags "/D${_d}")
         endforeach()
+      endif()
+      if(CAH_INCLUDES)
+        foreach(_i IN LISTS CAH_INCLUDES)
+          list(APPEND _fxcflags "/I\"${_i}\"")
+        endforeach()
+      endif()
+      if(_fxcflags)
         string(REPLACE ";" " " _fxcflags "${_fxcflags}")
-        set_source_files_properties("${_abs}" PROPERTIES
-          VS_SHADER_FLAGS "${_fxcflags}")
+        set_source_files_properties("${_abs}" PROPERTIES VS_SHADER_FLAGS "${_fxcflags}")
       endif()
 
       set_source_files_properties("${_abs}" PROPERTIES ${_props})
@@ -310,6 +311,7 @@ function(colony_add_hlsl target)
       _colony_fxc_profile("${_stage}" "${CAH_MODEL}" _profile)
 
       set(_obj "${CAH_OUTDIR}/objects/${_namewe}.cso")
+      set(_hdr "${CAH_OUTDIR}/headers/${_namewe}.h")
       set(_cmd "${_FXC_EXE}" /nologo /T "${_profile}" /E "${CAH_ENTRY}")
 
       # Includes/defines
@@ -320,20 +322,23 @@ function(colony_add_hlsl target)
         list(APPEND _cmd /D "${_def}")
       endforeach()
 
-      # Outputs
+      # Outputs & bookkeeping
+      set(_outputs_this_rule "")
       if(CAH_EMIT STREQUAL "object" OR CAH_EMIT STREQUAL "both")
         list(APPEND _cmd /Fo "${_obj}")
+        list(APPEND _outputs_this_rule "${_obj}")
+        list(APPEND _outputs "${_obj}")
       endif()
       if(CAH_EMIT STREQUAL "header" OR CAH_EMIT STREQUAL "both")
-        set(_hdr "${CAH_OUTDIR}/headers/${_namewe}.h")
         list(APPEND _cmd /Fh "${_hdr}" /Vn "${CAH_VARIABLE_PREFIX}${_namewe}")
+        list(APPEND _outputs_this_rule "${_hdr}")
         list(APPEND _outputs "${_hdr}")
       endif()
 
       list(APPEND _cmd "${_abs}")
 
       add_custom_command(
-        OUTPUT  "${_obj}"
+        OUTPUT  ${_outputs_this_rule}
         COMMAND "${CMAKE_COMMAND}" -E make_directory "${CAH_OUTDIR}/objects"
         COMMAND "${CMAKE_COMMAND}" -E make_directory "${CAH_OUTDIR}/headers"
         COMMAND ${_cmd}
@@ -341,10 +346,6 @@ function(colony_add_hlsl target)
         COMMENT "FXC ${_profile} ${f}"
         VERBATIM
       )
-
-      if(CAH_EMIT STREQUAL "object" OR CAH_EMIT STREQUAL "both")
-        list(APPEND _outputs "${_obj}")
-      endif()
     endforeach()
 
   else()
@@ -366,6 +367,7 @@ function(colony_add_hlsl target)
       _colony_dxc_profile("${_stage}" "${CAH_MODEL}" _profile)
 
       set(_obj "${CAH_OUTDIR}/objects/${_namewe}.dxil")
+      set(_hdr "${CAH_OUTDIR}/headers/${_namewe}.h")
       set(_cmd "${DIRECTX_DXC_TOOL}" -nologo -T "${_profile}" -E "${CAH_ENTRY}")
 
       # Includes/defines
@@ -376,20 +378,23 @@ function(colony_add_hlsl target)
         list(APPEND _cmd -D "${_def}")
       endforeach()
 
-      # Outputs
+      # Outputs & bookkeeping
+      set(_outputs_this_rule "")
       if(CAH_EMIT STREQUAL "object" OR CAH_EMIT STREQUAL "both")
         list(APPEND _cmd -Fo "${_obj}")
+        list(APPEND _outputs_this_rule "${_obj}")
+        list(APPEND _outputs "${_obj}")
       endif()
       if(CAH_EMIT STREQUAL "header" OR CAH_EMIT STREQUAL "both")
-        set(_hdr "${CAH_OUTDIR}/headers/${_namewe}.h")
         list(APPEND _cmd -Fh "${_hdr}" -Vn "${CAH_VARIABLE_PREFIX}${_namewe}")
+        list(APPEND _outputs_this_rule "${_hdr}")
         list(APPEND _outputs "${_hdr}")
       endif()
 
       list(APPEND _cmd "${_abs}")
 
       add_custom_command(
-        OUTPUT  "${_obj}"
+        OUTPUT  ${_outputs_this_rule}
         COMMAND "${CMAKE_COMMAND}" -E make_directory "${CAH_OUTDIR}/objects"
         COMMAND "${CMAKE_COMMAND}" -E make_directory "${CAH_OUTDIR}/headers"
         COMMAND ${_cmd}
@@ -397,10 +402,6 @@ function(colony_add_hlsl target)
         COMMENT "DXC ${_profile} ${f}"
         VERBATIM
       )
-
-      if(CAH_EMIT STREQUAL "object" OR CAH_EMIT STREQUAL "both")
-        list(APPEND _outputs "${_obj}")
-      endif()
     endforeach()
   endif()
 
