@@ -1,223 +1,74 @@
 # cmake/ColonyShaders.cmake
-# JSON-driven HLSL compilation with DXC (Option B: OUTPUT-based rules)
-# Windows-only. Requires: CMake >= 3.20 (genex in OUTPUT), 3.19 (string(JSON)).
-# Usage:
-#   include(${CMAKE_SOURCE_DIR}/cmake/ColonyShaders.cmake)
-#   # (optional) Override search roots; defaults to <repo>/renderer/Shaders and <repo>/shaders
-#   # set(COLONY_SHADER_ROOTS "C:/path/to/extra/shaders;${CMAKE_SOURCE_DIR}/renderer/Shaders;${CMAKE_SOURCE_DIR}/shaders" CACHE STRING "Shader search roots")
-#   colony_register_shaders(
-#     TARGET       ColonyGame
-#     MANIFEST     ${CMAKE_SOURCE_DIR}/renderer/Shaders/shaders.json
-#     OUTPUT_DIR   ${CMAKE_BINARY_DIR}/shaders
-#     INCLUDE_DIRS ${CMAKE_SOURCE_DIR}/renderer/Shaders
-#     DEFINES      USE_FOG=1
-#     DXC_ARGS     -nologo
-#   )
-#   colony_install_shaders(TARGET ColonyGame DESTINATION bin/shaders)
-
-include_guard(GLOBAL)
-
-if(CMAKE_VERSION VERSION_LESS "3.20")
-  message(FATAL_ERROR "ColonyShaders.cmake requires CMake 3.20+")
-endif()
-
-function(colony_register_shaders)
+# Windows-only helper to compile HLSL with DXC (fallback to FXC if DXC not found).
+function(colony_compile_hlsl target)
   set(options)
-  set(oneValueArgs TARGET MANIFEST OUTPUT_DIR)
-  set(multiValueArgs INCLUDE_DIRS DEFINES DXC_ARGS)
-  cmake_parse_arguments(CSH "${options}" "${oneValueArgs}" "${multiValueArgs}" ${ARGN})
+  set(oneValueArgs OUTPUT_DIR PROFILE ENTRY)
+  set(multiValueArgs SOURCES DEFINES INCLUDES)
+  cmake_parse_arguments(HLSL "${options}" "${oneValueArgs}" "${multiValueArgs}" ${ARGN})
 
-  if(NOT CSH_TARGET)
-    message(FATAL_ERROR "colony_register_shaders: specify TARGET <name>")
+  if (NOT WIN32)
+    message(FATAL_ERROR "colony_compile_hlsl: Windows-only")
   endif()
-  if(NOT TARGET ${CSH_TARGET})
-    message(FATAL_ERROR "colony_register_shaders: target ${CSH_TARGET} does not exist yet. Call after add_executable/add_library.")
-  endif()
-  if(NOT CSH_MANIFEST)
-    message(FATAL_ERROR "colony_register_shaders: specify MANIFEST <file.json>")
-  endif()
-  if(NOT EXISTS "${CSH_MANIFEST}")
-    message(FATAL_ERROR "colony_register_shaders: manifest not found: ${CSH_MANIFEST}")
+  if (NOT HLSL_SOURCES)
+    return()
   endif()
 
-  # Resolve DXC
-  if(NOT DEFINED DIRECTX_DXC_TOOL OR NOT EXISTS "${DIRECTX_DXC_TOOL}")
-    # Fallback search (works even without vcpkg variable)
-    find_program(DIRECTX_DXC_TOOL NAMES dxc)
-  endif()
-  if(NOT DIRECTX_DXC_TOOL)
-    message(FATAL_ERROR "DXC not found. Install 'directx-dxc' (vcpkg) or set DIRECTX_DXC_TOOL.")
+  # Try to locate dxc.exe; allow vcpkg or system installs.
+  find_program(DXC_EXE NAMES dxc HINTS "$ENV{VCPKG_ROOT}/installed/x64-windows/tools/dxc")
+  if (NOT DXC_EXE)
+    # Fallback to fxc (older HLSL compiler from Windows SDK). You can remove this if you use DXC only.
+    find_program(FXC_EXE NAMES fxc)
   endif()
 
-  # Default output directory
-  if(NOT CSH_OUTPUT_DIR)
-    set(CSH_OUTPUT_DIR "${CMAKE_CURRENT_BINARY_DIR}/shaders")
-  endif()
+  file(MAKE_DIRECTORY "${HLSL_OUTPUT_DIR}")
 
-  # Read & check manifest
-  file(READ "${CSH_MANIFEST}" _csh_json)
-  string(JSON _csh_type TYPE "${_csh_json}")
-  if(NOT _csh_type STREQUAL "ARRAY")
-    message(FATAL_ERROR "shader manifest must be a JSON array of objects")
-  endif()
-  string(JSON _csh_count LENGTH "${_csh_json}")
-  math(EXPR _last "${_csh_count} - 1")
-
-  # Establish shader search roots
-  # - Users can set COLONY_SHADER_ROOTS to add/override roots (semicolon-separated list).
-  # - We also try the manifest's directory first for convenience.
-  set(_csh_roots)
-  if(DEFINED COLONY_SHADER_ROOTS AND NOT "${COLONY_SHADER_ROOTS}" STREQUAL "")
-    # Accept as a list directly (semicolon-separated)
-    set(_csh_roots ${COLONY_SHADER_ROOTS})
-  else()
-    # Sensible defaults for this project
-    list(APPEND _csh_roots
-      "${CMAKE_SOURCE_DIR}/renderer/Shaders"
-      "${CMAKE_SOURCE_DIR}/shaders"
-    )
-  endif()
-
-  set(_csh_outputs)
-
-  foreach(_i RANGE 0 ${_last})
-    # Required keys
-    string(JSON _file    GET "${_csh_json}" ${_i} file)
-    string(JSON _entry   GET "${_csh_json}" ${_i} entry)
-    string(JSON _profile GET "${_csh_json}" ${_i} profile)
-    if(_file STREQUAL "" OR _entry STREQUAL "" OR _profile STREQUAL "")
-      message(FATAL_ERROR "manifest[${_i}]: keys 'file', 'entry', 'profile' required")
-    endif()
-
-    # Resolve source path (search across multiple roots)
-    # Priority order:
-    #   1) If _file is absolute, use it (and require it to exist).
-    #   2) Manifest directory + relative path.
-    #   3) Each root in _csh_roots + relative path.
-    get_filename_component(_manifest_dir "${CSH_MANIFEST}" DIRECTORY)
-
-    if(IS_ABSOLUTE "${_file}")
-      set(_src "${_file}")
-      if(NOT EXISTS "${_src}")
-        message(FATAL_ERROR "manifest[${_i}]: source not found (absolute): ${_src}")
-      endif()
-    else()
-      set(_candidate_paths)
-      list(APPEND _candidate_paths "${_manifest_dir}/${_file}")
-      foreach(_root IN LISTS _csh_roots)
-        list(APPEND _candidate_paths "${_root}/${_file}")
-      endforeach()
-
-      set(_src "")
-      foreach(_p IN LISTS _candidate_paths)
-        if(EXISTS "${_p}")
-          set(_src "${_p}")
-          break()
-        endif()
-      endforeach()
-
-      if(_src STREQUAL "")
-        string(JOIN "\n  " _paths_tried ${_candidate_paths})
-        message(FATAL_ERROR
-          "manifest[${_i}]: source not found: ${_file}\n"
-          "Tried:\n  ${_paths_tried}\n"
-          "Hint: set COLONY_SHADER_ROOTS to a semicolon-separated list of additional shader roots.")
-      endif()
-    endif()
-
-    # Per-shader defines
-    set(_shader_defines)
-    string(JSON _defs_type ERROR_VARIABLE _defs_err TYPE "${_csh_json}" ${_i} defines)
-    if(NOT _defs_err AND _defs_type STREQUAL "ARRAY")
-      string(JSON _defs_len LENGTH "${_csh_json}" ${_i} defines)
-      math(EXPR _defs_last "${_defs_len} - 1")
-      foreach(_j RANGE 0 ${_defs_last})
-        string(JSON _def GET "${_csh_json}" ${_i} defines ${_j})
-        list(APPEND _shader_defines "-D${_def}")
-      endforeach()
-    endif()
-
-    # Per-shader include dirs (relative to the shader file dir)
-    set(_shader_includes)
-    string(JSON _incs_type ERROR_VARIABLE _incs_err TYPE "${_csh_json}" ${_i} includes)
-    if(NOT _incs_err AND _incs_type STREQUAL "ARRAY")
-      string(JSON _incs_len LENGTH "${_csh_json}" ${_i} includes)
-      math(EXPR _incs_last "${_incs_len} - 1")
-      foreach(_k RANGE 0 ${_incs_last})
-        string(JSON _inc GET "${_csh_json}" ${_i} includes ${_k})
-        if(NOT IS_ABSOLUTE "${_inc}")
-          get_filename_component(_file_dir "${_src}" DIRECTORY)
-          set(_inc_resolved "${_file_dir}/${_inc}")
-        else()
-          set(_inc_resolved "${_inc}")
-        endif()
-        list(APPEND _shader_includes "-I${_inc_resolved}")
-      endforeach()
-    endif()
-
-    # Global include dirs / defines
-    foreach(_idir IN LISTS CSH_INCLUDE_DIRS)
-      list(APPEND _shader_includes "-I${_idir}")
-    endforeach()
-    foreach(_d IN LISTS CSH_DEFINES)
-      list(APPEND _shader_defines "-D${_d}")
-    endforeach()
-
-    # Per-config flags
-    set(_cfg_flags
-      "$<$<CONFIG:Debug>:-Od;-Zi;-Qembed_debug>"
-      "$<$<OR:$<CONFIG:Release>,$<CONFIG:RelWithDebInfo>,$<CONFIG:MinSizeRel>>:-O3>"
-    )
-
-    # Output path (per-config to avoid collisions on multi-config generators like VS)
+  set(_outputs)
+  foreach(_src IN LISTS HLSL_SOURCES)
     get_filename_component(_name "${_src}" NAME_WE)
-    string(REPLACE "." "_" _profile_sanitized "${_profile}")
-    set(_out "${CSH_OUTPUT_DIR}/$<CONFIG>/${_name}.${_profile_sanitized}.cso")
+    set(_out "${HLSL_OUTPUT_DIR}/${_name}.cso")
 
-    # Build rule
+    if (DXC_EXE)
+      # DXC (Shader Model 6.x)
+      set(_cmd "${DXC_EXE}" -nologo -T "${HLSL_PROFILE}" -E "${HLSL_ENTRY}" -Fo "${_out}" "${_src}")
+      foreach(_def IN LISTS HLSL_DEFINES)
+        list(APPEND _cmd -D "${_def}")
+      endforeach()
+      foreach(_inc IN LISTS HLSL_INCLUDES)
+        list(APPEND _cmd -I "${_inc}")
+      endforeach()
+    elseif(FXC_EXE)
+      # FXC (Shader Model 5.x). Adjust /T profile accordingly if you use D3D11.
+      set(_cmd "${FXC_EXE}" /nologo /T "${HLSL_PROFILE}" /E "${HLSL_ENTRY}" /Fo "${_out}" "${_src}")
+      foreach(_def IN LISTS HLSL_DEFINES)
+        list(APPEND _cmd /D "${_def}")
+      endforeach()
+      foreach(_inc IN LISTS HLSL_INCLUDES)
+        list(APPEND _cmd /I "${_inc}")
+      endforeach()
+    else()
+      message(FATAL_ERROR "Neither dxc nor fxc found; install DirectXShaderCompiler or Windows SDK tools")
+    endif()
+
     add_custom_command(
       OUTPUT "${_out}"
-      COMMAND "${CMAKE_COMMAND}" -E make_directory "${CSH_OUTPUT_DIR}/$<CONFIG>"
-      COMMAND "${DIRECTX_DXC_TOOL}" -nologo
-              -T "${_profile}"
-              -E "${_entry}"
-              ${_cfg_flags}
-              ${_shader_includes}
-              ${_shader_defines}
-              ${CSH_DXC_ARGS}
-              -Fo "${_out}"
-              "${_src}"
+      COMMAND ${_cmd}
       DEPENDS "${_src}"
-      COMMENT "DXC ${_profile}: ${_file} -> ${_out}"
+      COMMENT "Compiling HLSL: ${_src} -> ${_out}"
       VERBATIM
-      COMMAND_EXPAND_LISTS
     )
-
-    list(APPEND _csh_outputs "${_out}")
+    list(APPEND _outputs "${_out}")
   endforeach()
 
-  # Aggregate & wire to the consumer target
-  set(_shader_target "${CSH_TARGET}_shaders")
-  add_custom_target(${_shader_target} ALL DEPENDS ${_csh_outputs})
-  add_dependencies(${CSH_TARGET} ${_shader_target})
+  # A phony target that builds all shader outputs:
+  add_custom_target(${target}_shaders DEPENDS ${_outputs})
 
-  # Expose for install helper
-  set_property(GLOBAL APPEND PROPERTY COLONY_${CSH_TARGET}_SHADER_OUTPUTS "${_csh_outputs}")
-endfunction()
+  # Ensure the main target builds shaders first:
+  add_dependencies(${target} ${target}_shaders)
 
-function(colony_install_shaders)
-  set(options)
-  set(oneValueArgs TARGET DESTINATION)
-  cmake_parse_arguments(CIS "${options}" "${oneValueArgs}" "" ${ARGN})
-
-  if(NOT CIS_TARGET OR NOT CIS_DESTINATION)
-    message(FATAL_ERROR "colony_install_shaders: usage: colony_install_shaders(TARGET <tgt> DESTINATION <dir>)")
-  endif()
-
-  get_property(_outs GLOBAL PROPERTY COLONY_${CIS_TARGET}_SHADER_OUTPUTS)
-  if(_outs)
-    install(FILES ${_outs} DESTINATION "${CIS_DESTINATION}")
-  else()
-    message(WARNING "colony_install_shaders: no registered shader outputs for target ${CIS_TARGET}")
-  endif()
+  # Optional: copy compiled shaders next to the exe after linking (same directory is OK here).
+  add_custom_command(TARGET ${target} POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E copy_directory
+            "${HLSL_OUTPUT_DIR}" "$<TARGET_FILE_DIR:${target}>/shaders"
+    COMMENT "Copying shaders to runtime folder"
+  )
 endfunction()
