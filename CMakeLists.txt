@@ -66,6 +66,50 @@ set_property(CACHE FRONTEND PROPERTY STRINGS win32 sdl)
 set(COLONY_RENDERER "d3d11" CACHE STRING "Renderer backend: d3d11 or d3d12")
 set_property(CACHE COLONY_RENDERER PROPERTY STRINGS d3d11 d3d12)
 
+# -------------------- HLSL reporting knobs (Windows only) --------------------
+if(WIN32)
+  # Default to D3D11-friendly Shader Model and an automatic compiler choice:
+  set(COLONY_HLSL_MODEL "5.0" CACHE STRING "Default HLSL shader model (e.g. 5.0, 5.1, 6.7)")
+  set_property(CACHE COLONY_HLSL_MODEL PROPERTY STRINGS "5.0;5.1;6.0;6.6;6.7")
+
+  set(COLONY_HLSL_COMPILER "AUTO" CACHE STRING "HLSL compiler on Windows: AUTO | FXC | DXC")
+  set_property(CACHE COLONY_HLSL_COMPILER PROPERTY STRINGS "AUTO;FXC;DXC")
+
+  # Decide the effective path the build will take (for display only).
+  set(COLONY_HLSL_SUMMARY "")
+  if(MSVC AND CMAKE_GENERATOR MATCHES "Visual Studio")
+    # Visual Studio generator uses native HLSL integration (VS_SHADER_*).
+    set(COLONY_HLSL_SUMMARY "VS native HLSL")
+  else()
+    # Non‑VS generators: choose between FXC (DXBC) and DXC (DXIL)
+    string(TOUPPER "${COLONY_HLSL_COMPILER}" _COLONY_HLSL_COMPILER_UP)
+    if(_COLONY_HLSL_COMPILER_UP STREQUAL "DXC" OR COLONY_HLSL_MODEL MATCHES "^6\\.")
+      # Prefer vcpkg-provided DXC; fall back to PATH
+      if(NOT DEFINED DIRECTX_DXC_TOOL)
+        find_program(DIRECTX_DXC_TOOL NAMES dxc)
+      endif()
+      if(DIRECTX_DXC_TOOL)
+        set(COLONY_HLSL_SUMMARY "DXC (DXIL) @ ${DIRECTX_DXC_TOOL}")
+      else()
+        set(COLONY_HLSL_SUMMARY "DXC (DXIL) @ <not found>")
+      endif()
+    else()
+      # FXC (DXBC) – best match for D3D11 / SM5.x
+      find_program(COLONY_FXC_EXE NAMES fxc
+        HINTS
+          "$ENV{WindowsSdkDir}/bin"
+          "C:/Program Files (x86)/Windows Kits/10/bin"
+          "C:/Program Files/Windows Kits/10/bin"
+        PATH_SUFFIXES x64 x86)
+      if(COLONY_FXC_EXE)
+        set(COLONY_HLSL_SUMMARY "FXC (DXBC) @ ${COLONY_FXC_EXE}")
+      else()
+        set(COLONY_HLSL_SUMMARY "FXC (DXBC) @ <not found>")
+      endif()
+    endif()
+  endif()
+endif()
+
 # ---- Erosion demo toggle (Windows-only) ----
 option(COLONY_BUILD_EROSION_DEMO "Build GPU erosion compute demo (Windows only)" OFF)
 
@@ -928,7 +972,11 @@ endif()
 # ===========================
 message(STATUS "================ ColonyGame Configuration ================")
 message(STATUS "C++ Standard          : C++${CMAKE_CXX_STANDARD}")
-message(STATUS "Renderer              : ${COLONY_RENDERER}")
+if(WIN32)
+  message(STATUS "Renderer              : ${COLONY_RENDERER}  [HLSL: ${COLONY_HLSL_SUMMARY}, SM ${COLONY_HLSL_MODEL}]")
+else()
+  message(STATUS "Renderer              : ${COLONY_RENDERER}")
+endif()
 message(STATUS "Frontend              : ${FRONTEND}")
 message(STATUS "PCH enabled           : ${COLONY_USE_PCH}")
 message(STATUS "Unity build           : ${COLONY_UNITY_BUILD}")
