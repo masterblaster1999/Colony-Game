@@ -127,7 +127,7 @@ function(colony_register_shaders)
 
     # Per-shader defines
     set(_shader_defines)
-    string(JSON _defs_type TYPE "${_csh_json}" ${_i} defines ERROR_VARIABLE _defs_err)
+    string(JSON _defs_type ERROR_VARIABLE _defs_err TYPE "${_csh_json}" ${_i} defines)
     if(NOT _defs_err AND _defs_type STREQUAL "ARRAY")
       string(JSON _defs_len LENGTH "${_csh_json}" ${_i} defines)
       math(EXPR _defs_last "${_defs_len} - 1")
@@ -139,7 +139,7 @@ function(colony_register_shaders)
 
     # Per-shader include dirs (relative to the shader file dir)
     set(_shader_includes)
-    string(JSON _incs_type TYPE "${_csh_json}" ${_i} includes ERROR_VARIABLE _incs_err)
+    string(JSON _incs_type ERROR_VARIABLE _incs_err TYPE "${_csh_json}" ${_i} includes)
     if(NOT _incs_err AND _incs_type STREQUAL "ARRAY")
       string(JSON _incs_len LENGTH "${_csh_json}" ${_i} includes)
       math(EXPR _incs_last "${_incs_len} - 1")
