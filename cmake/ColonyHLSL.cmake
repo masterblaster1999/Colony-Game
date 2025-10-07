@@ -18,20 +18,16 @@
 #
 # Notes:
 # - Call this *after* add_executable/add_library for <target>.
-# - We DON'T use 'add_custom_command(TARGET ...)' anywhere; this avoids CMake's
-#   "target not created in this directory" error.
-#
-# - Visual Studio generator path uses CMake's documented VS_SHADER_* properties:
-#     VS_SHADER_TYPE / VS_SHADER_MODEL / VS_SHADER_ENTRYPOINT
-#     VS_SHADER_OBJECT_FILE_NAME / VS_SHADER_OUTPUT_HEADER_FILE
-#     VS_SHADER_ENABLE_DEBUG / VS_SHADER_DISABLE_OPTIMIZATIONS
-#   See CMake docs.  (Generator expressions are supported for the debug/opt properties.)
-#
+# - We do NOT use 'add_custom_command(TARGET …)' anywhere; this avoids CMake's
+#   same-directory constraint that causes "TARGET was not created in this directory" errors.
+# - Visual Studio generator path uses CMake's VS shader properties:
+#     VS_SHADER_TYPE / VS_SHADER_MODEL / VS_SHADER_ENTRYPOINT /
+#     VS_SHADER_OBJECT_FILE_NAME / VS_SHADER_OUTPUT_HEADER_FILE /
+#     VS_SHADER_ENABLE_DEBUG / VS_SHADER_DISABLE_OPTIMIZATIONS / VS_SHADER_FLAGS
 # - Non-VS generators on Windows:
-#   * FXC (default): produces DXBC .cso compatible with D3D11.
-#   * DXC (opt-in): produces DXIL; typically for D3D12/SM6.x workflows.
-#
-# - Stage inference: filename suffixes *_VS.hlsl, *_PS.hlsl, *_CS.hlsl, *_GS.hlsl, *_HS.hlsl, *_DS.hlsl.
+#   * FXC (default): produces DXBC .cso for D3D11.
+#   * DXC (opt-in): produces DXIL; for SM6.x/D3D12 workflows.
+# - Stage inference: supports *VS/*PS/*CS/*GS/*HS/*DS suffixes with or without '_' before them.
 #
 include_guard(GLOBAL)
 include(CMakeParseArguments)
@@ -96,21 +92,23 @@ function(colony_add_hlsl target)
     return()
   endif()
 
-  # Utility: stage inference from file name (case-insensitive)
+  # Utility: stage inference from file name (case-insensitive).
+  # Matches both FooVS.hlsl and Foo_VS.hlsl (and similar for PS/CS/GS/HS/DS).
   function(_colony_guess_stage in out_var)
-    string(TOUPPER "${in}" _UP)
+    get_filename_component(_base "${in}" NAME)
+    string(TOUPPER "${_base}" _UP)
     set(stage "Pixel")
-    if("${_UP}" MATCHES "_VS\\.HLSL$")
+    if("${_UP}" MATCHES "(_|)VS\\.HLSL$")
       set(stage "Vertex")
-    elseif("${_UP}" MATCHES "_PS\\.HLSL$")
+    elseif("${_UP}" MATCHES "(_|)PS\\.HLSL$")
       set(stage "Pixel")
-    elseif("${_UP}" MATCHES "_CS\\.HLSL$")
+    elseif("${_UP}" MATCHES "(_|)CS\\.HLSL$")
       set(stage "Compute")
-    elseif("${_UP}" MATCHES "_GS\\.HLSL$")
+    elseif("${_UP}" MATCHES "(_|)GS\\.HLSL$")
       set(stage "Geometry")
-    elseif("${_UP}" MATCHES "_HS\\.HLSL$")
+    elseif("${_UP}" MATCHES "(_|)HS\\.HLSL$")
       set(stage "Hull")
-    elseif("${_UP}" MATCHES "_DS\\.HLSL$")
+    elseif("${_UP}" MATCHES "(_|)DS\\.HLSL$")
       set(stage "Domain")
     endif()
     set(${out_var} "${stage}" PARENT_SCOPE)
@@ -133,7 +131,7 @@ function(colony_add_hlsl target)
     else()
       set(pfx "ps")
     endif()
-    string(REPLACE "." "_" _m "${model}")   # <-- fxc expects underscores
+    string(REPLACE "." "_" _m "${model}")   # fxc expects underscores
     set(${out_var} "${pfx}_${_m}" PARENT_SCOPE)
   endfunction()
 
@@ -209,7 +207,7 @@ function(colony_add_hlsl target)
 
   # ---- Path A: Visual Studio generator → native HLSL (FXC for SM<=5.1; DXC for SM6.x)
   if(MSVC AND CMAKE_GENERATOR MATCHES "Visual Studio")
-    # CMake source-file properties driving VS HLSL build:
+    # CMake source-file properties that drive the VS/MSBuild HLSL step:
     # VS_SHADER_TYPE / VS_SHADER_MODEL / VS_SHADER_ENTRYPOINT /
     # VS_SHADER_OBJECT_FILE_NAME / VS_SHADER_OUTPUT_HEADER_FILE /
     # VS_SHADER_ENABLE_DEBUG / VS_SHADER_DISABLE_OPTIMIZATIONS / VS_SHADER_FLAGS
@@ -217,20 +215,23 @@ function(colony_add_hlsl target)
       get_filename_component(_abs "${f}" ABSOLUTE)
       get_filename_component(_namewe "${f}" NAME_WE)
 
+      # Sanitize for header variable names
+      set(_var "${CAH_VARIABLE_PREFIX}${_namewe}")
+      string(REGEX REPLACE "[^A-Za-z0-9_]" "_" _var "${_var}")
+
       _colony_guess_stage("${f}" _stage)
 
-      # Define base properties
+      # Base properties
       set(_props
         VS_SHADER_TYPE "${_stage}"
         VS_SHADER_MODEL "${CAH_MODEL}"
         VS_SHADER_ENTRYPOINT "${CAH_ENTRY}"
-        VS_SHADER_ENABLE_DEBUG "$<CONFIG:Debug>"
-        VS_SHADER_DISABLE_OPTIMIZATIONS "$<CONFIG:Debug>"
+        VS_SHADER_ENABLE_DEBUG "$<IF:$<CONFIG:Debug>,true,false>"
+        VS_SHADER_DISABLE_OPTIMIZATIONS "$<IF:$<CONFIG:Debug>,true,false>"
       )
 
       # Emit object/header as requested
       if(CAH_EMIT STREQUAL "object" OR CAH_EMIT STREQUAL "both")
-        # Note: VS_SHADER_OBJECT_FILE_NAME does not support generator expressions. :contentReference[oaicite:3]{index=3}
         list(APPEND _props
           VS_SHADER_OBJECT_FILE_NAME "${CAH_OUTDIR}/objects/${_namewe}.cso")
       endif()
@@ -238,7 +239,7 @@ function(colony_add_hlsl target)
       if(CAH_EMIT STREQUAL "header" OR CAH_EMIT STREQUAL "both")
         list(APPEND _props
           VS_SHADER_OUTPUT_HEADER_FILE "${CAH_OUTDIR}/headers/${_namewe}.h"
-          VS_SHADER_VARIABLE_NAME       "${CAH_VARIABLE_PREFIX}${_namewe}")
+          VS_SHADER_VARIABLE_NAME       "${_var}")
       endif()
 
       # Defines and include paths via VS_SHADER_FLAGS
@@ -267,9 +268,12 @@ function(colony_add_hlsl target)
     endif()
 
     # Optional: group in the IDE
-    source_group(TREE "${CMAKE_CURRENT_SOURCE_DIR}" FILES ${HLSL_FILES})
+    if(CAH_DIR)
+      source_group(TREE "${CAH_DIR}" FILES ${HLSL_FILES})
+    else()
+      source_group(TREE "${CMAKE_CURRENT_SOURCE_DIR}" FILES ${HLSL_FILES})
+    endif()
 
-    # Done for the VS path
     return()
   endif()
 
@@ -281,7 +285,6 @@ function(colony_add_hlsl target)
   elseif(CAH_COMPILER STREQUAL "AUTO")
     # D3D11-friendly default: FXC for SM <= 5.1
     if(CAH_MODEL MATCHES "^6\\.")
-      # Model 6.x implies DXIL; make this an explicit choice to avoid surprises on D3D11.
       message(WARNING "colony_add_hlsl: MODEL=${CAH_MODEL} implies DXC/DXIL. "
                       "D3D11 cannot consume DXIL. Use DX12 or switch MODEL to 5.0/5.1 for D3D11.")
       set(_use_dxc TRUE)
@@ -307,6 +310,10 @@ function(colony_add_hlsl target)
       get_filename_component(_abs "${f}" ABSOLUTE)
       get_filename_component(_namewe "${f}" NAME_WE)
 
+      # Sanitize variable name for /Vn (header mode)
+      set(_var "${CAH_VARIABLE_PREFIX}${_namewe}")
+      string(REGEX REPLACE "[^A-Za-z0-9_]" "_" _var "${_var}")
+
       _colony_guess_stage("${f}" _stage)
       _colony_fxc_profile("${_stage}" "${CAH_MODEL}" _profile)
 
@@ -330,7 +337,7 @@ function(colony_add_hlsl target)
         list(APPEND _outputs "${_obj}")
       endif()
       if(CAH_EMIT STREQUAL "header" OR CAH_EMIT STREQUAL "both")
-        list(APPEND _cmd /Fh "${_hdr}" /Vn "${CAH_VARIABLE_PREFIX}${_namewe}")
+        list(APPEND _cmd /Fh "${_hdr}" /Vn "${_var}")
         list(APPEND _outputs_this_rule "${_hdr}")
         list(APPEND _outputs "${_hdr}")
       endif()
@@ -363,6 +370,10 @@ function(colony_add_hlsl target)
       get_filename_component(_abs "${f}" ABSOLUTE)
       get_filename_component(_namewe "${f}" NAME_WE)
 
+      # Sanitize variable name for -Vn (header mode)
+      set(_var "${CAH_VARIABLE_PREFIX}${_namewe}")
+      string(REGEX REPLACE "[^A-Za-z0-9_]" "_" _var "${_var}")
+
       _colony_guess_stage("${f}" _stage)
       _colony_dxc_profile("${_stage}" "${CAH_MODEL}" _profile)
 
@@ -386,7 +397,7 @@ function(colony_add_hlsl target)
         list(APPEND _outputs "${_obj}")
       endif()
       if(CAH_EMIT STREQUAL "header" OR CAH_EMIT STREQUAL "both")
-        list(APPEND _cmd -Fh "${_hdr}" -Vn "${CAH_VARIABLE_PREFIX}${_namewe}")
+        list(APPEND _cmd -Fh "${_hdr}" -Vn "${_var}")
         list(APPEND _outputs_this_rule "${_hdr}")
         list(APPEND _outputs "${_hdr}")
       endif()
@@ -414,5 +425,9 @@ function(colony_add_hlsl target)
   endif()
 
   # IDE grouping
-  source_group(TREE "${CMAKE_CURRENT_SOURCE_DIR}" FILES ${HLSL_FILES})
+  if(CAH_DIR)
+    source_group(TREE "${CAH_DIR}" FILES ${HLSL_FILES})
+  else()
+    source_group(TREE "${CMAKE_CURRENT_SOURCE_DIR}" FILES ${HLSL_FILES})
+  endif()
 endfunction()
