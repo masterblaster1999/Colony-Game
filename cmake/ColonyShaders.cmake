@@ -3,6 +3,8 @@
 # Windows-only. Requires: CMake >= 3.20 (genex in OUTPUT), 3.19 (string(JSON)).
 # Usage:
 #   include(${CMAKE_SOURCE_DIR}/cmake/ColonyShaders.cmake)
+#   # (optional) Override search roots; defaults to <repo>/renderer/Shaders and <repo>/shaders
+#   # set(COLONY_SHADER_ROOTS "C:/path/to/extra/shaders;${CMAKE_SOURCE_DIR}/renderer/Shaders;${CMAKE_SOURCE_DIR}/shaders" CACHE STRING "Shader search roots")
 #   colony_register_shaders(
 #     TARGET       ColonyGame
 #     MANIFEST     ${CMAKE_SOURCE_DIR}/renderer/Shaders/shaders.json
@@ -61,6 +63,21 @@ function(colony_register_shaders)
   string(JSON _csh_count LENGTH "${_csh_json}")
   math(EXPR _last "${_csh_count} - 1")
 
+  # Establish shader search roots
+  # - Users can set COLONY_SHADER_ROOTS to add/override roots (semicolon-separated list).
+  # - We also try the manifest's directory first for convenience.
+  set(_csh_roots)
+  if(DEFINED COLONY_SHADER_ROOTS AND NOT "${COLONY_SHADER_ROOTS}" STREQUAL "")
+    # Accept as a list directly (semicolon-separated)
+    set(_csh_roots ${COLONY_SHADER_ROOTS})
+  else()
+    # Sensible defaults for this project
+    list(APPEND _csh_roots
+      "${CMAKE_SOURCE_DIR}/renderer/Shaders"
+      "${CMAKE_SOURCE_DIR}/shaders"
+    )
+  endif()
+
   set(_csh_outputs)
 
   foreach(_i RANGE 0 ${_last})
@@ -72,15 +89,40 @@ function(colony_register_shaders)
       message(FATAL_ERROR "manifest[${_i}]: keys 'file', 'entry', 'profile' required")
     endif()
 
-    # Resolve source path
-    if(NOT IS_ABSOLUTE "${_file}")
-      get_filename_component(_manifest_dir "${CSH_MANIFEST}" DIRECTORY)
-      set(_src "${_manifest_dir}/${_file}")
-    else()
+    # Resolve source path (search across multiple roots)
+    # Priority order:
+    #   1) If _file is absolute, use it (and require it to exist).
+    #   2) Manifest directory + relative path.
+    #   3) Each root in _csh_roots + relative path.
+    get_filename_component(_manifest_dir "${CSH_MANIFEST}" DIRECTORY)
+
+    if(IS_ABSOLUTE "${_file}")
       set(_src "${_file}")
-    endif()
-    if(NOT EXISTS "${_src}")
-      message(FATAL_ERROR "manifest[${_i}]: source not found: ${_src}")
+      if(NOT EXISTS "${_src}")
+        message(FATAL_ERROR "manifest[${_i}]: source not found (absolute): ${_src}")
+      endif()
+    else()
+      set(_candidate_paths)
+      list(APPEND _candidate_paths "${_manifest_dir}/${_file}")
+      foreach(_root IN LISTS _csh_roots)
+        list(APPEND _candidate_paths "${_root}/${_file}")
+      endforeach()
+
+      set(_src "")
+      foreach(_p IN LISTS _candidate_paths)
+        if(EXISTS "${_p}")
+          set(_src "${_p}")
+          break()
+        endif()
+      endforeach()
+
+      if(_src STREQUAL "")
+        string(JOIN "\n  " _paths_tried ${_candidate_paths})
+        message(FATAL_ERROR
+          "manifest[${_i}]: source not found: ${_file}\n"
+          "Tried:\n  ${_paths_tried}\n"
+          "Hint: set COLONY_SHADER_ROOTS to a semicolon-separated list of additional shader roots.")
+      endif()
     endif()
 
     # Per-shader defines
