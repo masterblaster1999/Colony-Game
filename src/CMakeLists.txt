@@ -1,6 +1,6 @@
 # src/CMakeLists.txt
 
-cmake_minimum_required(VERSION 3.16) # needs VS_SHADER_OBJECT_FILE_NAME (3.12+) and ENABLE_DEBUG (3.11+)
+cmake_minimum_required(VERSION 3.20) # genex in OUTPUT requires 3.20+; string(JSON) is 3.19+
 # ------------------------------------------------------------------------------
 
 # ---------------- HLSL helper (inline) ----------------
@@ -21,8 +21,8 @@ cmake_minimum_required(VERSION 3.16) # needs VS_SHADER_OBJECT_FILE_NAME (3.12+) 
 # Notes:
 # - Uses VS source-file properties: VS_SHADER_TYPE, VS_SHADER_MODEL, VS_SHADER_ENTRYPOINT,
 #   VS_SHADER_FLAGS, VS_SHADER_OBJECT_FILE_NAME, VS_SHADER_OUTPUT_HEADER_FILE, VS_SHADER_VARIABLE_NAME.
-#   These are officially documented CMake properties for Visual Studio generators. 
-#   (See CMake docs for VS_SHADER_*).  MSBuild compiles one shader per file automatically. 
+#   These are officially documented CMake properties for Visual Studio generators.
+#   (See CMake docs for VS_SHADER_*).  MSBuild compiles one shader per file automatically.
 # ------------------------------------------------------------------------------
 
 function(colony_add_hlsl)
@@ -44,7 +44,7 @@ function(colony_add_hlsl)
   endif()
   if(NOT CAH_OUTDIR)
     # Multi-config safe (expands to $(Configuration) on VS). Do not use $<CONFIG> here.
-    # CMAKE_CFG_INTDIR behavior is documented by CMake. 
+    # CMAKE_CFG_INTDIR behavior is documented by CMake.
     set(CAH_OUTDIR "${CMAKE_BINARY_DIR}/res/shaders/${CMAKE_CFG_INTDIR}")
   endif()
 
@@ -188,6 +188,42 @@ endif()
 
 add_executable(ColonyGame ${SRC_ALL})
 
+# ------------------------- NEW: wire JSON-driven DXC shaders (Option B) -------------------------
+# Include the helper and register shaders after the target is created.
+# This uses generator expressions in OUTPUT (CMake 3.20+) and string(JSON) (3.19+).
+include(${CMAKE_SOURCE_DIR}/cmake/ColonyShaders.cmake)
+
+# Detect a shaders.json manifest in either renderer/Shaders or shaders
+set(_COLONY_MANIFEST "")
+if(EXISTS "${CMAKE_SOURCE_DIR}/renderer/Shaders/shaders.json")
+  set(_COLONY_MANIFEST "${CMAKE_SOURCE_DIR}/renderer/Shaders/shaders.json")
+elseif(EXISTS "${CMAKE_SOURCE_DIR}/shaders/shaders.json")
+  set(_COLONY_MANIFEST "${CMAKE_SOURCE_DIR}/shaders/shaders.json")
+endif()
+
+if(_COLONY_MANIFEST)
+  # Where to place compiled shader blobs during build:
+  set(_COLONY_SHADER_OUT "${CMAKE_BINARY_DIR}/shaders")
+
+  colony_register_shaders(
+    TARGET       ColonyGame
+    MANIFEST     "${_COLONY_MANIFEST}"
+    OUTPUT_DIR   "${_COLONY_SHADER_OUT}"
+    INCLUDE_DIRS
+      ${CMAKE_SOURCE_DIR}/renderer/Shaders
+      ${CMAKE_SOURCE_DIR}/renderer/Shaders/include
+      ${CMAKE_SOURCE_DIR}/shaders
+      ${CMAKE_SOURCE_DIR}/shaders/include
+    DXC_ARGS     -nologo
+  )
+
+  # Optional install step for 'cmake --install'
+  colony_install_shaders(TARGET ColonyGame DESTINATION bin/shaders)
+else()
+  message(WARNING "No shaders.json manifest found; DXC shader registration skipped.")
+endif()
+# -----------------------------------------------------------------------------------------------
+
 # Win32/Console subsystem toggle for the main EXE
 if(WIN32 AND NOT SHOW_CONSOLE)
   set_target_properties(ColonyGame PROPERTIES WIN32_EXECUTABLE YES)
@@ -214,12 +250,11 @@ if(COLONY_UNITY_BUILD)
   set_target_properties(ColonyGame PROPERTIES UNITY_BUILD ON UNITY_BUILD_BATCH_SIZE 16)
 endif()
 
-# ---- HLSL shader compilation (VS/FXC/DXC) with explicit entrypoints ----
-# Uses the inline helper above to tag shaders with VS_SHADER_* properties.
-# CMake docs: VS_SHADER_TYPE, MODEL, ENTRYPOINT, FLAGS, OBJECT_FILE_NAME, OUTPUT_HEADER_FILE, VARIABLE_NAME. 
-# These properties drive one-file-per-invocation HLSL compilation under MSBuild/VS. 
-# (See official CMake properties reference.) :contentReference[oaicite:3]{index=3}
-if(COMMAND colony_add_hlsl)
+# ---- (OLD PATH) Native VS HLSL compilation block (disabled by default) ----
+# If you prefer Visual Studio/MSBuild to compile .hlsl files via VS_SHADER_* properties,
+# enable this with: -DCOLONY_USE_VS_HLSL=ON
+option(COLONY_USE_VS_HLSL "Use Visual Studio native HLSL compile of .hlsl sources" OFF)
+if(COLONY_USE_VS_HLSL AND COMMAND colony_add_hlsl)
   # Location for compiled CSO/DXIL at build time (per-config).
   set(_SHADER_OUT "${CMAKE_BINARY_DIR}/res/shaders/${CMAKE_CFG_INTDIR}")
 
@@ -334,31 +369,29 @@ if(EXISTS "${CMAKE_SOURCE_DIR}/shaders/common/common.hlsli")
   )
 endif()
 
-# Stage compiled shader blobs into the runtime res/shaders folder next to the EXE.
-# We compiled to ${CMAKE_BINARY_DIR}/res/shaders/$(Configuration); copy that to the side of the exe.
+# Stage compiled shader blobs (Option B output) next to the EXE.
+# These were generated under ${CMAKE_BINARY_DIR}/shaders/$<CONFIG> by colony_register_shaders.
 add_custom_command(TARGET ColonyGame POST_BUILD
   COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:ColonyGame>/res/shaders"
   COMMAND ${CMAKE_COMMAND} -E copy_directory
-          "${CMAKE_BINARY_DIR}/res/shaders/$<CONFIG>"
+          "${CMAKE_BINARY_DIR}/shaders/$<CONFIG>"
           "$<TARGET_FILE_DIR:ColonyGame>/res/shaders"
   VERBATIM
 )
 
-# Ensure shaders are built before we copy (when a 'shaders' target exists)
-if(TARGET shaders)
-  add_dependencies(ColonyGame shaders)
-endif()
+# (Old dependency bridge no longer needed; colony_register_shaders already wires dependencies.)
+# if(TARGET shaders)
+#   add_dependencies(ColonyGame shaders)
+# endif()
 
 # ---------------- Quality/security toggles you can enable upstream ----------------
 # For faster debugging, consider MSVC AddressSanitizer in Debug builds:
 #   target_compile_options(ColonyGame PRIVATE $<$<CONFIG:Debug>:/fsanitize=address>)
 #   target_link_options(ColonyGame    PRIVATE $<$<CONFIG:Debug>:/INFERASANLIBS>)
-# (/fsanitize=address available since VS 16.9; official docs here.) :contentReference[oaicite:4]{index=4}
 #
 # For hardened Release builds, enable Control Flow Guard:
 #   target_compile_options(ColonyGame PRIVATE $<$<CONFIG:Release>:/guard:cf>)
 #   target_link_options(ColonyGame    PRIVATE $<$<CONFIG:Release>:/guard:cf>)
-# (Official MSVC CFG docs.) :contentReference[oaicite:5]{index=5}
 
-# ------------------------------------------------------------------------------ 
+# ------------------------------------------------------------------------------
 # End of file
