@@ -1,6 +1,6 @@
 # src/CMakeLists.txt
+cmake_minimum_required(VERSION 3.20) # genex in OUTPUT requires 3.20+; VS HLSL props are 3.1+/3.10+
 
-cmake_minimum_required(VERSION 3.20) # genex in OUTPUT requires 3.20+; string(JSON) is 3.19+
 # ------------------------------------------------------------------------------
 
 # ---------------- HLSL helper (inline) ----------------
@@ -76,7 +76,7 @@ function(colony_add_hlsl)
   # Build up additional flags (defines, include dirs)
   set(_extra_flags "")
   if(CAH_DEFINES)
-    # transform NAME or NAME=VALUE -> /DNAME or /DNAME=VALUE (FXC/DXC understand both -D and /D)
+    # transform NAME or NAME=VALUE -> /DNAME or /DNAME=VALUE
     foreach(_d IN LISTS CAH_DEFINES)
       list(APPEND _extra_flags "/D${_d}")
     endforeach()
@@ -190,8 +190,10 @@ add_executable(ColonyGame ${SRC_ALL})
 
 # ------------------------- NEW: wire JSON-driven DXC shaders (Option B) -------------------------
 # Include the helper and register shaders after the target is created.
-# This uses generator expressions in OUTPUT (CMake 3.20+) and string(JSON) (3.19+).
-include(${CMAKE_SOURCE_DIR}/cmake/ColonyShaders.cmake)
+# This expects cmake/ColonyShaders.cmake to define:
+#   - colony_register_shaders(TARGET ... MANIFEST ... OUTPUT_DIR ... [INCLUDE_DIRS ...] [DXC_ARGS ...])
+#   - colony_install_shaders(TARGET ... DESTINATION <dir>)
+include(${CMAKE_SOURCE_DIR}/cmake/ColonyShaders.cmake OPTIONAL RESULT_VARIABLE _colony_shaders_included)
 
 # Detect a shaders.json manifest in either renderer/Shaders or shaders
 set(_COLONY_MANIFEST "")
@@ -201,7 +203,7 @@ elseif(EXISTS "${CMAKE_SOURCE_DIR}/shaders/shaders.json")
   set(_COLONY_MANIFEST "${CMAKE_SOURCE_DIR}/shaders/shaders.json")
 endif()
 
-if(_COLONY_MANIFEST)
+if(_COLONY_MANIFEST AND COMMAND colony_register_shaders)
   # Where to place compiled shader blobs during build:
   set(_COLONY_SHADER_OUT "${CMAKE_BINARY_DIR}/shaders")
 
@@ -218,9 +220,17 @@ if(_COLONY_MANIFEST)
   )
 
   # Optional install step for 'cmake --install'
-  colony_install_shaders(TARGET ColonyGame DESTINATION bin/shaders)
+  if(COMMAND colony_install_shaders)
+    colony_install_shaders(TARGET ColonyGame DESTINATION bin/shaders)
+  endif()
+
+elseif(_COLONY_MANIFEST)
+  message(WARNING
+    "Found '${_COLONY_MANIFEST}', but 'colony_register_shaders()' is not defined. "
+    "Ensure cmake/ColonyShaders.cmake provides it, or enable COLONY_USE_VS_HLSL=ON to let MSBuild compile HLSL."
+  )
 else()
-  message(WARNING "No shaders.json manifest found; DXC shader registration skipped.")
+  message(STATUS "No shaders.json manifest found; DXC shader registration skipped.")
 endif()
 # -----------------------------------------------------------------------------------------------
 
@@ -335,8 +345,8 @@ if(WIN32)
   target_link_libraries(ColonyGame PRIVATE dbghelp shell32 ole32)
 endif()
 
-# Make the game the startup project in Visual Studio
-set_property(DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}" PROPERTY VS_STARTUP_PROJECT ColonyGame)
+# Make the game the startup project in Visual Studio (must be set on the directory with 'project()')
+set_property(DIRECTORY "${CMAKE_SOURCE_DIR}" PROPERTY VS_STARTUP_PROJECT ColonyGame)
 
 # Output directories per configuration (for multi-config generators like VS)
 if(CMAKE_CONFIGURATION_TYPES)
@@ -379,11 +389,6 @@ add_custom_command(TARGET ColonyGame POST_BUILD
   VERBATIM
 )
 
-# (Old dependency bridge no longer needed; colony_register_shaders already wires dependencies.)
-# if(TARGET shaders)
-#   add_dependencies(ColonyGame shaders)
-# endif()
-
 # ---------------- Quality/security toggles you can enable upstream ----------------
 # For faster debugging, consider MSVC AddressSanitizer in Debug builds:
 #   target_compile_options(ColonyGame PRIVATE $<$<CONFIG:Debug>:/fsanitize=address>)
@@ -392,6 +397,4 @@ add_custom_command(TARGET ColonyGame POST_BUILD
 # For hardened Release builds, enable Control Flow Guard:
 #   target_compile_options(ColonyGame PRIVATE $<$<CONFIG:Release>:/guard:cf>)
 #   target_link_options(ColonyGame    PRIVATE $<$<CONFIG:Release>:/guard:cf>)
-
-# ------------------------------------------------------------------------------
-# End of file
+# ------------------------------------------------------------------------------  End of file
