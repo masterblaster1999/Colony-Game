@@ -142,8 +142,9 @@ inline std::vector<Vec2f> poisson_disk_2d(const PoissonParams2D& P)
                 }
                 if (gi >= 0) {
                     const Vec2f& q = samples[(size_t)gi];
-                    float dx = p.x - q.x, dy = p.y - q.y;
-                    if (dx*dx + dy*dy < min2) return true;
+                    const float ddx = p.x - q.x;
+                    const float ddy = p.y - q.y;
+                    if (ddx*ddx + ddy*ddy < min2) return true;
                 }
             }
         return false;
