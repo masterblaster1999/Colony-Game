@@ -45,32 +45,92 @@ add_executable(ColonyGame ${SRC_ALL})
 # A) Visual Studio path (MSBuild HLSL)
 if(CMAKE_GENERATOR MATCHES "Visual Studio")
   set(HLSL_DIR  "${CMAKE_SOURCE_DIR}/renderer/Shaders")
-  set(HLSL_INC  "${HLSL_DIR}/include")
+  set(HLSL_INC_PRIMARY  "${HLSL_DIR}/include")
+  set(HLSL_INC_ALT      "${CMAKE_SOURCE_DIR}/shaders/include")  # optional secondary include root
   set(_VS_OUTDIR "$(OutDir)res\\shaders")  # place .cso where the runtime expects them
 
-  set(VS_SHADERS
-      "${HLSL_DIR}/mesh_vs.hlsl"
-      "${HLSL_DIR}/mesh_ps.hlsl")
-
-  target_sources(ColonyGame PRIVATE ${VS_SHADERS})
-  source_group("Shaders" FILES ${VS_SHADERS})
-
-  # Vertex shader properties
-  set_source_files_properties("${HLSL_DIR}/mesh_vs.hlsl" PROPERTIES
-    VS_SHADER_TYPE              "Vertex"
-    VS_SHADER_MODEL             "5.0"
-    VS_SHADER_ENTRYPOINT        "VSMain"
-    VS_SHADER_OBJECT_FILE_NAME  "${_VS_OUTDIR}\\%(Filename).cso"
-    VS_SHADER_FLAGS             "/I\"${HLSL_INC}\""
+  # Discover shader sources and include-only headers
+  file(GLOB_RECURSE HLSL_ALL
+    CONFIGURE_DEPENDS
+    "${HLSL_DIR}/*.hlsl" "${HLSL_DIR}/*.hlsli"
   )
-  # Pixel shader properties
-  set_source_files_properties("${HLSL_DIR}/mesh_ps.hlsl" PROPERTIES
-    VS_SHADER_TYPE              "Pixel"
-    VS_SHADER_MODEL             "5.0"
-    VS_SHADER_ENTRYPOINT        "PSMain"
-    VS_SHADER_OBJECT_FILE_NAME  "${_VS_OUTDIR}\\%(Filename).cso"
-    VS_SHADER_FLAGS             "/I\"${HLSL_INC}\""
-  )
+
+  set(VS_SHADERS "")
+  set(HLSL_INCLUDES "")
+  foreach(_f IN LISTS HLSL_ALL)
+    if(_f MATCHES "\\.hlsli$")
+      list(APPEND HLSL_INCLUDES "${_f}")  # include-only: visible in VS, not compiled
+    else()
+      list(APPEND VS_SHADERS "${_f}")     # .hlsl files to be compiled by MSBuild/FXC
+    endif()
+  endforeach()
+
+  # Add shaders and includes to the project (so they show up in Solution Explorer)
+  if(VS_SHADERS)
+    target_sources(ColonyGame PRIVATE ${VS_SHADERS})
+  endif()
+  if(HLSL_INCLUDES)
+    target_sources(ColonyGame PRIVATE ${HLSL_INCLUDES})
+    set_source_files_properties(${HLSL_INCLUDES} PROPERTIES HEADER_FILE_ONLY ON)
+  endif()
+
+  source_group("Shaders\\Sources"  FILES ${VS_SHADERS})
+  source_group("Shaders\\Includes" FILES ${HLSL_INCLUDES})
+
+  # Construct include flags for FXC (support both include roots if they exist)
+  set(_HLSL_INC_FLAGS "")
+  if(EXISTS "${HLSL_INC_PRIMARY}")
+    string(APPEND _HLSL_INC_FLAGS " /I\"${HLSL_INC_PRIMARY}\"")
+  endif()
+  if(EXISTS "${HLSL_INC_ALT}")
+    string(APPEND _HLSL_INC_FLAGS " /I\"${HLSL_INC_ALT}\"")
+  endif()
+
+  # Helper to set VS shader properties by suffix: *_vs.hlsl / *_ps.hlsl / *_cs.hlsl
+  function(_configure_vs_shader _file)
+    get_filename_component(_we "${_file}" NAME_WE)
+    # Determine type from common suffixes
+    set(_type "")
+    set(_entry "")
+    if(_we MATCHES "_vs$")
+      set(_type  "Vertex")
+      set(_entry "VSMain")
+    elseif(_we MATCHES "_ps$")
+      set(_type  "Pixel")
+      set(_entry "PSMain")
+    elseif(_we MATCHES "_cs$")
+      set(_type  "Compute")
+      set(_entry "CSMain")
+    endif()
+
+    if(NOT _type)
+      # Fall back to explicit mapping for known names if they don't follow the suffix convention
+      if(_we STREQUAL "mesh_vs")
+        set(_type  "Vertex")
+        set(_entry "VSMain")
+      elseif(_we STREQUAL "mesh_ps")
+        set(_type  "Pixel")
+        set(_entry "PSMain")
+      else()
+        # If we still can't infer the type, don't touch this source (lets user configure manually)
+        return()
+      endif()
+    endif()
+
+    # Apply properties (Shader Model 5.0 via FXC; swap to 6.x + DXC later if desired)
+    set_source_files_properties("${_file}" PROPERTIES
+      VS_SHADER_TYPE              "${_type}"
+      VS_SHADER_MODEL             "5.0"
+      VS_SHADER_ENTRYPOINT        "${_entry}"
+      VS_SHADER_OBJECT_FILE_NAME  "${_VS_OUTDIR}\\%(Filename).cso"
+      # Debug-friendly flags in Debug config; also pass include dirs
+      VS_SHADER_FLAGS             "$<$<CONFIG:Debug>:/Od;/Zi>${_HLSL_INC_FLAGS}"
+    )
+  endfunction()
+
+  foreach(_sh IN LISTS VS_SHADERS)
+    _configure_vs_shader("${_sh}")
+  endforeach()
 
 else()
   # B) Manifest + DXC/FXC path (single-config generators)
