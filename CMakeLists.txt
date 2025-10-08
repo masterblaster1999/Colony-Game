@@ -817,14 +817,6 @@ if(TARGET ColonyGame)
         ENTRYPOINT_MAP "noise_fbm_cs.hlsl=main"
       )
     endif()
-
-    # Mirror MSBuild's $(OutDir)/shaders into ${CMAKE_BINARY_DIR}/res/shaders for stage/install
-    add_custom_command(TARGET ColonyGame POST_BUILD
-      COMMAND ${CMAKE_COMMAND} -E make_directory "${CMAKE_BINARY_DIR}/res/shaders"
-      COMMAND ${CMAKE_COMMAND} -E copy_directory "$<TARGET_FILE_DIR:ColonyGame>/shaders" "${CMAKE_BINARY_DIR}/res/shaders"
-      COMMENT "Copying compiled shader objects to res/shaders for staging/install."
-      VERBATIM
-    )
   endif()
 
   if(TARGET shaders AND NOT CG_HLSL_MSBUILD)
