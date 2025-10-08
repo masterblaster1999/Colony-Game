@@ -785,27 +785,35 @@ if(TARGET ColonyGame)
 
   target_compile_definitions(ColonyGame PRIVATE SHADER_DIR=L\"res/shaders/\")
 
-  # --- Visual Studio MSBuild HLSL path via ShaderSetup.cmake ---
+  # --- HLSL compilation (via Visual Studio integration) ------------------------
   if(CG_HLSL_MSBUILD)
-    # Project shaders
-    if(EXISTS "${CMAKE_SOURCE_DIR}/shaders")
+    # Choose the first shader folder that exists (adjust if your layout differs)
+    set(COLONY_SHADER_DIR "${CMAKE_SOURCE_DIR}/shaders")
+    if(NOT EXISTS "${COLONY_SHADER_DIR}")
+      set(COLONY_SHADER_DIR "${CMAKE_SOURCE_DIR}/renderer/Shaders")
+    endif()
+
+    if(EXISTS "${COLONY_SHADER_DIR}")
       colony_compile_hlsl(
-        TARGET ColonyGame
-        DIR    "${CMAKE_SOURCE_DIR}/shaders"
+        TARGET        ColonyGame
+        DIR           "${COLONY_SHADER_DIR}"
         RECURSE
-        MODEL  ${COLONY_HLSL_MODEL}
+        MODEL         ${COLONY_HLSL_MODEL}
         OUTPUT_SUBDIR "shaders"
+        INCLUDE_DIRS  "${COLONY_SHADER_DIR}/include"
         ENTRYPOINT_MAP "noise_fbm_cs.hlsl=main"
       )
     endif()
-    # PCG shaders
+
+    # PCG shaders (optional second folder)
     if(EXISTS "${CMAKE_SOURCE_DIR}/src/pcg/shaders")
       colony_compile_hlsl(
-        TARGET ColonyGame
-        DIR    "${CMAKE_SOURCE_DIR}/src/pcg/shaders"
+        TARGET        ColonyGame
+        DIR           "${CMAKE_SOURCE_DIR}/src/pcg/shaders"
         RECURSE
-        MODEL  ${COLONY_HLSL_MODEL}
+        MODEL         ${COLONY_HLSL_MODEL}
         OUTPUT_SUBDIR "shaders"
+        INCLUDE_DIRS  "${CMAKE_SOURCE_DIR}/src/pcg/shaders/include"
         ENTRYPOINT_MAP "noise_fbm_cs.hlsl=main"
       )
     endif()
