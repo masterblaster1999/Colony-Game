@@ -2,9 +2,9 @@
 #pragma once
 #include <cstdint>
 #include <type_traits>
-#include <span>                 // added: for std::span
-#include "worldgen/GeneratorSettings.hpp"  // ensure full type available when included first
-#include "worldgen/Random.hpp"  // Pcg32 + sub_rng helpers
+#include <cstddef>                 // for std::size_t
+#include "worldgen/GeneratorSettings.hpp"  // interface-only config
+#include "worldgen/Random.hpp"             // Pcg32 + sub_rng helpers
 
 namespace colony::worldgen {
 
@@ -12,8 +12,10 @@ namespace colony::worldgen {
 struct WorldChunk;
 struct ChunkCoord;
 
-// Forward-declare the cell payload type used by stages; the concrete
-// definition lives in the worldgen implementation units.
+// Forward-declare the cell payload type used by stages.
+// NOTE: We intentionally keep Cell incomplete here so this header stays light.
+// Any code that needs to *touch* Cell's definition should include the real header
+// (e.g., "worldgen/Cell.hpp") in the corresponding .cpp.
 struct Cell;
 
 // Interface-only context passed to worldgen stages.
@@ -40,14 +42,12 @@ struct StageContext {
   WorldChunk& chunk;
 
   // -------------------------------------------------------------------
-  // Added to resolve Stages.hpp ↔ StageContext name mismatches:
+  // Kept lightweight and header-only for fast includes (Windows/MSVC):
   //   - chunk_origin_world
   //   - cellSize
-  //   - cells
+  //   - cells / cells_count  (replaces std::span<Cell>; safe with incomplete Cell)
   //   - sub_seed
   //   - chunk_seed
-  //
-  // Keep these lightweight and header-only to preserve fast includes.
   // -------------------------------------------------------------------
 
   // Minimal 2D float vector without introducing heavy math headers.
@@ -63,14 +63,19 @@ struct StageContext {
   std::uint32_t cellSize = 0;
 
   // Borrowed view of the chunk's cell buffer (row-major).
-  // The exact Cell definition is provided in implementation headers.
-  std::span<Cell> cells{};
+  // We avoid std::span<Cell> here because Cell is incomplete in this header.
+  // In .cpp files that include the real Cell definition, you may do:
+  //   #include <span>
+  //   std::span<Cell> view{cells, cells_count};
+  Cell*        cells       = nullptr;
+  std::size_t  cells_count = 0;
 
   // Deterministic seeds for sub-stages and per-chunk variation.
-  std::uint64_t sub_seed  = 0;
+  std::uint64_t sub_seed   = 0;
   std::uint64_t chunk_seed = 0;
 
-  // Declaration only; the definition lives in StageContext.cpp where ChunkCoord/WorldChunk are fully known.
+  // Declaration only; the definition lives in StageContext.cpp
+  // where ChunkCoord/WorldChunk and Cell are fully known.
   StageContext(const GeneratorSettings& s, const ChunkCoord& coord, Pcg32 r, WorldChunk& o) noexcept;
 
   // Deterministic child streams (sugar).
