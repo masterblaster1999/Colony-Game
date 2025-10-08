@@ -16,7 +16,7 @@ function(colony_find_fxc OUT_FXC)
     "$ENV{WindowsSdkDir}/bin/x86/fxc.exe"
   )
 
-  if(EXISTS "$ENV{WindowsSdkDir}/bin")
+  if(DEFINED ENV{WindowsSdkDir} AND EXISTS "$ENV{WindowsSdkDir}/bin")
     file(GLOB _kits "$ENV{WindowsSdkDir}/bin/*")
     foreach(_kit IN LISTS _kits)
       if(EXISTS "${_kit}/x64/fxc.exe")
@@ -61,12 +61,7 @@ function(colony_add_hlsl)
   set(multiValueArgs SOURCES DEFINES INCLUDES)
   cmake_parse_arguments(CAH "${options}" "${oneValueArgs}" "${multiValueArgs}" ${ARGN})
 
-  # --------------------------------------------------------------------------
   # Back-compat shim: allow legacy call style
-  #   colony_add_hlsl(<target> SOURCES ... PROFILE ... ENTRY ... )
-  # If TARGET wasn't provided as a keyword but the first unparsed argument is a
-  # known CMake target, treat it as the target and remove it from unparsed args.
-  # --------------------------------------------------------------------------
   if(NOT CAH_TARGET AND CAH_UNPARSED_ARGUMENTS)
     list(GET CAH_UNPARSED_ARGUMENTS 0 _maybe_target)
     if(TARGET "${_maybe_target}")
@@ -167,8 +162,8 @@ function(colony_add_hlsl)
   endforeach()
 
   # --------------------------------------------------------------------------
-  # Visual Studio MSBuild HLSL path (directory-agnostic):
-  # Put MSBuild-compiled CSO into ${CMAKE_BINARY_DIR}/res/shaders/$(Configuration)
+  # Visual Studio MSBuild HLSL path
+  # Puts CSO into ${CMAKE_BINARY_DIR}/res/shaders/$(Configuration)
   # --------------------------------------------------------------------------
   if(WIN32 AND CMAKE_GENERATOR MATCHES "Visual Studio")
     # Ensure the target knows about the shader sources so MSBuild compiles them.
@@ -186,6 +181,7 @@ function(colony_add_hlsl)
 
     foreach(src IN LISTS _hlsl_sources)
       get_filename_component(_namewe "${src}" NAME_WE)
+
       # Derive stage from filename; if ambiguous, fall back to PROFILE stage, else default to Pixel.
       _colony_detect_stage("${_namewe}" _stage)
       if(NOT _stage AND _profile_stage)
@@ -216,7 +212,7 @@ function(colony_add_hlsl)
         foreach(i IN LISTS CAH_INCLUDES) set(_flags "${_flags};/I;${i}") endforeach()
       endif()
 
-      # Default entry: allow override via ENTRY, else stage-based heuristic
+      # Decide entry point now (avoid nested generator expressions in command lines)
       set(_entry "${CAH_ENTRY}")
       if(NOT _entry OR _entry STREQUAL "")
         _colony_default_entry("${_stage}" _entry)
@@ -270,6 +266,7 @@ function(colony_add_hlsl)
 
     foreach(src IN LISTS _hlsl_sources)
       get_filename_component(_namewe "${src}" NAME_WE)
+
       _colony_detect_stage("${_namewe}" _stage)
       if(NOT _stage AND _profile_stage)
         set(_stage "${_profile_stage}")
@@ -285,7 +282,6 @@ function(colony_add_hlsl)
 
       # Build profile per file: <stage>_<M_N>, forcing SM5.x on DX11
       if(_model_us MATCHES "^6_")
-        # Force down to SM5.x when requested model is SM6.* but backend is DX11
         string(REGEX REPLACE "^6_" "5_" _model_us_dx11 "${_model_us}")
       else()
         set(_model_us_dx11 "${_model_us}")
@@ -302,11 +298,17 @@ function(colony_add_hlsl)
       foreach(d IN LISTS CAH_DEFINES)  set(_fxc_flags "${_fxc_flags};/D;${d}") endforeach()
       foreach(i IN LISTS CAH_INCLUDES) set(_fxc_flags "${_fxc_flags};/I;${i}") endforeach()
 
+      # Decide entry point now
+      set(_entry "${CAH_ENTRY}")
+      if(NOT _entry OR _entry STREQUAL "")
+        _colony_default_entry("${_stage}" _entry)
+      endif()
+
       add_custom_command(
         OUTPUT "${_out}"
         COMMAND ${CMAKE_COMMAND} -E make_directory "${_outdir}"
         COMMAND "${FXC_EXE}" /nologo
-                /T ${_profile} /E $<IF:$<BOOL:${CAH_ENTRY}>,${CAH_ENTRY},$<IF:$<STREQUAL:${_stage},vs>,VSMain,$<IF:$<STREQUAL:${_stage},ps>,PSMain,$<IF:$<STREQUAL:${_stage},cs>,CSMain,$<IF:$<STREQUAL:${_stage},gs>,GSMain,$<IF:$<STREQUAL:${_stage},hs>,HSMain,$<IF:$<STREQUAL:${_stage},ds>,DSMain,main>>>>>>>>
+                /T ${_profile} /E ${_entry}
                 /Fo "${_out}" ${_fxc_flags}
                 "${_abs_src}"
         DEPENDS "${_abs_src}"
@@ -336,6 +338,7 @@ function(colony_add_hlsl)
 
     foreach(src IN LISTS _hlsl_sources)
       get_filename_component(_namewe "${src}" NAME_WE)
+
       _colony_detect_stage("${_namewe}" _stage)
       if(NOT _stage AND _profile_stage)
         set(_stage "${_profile_stage}")
@@ -357,11 +360,17 @@ function(colony_add_hlsl)
       foreach(d IN LISTS CAH_DEFINES)  set(_dxc_flags "${_dxc_flags};-D;${d}") endforeach()
       foreach(i IN LISTS CAH_INCLUDES) set(_dxc_flags "${_dxc_flags};-I;${i}") endforeach()
 
+      # Decide entry point now
+      set(_entry "${CAH_ENTRY}")
+      if(NOT _entry OR _entry STREQUAL "")
+        _colony_default_entry("${_stage}" _entry)
+      endif()
+
       add_custom_command(
         OUTPUT "${_out}"
         COMMAND ${CMAKE_COMMAND} -E make_directory "${_outdir}"
         COMMAND "${DIRECTX_DXC_TOOL}" -nologo
-                -T ${_profile} -E $<IF:$<BOOL:${CAH_ENTRY}>,${CAH_ENTRY},$<IF:$<STREQUAL:${_stage},vs>,VSMain,$<IF:$<STREQUAL:${_stage},ps>,PSMain,$<IF:$<STREQUAL:${_stage},cs>,CSMain,$<IF:$<STREQUAL:${_stage},gs>,GSMain,$<IF:$<STREQUAL:${_stage},hs>,HSMain,$<IF:$<STREQUAL:${_stage},ds>,DSMain,$<IF:$<STREQUAL:${_stage},as>,ASMain,$<IF:$<STREQUAL:${_stage},ms>,MSMain,main>>>>>>>>>> 
+                -T ${_profile} -E ${_entry}
                 -Fo "${_out}" ${_dxc_flags}
                 "${_abs_src}"
         DEPENDS "${_abs_src}"
