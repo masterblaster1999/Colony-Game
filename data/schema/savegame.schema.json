@@ -1,0 +1,129 @@
+{
+  "$id": "https://colonygame.local/schemas/savegame.schema.json",
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Colony Game Save",
+  "description": "Serialized game state for Colony Game. Draft-07. Forward-compatible: unknown properties are allowed.",
+  "type": "object",
+  "additionalProperties": true,
+  "required": ["schema_version", "game", "world"],
+  "properties": {
+    "schema_version": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "Monotonic schema version for migrations"
+    },
+    "engine_version": {
+      "type": "string",
+      "description": "Semver of the game/engine that wrote this save (informational)"
+    },
+    "created_utc": { "type": "string", "format": "date-time" },
+    "last_saved_utc": { "type": "string", "format": "date-time" },
+
+    "game": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["tick"],
+      "properties": {
+        "tick": { "type": "integer", "minimum": 0 },
+        "paused": { "type": "boolean" },
+        "time_scale": { "type": "number", "minimum": 0.0 }
+      }
+    },
+
+    "world": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["seed"],
+      "properties": {
+        "seed": { "type": "integer" },
+        "rng_state": { "type": "string", "description": "Opaque RNG state (e.g., base64)" }
+      }
+    },
+
+    "player": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "camera_pos": { "$ref": "#/definitions/vec3" },
+        "camera_yaw_deg": { "type": "number" },
+        "camera_pitch_deg": { "type": "number" }
+      }
+    },
+
+    "resources": {
+      "type": "object",
+      "additionalProperties": { "type": "number" },
+      "description": "Map: resource_id -> quantity"
+    },
+
+    "research": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "unlocked": {
+          "type": "array",
+          "items": { "type": "string", "pattern": "^[a-zA-Z0-9_.-]+$" }
+        }
+      }
+    },
+
+    "colonists": {
+      "type": "array",
+      "items": { "$ref": "#/definitions/colonist" }
+    },
+
+    "buildings": {
+      "type": "array",
+      "items": { "$ref": "#/definitions/building" }
+    }
+  },
+
+  "definitions": {
+    "vec3": {
+      "description": "3D vector as array [x,y,z]",
+      "type": "array",
+      "minItems": 3,
+      "maxItems": 3,
+      "items": { "type": "number" }
+    },
+
+    "item_stack": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["item_id", "count"],
+      "properties": {
+        "item_id": { "type": "string", "pattern": "^[a-zA-Z0-9_.-]+$" },
+        "count":   { "type": "integer", "minimum": 0 }
+      }
+    },
+
+    "colonist": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["id", "name", "pos"],
+      "properties": {
+        "id":   { "type": "string", "pattern": "^[a-fA-F0-9-]{8,}$", "description": "Stable unique id (UUID or similar)" },
+        "name": { "type": "string" },
+        "pos":  { "$ref": "#/definitions/vec3" },
+        "health": { "type": "number", "minimum": 0.0, "maximum": 100.0 },
+        "job": { "type": "string" },
+        "inventory": {
+          "type": "array",
+          "items": { "$ref": "#/definitions/item_stack" }
+        }
+      }
+    },
+
+    "building": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["id", "type", "pos"],
+      "properties": {
+        "id":   { "type": "string", "pattern": "^[a-fA-F0-9-]{8,}$" },
+        "type": { "type": "string", "pattern": "^[a-zA-Z0-9_.-]+$" },
+        "pos":  { "$ref": "#/definitions/vec3" },
+        "hp":   { "type": "number", "minimum": 0.0 }
+      }
+    }
+  }
+}
