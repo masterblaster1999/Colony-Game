@@ -319,6 +319,8 @@ if(_colony_hlsl_loaded)
   message(STATUS "ColonyHLSL.cmake loaded; Visual Studio HLSL integration available.")
 endif()
 include(cmake/shaders.cmake OPTIONAL)
+# --- Auto HLSL per-file configuration (Visual Studio) ---
+include(AutoHlsl OPTIONAL)
 
 # Initialize friendly status for shader route
 set(_HLSL_TOOLCHAIN "unknown")
@@ -780,6 +782,16 @@ if(TARGET ColonyGame)
   if(MSVC AND COLONY_ASAN)
     target_compile_options(ColonyGame PRIVATE "$<$<CONFIG:Debug>:/fsanitize=address>")
     target_link_options(ColonyGame PRIVATE   "$<$<CONFIG:Debug>:/fsanitize=address>")
+  endif()
+
+  # --- Auto HLSL per-file configuration for Visual Studio (executes after target exists) ---
+  if(MSVC AND CMAKE_GENERATOR MATCHES "Visual Studio" AND NOT COMMAND colony_add_hlsl)
+    if(COMMAND colony_autoconfigure_hlsl)
+      if(NOT DEFINED COLONY_HLSL_MODEL)
+        set(COLONY_HLSL_MODEL "5.0")
+      endif()
+      colony_autoconfigure_hlsl(ColonyGame)
+    endif()
   endif()
 
   # ===========================
