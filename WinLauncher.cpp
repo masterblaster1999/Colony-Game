@@ -5,6 +5,7 @@
 //  0.2 DPI awareness + single-instance + discrete-GPU hint
 //  0.3 Friendly preflight checks for res/, assets/, shaders/
 //  0.4 Crash dumps on unhandled exceptions (via wincrash::InitCrashHandler)
+//  0.5 D3D12 Agility SDK lookup via AddDllDirectory(".\\D3D12") with safe DLL search
 //
 // Plus: Safe DLL search order, UTF‑16 log files (with BOM), and clear logging.
 //
@@ -41,6 +42,9 @@
 
 #ifndef LOAD_LIBRARY_SEARCH_DEFAULT_DIRS
 #  define LOAD_LIBRARY_SEARCH_DEFAULT_DIRS 0x00001000
+#endif
+#ifndef LOAD_LIBRARY_SEARCH_USER_DIRS
+#  define LOAD_LIBRARY_SEARCH_USER_DIRS 0x00000400
 #endif
 
 // --- Prefer discrete GPU on hybrid laptops (hint; not guaranteed) ---
@@ -93,8 +97,9 @@ static void EnableHeapTerminationOnCorruption()
 
 // Restrict DLL search order to safe defaults and remove CWD from search path.
 // Dynamically resolves SetDefaultDllDirectories for broad OS/SDK compatibility.
-// Note: LOAD_LIBRARY_SEARCH_DEFAULT_DIRS includes the application directory, System32,
-// and any user directories added with AddDllDirectory/SetDllDirectory. (MS Docs)
+// Note: LOAD_LIBRARY_SEARCH_DEFAULT_DIRS sets the recommended base search order;
+//       we *also* include LOAD_LIBRARY_SEARCH_USER_DIRS so AddDllDirectory()
+//       entries (like .\D3D12 for Agility) apply process‑wide. (MS Docs)
 static void EnableSafeDllSearch()
 {
     HMODULE hKernel32 = GetModuleHandleW(L"kernel32.dll");
@@ -105,10 +110,11 @@ static void EnableSafeDllSearch()
             reinterpret_cast<PFN_SetDefaultDllDirectories>(GetProcAddress(hKernel32, "SetDefaultDllDirectories"));
         if (pSetDefaultDllDirectories)
         {
-            (void)pSetDefaultDllDirectories(LOAD_LIBRARY_SEARCH_DEFAULT_DIRS);
+            // Include USER_DIRS so directories added via AddDllDirectory() participate in implicit loads.
+            (void)pSetDefaultDllDirectories(LOAD_LIBRARY_SEARCH_DEFAULT_DIRS | LOAD_LIBRARY_SEARCH_USER_DIRS);
         }
 
-        // Optional: explicitly add the application directory as a user dir when available.
+        // Explicitly add the application directory (defensive) and Agility folder ".\D3D12".
         using PFN_AddDllDirectory = DLL_DIRECTORY_COOKIE (WINAPI*)(PCWSTR);
         auto pAddDllDirectory =
             reinterpret_cast<PFN_AddDllDirectory>(GetProcAddress(hKernel32, "AddDllDirectory"));
@@ -118,6 +124,14 @@ static void EnableSafeDllSearch()
             if (!exeDir.empty())
             {
                 (void)pAddDllDirectory(exeDir.c_str());
+
+                // Agility SDK: place D3D12Core.dll (etc.) under "<exe>\D3D12".
+                // Adding this directory ensures discovery with safe DLL search enabled.
+                const fs::path agilityDir = exeDir / L"D3D12";
+                if (fs::exists(agilityDir))
+                {
+                    (void)pAddDllDirectory(agilityDir.c_str());
+                }
             }
         }
     }
@@ -268,7 +282,7 @@ int APIENTRY wWinMain(HINSTANCE, HINSTANCE, PWSTR, int)
     // Enable fail-fast behavior on heap corruption as early as possible.
     EnableHeapTerminationOnCorruption();
 
-    // Constrain DLL search order before any loads.
+    // Constrain DLL search order before any loads and enable user dirs.
     EnableSafeDllSearch();
 
     // Ensure asset-relative paths work from any launch context (Explorer, VS, cmd).
