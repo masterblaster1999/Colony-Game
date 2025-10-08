@@ -703,6 +703,10 @@ if(EXISTS "${CMAKE_SOURCE_DIR}/src/CMakeLists.txt")
   add_subdirectory(src)
 endif()
 
+# --- NEW: add Poisson-disk library and CLI subdirectories ---
+add_subdirectory(src/pcg)
+add_subdirectory(tools/poisson_scatter)
+
 if(TARGET ColonyGame)
   if(COLONY_THIRDPARTY_LIBS)
     target_link_libraries(ColonyGame PRIVATE ${COLONY_THIRDPARTY_LIBS})
