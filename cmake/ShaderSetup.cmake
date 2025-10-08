@@ -3,20 +3,28 @@
 # Windows + Visual Studio generators only.
 # Compiles HLSL files and drops .cso to $(OutDir)/<OUTPUT_SUBDIR>.
 #
-# Requires: CMake >= 3.12 for VS_SHADER_OBJECT_FILE_NAME.
+# Requires:
+#   - CMake >= 3.12 for VS_SHADER_OBJECT_FILE_NAME and other VS HLSL properties
+#   - CMake >= 3.20 to use $<CONFIG> in add_custom_command(OUTPUT)
 #
 # Usage (example):
-#   include(ShaderSetup)
+#   include(cmake/ShaderSetup.cmake)
 #   colony_compile_hlsl(
 #     TARGET ColonyGame
 #     DIR    "${CMAKE_SOURCE_DIR}/renderer/Shaders"
 #     RECURSE
-#     MODEL  5.0                 # use 6.0+ to switch VS to DXC automatically
+#     MODEL  5.0                 # Use 6.0+ to switch Visual Studio to DXC automatically
 #     OUTPUT_SUBDIR "shaders"
 #     DEFINES "USE_FOG=1;PROFILE=1"
 #     INCLUDE_DIRS "${CMAKE_SOURCE_DIR}/renderer/Shaders/include"
 #     ENTRYPOINT_MAP "Water.hlsl=PixelMain;Atmosphere.hlsl=PS"  # per-file overrides
 #   )
+#
+# Notes:
+#  - Call AFTER the target (add_executable/add_library) exists.
+#  - No add_custom_command(TARGET ...) is used (avoids "TARGET was not created in this directory").
+#  - A per-config stamp ensures $(OutDir)\OUTPUT_SUBDIR exists without creating
+#    directory-scope cycles or cross-directory TARGET modifications.
 
 function(colony_compile_hlsl)
   set(options RECURSE INFER_BY_SUFFIX)
@@ -27,8 +35,13 @@ function(colony_compile_hlsl)
   if(NOT COLONY_TARGET)
     message(FATAL_ERROR "colony_compile_hlsl: TARGET is required")
   endif()
+  if(NOT TARGET ${COLONY_TARGET})
+    message(FATAL_ERROR
+      "colony_compile_hlsl: TARGET '${COLONY_TARGET}' does not exist yet. "
+      "Call after add_executable/add_library.")
+  endif()
 
-  # VS generator + MSVC only (Windows focus)
+  # Windows-only: use MSVC + Visual Studio generators
   if(NOT MSVC OR NOT CMAKE_GENERATOR MATCHES "Visual Studio")
     message(STATUS "colony_compile_hlsl: Skipped (requires Visual Studio generators on Windows).")
     return()
@@ -38,7 +51,7 @@ function(colony_compile_hlsl)
   if(NOT COLONY_MODEL)
     set(COLONY_MODEL "5.0")
   endif()
-  if(NOT COLONY_OUTPUT_SUBDIR)
+  if(NOT DEFINED COLONY_OUTPUT_SUBDIR)
     set(COLONY_OUTPUT_SUBDIR "shaders")
   endif()
   if(NOT DEFINED COLONY_INFER_BY_SUFFIX)
@@ -76,34 +89,46 @@ function(colony_compile_hlsl)
 
   # Never build includes
   if(HLSLI_FILES)
-    set_source_files_properties(${HLSLI_FILES} PROPERTIES HEADER_FILE_ONLY ON)  # CMake property
+    set_source_files_properties(${HLSLI_FILES} PROPERTIES HEADER_FILE_ONLY ON)
   endif()
 
   # Build extra flags (-D / -I) for FXC/DXC via VS_SHADER_FLAGS
   set(_extra_flags "")
   foreach(def IN LISTS COLONY_DEFINES)
-    string(APPEND _extra_flags " -D${def}")
+    if(NOT def STREQUAL "")
+      string(APPEND _extra_flags " -D${def}")
+    endif()
   endforeach()
   foreach(inc IN LISTS COLONY_INCLUDE_DIRS)
-    # Quote include path for spaces
-    string(APPEND _extra_flags " -I\"${inc}\"")
+    if(NOT inc STREQUAL "")
+      string(APPEND _extra_flags " -I\"${inc}\"")
+    endif()
   endforeach()
   string(STRIP "${_extra_flags}" _extra_flags)
 
-  # Make sure destination exists before compilation starts
-  # $(OutDir) maps to $<TARGET_FILE_DIR:...> for the active config
-  add_custom_command(TARGET ${COLONY_TARGET} PRE_BUILD
-    COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:${COLONY_TARGET}>/${COLONY_OUTPUT_SUBDIR}"
-  )
+  # Ensure $(OutDir)/<subdir> exists per-config WITHOUT using add_custom_command(TARGET ...)
+  # We create a configuration-specific stamp and attach it as a non-built source.
+  if(NOT COLONY_OUTPUT_SUBDIR STREQUAL "")
+    set(_stamp "${CMAKE_CURRENT_BINARY_DIR}/.${COLONY_TARGET}_${COLONY_OUTPUT_SUBDIR}_$<CONFIG>_shdir.stamp")
+    add_custom_command(
+      OUTPUT  "${_stamp}"
+      COMMAND ${CMAKE_COMMAND} -E make_directory "$(OutDir)/${COLONY_OUTPUT_SUBDIR}"
+      COMMAND ${CMAKE_COMMAND} -E touch "${_stamp}"
+      COMMENT "Ensuring '$(OutDir)/${COLONY_OUTPUT_SUBDIR}' exists"
+      VERBATIM
+    )
+    target_sources(${COLONY_TARGET} PRIVATE "${_stamp}")
+    set_source_files_properties("${_stamp}" PROPERTIES GENERATED TRUE HEADER_FILE_ONLY TRUE)
+  endif()
 
-  # Apply per-file settings
+  # Apply per-file settings and attach to target
   foreach(SHADER ${HLSL_FILES})
     get_filename_component(_name "${SHADER}" NAME)
     get_filename_component(_stem "${SHADER}" NAME_WE)
     string(TOLOWER "${_stem}" _stem_lower)
 
     # Infer shader type & default entrypoint
-    set(_type "Pixel")    # sensible default
+    set(_type "Pixel")    # default
     set(_entry "PSMain")
 
     if(COLONY_INFER_BY_SUFFIX)
@@ -116,6 +141,15 @@ function(colony_compile_hlsl)
       elseif(_stem_lower MATCHES ".*([._-]cs)$")
         set(_type "Compute")
         set(_entry "CSMain")
+      elseif(_stem_lower MATCHES ".*([._-]gs)$")
+        set(_type "Geometry")
+        set(_entry "GSMain")
+      elseif(_stem_lower MATCHES ".*([._-]hs)$")
+        set(_type "Hull")
+        set(_entry "HSMain")
+      elseif(_stem_lower MATCHES ".*([._-]ds)$")
+        set(_type "Domain")
+        set(_entry "DSMain")
       endif()
     endif()
 
@@ -131,22 +165,33 @@ function(colony_compile_hlsl)
       endif()
     endforeach()
 
+    # Choose output path
+    if(COLONY_OUTPUT_SUBDIR STREQUAL "")
+      set(_out "$(OutDir)/%(Filename).cso")
+    else()
+      set(_out "$(OutDir)/${COLONY_OUTPUT_SUBDIR}/%(Filename).cso")
+    endif()
+
     # Core VS HLSL properties
     set_source_files_properties("${SHADER}" PROPERTIES
-      VS_SHADER_TYPE             "${_type}"         # Vertex/Pixel/Compute
-      VS_SHADER_MODEL            "${COLONY_MODEL}"  # e.g., 5.0, 6.0, 6.6
-      VS_SHADER_ENTRYPOINT       "${_entry}"
-      VS_SHADER_OBJECT_FILE_NAME "$(OutDir)/${COLONY_OUTPUT_SUBDIR}/%(Filename).cso"
-      VS_SHADER_ENABLE_DEBUG     "$<IF:$<CONFIG:Debug>,true,false>"
-      VS_SHADER_DISABLE_OPTIMIZATIONS "$<IF:$<CONFIG:Debug>,true,false>"
+      VS_SHADER_TYPE                  "${_type}"            # Vertex/Pixel/Compute/Geometry/Hull/Domain
+      VS_SHADER_MODEL                 "${COLONY_MODEL}"     # e.g., 5.0, 6.0, 6.6
+      VS_SHADER_ENTRYPOINT            "${_entry}"
+      VS_SHADER_OBJECT_FILE_NAME      "${_out}"             # -Fo
+      VS_SHADER_ENABLE_DEBUG          "$<IF:$<CONFIG:Debug>,true,false>"  # -Zi
+      VS_SHADER_DISABLE_OPTIMIZATIONS "$<IF:$<CONFIG:Debug>,true,false>"  # -Od
     )
 
     if(_extra_flags)
-      # Additional flags passed to FXC/DXC (e.g., -DNAME=VALUE, -Ipath)
       set_source_files_properties("${SHADER}" PROPERTIES VS_SHADER_FLAGS "${_extra_flags}")
     endif()
   endforeach()
 
-  # Attach to the target so VS builds them
-  target_sources(${COLONY_TARGET} PRIVATE ${HLSL_FILES} ${HLSLI_FILES})
+  # Show in VS filters and attach sources
+  if(HLSL_FILES)
+    if(COLONY_DIR)
+      source_group(TREE "${COLONY_DIR}" PREFIX "Shaders" FILES ${HLSL_FILES} ${HLSLI_FILES})
+    endif()
+    target_sources(${COLONY_TARGET} PRIVATE ${HLSL_FILES} ${HLSLI_FILES})
+  endif()
 endfunction()
