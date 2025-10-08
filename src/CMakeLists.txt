@@ -38,6 +38,32 @@ endif()
 
 add_executable(ColonyGame ${SRC_ALL})
 
+# ---------------------------------------------------------------------------
+# POST-BUILD: stage runtime assets next to the ColonyGame.exe
+# This must live in the SAME CMake directory where ColonyGame is defined.
+# CMake docs: the <target> in add_custom_command(TARGET ...) must be defined
+# in the current directory; targets in other directories cannot be specified.
+# ---------------------------------------------------------------------------
+add_custom_command(TARGET ColonyGame POST_BUILD
+  # Ensure output folders exist
+  COMMAND ${CMAKE_COMMAND} -E make_directory
+          "$<TARGET_FILE_DIR:ColonyGame>/assets"
+  COMMAND ${CMAKE_COMMAND} -E make_directory
+          "$<TARGET_FILE_DIR:ColonyGame>/res"
+  # Copy static assets shipped from the repo
+  COMMAND ${CMAKE_COMMAND} -E copy_directory
+          "${CMAKE_SOURCE_DIR}/assets" "$<TARGET_FILE_DIR:ColonyGame>/assets"
+  COMMAND ${CMAKE_COMMAND} -E copy_directory
+          "${CMAKE_SOURCE_DIR}/res"    "$<TARGET_FILE_DIR:ColonyGame>/res"
+  # (Optional) If your shader pipeline emits compiled outputs into build/shaders,
+  # uncomment this block. Keep it commented if that folder may not exist.
+  # COMMAND ${CMAKE_COMMAND} -E make_directory
+  #         "$<TARGET_FILE_DIR:ColonyGame>/shaders"
+  # COMMAND ${CMAKE_COMMAND} -E copy_directory
+  #         "${CMAKE_BINARY_DIR}/shaders" "$<TARGET_FILE_DIR:ColonyGame>/shaders"
+  VERBATIM
+)
+
 # ------------------------- SHADERS: choose ONE route per generator -------------------------
 # A) Visual Studio generator -> let MSBuild compile .hlsl (VS_SHADER_* props)
 # B) Other generators (e.g., Ninja) -> use shaders.json + colony_register_shaders()
@@ -252,15 +278,6 @@ if(CMAKE_CONFIGURATION_TYPES)
     set_target_properties(ColonyGame PROPERTIES
       RUNTIME_OUTPUT_DIRECTORY_${CFGU} "${CMAKE_BINARY_DIR}/bin/${cfg}")
   endforeach()
-endif()
-
-# Stage assets next to the EXE after build (if the source dir exists)
-if(EXISTS "${CMAKE_SOURCE_DIR}/res")
-  add_custom_command(TARGET ColonyGame POST_BUILD
-    COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:ColonyGame>/res"
-    COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/res" "$<TARGET_FILE_DIR:ColonyGame>/res"
-    VERBATIM
-  )
 endif()
 
 # ---- Optional: copy shared shader header for modding/debugging ----
