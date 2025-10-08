@@ -1,6 +1,6 @@
 {
   "version": 6,
-  "cmakeMinimumRequired": { "major": 3, "minor": 25 },
+  "cmakeMinimumRequired": { "major": 3, "minor": 27 },
   "configurePresets": [
     {
       "name": "win-msvc-x64-debug",
@@ -8,7 +8,7 @@
       "binaryDir": "${sourceDir}/out/build/win-msvc-x64-debug",
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "Debug",
-        "CMAKE_CXX_STANDARD": "20",
+        "CMAKE_CXX_STANDARD": "23",
         "VCPKG_MANIFEST_MODE": "ON"
       }
     },
@@ -27,14 +27,22 @@
       "cacheVariables": {
         "VCPKG_MANIFEST_MODE": "ON",
         "FRONTEND": "win32",
-        "COLONY_STATIC_CRT": "OFF"
+        "COLONY_STATIC_CRT": "OFF",
+        "CMAKE_CXX_STANDARD": "23",
+        "COLONY_USE_VS_HLSL": "ON",
+        "COLONY_LTO": "ON"
       }
     },
     {
       "name": "vs-2022-x64-debug",
       "displayName": "Visual Studio 2022 (x64) — Debug",
       "inherits": "vs-2022-x64-relwithdebinfo",
-      "binaryDir": "${sourceDir}/out/build/vs-2022-x64-debug"
+      "binaryDir": "${sourceDir}/out/build/vs-2022-x64-debug",
+      "cacheVariables": {
+        "COLONY_USE_VS_HLSL": "ON",
+        "COLONY_ASAN": "ON",
+        "CMAKE_CXX_STANDARD": "23"
+      }
     },
     {
       "name": "vs-hlsl",
@@ -46,7 +54,9 @@
       "cacheVariables": {
         "VCPKG_MANIFEST_MODE": "ON",
         "FRONTEND": "win32",
-        "COLONY_STATIC_CRT": "OFF"
+        "COLONY_STATIC_CRT": "OFF",
+        "COLONY_USE_VS_HLSL": "ON",
+        "CMAKE_CXX_STANDARD": "23"
       }
     },
     {
