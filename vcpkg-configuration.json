@@ -1,7 +1,15 @@
 {
+  "$schema": "https://raw.githubusercontent.com/microsoft/vcpkg-tool/main/docs/vcpkg-configuration.schema.json",
   "default-registry": {
     "kind": "git",
     "repository": "https://github.com/microsoft/vcpkg",
-    "baseline": "<commit hash from 'vcpkg x-update-baseline'>"
-  }
+    // Use the HEAD suggested by the error, or run the command below to refresh:
+    "baseline": "6216d31bc1d529bbb40c2a1c4535ab86d081abcf"
+  },
+  "registries": [
+    // (If you have private registries, keep them here, each with its own "baseline")
+  ],
+  "overlay-ports": [],
+  "overlay-triplets": []
 }
+
