@@ -1,0 +1,6 @@
+<asmv3:application xmlns:asmv3="urn:schemas-microsoft-com:asm.v3">
+  <asmv3:windowsSettings>
+    <ms_windowsSettings:dpiAware xmlns:ms_windowsSettings="http://schemas.microsoft.com/SMI/2005/WindowsSettings">true/pm</ms_windowsSettings:dpiAware>
+    <ms_windowsSettings:dpiAwareness>PerMonitorV2</ms_windowsSettings:dpiAwareness>
+  </asmv3:windowsSettings>
+</asmv3:application>
