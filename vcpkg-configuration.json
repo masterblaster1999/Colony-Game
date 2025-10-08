@@ -2,6 +2,6 @@
   "default-registry": {
     "kind": "git",
     "repository": "https://github.com/microsoft/vcpkg",
-    "baseline": "b1b19307e2d2ec1eefbdb7ea069de7d4bcd31f01"
+    "baseline": "<commit hash from 'vcpkg x-update-baseline'>"
   }
 }
