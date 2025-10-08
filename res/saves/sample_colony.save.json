@@ -1,0 +1,57 @@
+{
+  "schema_version": 1,
+  "engine_version": "1.0.0",
+  "created_utc": "2025-01-01T00:00:00Z",
+  "last_saved_utc": "2025-01-01T00:00:00Z",
+
+  "game": {
+    "tick": 12345,
+    "paused": false,
+    "time_scale": 1.0
+  },
+
+  "world": {
+    "seed": 987654321,
+    "rng_state": "AAECAwQFBgcICQ=="  // opaque example
+  },
+
+  "player": {
+    "camera_pos": [0.0, 2.0, 5.0],
+    "camera_yaw_deg": 180.0,
+    "camera_pitch_deg": -15.0
+  },
+
+  "resources": {
+    "wood": 1200,
+    "stone": 340.5
+  },
+
+  "research": {
+    "unlocked": ["mining.tier1", "forestry.tier1"]
+  },
+
+  "colonists": [
+    {
+      "id": "c01bc5d0-1a2b-4e33-8e20-ff8842db9010",
+      "name": "Ava",
+      "pos": [5.0, 0.0, -3.0],
+      "health": 92.5,
+      "job": "builder",
+      "inventory": [
+        { "item_id": "plank", "count": 20 }
+      ],
+      "future_field_v2": "this is preserved by extras"
+    }
+  ],
+
+  "buildings": [
+    {
+      "id": "b-0001",
+      "type": "workbench.t1",
+      "pos": [0.0, 0.0, 0.0],
+      "hp": 100.0
+    }
+  ],
+
+  "some_future_top_level_field": 123
+}
