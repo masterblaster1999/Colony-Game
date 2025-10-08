@@ -47,6 +47,14 @@
 #  define LOAD_LIBRARY_SEARCH_USER_DIRS 0x00000400
 #endif
 
+// Fallbacks for older SDKs so this compiles on more Windows toolchains.
+#ifndef DPI_AWARENESS_CONTEXT
+typedef HANDLE DPI_AWARENESS_CONTEXT;
+#endif
+#ifndef DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2
+#  define DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2 ((DPI_AWARENESS_CONTEXT)-4)
+#endif
+
 // --- Prefer discrete GPU on hybrid laptops (hint; not guaranteed) ---
 extern "C" {
 __declspec(dllexport) DWORD NvOptimusEnablement                   = 0x00000001;
