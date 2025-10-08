@@ -132,6 +132,9 @@ if(COLONY_LTO)
   endif()
 endif()
 
+# Optional: AddressSanitizer for MSVC Debug builds (-DCOLONY_ASAN=ON)
+option(COLONY_ASAN "Enable AddressSanitizer (MSVC) for Debug builds" OFF)
+
 # Optional: turn warnings into errors (handy for CI)
 option(COLONY_WARNINGS_AS_ERRORS "Treat all warnings as errors (/WX on MSVC)" OFF)
 
@@ -773,6 +776,12 @@ if(TARGET ColonyGame)
     set_target_properties(ColonyGame PROPERTIES VS_DEBUGGER_WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}")
   endif()
 
+  # ---- AddressSanitizer (Debug only, MSVC) ----
+  if(MSVC AND COLONY_ASAN)
+    target_compile_options(ColonyGame PRIVATE "$<$<CONFIG:Debug>:/fsanitize=address>")
+    target_link_options(ColonyGame PRIVATE   "$<$<CONFIG:Debug>:/fsanitize=address>")
+  endif()
+
   # ===========================
   # Visual Studio HLSL integration (only with VS generator)
   # ===========================
@@ -982,6 +991,7 @@ message(STATUS "PCH enabled           : ${COLONY_USE_PCH}")
 message(STATUS "Unity build           : ${COLONY_UNITY_BUILD}")
 message(STATUS "Warnings as errors    : ${COLONY_WARNINGS_AS_ERRORS}")
 message(STATUS "LTO/IPO (Release)     : ${CMAKE_INTERPROCEDURAL_OPTIMIZATION_RELEASE}")
+message(STATUS "ASan (Debug)          : ${COLONY_ASAN}")
 message(STATUS "HLSL toolchain        : ${_HLSL_TOOLCHAIN}")
 message(STATUS "Git revision          : ${CG_GIT_HASH}")
 message(STATUS "==========================================================")
