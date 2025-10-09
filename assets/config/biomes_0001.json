@@ -1,0 +1,294 @@
+{
+  "meta": {
+    "generated_at": "2025-10-09T00:00:00Z",
+    "seed": 283502819,
+    "schema": "colony/biomes@0.1"
+  },
+  "biomes": [
+    {
+      "name": "Ocean",
+      "height": {
+        "min": 0.069,
+        "max": 0.369
+      },
+      "temperature": {
+        "min": 0.284,
+        "max": 0.498
+      },
+      "moisture": {
+        "min": 0.169,
+        "max": 0.986
+      },
+      "debug_color_rgb": [
+        57,
+        96,
+        193
+      ]
+    },
+    {
+      "name": "Coast",
+      "height": {
+        "min": 0.238,
+        "max": 0.391
+      },
+      "temperature": {
+        "min": 0.403,
+        "max": 0.943
+      },
+      "moisture": {
+        "min": 0.073,
+        "max": 0.753
+      },
+      "debug_color_rgb": [
+        117,
+        193,
+        105
+      ]
+    },
+    {
+      "name": "Marsh",
+      "height": {
+        "min": 0.057,
+        "max": 0.445
+      },
+      "temperature": {
+        "min": 0.237,
+        "max": 0.906
+      },
+      "moisture": {
+        "min": 0.515,
+        "max": 0.982
+      },
+      "debug_color_rgb": [
+        188,
+        164,
+        64
+      ]
+    },
+    {
+      "name": "Grassland",
+      "height": {
+        "min": 0.215,
+        "max": 0.778
+      },
+      "temperature": {
+        "min": 0.233,
+        "max": 0.684
+      },
+      "moisture": {
+        "min": 0.073,
+        "max": 0.983
+      },
+      "debug_color_rgb": [
+        70,
+        178,
+        74
+      ]
+    },
+    {
+      "name": "Savanna",
+      "height": {
+        "min": 0.147,
+        "max": 0.944
+      },
+      "temperature": {
+        "min": 0.516,
+        "max": 0.852
+      },
+      "moisture": {
+        "min": 0.082,
+        "max": 0.952
+      },
+      "debug_color_rgb": [
+        155,
+        118,
+        196
+      ]
+    },
+    {
+      "name": "Forest",
+      "height": {
+        "min": 0.044,
+        "max": 0.641
+      },
+      "temperature": {
+        "min": 0.053,
+        "max": 0.941
+      },
+      "moisture": {
+        "min": 0.255,
+        "max": 0.91
+      },
+      "debug_color_rgb": [
+        195,
+        129,
+        187
+      ]
+    },
+    {
+      "name": "SeasonalForest",
+      "height": {
+        "min": 0.298,
+        "max": 0.721
+      },
+      "temperature": {
+        "min": 0.118,
+        "max": 0.652
+      },
+      "moisture": {
+        "min": 0.638,
+        "max": 0.944
+      },
+      "debug_color_rgb": [
+        76,
+        127,
+        148
+      ]
+    },
+    {
+      "name": "Rainforest",
+      "height": {
+        "min": 0.296,
+        "max": 0.978
+      },
+      "temperature": {
+        "min": 0.652,
+        "max": 0.9
+      },
+      "moisture": {
+        "min": 0.717,
+        "max": 0.888
+      },
+      "debug_color_rgb": [
+        171,
+        84,
+        84
+      ]
+    },
+    {
+      "name": "Desert",
+      "height": {
+        "min": 0.293,
+        "max": 0.971
+      },
+      "temperature": {
+        "min": 0.139,
+        "max": 0.822
+      },
+      "moisture": {
+        "min": 0.052,
+        "max": 0.391
+      },
+      "debug_color_rgb": [
+        133,
+        86,
+        117
+      ]
+    },
+    {
+      "name": "Scrub",
+      "height": {
+        "min": 0.016,
+        "max": 0.905
+      },
+      "temperature": {
+        "min": 0.277,
+        "max": 0.733
+      },
+      "moisture": {
+        "min": 0.122,
+        "max": 0.394
+      },
+      "debug_color_rgb": [
+        160,
+        164,
+        151
+      ]
+    },
+    {
+      "name": "Taiga",
+      "height": {
+        "min": 0.173,
+        "max": 0.796
+      },
+      "temperature": {
+        "min": 0.19,
+        "max": 0.5
+      },
+      "moisture": {
+        "min": 0.406,
+        "max": 0.783
+      },
+      "debug_color_rgb": [
+        173,
+        122,
+        221
+      ]
+    },
+    {
+      "name": "Tundra",
+      "height": {
+        "min": 0.295,
+        "max": 0.831
+      },
+      "temperature": {
+        "min": 0.013,
+        "max": 0.485
+      },
+      "moisture": {
+        "min": 0.113,
+        "max": 0.761
+      },
+      "debug_color_rgb": [
+        164,
+        92,
+        196
+      ]
+    },
+    {
+      "name": "Snow",
+      "height": {
+        "min": 0.702,
+        "max": 0.845
+      },
+      "temperature": {
+        "min": 0.092,
+        "max": 0.5
+      },
+      "moisture": {
+        "min": 0.298,
+        "max": 0.89
+      },
+      "debug_color_rgb": [
+        77,
+        117,
+        69
+      ]
+    },
+    {
+      "name": "Alpine",
+      "height": {
+        "min": 0.695,
+        "max": 0.851
+      },
+      "temperature": {
+        "min": 0.044,
+        "max": 0.5
+      },
+      "moisture": {
+        "min": 0.396,
+        "max": 0.983
+      },
+      "debug_color_rgb": [
+        103,
+        179,
+        113
+      ]
+    }
+  ],
+  "rules": {
+    "water_threshold": 0.38,
+    "snowline": 0.78,
+    "biome_blend": 0.08
+  }
+}
