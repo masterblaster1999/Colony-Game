@@ -1,16 +1,18 @@
 #define WIN32_LEAN_AND_MEAN
 #include <Windows.h>
 #include <ShlObj.h>         // SHGetKnownFolderPath, FOLDERID_*
+#include <KnownFolders.h>
 #include <filesystem>
 #include <system_error>
 #include <string>
-#include <cwchar>           // swprintf
+#include <cwchar>           // swprintf (not strictly needed after changes)
 #include "PathUtilWin.h"
 
 namespace fs = std::filesystem;
 
 namespace winpath {
 
+    // Returns the full path to the running module (exe)
     static std::wstring get_module_path_w() {
         DWORD size = MAX_PATH;
         std::wstring buf(size, L'\0');
@@ -41,9 +43,33 @@ namespace winpath {
         if (!dir.empty()) {
             SetCurrentDirectoryW(dir.c_str());
         }
-        // (Optional) reduce DLL search hijacking:
-        // SetDefaultDllDirectories(LOAD_LIBRARY_SEARCH_DEFAULT_DIRS);
-        // SetDllDirectoryW(nullptr);
+
+        // Harden the process DLL search order (Windows 8+ or Win7 w/ KB2533623).
+        // Prefer safe default directories and remove the current directory.
+        // Use dynamic lookup so the binary still starts on very old Windows.
+        HMODULE hKernel = GetModuleHandleW(L"kernel32.dll");
+        if (hKernel) {
+            using PFN_SetDefaultDllDirectories = BOOL (WINAPI*)(DWORD);
+            using PFN_SetDllDirectoryW       = BOOL (WINAPI*)(LPCWSTR);
+
+            auto pSetDefaultDllDirectories =
+                reinterpret_cast<PFN_SetDefaultDllDirectories>(
+                    GetProcAddress(hKernel, "SetDefaultDllDirectories"));
+            auto pSetDllDirectoryW =
+                reinterpret_cast<PFN_SetDllDirectoryW>(
+                    GetProcAddress(hKernel, "SetDllDirectoryW"));
+
+#ifndef LOAD_LIBRARY_SEARCH_DEFAULT_DIRS
+#define LOAD_LIBRARY_SEARCH_DEFAULT_DIRS 0x00001000
+#endif
+            if (pSetDefaultDllDirectories) {
+                pSetDefaultDllDirectories(LOAD_LIBRARY_SEARCH_DEFAULT_DIRS);
+            }
+            if (pSetDllDirectoryW) {
+                // Empty string removes the current directory from the search path.
+                pSetDllDirectoryW(L"");
+            }
+        }
     }
 
     fs::path resource_dir() {
@@ -64,7 +90,7 @@ namespace winpath {
         return out;
     }
 
-    // ---- %USERPROFILE%\Saved Games\<app_name> (Vista+) -------------------------
+    // %USERPROFILE%\Saved Games\<app_name> (Vista+) with fallbacks
     fs::path saved_games_dir(const wchar_t* app_name) {
         PWSTR p = nullptr;
         fs::path base;
@@ -88,19 +114,24 @@ namespace winpath {
         return target;
     }
 
-    // ---- Atomic write with backup using ReplaceFileW ---------------------------
+    // Atomic write with backup using ReplaceFileW, fallback to MoveFileExW
     // Writes to a temp file on the same volume, flushes, then atomically replaces.
     bool atomic_write_file(const fs::path& final_path,
                            const void* data, size_t size_bytes)
     {
-        const fs::path dir  = final_path.parent_path();
-        const std::wstring name = final_path.filename().wstring();
+        const fs::path dir = final_path.parent_path();
+        if (!dir.empty()) {
+            std::error_code ec;
+            fs::create_directories(dir, ec);
+        }
 
-        wchar_t tmp_name[64];
-        std::swprintf(tmp_name, 64, L".%s.tmp.%u_%llu",
-                      name.c_str(), GetCurrentProcessId(),
-                      static_cast<unsigned long long>(GetTickCount64()));
-        fs::path tmp_path = dir / tmp_name;
+        const std::wstring name = final_path.filename().wstring();
+        std::wstring tmpName = L"." + name +
+                               L".tmp." +
+                               std::to_wstring(GetCurrentProcessId()) +
+                               L"_" +
+                               std::to_wstring(static_cast<unsigned long long>(GetTickCount64()));
+        const fs::path tmp_path = dir / tmpName;
 
         // Create temp with write-through to push bytes to device
         HANDLE h = CreateFileW(tmp_path.c_str(),
@@ -133,14 +164,14 @@ namespace winpath {
 
         const fs::path bak_path = final_path.wstring() + L".bak";
 
-        // Try atomic replace with backup first
+        // Try atomic-style replace with backup (works when destination exists).
         if (ReplaceFileW(final_path.c_str(), tmp_path.c_str(), bak_path.c_str(),
                          REPLACEFILE_IGNORE_MERGE_ERRORS | REPLACEFILE_IGNORE_ACL_ERRORS,
                          nullptr, nullptr)) {
             return true;
         }
 
-        // Fallback: non-atomic “replace existing” move, still write-through
+        // Fallback: non-atomic “replace existing” move, still write-through.
         if (MoveFileExW(tmp_path.c_str(), final_path.c_str(),
                         MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) {
             // Best-effort: refresh backup
@@ -153,3 +184,4 @@ namespace winpath {
     }
 
 } // namespace winpath
+
