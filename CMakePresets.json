@@ -8,13 +8,19 @@
       "binaryDir": "${sourceDir}/out/build/win-msvc-x64-debug",
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "Debug",
-        "VCPKG_MANIFEST_MODE": "ON"
+        "VCPKG_MANIFEST_MODE": "ON",
+        "CMAKE_MSVC_DEBUG_INFORMATION_FORMAT": "ProgramDatabase",
+        "COLONY_ENABLE_MINIDUMPS": "ON"
       }
     },
     {
       "name": "win-msvc-x64-relwithdebinfo",
       "inherits": "win-msvc-x64-debug",
-      "cacheVariables": { "CMAKE_BUILD_TYPE": "RelWithDebInfo" }
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "RelWithDebInfo",
+        "CMAKE_MSVC_DEBUG_INFORMATION_FORMAT": "ProgramDatabase",
+        "COLONY_ENABLE_MINIDUMPS": "ON"
+      }
     },
     {
       "name": "vs-2022-x64-relwithdebinfo",
@@ -28,7 +34,10 @@
         "FRONTEND": "win32",
         "COLONY_STATIC_CRT": "OFF",
         "COLONY_USE_VS_HLSL": "ON",
-        "COLONY_LTO": "ON"
+        "COLONY_LTO": "ON",
+        "CMAKE_MSVC_DEBUG_INFORMATION_FORMAT": "ProgramDatabase",
+        "COLONY_ENABLE_MINIDUMPS": "ON",
+        "COLONY_SHIP_PDB": "ON"
       }
     },
     {
@@ -38,7 +47,8 @@
       "binaryDir": "${sourceDir}/out/build/vs-2022-x64-debug",
       "cacheVariables": {
         "COLONY_USE_VS_HLSL": "ON",
-        "COLONY_ASAN": "ON"
+        "COLONY_ASAN": "ON",
+        "COLONY_ENABLE_MINIDUMPS": "ON"
       }
     },
     {
@@ -52,7 +62,9 @@
         "VCPKG_MANIFEST_MODE": "ON",
         "FRONTEND": "win32",
         "COLONY_STATIC_CRT": "OFF",
-        "COLONY_USE_VS_HLSL": "ON"
+        "COLONY_USE_VS_HLSL": "ON",
+        "CMAKE_MSVC_DEBUG_INFORMATION_FORMAT": "ProgramDatabase",
+        "COLONY_ENABLE_MINIDUMPS": "ON"
       }
     },
     {
@@ -66,7 +78,9 @@
         "VCPKG_MANIFEST_MODE": "ON",
         "COLONY_RENDERER": "d3d12",
         "BUILD_SHADERS_DXC": "ON",
-        "BUILD_SHADERS_FXC": "OFF"
+        "BUILD_SHADERS_FXC": "OFF",
+        "CMAKE_MSVC_DEBUG_INFORMATION_FORMAT": "ProgramDatabase",
+        "COLONY_ENABLE_MINIDUMPS": "ON"
       }
     }
   ],
