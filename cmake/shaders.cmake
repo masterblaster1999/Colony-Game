@@ -10,7 +10,6 @@ function(colony_find_fxc OUT_FXC)
     message(FATAL_ERROR "FXC only available on Windows")
   endif()
 
-  # Prefer unversioned kit bin, then probe versioned subdirs, then PATH
   set(_candidates
     "$ENV{WindowsSdkDir}/bin/x64/fxc.exe"
     "$ENV{WindowsSdkDir}/bin/x86/fxc.exe"
@@ -48,55 +47,55 @@ endfunction()
 function(_colony_detect_stage STEM OUTVAR)
   set(_stage "")
   if("${STEM}" MATCHES ".*_vs$")      set(_stage "vs")
-  elseif("${STEM}" MATCHES ".*_ps$") set(_stage "ps")
-  elseif("${STEM}" MATCHES ".*_cs$") set(_stage "cs")
-  elseif("${STEM}" MATCHES ".*_gs$") set(_stage "gs")
-  elseif("${STEM}" MATCHES ".*_hs$") set(_stage "hs")
-  elseif("${STEM}" MATCHES ".*_ds$") set(_stage "ds")
-  elseif("${STEM}" MATCHES ".*_as$") set(_stage "as") # Amplification (DX12/SM6+)
-  elseif("${STEM}" MATCHES ".*_ms$") set(_stage "ms") # Mesh (DX12/SM6+)
+  elseif("${STEM}" MATCHES ".*_ps$")  set(_stage "ps")
+  elseif("${STEM}" MATCHES ".*_cs$")  set(_stage "cs")
+  elseif("${STEM}" MATCHES ".*_gs$")  set(_stage "gs")
+  elseif("${STEM}" MATCHES ".*_hs$")  set(_stage "hs")
+  elseif("${STEM}" MATCHES ".*_ds$")  set(_stage "ds")
+  elseif("${STEM}" MATCHES ".*_as$")  set(_stage "as") # Amplification (DX12/SM6+)
+  elseif("${STEM}" MATCHES ".*_ms$")  set(_stage "ms") # Mesh (DX12/SM6+)
   endif()
   set(${OUTVAR} "${_stage}" PARENT_SCOPE)
 endfunction()
 
 # Map stage -> Visual Studio "VS_SHADER_TYPE" value
 function(_colony_stage_to_vs_type STAGE OUTVAR)
-  if("${STAGE}" STREQUAL "vs")       set(_type "Vertex")
-  elseif("${STAGE}" STREQUAL "ps")   set(_type "Pixel")
-  elseif("${STAGE}" STREQUAL "cs")   set(_type "Compute")
-  elseif("${STAGE}" STREQUAL "gs")   set(_type "Geometry")
-  elseif("${STAGE}" STREQUAL "hs")   set(_type "Hull")
-  elseif("${STAGE}" STREQUAL "ds")   set(_type "Domain")
-  elseif("${STAGE}" STREQUAL "as")   set(_type "Amplification")
-  elseif("${STAGE}" STREQUAL "ms")   set(_type "Mesh")
-  else()                              set(_type "Pixel")
+  if("${STAGE}" STREQUAL "vs")      set(_type "Vertex")
+  elseif("${STAGE}" STREQUAL "ps")  set(_type "Pixel")
+  elseif("${STAGE}" STREQUAL "cs")  set(_type "Compute")
+  elseif("${STAGE}" STREQUAL "gs")  set(_type "Geometry")
+  elseif("${STAGE}" STREQUAL "hs")  set(_type "Hull")
+  elseif("${STAGE}" STREQUAL "ds")  set(_type "Domain")
+  elseif("${STAGE}" STREQUAL "as")  set(_type "Amplification")
+  elseif("${STAGE}" STREQUAL "ms")  set(_type "Mesh")
+  else()                            set(_type "Pixel")
   endif()
   set(${OUTVAR} "${_type}" PARENT_SCOPE)
 endfunction()
 
 # Choose a good default entry point based on stage; fallback to "main"
 function(_colony_default_entry STAGE OUTVAR)
-  if("${STAGE}" STREQUAL "vs")       set(_e "VSMain")
-  elseif("${STAGE}" STREQUAL "ps")   set(_e "PSMain")
-  elseif("${STAGE}" STREQUAL "cs")   set(_e "CSMain")
-  elseif("${STAGE}" STREQUAL "gs")   set(_e "GSMain")
-  elseif("${STAGE}" STREQUAL "hs")   set(_e "HSMain")
-  elseif("${STAGE}" STREQUAL "ds")   set(_e "DSMain")
-  elseif("${STAGE}" STREQUAL "as")   set(_e "ASMain")
-  elseif("${STAGE}" STREQUAL "ms")   set(_e "MSMain")
-  else()                              set(_e "main")
+  if("${STAGE}" STREQUAL "vs")      set(_e "VSMain")
+  elseif("${STAGE}" STREQUAL "ps")  set(_e "PSMain")
+  elseif("${STAGE}" STREQUAL "cs")  set(_e "CSMain")
+  elseif("${STAGE}" STREQUAL "gs")  set(_e "GSMain")
+  elseif("${STAGE}" STREQUAL "hs")  set(_e "HSMain")
+  elseif("${STAGE}" STREQUAL "ds")  set(_e "DSMain")
+  elseif("${STAGE}" STREQUAL "as")  set(_e "ASMain")
+  elseif("${STAGE}" STREQUAL "ms")  set(_e "MSMain")
+  else()                            set(_e "main")
   endif()
   set(${OUTVAR} "${_e}" PARENT_SCOPE)
 endfunction()
 
 # colony_add_hlsl(
-#   TARGET   <cmake target>   [required]
-#   OUTDIR   <bin-relative outdir> (default: res/shaders)
+#   TARGET   [required]
+#   OUTDIR   (default: res/shaders)
 #   SOURCES  <.hlsl/.hlsli files...> [required]
-#   PROFILE  <e.g. 5_0 | 6_7 | vs_5_0 | ps_6_0> (model; stage may be omitted)
-#   ENTRY    <entry function> (if omitted, inferred from stage)
-#   DEFINES  <list of -D / /D>
-#   INCLUDES <list of -I / /I>
+#   PROFILE  (model; stage may be omitted: e.g. "6_7" or "ps_6_7")
+#   ENTRY    (if omitted, inferred from stage)
+#   DEFINES
+#   INCLUDES
 # )
 function(colony_add_hlsl)
   set(options)
@@ -104,29 +103,19 @@ function(colony_add_hlsl)
   set(multiValueArgs SOURCES DEFINES INCLUDES)
   cmake_parse_arguments(CAH "${options}" "${oneValueArgs}" "${multiValueArgs}" ${ARGN})
 
-  if(NOT CAH_TARGET)
-    message(FATAL_ERROR "colony_add_hlsl: TARGET is required")
-  endif()
-  if(NOT CAH_SOURCES)
-    message(FATAL_ERROR "colony_add_hlsl: provide SOURCES")
-  endif()
+  if(NOT CAH_TARGET)  message(FATAL_ERROR "colony_add_hlsl: TARGET is required") endif()
+  if(NOT CAH_SOURCES) message(FATAL_ERROR "colony_add_hlsl: provide SOURCES") endif()
+  if(NOT CAH_OUTDIR OR CAH_OUTDIR STREQUAL "") set(CAH_OUTDIR "res/shaders") endif()
 
-  if(NOT CAH_OUTDIR OR CAH_OUTDIR STREQUAL "")
-    set(CAH_OUTDIR "res/shaders")
-  endif()
-
-  # Parse shader model from PROFILE:
-  #   Accept "vs_5_0" / "ps_6_7" -> model "5.0"/"6.7"
-  #   Accept "5_0" / "6_7"
-  #   Default "5.0"
+  # Parse shader model from PROFILE; default 5.0
   set(_model "5.0")
   set(_model_us "5_0")
   if(CAH_PROFILE MATCHES "^[a-z]+_([0-9]+)_([0-9]+)$")
-    set(_model "${CMAKE_MATCH_1}.${CMAKE_MATCH_2}")
-    set(_model_us "${CMAKE_MATCH_1}_${CMAKE_MATCH_2}")
+    set(_model     "${CMAKE_MATCH_1}.${CMAKE_MATCH_2}")
+    set(_model_us  "${CMAKE_MATCH_1}_${CMAKE_MATCH_2}")
   elseif(CAH_PROFILE MATCHES "^([0-9]+)_([0-9]+)$")
-    set(_model "${CMAKE_MATCH_1}.${CMAKE_MATCH_2}")
-    set(_model_us "${CMAKE_MATCH_1}_${CMAKE_MATCH_2}")
+    set(_model     "${CMAKE_MATCH_1}.${CMAKE_MATCH_2}")
+    set(_model_us  "${CMAKE_MATCH_1}_${CMAKE_MATCH_2}")
   endif()
 
   # If PROFILE includes a stage, remember it as a weak hint
@@ -148,12 +137,9 @@ function(colony_add_hlsl)
     endif()
   endforeach()
 
-  # --------------------------------------------------------------------------
-  # Visual Studio MSBuild HLSL path (directory-agnostic):
+  # ---------- Visual Studio generator path (MSBuild HLSL integration) ----------
   # Put MSBuild-compiled CSO into ${CMAKE_BINARY_DIR}/res/shaders/$(Configuration)
-  # --------------------------------------------------------------------------
-  if(WIN32 AND CMAKE_GENERATOR MATCHES "Visual Studio")
-    # Ensure the target knows about the shader sources so MSBuild compiles them.
+  if(WIN32 AND CMAKE_GENERATOR MATCHES "Visual Studio" AND COLONY_USE_VS_HLSL)
     target_sources(${CAH_TARGET} PRIVATE ${_hlsl_sources} ${_hlsli_sources})
     source_group("Shaders" FILES ${_hlsl_sources})
     if(_hlsli_sources)
@@ -161,54 +147,42 @@ function(colony_add_hlsl)
       set_source_files_properties(${_hlsli_sources} PROPERTIES HEADER_FILE_ONLY ON)
     endif()
 
-    # Use MSBuild variable for per-config output directory
     set(_msbuild_outdir "${CMAKE_BINARY_DIR}/${CAH_OUTDIR}/$(Configuration)")
-
     foreach(src IN LISTS _hlsl_sources)
       get_filename_component(_namewe "${src}" NAME_WE)
-      # Derive stage from filename; if ambiguous, fall back to PROFILE stage, else default to Pixel.
       _colony_detect_stage("${_namewe}" _stage)
-      if(NOT _stage AND _profile_stage)
-        set(_stage "${_profile_stage}")
-      endif()
-      if(NOT _stage)
-        set(_stage "ps")
-      endif()
-      # Map to Visual Studio HLSL type
+      if(NOT _stage AND _profile_stage)  set(_stage "${_profile_stage}") endif()
+      if(NOT _stage)                      set(_stage "ps")                endif()
+
       _colony_stage_to_vs_type("${_stage}" _type)
-      # Shader model as "M.N" (e.g., "5.0", "6.7")
+
       set(_model_vis "${_model}")
-
-      # Build flags: DXC style if SM6.x, else FXC style
-      if(_model_vis VERSION_GREATER_EQUAL "6.0")
-        set(_flags "$<$<CONFIG:Debug>:-Zi;-Od>;$<$<CONFIG:Release>:-O3;-Qstrip_debug>")
-        foreach(d IN LISTS CAH_DEFINES)  list(APPEND _flags "-D" "${d}")  endforeach()
-        foreach(i IN LISTS CAH_INCLUDES) list(APPEND _flags "-I" "${i}")  endforeach()
-      else()
-        set(_flags "$<$<CONFIG:Debug>:/Zi;/Od>;$<$<CONFIG:Release>:/O2>")
-        foreach(d IN LISTS CAH_DEFINES)  list(APPEND _flags "/D" "${d}")  endforeach()
-        foreach(i IN LISTS CAH_INCLUDES) list(APPEND _flags "/I" "${i}")  endforeach()
-      endif()
-
-      # Default entry: allow override via ENTRY, else stage-based heuristic
       set(_entry "${CAH_ENTRY}")
       if(NOT _entry OR _entry STREQUAL "")
         _colony_default_entry("${_stage}" _entry)
       endif()
 
-      # Force object file name with stage suffix to avoid collisions (foo.vs.cso / foo.ps.cso)
-      set(_obj "${_msbuild_outdir}/${_namewe}.${_stage}.cso")
+      # Flags: DXC-style if SM6.x, else FXC-style
+      if(_model_vis VERSION_GREATER_EQUAL "6.0")
+        set(_flags "$<$:<-Zi;-Od>;$<$:<-O3;-Qstrip_debug>>")
+        foreach(d IN LISTS CAH_DEFINES)  list(APPEND _flags "-D" "${d}")  endforeach()
+        foreach(i IN LISTS CAH_INCLUDES) list(APPEND _flags "-I" "${i}")  endforeach()
+      else()
+        set(_flags "$<$:</Zi;/Od>;$<$:</O2>>")
+        foreach(d IN LISTS CAH_DEFINES)  list(APPEND _flags "/D" "${d}")  endforeach()
+        foreach(i IN LISTS CAH_INCLUDES) list(APPEND _flags "/I" "${i}")  endforeach()
+      endif()
 
+      set(_obj "${_msbuild_outdir}/${_namewe}.${_stage}.cso")
       set_source_files_properties("${src}" PROPERTIES
-        VS_SHADER_TYPE              "${_type}"
-        VS_SHADER_MODEL             "${_model_vis}"
-        VS_SHADER_ENTRYPOINT        "${_entry}"
-        VS_SHADER_OBJECT_FILE_NAME  "${_obj}"
-        VS_SHADER_FLAGS             "${_flags}"
+        VS_SHADER_TYPE             "${_type}"
+        VS_SHADER_MODEL            "${_model_vis}"
+        VS_SHADER_ENTRYPOINT       "${_entry}"
+        VS_SHADER_OBJECT_FILE_NAME "${_obj}"
+        VS_SHADER_FLAGS            "${_flags}"
       )
     endforeach()
 
-    # Create output folders at configure time so MSBuild can write .cso
     if(CMAKE_CONFIGURATION_TYPES)
       foreach(_cfg IN LISTS CMAKE_CONFIGURATION_TYPES)
         file(MAKE_DIRECTORY "${CMAKE_BINARY_DIR}/${CAH_OUTDIR}/${_cfg}")
@@ -217,18 +191,14 @@ function(colony_add_hlsl)
       file(MAKE_DIRECTORY "${CMAKE_BINARY_DIR}/${CAH_OUTDIR}")
     endif()
 
-    # MSBuild handles compilation; no explicit custom target/products required here.
-    return()
+    return() # MSBuild handles compilation
   endif()
 
-  # --------------------------------------------------------------------------
-  # Non-VS generators (Ninja/Makefiles): explicit FXC/DXC custom commands
-  # --------------------------------------------------------------------------
+  # ---------- Ninja/Makefiles path: explicit FXC/DXC custom commands ----------
   set(_outdir "${CMAKE_CURRENT_BINARY_DIR}/${CAH_OUTDIR}")
   file(MAKE_DIRECTORY "${_outdir}")
   set(_products)
 
-  # Helper: absolute path to source
   function(_colony_abs SRC OUTVAR)
     if(IS_ABSOLUTE "${SRC}")
       set(${OUTVAR} "${SRC}" PARENT_SCOPE)
@@ -243,16 +213,14 @@ function(colony_add_hlsl)
 
     foreach(src IN LISTS _hlsl_sources)
       get_filename_component(_namewe "${src}" NAME_WE)
-      _colony_detect_stage("${_namewe}" _stage)
-      if(NOT _stage AND _profile_stage)  set(_stage "${_profile_stage}")  endif()
-      if(NOT _stage)                     set(_stage "ps")                 endif()
 
-      # Mesh/Amplification require DX12/DXC (SM6+)
+      _colony_detect_stage("${_namewe}" _stage)
+      if(NOT _stage AND _profile_stage)  set(_stage "${_profile_stage}") endif()
+      if(NOT _stage)                      set(_stage "ps")                endif()
       if(_stage STREQUAL "as" OR _stage STREQUAL "ms")
         message(FATAL_ERROR "Shader '${src}': stage '${_stage}' requires DX12 (SM6.x).")
       endif()
 
-      # Force down to SM5.x when requested model is SM6.* but backend is DX11
       if(_model_us MATCHES "^6_")
         string(REGEX REPLACE "^6_" "5_" _model_us_dx11 "${_model_us}")
       else()
@@ -263,14 +231,19 @@ function(colony_add_hlsl)
       set(_out "${_outdir}/${_namewe}.${_stage}.cso")
       _colony_abs("${src}" _abs_src)
 
-      set(_fxc_flags "$<$<CONFIG:Debug>:/Zi;/Od>;$<$<CONFIG:Release>:/O3>")
+      set(_fxc_flags "$<$:</Zi;/Od>;$<$:</O3>>")
       foreach(d IN LISTS CAH_DEFINES)  list(APPEND _fxc_flags "/D" "${d}")  endforeach()
       foreach(i IN LISTS CAH_INCLUDES) list(APPEND _fxc_flags "/I" "${i}")  endforeach()
+
+      set(_entry "${CAH_ENTRY}")
+      if(NOT _entry OR _entry STREQUAL "")
+        _colony_default_entry("${_stage}" _entry)
+      endif()
 
       add_custom_command(
         OUTPUT "${_out}"
         COMMAND ${CMAKE_COMMAND} -E make_directory "${_outdir}"
-        COMMAND "${FXC_EXE}" /nologo /T ${_profile} /E "$<IF:$<BOOL:${CAH_ENTRY}>,${CAH_ENTRY},$<1:main>>" /Fo "${_out}" ${_fxc_flags} "${_abs_src}"
+        COMMAND "${FXC_EXE}" /nologo /T ${_profile} /E "${_entry}" /Fo "${_out}" ${_fxc_flags} "${_abs_src}"
         DEPENDS "${_abs_src}"
         BYPRODUCTS "${_out}"
         COMMENT "FXC: ${src} -> ${_out}"
@@ -278,9 +251,9 @@ function(colony_add_hlsl)
       )
       list(APPEND _products "${_out}")
     endforeach()
+
   else()
     # ---- DX12 path (DXC, DXIL/SM6.x) -----------------------------------------
-    # Prefer vcpkg-provided tool, but fall back to common locations if unset.
     if(NOT DEFINED DIRECTX_DXC_TOOL)
       find_program(DIRECTX_DXC_TOOL NAMES dxc dxc.exe
         HINTS
@@ -288,7 +261,8 @@ function(colony_add_hlsl)
           "$ENV{VCPKG_ROOT}/installed/x64-windows/tools/directx-dxc"
           "$ENV{WindowsSdkDir}/bin/x64"
           "C:/Program Files (x86)/Windows Kits/10/bin/x64"
-          "C:/Program Files/Windows Kits/10/bin/x64")
+          "C:/Program Files/Windows Kits/10/bin/x64"
+      )
     endif()
     if(NOT DIRECTX_DXC_TOOL)
       message(FATAL_ERROR "DirectX Shader Compiler (dxc.exe) not found. Install 'directx-dxc' via vcpkg or set DIRECTX_DXC_TOOL.")
@@ -296,15 +270,16 @@ function(colony_add_hlsl)
 
     foreach(src IN LISTS _hlsl_sources)
       get_filename_component(_namewe "${src}" NAME_WE)
+
       _colony_detect_stage("${_namewe}" _stage)
-      if(NOT _stage AND _profile_stage)  set(_stage "${_profile_stage}")  endif()
-      if(NOT _stage)                     set(_stage "ps")                 endif()
+      if(NOT _stage AND _profile_stage)  set(_stage "${_profile_stage}") endif()
+      if(NOT _stage)                      set(_stage "ps")                endif()
 
       set(_profile "${_stage}_${_model_us}")
       set(_out "${_outdir}/${_namewe}.${_stage}.cso")
       _colony_abs("${src}" _abs_src)
 
-      set(_dxc_flags "$<$<CONFIG:Debug>:-Zi;-Od>;$<$<CONFIG:Release>:-O3;-Qstrip_debug>")
+      set(_dxc_flags "$<$:<-Zi;-Od>;$<$:<-O3;-Qstrip_debug>>")
       foreach(d IN LISTS CAH_DEFINES)  list(APPEND _dxc_flags "-D" "${d}")  endforeach()
       foreach(i IN LISTS CAH_INCLUDES) list(APPEND _dxc_flags "-I" "${i}")  endforeach()
 
