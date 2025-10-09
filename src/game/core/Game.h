@@ -1,14 +1,16 @@
 #pragma once
 
 // Compatibility shim for tests including "game/core/Game.h"
-#if __has_include("core/Game.hpp")
-  #include "core/Game.hpp"
-#elif __has_include("core/Game.h")
-  #include "core/Game.h"
-#elif __has_include("../../core/Game.hpp")
+// Patched to prefer the real path at: ../../core/Game.hpp
+
+#if __has_include("../../core/Game.hpp")
   #include "../../core/Game.hpp"
 #elif __has_include("../../core/Game.h")
   #include "../../core/Game.h"
+#elif __has_include("core/Game.hpp")
+  #include "core/Game.hpp"
+#elif __has_include("core/Game.h")
+  #include "core/Game.h"
 #elif __has_include("../../engine/Game.hpp")
   #include "../../engine/Game.hpp"
 #elif __has_include("../../engine/Game.h")
