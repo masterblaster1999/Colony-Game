@@ -772,26 +772,6 @@ if(TARGET ColonyGame)
   set(COLONY_SHADER_DIR "${CMAKE_SOURCE_DIR}/renderer/Shaders" CACHE PATH "HLSL sources (erosion)")
   target_compile_definitions(ColonyGame PRIVATE COLONY_SHADER_DIR=L"${COLONY_SHADER_DIR}")
 
-  # Copy the erosion compute shader sources next to the EXE (bin/…/Shaders) AND into res/shaders
-  # so that stage_win/install also pick them up.
-  add_custom_command(TARGET ColonyGame POST_BUILD
-    COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:ColonyGame>/Shaders"
-    COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "${COLONY_SHADER_DIR}/erosion_thermal_flow_cs.hlsl"
-            "$<TARGET_FILE_DIR:ColonyGame>/Shaders/erosion_thermal_flow_cs.hlsl"
-    COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "${COLONY_SHADER_DIR}/erosion_thermal_apply_cs.hlsl"
-            "$<TARGET_FILE_DIR:ColonyGame>/Shaders/erosion_thermal_apply_cs.hlsl"
-    COMMAND ${CMAKE_COMMAND} -E make_directory "${CMAKE_BINARY_DIR}/res/shaders"
-    COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "${COLONY_SHADER_DIR}/erosion_thermal_flow_cs.hlsl"
-            "${CMAKE_BINARY_DIR}/res/shaders/erosion_thermal_flow_cs.hlsl"
-    COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "${COLONY_SHADER_DIR}/erosion_thermal_apply_cs.hlsl"
-            "${CMAKE_BINARY_DIR}/res/shaders/erosion_thermal_apply_cs.hlsl"
-    VERBATIM
-  )
-
   # Include root/src (for the headers above)
   target_include_directories(ColonyGame PRIVATE
       ${CMAKE_SOURCE_DIR}/src
