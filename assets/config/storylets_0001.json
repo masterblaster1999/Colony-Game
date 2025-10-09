@@ -1,0 +1,412 @@
+{
+  "meta": {
+    "generated_at": "2025-10-09T00:00:00Z",
+    "seed": 283502819,
+    "schema": "colony/storylets@0.1"
+  },
+  "events": [
+    {
+      "id": "evt_001",
+      "title": "Echoes of War",
+      "weight": 0.67,
+      "trigger": {
+        "type": "relation_threshold",
+        "faction": "fac_04",
+        "min": -0.25
+      },
+      "conditions": {
+        "min_population": 44,
+        "allowed_biomes": [
+          "Scrub",
+          "Savanna"
+        ]
+      },
+      "consequences": [
+        {
+          "type": "rumor",
+          "text": "A cache was sighted near the Scrub."
+        },
+        {
+          "type": "offer",
+          "from": "fac_01",
+          "ask": "wood",
+          "give": "seedlings"
+        },
+        {
+          "type": "spawn_npc",
+          "role": "scout",
+          "count": 2
+        }
+      ]
+    },
+    {
+      "id": "evt_002",
+      "title": "Rising Tides",
+      "weight": 0.66,
+      "trigger": {
+        "type": "relation_threshold",
+        "faction": "fac_02",
+        "min": -0.21
+      },
+      "conditions": {
+        "min_population": 41,
+        "allowed_biomes": [
+          "Taiga",
+          "Alpine",
+          "Coast"
+        ]
+      },
+      "consequences": [
+        {
+          "type": "raid",
+          "faction": "fac_02",
+          "strength": 3
+        },
+        {
+          "type": "weather_shift",
+          "to": "fog",
+          "duration_hours": 39
+        },
+        {
+          "type": "resource_change",
+          "resource": "food",
+          "amount": -17
+        }
+      ]
+    },
+    {
+      "id": "evt_003",
+      "title": "Festival of Sparks",
+      "weight": 0.33,
+      "trigger": {
+        "type": "relation_threshold",
+        "faction": "fac_01",
+        "min": 0.59
+      },
+      "conditions": {
+        "min_population": 34,
+        "allowed_biomes": [
+          "Savanna",
+          "Grassland",
+          "SeasonalForest"
+        ]
+      },
+      "consequences": [
+        {
+          "type": "offer",
+          "from": "fac_06",
+          "ask": "metal",
+          "give": "seedlings"
+        },
+        {
+          "type": "weather_shift",
+          "to": "fog",
+          "duration_hours": 25
+        },
+        {
+          "type": "spawn_npc",
+          "role": "thief",
+          "count": 3
+        }
+      ]
+    },
+    {
+      "id": "evt_004",
+      "title": "Omen in the Sky",
+      "weight": 0.63,
+      "trigger": {
+        "type": "relation_threshold",
+        "faction": "fac_03",
+        "min": -0.77
+      },
+      "conditions": {
+        "min_population": 4,
+        "allowed_biomes": [
+          "Forest",
+          "Desert"
+        ]
+      },
+      "consequences": [
+        {
+          "type": "resource_change",
+          "resource": "research",
+          "amount": -3
+        },
+        {
+          "type": "offer",
+          "from": "fac_02",
+          "ask": "wood",
+          "give": "research"
+        },
+        {
+          "type": "weather_shift",
+          "to": "storm",
+          "duration_hours": 17
+        }
+      ]
+    },
+    {
+      "id": "evt_005",
+      "title": "Trade Winds",
+      "weight": 0.56,
+      "trigger": {
+        "type": "population_threshold",
+        "min": 70
+      },
+      "conditions": {
+        "min_population": 20,
+        "allowed_biomes": [
+          "Alpine",
+          "Marsh",
+          "Forest"
+        ]
+      },
+      "consequences": [
+        {
+          "type": "offer",
+          "from": "fac_01",
+          "ask": "stone",
+          "give": "seedlings"
+        },
+        {
+          "type": "rumor",
+          "text": "A cache was sighted near the Desert."
+        },
+        {
+          "type": "spawn_npc",
+          "role": "refugee",
+          "count": 1
+        }
+      ]
+    },
+    {
+      "id": "evt_006",
+      "title": "Trade Winds",
+      "weight": 0.66,
+      "trigger": {
+        "type": "season",
+        "value": "summer"
+      },
+      "conditions": {
+        "min_population": 3,
+        "allowed_biomes": [
+          "Rainforest",
+          "Taiga"
+        ]
+      },
+      "consequences": [
+        {
+          "type": "resource_change",
+          "resource": "food",
+          "amount": -1
+        },
+        {
+          "type": "offer",
+          "from": "fac_04",
+          "ask": "metal",
+          "give": "tools"
+        },
+        {
+          "type": "resource_change",
+          "resource": "wood",
+          "amount": 4
+        }
+      ]
+    },
+    {
+      "id": "evt_007",
+      "title": "Stranger at the Gate",
+      "weight": 0.71,
+      "trigger": {
+        "type": "relation_threshold",
+        "faction": "fac_05",
+        "min": -0.58
+      },
+      "conditions": {
+        "min_population": 48,
+        "allowed_biomes": [
+          "Savanna",
+          "Forest",
+          "Scrub"
+        ]
+      },
+      "consequences": [
+        {
+          "type": "resource_change",
+          "resource": "food",
+          "amount": 5
+        },
+        {
+          "type": "resource_change",
+          "resource": "stone",
+          "amount": 40
+        },
+        {
+          "type": "rumor",
+          "text": "A cache was sighted near the Taiga."
+        }
+      ]
+    },
+    {
+      "id": "evt_008",
+      "title": "Tools of the Ancients",
+      "weight": 0.57,
+      "trigger": {
+        "type": "season",
+        "value": "spring"
+      },
+      "conditions": {
+        "min_population": 29,
+        "allowed_biomes": [
+          "Scrub",
+          "Forest"
+        ]
+      },
+      "consequences": [
+        {
+          "type": "offer",
+          "from": "fac_02",
+          "ask": "metal",
+          "give": "research"
+        },
+        {
+          "type": "offer",
+          "from": "fac_07",
+          "ask": "wood",
+          "give": "tools"
+        },
+        {
+          "type": "spawn_npc",
+          "role": "trader",
+          "count": 1
+        }
+      ]
+    },
+    {
+      "id": "evt_009",
+      "title": "A Broken Mast",
+      "weight": 0.43,
+      "trigger": {
+        "type": "biome_entered",
+        "value": "Marsh"
+      },
+      "conditions": {
+        "min_population": 10,
+        "allowed_biomes": [
+          "Savanna",
+          "Alpine",
+          "Coast"
+        ]
+      },
+      "consequences": [
+        {
+          "type": "weather_shift",
+          "to": "storm",
+          "duration_hours": 33
+        },
+        {
+          "type": "spawn_npc",
+          "role": "scout",
+          "count": 1
+        }
+      ]
+    },
+    {
+      "id": "evt_010",
+      "title": "Wandering Herd",
+      "weight": 0.32,
+      "trigger": {
+        "type": "relation_threshold",
+        "faction": "fac_01",
+        "min": -0.46
+      },
+      "conditions": {
+        "min_population": 8,
+        "allowed_biomes": [
+          "Savanna",
+          "Scrub",
+          "SeasonalForest"
+        ]
+      },
+      "consequences": [
+        {
+          "type": "resource_change",
+          "resource": "food",
+          "amount": -47
+        },
+        {
+          "type": "resource_change",
+          "resource": "research",
+          "amount": -11
+        }
+      ]
+    },
+    {
+      "id": "evt_011",
+      "title": "Forgotten Cache",
+      "weight": 0.55,
+      "trigger": {
+        "type": "biome_entered",
+        "value": "Marsh"
+      },
+      "conditions": {
+        "min_population": 50,
+        "allowed_biomes": [
+          "Rainforest",
+          "Taiga",
+          "Tundra",
+          "Coast",
+          "SeasonalForest"
+        ]
+      },
+      "consequences": [
+        {
+          "type": "offer",
+          "from": "fac_04",
+          "ask": "wood",
+          "give": "seedlings"
+        },
+        {
+          "type": "resource_change",
+          "resource": "research",
+          "amount": -1
+        },
+        {
+          "type": "resource_change",
+          "resource": "metal",
+          "amount": -25
+        }
+      ]
+    },
+    {
+      "id": "evt_012",
+      "title": "A Broken Mast",
+      "weight": 0.37,
+      "trigger": {
+        "type": "resource_delta",
+        "resource": "stone",
+        "min_change": 12
+      },
+      "conditions": {
+        "min_population": 19,
+        "allowed_biomes": [
+          "Taiga",
+          "Desert"
+        ]
+      },
+      "consequences": [
+        {
+          "type": "offer",
+          "from": "fac_07",
+          "ask": "food",
+          "give": "seedlings"
+        },
+        {
+          "type": "raid",
+          "faction": "fac_01",
+          "strength": 1
+        }
+      ]
+    }
+  ]
+}
