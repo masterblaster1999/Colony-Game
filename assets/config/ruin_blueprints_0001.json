@@ -1,0 +1,254 @@
+{
+  "meta": {
+    "generated_at": "2025-10-09T00:00:00Z",
+    "seed": 283502819,
+    "schema": "colony/ruins@0.1"
+  },
+  "legend": {
+    "#": "wall",
+    ".": "floor",
+    "D": "door",
+    "B": "bed",
+    "T": "table",
+    "C": "crate"
+  },
+  "blueprints": [
+    {
+      "id": "ruin_01",
+      "title": "Outpost",
+      "size": {
+        "w": 7,
+        "h": 8
+      },
+      "grid": [
+        "#######",
+        "D..C..#",
+        "#..#..#",
+        "#..#..#",
+        "#...T.#",
+        "#.B...#",
+        "#....D#",
+        "#######"
+      ],
+      "connectors": [
+        {
+          "x": 0,
+          "y": 1
+        },
+        {
+          "x": 5,
+          "y": 6
+        }
+      ],
+      "spawn_groups": [
+        {
+          "type": "crate",
+          "count": 3
+        },
+        {
+          "type": "scrap",
+          "count": 7
+        }
+      ],
+      "allowed_biomes": [
+        "Grassland",
+        "Forest"
+      ]
+    },
+    {
+      "id": "ruin_02",
+      "title": "Relay Hut",
+      "size": {
+        "w": 7,
+        "h": 6
+      },
+      "grid": [
+        "#######",
+        "#..B..#",
+        "#.....#",
+        "D.T...#",
+        "#..C..#",
+        "#######"
+      ],
+      "connectors": [
+        {
+          "x": 0,
+          "y": 3
+        }
+      ],
+      "spawn_groups": [
+        {
+          "type": "crate",
+          "count": 2
+        },
+        {
+          "type": "scrap",
+          "count": 8
+        }
+      ],
+      "allowed_biomes": [
+        "Rainforest",
+        "Taiga",
+        "Savanna",
+        "SeasonalForest",
+        "Forest"
+      ]
+    },
+    {
+      "id": "ruin_03",
+      "title": "Depot",
+      "size": {
+        "w": 7,
+        "h": 5
+      },
+      "grid": [
+        "#######",
+        "#C....#",
+        "#..#..#",
+        "D..T..#",
+        "#######"
+      ],
+      "connectors": [
+        {
+          "x": 0,
+          "y": 3
+        }
+      ],
+      "spawn_groups": [
+        {
+          "type": "crate",
+          "count": 3
+        },
+        {
+          "type": "scrap",
+          "count": 3
+        }
+      ],
+      "allowed_biomes": [
+        "Taiga",
+        "Grassland",
+        "Savanna"
+      ]
+    },
+    {
+      "id": "ruin_04",
+      "title": "Watchhouse",
+      "size": {
+        "w": 6,
+        "h": 8
+      },
+      "grid": [
+        "######",
+        "D.T..#",
+        "#..C.#",
+        "#....#",
+        "#..#.#",
+        "#....#",
+        "#...D#",
+        "######"
+      ],
+      "connectors": [
+        {
+          "x": 0,
+          "y": 1
+        },
+        {
+          "x": 4,
+          "y": 6
+        }
+      ],
+      "spawn_groups": [
+        {
+          "type": "crate",
+          "count": 0
+        },
+        {
+          "type": "scrap",
+          "count": 6
+        }
+      ],
+      "allowed_biomes": [
+        "Savanna",
+        "SeasonalForest",
+        "Rainforest"
+      ]
+    },
+    {
+      "id": "ruin_05",
+      "title": "Greenhouse",
+      "size": {
+        "w": 8,
+        "h": 5
+      },
+      "grid": [
+        "########",
+        "D..C..D#",
+        "#..#...#",
+        "#..B.T.#",
+        "########"
+      ],
+      "connectors": [
+        {
+          "x": 0,
+          "y": 1
+        },
+        {
+          "x": 6,
+          "y": 1
+        }
+      ],
+      "spawn_groups": [
+        {
+          "type": "crate",
+          "count": 1
+        },
+        {
+          "type": "scrap",
+          "count": 5
+        }
+      ],
+      "allowed_biomes": [
+        "Savanna",
+        "SeasonalForest",
+        "Rainforest",
+        "Taiga"
+      ]
+    },
+    {
+      "id": "ruin_06",
+      "title": "Waystation",
+      "size": {
+        "w": 7,
+        "h": 6
+      },
+      "grid": [
+        "#######",
+        "#..C..#",
+        "#.B...#",
+        "#..#..#",
+        "#..T.D#",
+        "#######"
+      ],
+      "connectors": [
+        {
+          "x": 5,
+          "y": 4
+        }
+      ],
+      "spawn_groups": [
+        {
+          "type": "crate",
+          "count": 0
+        },
+        {
+          "type": "scrap",
+          "count": 6
+        }
+      ],
+      "allowed_biomes": [
+        "Savanna",
+        "SeasonalForest"
+      ]
+    }
+  ]
+}
