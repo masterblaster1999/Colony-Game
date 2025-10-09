@@ -1,0 +1,257 @@
+{
+  "meta": {
+    "generated_at": "2025-10-09T00:00:00Z",
+    "seed": 283502819,
+    "schema": "colony/factions@0.1"
+  },
+  "factions": [
+    {
+      "id": "fac_01",
+      "name": "The Zium Circle",
+      "color_rgb": [
+        55,
+        178,
+        179
+      ],
+      "ethos": {
+        "cooperation": 0.33,
+        "ambition": 0.54,
+        "piety": 0.05,
+        "innovation": 0.04,
+        "militarism": 0.95
+      },
+      "tech_level": "settled",
+      "population_estimate": 288,
+      "preferred_biomes": [
+        "SeasonalForest",
+        "Taiga",
+        "Savanna"
+      ],
+      "hostile_biomes": [
+        "Rainforest",
+        "Grassland",
+        "Snow"
+      ],
+      "starting_relations": {
+        "player": -0.07,
+        "wildlife": -0.11
+      },
+      "emblem": {
+        "shape": "triangle",
+        "motif": "eye"
+      }
+    },
+    {
+      "id": "fac_02",
+      "name": "The Irbel Syndicate",
+      "color_rgb": [
+        212,
+        133,
+        214
+      ],
+      "ethos": {
+        "cooperation": 0.02,
+        "ambition": 0.68,
+        "piety": 0.86,
+        "innovation": 0.66,
+        "militarism": 0.43
+      },
+      "tech_level": "settled",
+      "population_estimate": 160,
+      "preferred_biomes": [
+        "Forest",
+        "Taiga",
+        "Tundra"
+      ],
+      "hostile_biomes": [
+        "Savanna",
+        "SeasonalForest"
+      ],
+      "starting_relations": {
+        "player": -0.08,
+        "wildlife": -0.4
+      },
+      "emblem": {
+        "shape": "hex",
+        "motif": "river"
+      }
+    },
+    {
+      "id": "fac_03",
+      "name": "The Yros Order",
+      "color_rgb": [
+        153,
+        201,
+        60
+      ],
+      "ethos": {
+        "cooperation": 0.56,
+        "ambition": 0.05,
+        "piety": 0.19,
+        "innovation": 0.69,
+        "militarism": 0.65
+      },
+      "tech_level": "industrial",
+      "population_estimate": 327,
+      "preferred_biomes": [
+        "Scrub",
+        "Forest",
+        "Desert"
+      ],
+      "hostile_biomes": [
+        "Savanna",
+        "Taiga",
+        "Grassland"
+      ],
+      "starting_relations": {
+        "player": -0.0,
+        "wildlife": -0.54
+      },
+      "emblem": {
+        "shape": "triangle",
+        "motif": "moon"
+      }
+    },
+    {
+      "id": "fac_04",
+      "name": "The Umkin Concord",
+      "color_rgb": [
+        106,
+        150,
+        204
+      ],
+      "ethos": {
+        "cooperation": 0.86,
+        "ambition": 0.38,
+        "piety": 0.78,
+        "innovation": 0.41,
+        "militarism": 0.3
+      },
+      "tech_level": "artisan",
+      "population_estimate": 463,
+      "preferred_biomes": [
+        "Savanna",
+        "Tundra",
+        "Scrub"
+      ],
+      "hostile_biomes": [
+        "SeasonalForest",
+        "Forest"
+      ],
+      "starting_relations": {
+        "player": -0.02,
+        "wildlife": -0.59
+      },
+      "emblem": {
+        "shape": "hex",
+        "motif": "mountain"
+      }
+    },
+    {
+      "id": "fac_05",
+      "name": "The Mirqu League",
+      "color_rgb": [
+        220,
+        73,
+        107
+      ],
+      "ethos": {
+        "cooperation": 0.6,
+        "ambition": 0.74,
+        "piety": 0.24,
+        "innovation": 0.87,
+        "militarism": 0.12
+      },
+      "tech_level": "primitive",
+      "population_estimate": 382,
+      "preferred_biomes": [
+        "Tundra",
+        "Scrub",
+        "Savanna"
+      ],
+      "hostile_biomes": [
+        "Forest",
+        "SeasonalForest"
+      ],
+      "starting_relations": {
+        "player": -0.18,
+        "wildlife": -0.12
+      },
+      "emblem": {
+        "shape": "diamond",
+        "motif": "leaf"
+      }
+    },
+    {
+      "id": "fac_06",
+      "name": "The Qumi Compact",
+      "color_rgb": [
+        150,
+        162,
+        203
+      ],
+      "ethos": {
+        "cooperation": 0.8,
+        "ambition": 0.15,
+        "piety": 0.6,
+        "innovation": 0.85,
+        "militarism": 0.36
+      },
+      "tech_level": "settled",
+      "population_estimate": 333,
+      "preferred_biomes": [
+        "Forest",
+        "Taiga",
+        "Scrub"
+      ],
+      "hostile_biomes": [
+        "SeasonalForest",
+        "Grassland"
+      ],
+      "starting_relations": {
+        "player": 0.23,
+        "wildlife": 0.74
+      },
+      "emblem": {
+        "shape": "hex",
+        "motif": "hammer"
+      }
+    },
+    {
+      "id": "fac_07",
+      "name": "The Felsil Kin",
+      "color_rgb": [
+        134,
+        185,
+        186
+      ],
+      "ethos": {
+        "cooperation": 0.26,
+        "ambition": 0.46,
+        "piety": 0.62,
+        "innovation": 0.8,
+        "militarism": 0.73
+      },
+      "tech_level": "industrial",
+      "population_estimate": 553,
+      "preferred_biomes": [
+        "Savanna",
+        "Rainforest",
+        "Desert"
+      ],
+      "hostile_biomes": [
+        "Scrub",
+        "Tundra",
+        "Taiga"
+      ],
+      "starting_relations": {
+        "player": 0.17,
+        "wildlife": 0.2
+      },
+      "emblem": {
+        "shape": "triangle",
+        "motif": "sun"
+      }
+    }
+  ]
+}
