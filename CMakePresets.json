@@ -8,7 +8,6 @@
       "binaryDir": "${sourceDir}/out/build/win-msvc-x64-debug",
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "Debug",
-        "CMAKE_CXX_STANDARD": "23",
         "VCPKG_MANIFEST_MODE": "ON"
       }
     },
@@ -28,7 +27,6 @@
         "VCPKG_MANIFEST_MODE": "ON",
         "FRONTEND": "win32",
         "COLONY_STATIC_CRT": "OFF",
-        "CMAKE_CXX_STANDARD": "23",
         "COLONY_USE_VS_HLSL": "ON",
         "COLONY_LTO": "ON"
       }
@@ -40,8 +38,7 @@
       "binaryDir": "${sourceDir}/out/build/vs-2022-x64-debug",
       "cacheVariables": {
         "COLONY_USE_VS_HLSL": "ON",
-        "COLONY_ASAN": "ON",
-        "CMAKE_CXX_STANDARD": "23"
+        "COLONY_ASAN": "ON"
       }
     },
     {
@@ -55,8 +52,7 @@
         "VCPKG_MANIFEST_MODE": "ON",
         "FRONTEND": "win32",
         "COLONY_STATIC_CRT": "OFF",
-        "COLONY_USE_VS_HLSL": "ON",
-        "CMAKE_CXX_STANDARD": "23"
+        "COLONY_USE_VS_HLSL": "ON"
       }
     },
     {
@@ -67,7 +63,6 @@
       "binaryDir": "${sourceDir}/out/build/ninja-dxc-relwithdebinfo",
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "RelWithDebInfo",
-        "CMAKE_CXX_STANDARD": "20",
         "VCPKG_MANIFEST_MODE": "ON",
         "COLONY_RENDERER": "d3d12",
         "BUILD_SHADERS_DXC": "ON",
