@@ -45,6 +45,7 @@ endif()
 
 # Include production headers so tests can include repo headers directly
 target_include_directories(colony_smoke PRIVATE
+  ${CMAKE_SOURCE_DIR}/include       # for "game/components/*.h" (Agent.h, Velocity.h)
   ${CMAKE_SOURCE_DIR}/src
   ${CMAKE_SOURCE_DIR}/src/worldgen
 )
