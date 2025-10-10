@@ -75,7 +75,6 @@ function(cg_init_hlsl_compilers)
   endif()
 
   # Per-config bin dir: use CMAKE_CFG_INTDIR for VS/Xcode multi-config.
-  # (Generator expressions for OUTPUT are limited; this approach is a practical compromise.)
   if(CG_BIN_DIR)
     set(_bin "${CG_BIN_DIR}")
   else()
@@ -221,9 +220,22 @@ function(cg_compile_hlsl)
   list(APPEND _fxc_inc "/I" "${CG_SHADER_DIR}")
   list(APPEND _dxc_inc "-I" "${CG_SHADER_DIR}")
 
-  # Debug/Release flags
-  set(_dxc_cfg "$<$<CONFIG:Debug>:-Od;-Zi;-Qembed_debug>;$<$<NOT:$<CONFIG:Debug>>:-O3;-Qstrip_debug;-Qstrip_reflect>")
-  set(_fxc_cfg "$<$<CONFIG:Debug>:/Od;/Zi>;$<$<NOT:$<CONFIG:Debug>>:/O3;/Qstrip_debug;/Qstrip_reflect>")
+  # Debug/Release flags (per-argument generator expressions; see notes)
+  set(_dxc_cfg
+    $<$<CONFIG:Debug>:-Od>
+    $<$<CONFIG:Debug>:-Zi>
+    $<$<CONFIG:Debug>:-Qembed_debug>
+    $<$<NOT:$<CONFIG:Debug>>:-O3>
+    $<$<NOT:$<CONFIG:Debug>>:-Qstrip_debug>
+    $<$<NOT:$<CONFIG:Debug>>:-Qstrip_reflect>
+  )
+  set(_fxc_cfg
+    $<$<CONFIG:Debug>:/Od>
+    $<$<CONFIG:Debug>:/Zi>
+    $<$<NOT:$<CONFIG:Debug>>:/O3>
+    $<$<NOT:$<CONFIG:Debug>>:/Qstrip_debug>
+    $<$<NOT:$<CONFIG:Debug>>:/Qstrip_reflect>
+  )
 
   if(_use_dxc)
     if(NOT DXC_BIN) find_program(DXC_BIN NAMES dxc dxc.exe) endif()
@@ -231,16 +243,21 @@ function(cg_compile_hlsl)
     add_custom_command(
       OUTPUT "${CG_OUT}"
       COMMAND "${CMAKE_COMMAND}" -E make_directory "${_OUT_DIR}"
-      COMMAND "${DXC_BIN}" -nologo -T "${CG_PROFILE}" -E "${CG_ENTRY}"
-              -Fo "${CG_OUT}" ${_dxc_cfg}
-              $<$<BOOL:${CG_PDB}>:-Fd;${CG_PDB}>
-              $<$<BOOL:${CG_REFLECTION}>:-Fre;${CG_REFLECTION}>
+      COMMAND "${DXC_BIN}"
+              -nologo
+              -T "${CG_PROFILE}"
+              -E "${CG_ENTRY}"
+              -Fo "${CG_OUT}"
+              ${_dxc_cfg}
+              $<$<BOOL:${CG_PDB}>:-Fd> $<$<BOOL:${CG_PDB}>:${CG_PDB}>
+              $<$<BOOL:${CG_REFLECTION}>:-Fre> $<$<BOOL:${CG_REFLECTION}>:${CG_REFLECTION}>
               ${_dxc_defs} ${_dxc_inc} ${CG_FLAGS_DXC}
               "${CG_SRC}"
       DEPENDS "${CG_SRC}"
       WORKING_DIRECTORY "${CG_SHADER_DIR}"
       COMMENT "DXC ${CG_SRC} (${CG_ENTRY}/${CG_PROFILE}) -> ${CG_OUT}"
       VERBATIM
+      COMMAND_EXPAND_LISTS
     )
   else()
     if(NOT FXC_BIN) find_program(FXC_BIN fxc.exe) endif()
@@ -248,14 +265,20 @@ function(cg_compile_hlsl)
     add_custom_command(
       OUTPUT "${CG_OUT}"
       COMMAND "${CMAKE_COMMAND}" -E make_directory "${_OUT_DIR}"
-      COMMAND "${FXC_BIN}" /nologo /T "${CG_PROFILE}" /E "${CG_ENTRY}"
-              /Fo "${CG_OUT}" ${_fxc_cfg}
+      COMMAND "${FXC_BIN}"
+              /nologo
+              /T "${CG_PROFILE}"
+              /E "${CG_ENTRY}"
+              /Fo "${CG_OUT}"
+              ${_fxc_cfg}
+              $<$<BOOL:${CG_PDB}>:/Fd> $<$<BOOL:${CG_PDB}>:${CG_PDB}>
               ${_fxc_defs} ${_fxc_inc} ${CG_FLAGS_FXC}
               "${CG_SRC}"
       DEPENDS "${CG_SRC}"
       WORKING_DIRECTORY "${CG_SHADER_DIR}"
       COMMENT "FXC ${CG_SRC} (${CG_ENTRY}/${CG_PROFILE}) -> ${CG_OUT}"
       VERBATIM
+      COMMAND_EXPAND_LISTS
     )
   endif()
 
@@ -278,6 +301,7 @@ function(cg_stage_source SRC)
     DEPENDS "${SRC}"
     COMMENT "Staging shader source: ${_base}"
     VERBATIM
+    COMMAND_EXPAND_LISTS
   )
   _cg_append_staged_output("${_dst}")
 endfunction()
@@ -318,6 +342,7 @@ function(cg_finalize_shader_target)
               "${CG_SHADER_BIN_DIR}" "$<TARGET_FILE_DIR:${CG_TARGET}>/shaders"
       COMMENT "Copying shaders to runtime dir for ${CG_TARGET}"
       VERBATIM
+      COMMAND_EXPAND_LISTS
     )
   endif()
 endfunction()
@@ -608,3 +633,4 @@ function(cg_compile_hlsl_from_table)
     endif()
   endif()
 endfunction()
+
