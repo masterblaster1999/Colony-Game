@@ -120,23 +120,23 @@ if(CMAKE_GENERATOR MATCHES "Visual Studio")
     set(_entry "")
     if(_we MATCHES "_vs$")
       set(_type  "Vertex")
-      set(_entry "VSMain")
+      set(_entry "main")   # standardized entrypoint
     elseif(_we MATCHES "_ps$")
       set(_type  "Pixel")
-      set(_entry "PSMain")
+      set(_entry "main")   # standardized entrypoint
     elseif(_we MATCHES "_cs$")
       set(_type  "Compute")
-      set(_entry "CSMain")
+      set(_entry "main")   # standardized entrypoint
     endif()
 
     if(NOT _type)
       # Fall back to explicit mapping for known names if they don't follow the suffix convention
       if(_we STREQUAL "mesh_vs")
         set(_type  "Vertex")
-        set(_entry "VSMain")
+        set(_entry "main") # standardized entrypoint
       elseif(_we STREQUAL "mesh_ps")
         set(_type  "Pixel")
-        set(_entry "PSMain")
+        set(_entry "main") # standardized entrypoint
       else()
         # If we still can't infer the type, don't touch this source (lets user configure manually)
         return()
