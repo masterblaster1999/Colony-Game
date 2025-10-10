@@ -3,6 +3,9 @@
 #include <KnownFolders.h>   // FOLDERID_LocalAppData
 #include <filesystem>
 #include <system_error>
+#include <algorithm>
+#include <cstdint>
+#include <string>
 #include "PathUtilWin.h"
 
 namespace fs = std::filesystem;
@@ -61,4 +64,69 @@ namespace winpath {
         fs::create_directories(out, ec);
         return out;
     }
-}
+
+    // Atomically write `size_bytes` from `data` into `path`.
+    // Strategy: write to a temp file in the same directory, flush, then replace/rename.
+    bool atomic_write_file(const std::wstring& path, const void* data, size_t size_bytes) {
+        // Reject invalid buffer when size > 0
+        if (!data && size_bytes > 0) {
+            return false;
+        }
+
+        const fs::path target(path);
+        const fs::path dir = target.parent_path().empty() ? exe_dir() : target.parent_path();
+
+        // Ensure target directory exists
+        std::error_code ec;
+        fs::create_directories(dir, ec); // ok if already exists
+
+        // Build a temp filename in the same directory to allow atomic replace
+        const std::wstring tmpName =
+            L"." + target.filename().wstring() +
+            L".tmp." + std::to_wstring(GetCurrentProcessId()) +
+            L"_" + std::to_wstring(static_cast<unsigned long long>(GetTickCount64()));
+
+        const fs::path tmp = dir / tmpName;
+
+        // Create temp file for write
+        HANDLE h = CreateFileW(tmp.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS,
+                               FILE_ATTRIBUTE_TEMPORARY | FILE_FLAG_SEQUENTIAL_SCAN, nullptr);
+        if (h == INVALID_HANDLE_VALUE) {
+            return false;
+        }
+
+        // Write contents (if any) in chunks <= 1 MiB to avoid DWORD overflow
+        size_t remaining = size_bytes;
+        const std::uint8_t* p = static_cast<const std::uint8_t*>(data);
+        while (remaining > 0) {
+            const DWORD toWrite = static_cast<DWORD>(std::min<size_t>(remaining, 1u << 20)); // 1 MiB
+            DWORD written = 0;
+            if (!WriteFile(h, p, toWrite, &written, nullptr)) {
+                CloseHandle(h);
+                DeleteFileW(tmp.c_str());
+                return false;
+            }
+            remaining -= written;
+            p += written;
+        }
+
+        // Ensure data hits disk before replacement
+        FlushFileBuffers(h);
+        CloseHandle(h);
+
+        // Try atomic replace first (succeeds only if target exists)
+        if (ReplaceFileW(target.c_str(), tmp.c_str(), nullptr, REPLACEFILE_WRITE_THROUGH, nullptr, nullptr)) {
+            return true;
+        }
+
+        // Fallback: move/rename with replace + write-through (for brand-new files)
+        if (MoveFileExW(tmp.c_str(), target.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) {
+            return true;
+        }
+
+        // Failure: remove temp file
+        DeleteFileW(tmp.c_str());
+        return false;
+    }
+
+} // namespace winpath
