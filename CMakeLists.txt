@@ -315,16 +315,67 @@ endif()
 # ---- HLSL shaders helper (DXC/FXC) ----
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_SOURCE_DIR}/cmake")
 include(ColonyHLSL OPTIONAL RESULT_VARIABLE _colony_hlsl_loaded)
-if(_colony_hlsl_loaded)
-  message(STATUS "ColonyHLSL.cmake loaded; Visual Studio HLSL integration available.")
-endif()
 include(ShaderSetup OPTIONAL RESULT_VARIABLE _shader_setup_loaded)
-if(_shader_setup_loaded)
-  message(STATUS "ShaderSetup.cmake loaded; colony_compile_hlsl() is available.")
-endif()
 include(cmake/shaders.cmake OPTIONAL)
 # --- Auto HLSL per-file configuration (Visual Studio) ---
 include(AutoHlsl OPTIONAL)
+
+# --- Fallback HLSL configurator (for VS) if external module is absent ---
+include(ConfigureHLSL OPTIONAL RESULT_VARIABLE _configure_hlsl_loaded)
+if(NOT COMMAND configure_hlsl_target)
+  # Minimal, self-contained helper used only if AutoHlsl/ColonyHLSL are unavailable.
+  function(configure_hlsl_target target)
+    if(NOT MSVC)
+      return()
+    endif()
+    get_target_property(_srcs ${target} SOURCES)
+    if(NOT _srcs)
+      return()
+    endif()
+    foreach(_s IN LISTS _srcs)
+      get_filename_component(_ext "${_s}" EXT)
+      if(NOT _ext STREQUAL ".hlsl")
+        continue()
+      endif()
+      get_filename_component(_name "${_s}" NAME_WE)
+      string(TOLOWER "${_name}" _lower)
+      set(_type "")
+      set(_entry "")
+      if(_lower MATCHES "_vs$")
+        set(_type "Vertex")
+        set(_entry "VSMain")
+      elseif(_lower MATCHES "_ps$")
+        set(_type "Pixel")
+        set(_entry "PSMain")
+      elseif(_lower MATCHES "_cs$")
+        set(_type "Compute")
+        set(_entry "CSMain")
+      elseif(_lower MATCHES "_gs$")
+        set(_type "Geometry")
+        set(_entry "GSMain")
+      elseif(_lower MATCHES "_hs$")
+        set(_type "Hull")
+        set(_entry "HSMain")
+      elseif(_lower MATCHES "_ds$")
+        set(_type "Domain")
+        set(_entry "DSMain")
+      else()
+        # Treat as include-only HLSL (no compilation)
+        set_source_files_properties(${_s} PROPERTIES HEADER_FILE_ONLY ON)
+        continue()
+      endif()
+      # Special-case: noise_fbm_cs.hlsl uses 'main' as entrypoint
+      if(_lower STREQUAL "noise_fbm_cs")
+        set(_entry "main")
+      endif()
+      set_source_files_properties(${_s} PROPERTIES
+        VS_SHADER_TYPE       "${_type}"
+        VS_SHADER_MODEL      "${COLONY_HLSL_MODEL}"
+        VS_SHADER_ENTRYPOINT "${_entry}"
+      )
+    endforeach()
+  endfunction()
+endif()
 
 # Initialize friendly status for shader route
 set(_HLSL_TOOLCHAIN "unknown")
@@ -810,6 +861,22 @@ if(TARGET ColonyGame)
   endif()
 
   target_compile_definitions(ColonyGame PRIVATE SHADER_DIR=L\"res/shaders/\")
+
+  # ---- PATCH: Add shaders to target & configure VS HLSL (fallback path) ----
+  if(MSVC AND CMAKE_GENERATOR MATCHES "Visual Studio" AND NOT CG_HLSL_MSBUILD AND NOT COMMAND colony_add_hlsl)
+    if(NOT COMMAND colony_autoconfigure_hlsl)
+      file(GLOB_RECURSE GAME_HLSL CONFIGURE_DEPENDS
+           "${CMAKE_SOURCE_DIR}/shaders/*.hlsl"
+           "${CMAKE_SOURCE_DIR}/renderer/Shaders/*.hlsl"
+           "${CMAKE_SOURCE_DIR}/src/pcg/shaders/*.hlsl")
+      if(GAME_HLSL)
+        target_sources(ColonyGame PRIVATE ${GAME_HLSL})
+        configure_hlsl_target(ColonyGame)
+        # Set friendly status so summary prints something useful
+        set(_HLSL_TOOLCHAIN "VS native HLSL (fallback)")
+      endif()
+    endif()
+  endif()
 
   # --- HLSL compilation (via Visual Studio integration) ------------------------
   if(CG_HLSL_MSBUILD)
