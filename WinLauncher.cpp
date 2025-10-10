@@ -1,4 +1,4 @@
-// WinLauncher.cpp — Windows-only launcher hardened for startup reliability.
+// / WinLauncher.cpp — Windows-only launcher hardened for startup reliability.
 //
 // Patches applied:
 //  0.1 Working directory -> EXE folder
@@ -8,7 +8,7 @@
 //  0.5 D3D12 Agility SDK lookup via AddDllDirectory(".\\D3D12") with safe DLL search
 //
 // Plus: Safe DLL search order, UTF‑16 log files (with BOM), and clear logging.
-//
+// Embedded safe‑mode game loop: define COLONY_EMBED_GAME_LOOP to enable.
 // Build: MSVC /std:c++20 (or CMake CXX_STANDARD 20)
 //
 
@@ -63,10 +63,12 @@ __declspec(dllexport) int   AmdPowerXpressRequestHighPerformance  = 1;
 
 // NEW: centralize Windows path/CWD logic in one place (your existing helper).
 #include "platform/win/PathUtilWin.h"
-// NEW: Minimal wiring for a fixed‑timestep loop (optional embedded mode).
-#include "core/FixedTimestep.h"
 // NEW: Crash handler (minidumps) — initialize at process start in wWinMain.
 #include "platform/win/CrashHandlerWin.h"
+
+// === Fixed-timestep hookup (embedded fallback) ===
+#include "colony/world/World.h"
+#include "colony/loop/GameLoop.h"
 
 namespace fs = std::filesystem;
 
@@ -278,7 +280,9 @@ private:
 
 // Optional: embedded fallback loop
 #ifdef COLONY_EMBED_GAME_LOOP
-extern int RunEmbeddedGameLoop(std::wostream& log);
+// Forward decl; implemented at bottom.
+static LRESULT CALLBACK EmbeddedWndProc(HWND, UINT, WPARAM, LPARAM);
+static int RunEmbeddedGameLoop(std::wostream& log);
 #endif
 
 // ---------- Entry point ----------
@@ -388,3 +392,136 @@ int APIENTRY wWinMain(HINSTANCE, HINSTANCE, PWSTR, int)
     log << L"[Launcher] Game exited with code " << code << L"\n";
     return static_cast<int>(code);
 }
+
+#ifdef COLONY_EMBED_GAME_LOOP
+// ========================== Embedded Safe-Mode Loop ==========================
+//
+// Provides a minimal fixed-timestep simulation + GDI visualization so players
+// get *something* even if the main EXE can't launch. This avoids any D3D deps.
+//
+// Window proc draws the latest interpolated snapshot (positions of demo agents).
+namespace {
+    struct EmbeddedState {
+        colony::RenderSnapshot snapshot;
+    };
+    static EmbeddedState g_state;
+}
+
+static LRESULT CALLBACK EmbeddedWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
+{
+    switch (msg)
+    {
+    case WM_PAINT:
+    {
+        PAINTSTRUCT ps{};
+        HDC dc = BeginPaint(hwnd, &ps);
+
+        RECT rc{};
+        GetClientRect(hwnd, &rc);
+        HBRUSH bg = CreateSolidBrush(RGB(32, 32, 48));
+        FillRect(dc, &rc, bg);
+        DeleteObject(bg);
+
+        SetBkMode(dc, TRANSPARENT);
+        SetTextColor(dc, RGB(220, 220, 230));
+        HFONT font = (HFONT)GetStockObject(DEFAULT_GUI_FONT);
+        HFONT oldFont = (HFONT)SelectObject(dc, font);
+
+        // World->screen transform (simple scale + center)
+        const int w = rc.right - rc.left;
+        const int h = rc.bottom - rc.top;
+        const float scale = 60.0f;
+        const float cx = w * 0.5f;
+        const float cy = h * 0.5f;
+
+        // Draw agents
+        HBRUSH agentBrush = CreateSolidBrush(RGB(80, 200, 255));
+        HBRUSH oldBrush = (HBRUSH)SelectObject(dc, agentBrush);
+        HPEN pen = CreatePen(PS_SOLID, 1, RGB(20, 120, 180));
+        HPEN oldPen = (HPEN)SelectObject(dc, pen);
+
+        for (const auto& p : g_state.snapshot.agent_positions)
+        {
+            const int x = (int)(cx + (float)p.x * scale);
+            const int y = (int)(cy - (float)p.y * scale);
+            const int r = 6;
+            Ellipse(dc, x - r, y - r, x + r, y + r);
+        }
+
+        SelectObject(dc, oldPen);
+        DeleteObject(pen);
+        SelectObject(dc, oldBrush);
+        DeleteObject(agentBrush);
+
+        // HUD
+        std::wstringstream hud;
+        hud << L"Embedded Safe Mode  |  sim_step=" << g_state.snapshot.sim_step
+            << L"  sim_time=" << std::fixed << std::setprecision(2) << g_state.snapshot.sim_time;
+        TextOutW(dc, 8, 8, hud.str().c_str(), (int)hud.str().size());
+
+        SelectObject(dc, oldFont);
+        EndPaint(hwnd, &ps);
+        return 0;
+    }
+    case WM_DESTROY:
+        PostQuitMessage(0);
+        return 0;
+    default:
+        return DefWindowProcW(hwnd, msg, wParam, lParam);
+    }
+}
+
+static int RunEmbeddedGameLoop(std::wostream& log)
+{
+    // 1) Create a basic Win32 window (no D3D) to visualize the sim via GDI.
+    HINSTANCE hInst = GetModuleHandleW(nullptr);
+    const wchar_t* kClass = L"ColonyEmbeddedGameWindow";
+
+    WNDCLASSW wc{};
+    wc.style         = CS_HREDRAW | CS_VREDRAW | CS_OWNDC;
+    wc.lpfnWndProc   = &EmbeddedWndProc;
+    wc.hInstance     = hInst;
+    wc.hCursor       = LoadCursorW(nullptr, IDC_ARROW);
+    wc.hbrBackground = (HBRUSH)(COLOR_WINDOW + 1);
+    wc.lpszClassName = kClass;
+
+    if (!RegisterClassW(&wc))
+    {
+        MsgBox(L"Colony Game", L"Failed to register embedded window class.");
+        return 10;
+    }
+
+    HWND hwnd = CreateWindowExW(
+        0, kClass, L"Colony Game (Embedded Safe Mode)",
+        WS_OVERLAPPEDWINDOW | WS_VISIBLE,
+        CW_USEDEFAULT, CW_USEDEFAULT, 1024, 768,
+        nullptr, nullptr, hInst, nullptr);
+
+    if (!hwnd)
+    {
+        MsgBox(L"Colony Game", L"Failed to create embedded window.");
+        return 11;
+    }
+
+    // 2) Build the world and start the deterministic loop.
+    colony::World world;
+    colony::GameLoopConfig cfg{};
+    cfg.fixed_dt = 1.0 / 60.0;
+    cfg.max_frame_time = 0.25;
+    cfg.max_updates_per_frame = 5;
+    cfg.run_when_minimized = false;
+
+    auto render = [&](const colony::World& w, float alpha) {
+        g_state.snapshot = w.snapshot(alpha);
+        // Ask the window to repaint using latest snapshot.
+        InvalidateRect(hwnd, nullptr, FALSE);
+    };
+
+    log << L"[Embedded] Running fixed-timestep loop.\n";
+    const int exitCode = colony::RunGameLoop(world, render, hwnd, cfg);
+
+    DestroyWindow(hwnd);
+    UnregisterClassW(kClass, hInst);
+    return exitCode;
+}
+#endif // COLONY_EMBED_GAME_LOOP
