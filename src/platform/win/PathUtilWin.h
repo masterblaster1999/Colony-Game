@@ -1,6 +1,8 @@
 #pragma once
 #include <filesystem>
 #include <string>
+#include <string_view>
+#include <cstddef>
 
 namespace winpath {
 
@@ -60,5 +62,22 @@ namespace winpath {
 
     // Ensure all standard directories exist (config/logs/crashdumps/saved games).
     void ensure_dirs();
+
+    // ------------------------------------------------------------------------------------
+    // Atomic file operations (Windows)
+    // ------------------------------------------------------------------------------------
+
+    // Writes `size` bytes atomically to `target`. Returns true on success.
+    // Implementation writes to a temporary file in the same directory and then
+    // replaces the target (e.g., via ReplaceFileW / MoveFileExW).
+    bool atomic_write_file(const std::filesystem::path& target,
+                           const void* data,
+                           std::size_t size);
+
+    // UTF-8 helper overload for common text payloads.
+    inline bool atomic_write_file(const std::filesystem::path& target,
+                                  std::string_view utf8) {
+        return atomic_write_file(target, utf8.data(), utf8.size());
+    }
 
 } // namespace winpath
