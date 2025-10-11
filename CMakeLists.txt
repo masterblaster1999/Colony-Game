@@ -235,9 +235,11 @@ set(COLONY_THIRDPARTY_LIBS         "" CACHE INTERNAL "")
 set(COLONY_THIRDPARTY_INCLUDE_DIRS "" CACHE INTERNAL "")
 
 # --- DirectX Shader Compiler (DXC) via vcpkg (for runtime DXC API usage) ---
-# Exposes imported target: Microsoft::DirectXShaderCompiler
-find_package(directx-dxc CONFIG REQUIRED)  # requires 'directx-dxc' in your vcpkg.json
-list(APPEND COLONY_THIRDPARTY_LIBS Microsoft::DirectXShaderCompiler)  # link later with ColonyGame
+# Link only when present / needed (keeps D3D11-only setups working).
+find_package(directx-dxc CONFIG QUIET)  # vcpkg: "directx-dxc"
+if(TARGET Microsoft::DirectXShaderCompiler)
+  list(APPEND COLONY_THIRDPARTY_LIBS Microsoft::DirectXShaderCompiler)
+endif()
 
 # --- SDL2 (only if FRONTEND is sdl) ---
 if(FRONTEND STREQUAL "sdl")
@@ -291,7 +293,6 @@ if(ENABLE_TRACY)
       FetchContent_Populate(tracy)
     endif()
     if(NOT TARGET tracy_client)
-      add_library(tricy_client_missing_name_fix INTERFACE) # safeguard if old cache kept a stale target name
       add_library(tracy_client STATIC "${tracy_SOURCE_DIR}/public/TracyClient.cpp")
       target_include_directories(tracy_client PUBLIC
         "${tracy_SOURCE_DIR}/public"
@@ -559,7 +560,6 @@ if(NOT CG_HLSL_MSBUILD)
           endforeach()
 
           if(_BUILT_CSOS)
-            # FIXED: make shaders target depend on the actual outputs
             add_custom_target(shaders ALL DEPENDS ${_BUILT_CSOS})
             set_property(TARGET shaders PROPERTY FOLDER "assets")
           else()
@@ -690,62 +690,73 @@ if(NOT DEFINED CG_HLSL_STATUS_PRINTED)
 endif()
 
 # ===========================
-#   PCG library & demo (NEW)
+#   PCG library & demo (optional)
 # ===========================
 option(PCG_USE_YAML   "Enable YAML storylets in the pcg library" OFF)
 option(BUILD_PCG_DEMO "Build the PCG demo tool"                  ON)
 
-set(PCG_SRC
-    src/pcg/SeededRng.cpp
-    src/pcg/Noise.cpp
-    src/pcg/TerrainGen.cpp
-    src/pcg/Rivers.cpp
-    src/pcg/Biomes.cpp
-    src/pcg/WfcLayout.cpp
-    src/pcg/Weather.cpp
-    src/pcg/NoiseCS.cpp
-)
-add_library(pcg STATIC ${PCG_SRC})
-target_include_directories(pcg PUBLIC ${CMAKE_SOURCE_DIR}/src)
-set_property(TARGET pcg PROPERTY FOLDER "libs")
+# Only define the 'pcg' library if sources actually exist
+if(EXISTS "${CMAKE_SOURCE_DIR}/src/pcg/SeededRng.cpp")
+  set(PCG_SRC
+      src/pcg/SeededRng.cpp
+      src/pcg/Noise.cpp
+      src/pcg/TerrainGen.cpp
+      src/pcg/Rivers.cpp
+      src/pcg/Biomes.cpp
+      src/pcg/WfcLayout.cpp
+      src/pcg/Weather.cpp
+      src/pcg/NoiseCS.cpp
+  )
+  add_library(pcg STATIC ${PCG_SRC})
+  target_include_directories(pcg PUBLIC ${CMAKE_SOURCE_DIR}/src)
+  set_property(TARGET pcg PROPERTY FOLDER "libs")
 
-if(PCG_USE_YAML)
-  find_package(yaml-cpp CONFIG REQUIRED)
-  target_compile_definitions(pcg PUBLIC PCG_USE_YAML)
-  target_link_libraries(pcg PUBLIC yaml-cpp)
-  target_sources(pcg PRIVATE src/pcg/Storylets.cpp)
-endif()
+  if(PCG_USE_YAML)
+    find_package(yaml-cpp CONFIG REQUIRED)
+    target_compile_definitions(pcg PUBLIC PCG_USE_YAML)
+    target_link_libraries(pcg PUBLIC yaml-cpp)
+    target_sources(pcg PRIVATE src/pcg/Storylets.cpp)
+  endif()
 
-# ---- PCG demo tool ----
-if(BUILD_PCG_DEMO AND EXISTS "${CMAKE_SOURCE_DIR}/src/tools/main_pcg_demo.cpp")
-  add_executable(pcg_demo src/tools/main_pcg_demo.cpp)
-  target_link_libraries(pcg_demo PRIVATE pcg)
-  target_include_directories(pcg_demo PRIVATE ${CMAKE_SOURCE_DIR}/src)
-  if(TARGET colony_build_options)
-    target_link_libraries(pcg_demo PRIVATE colony_build_options)
+  # ---- PCG demo tool ----
+  if(BUILD_PCG_DEMO AND EXISTS "${CMAKE_SOURCE_DIR}/src/tools/main_pcg_demo.cpp")
+    add_executable(pcg_demo src/tools/main_pcg_demo.cpp)
+    target_link_libraries(pcg_demo PRIVATE pcg)
+    target_include_directories(pcg_demo PRIVATE ${CMAKE_SOURCE_DIR}/src)
+    if(TARGET colony_build_options)
+      target_link_libraries(pcg_demo PRIVATE colony_build_options)
+    endif()
+    if(TARGET shaders)
+      add_dependencies(pcg_demo shaders)
+    endif()
+    target_compile_definitions(pcg_demo PRIVATE SHADER_DIR=L\"res/shaders/\")
+    if(MSVC)
+      set_target_properties(pcg_demo PROPERTIES VS_DEBUGGER_WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}")
+    endif()
+    set_property(TARGET pcg_demo PROPERTY FOLDER "tools")
   endif()
-  if(TARGET shaders)
-    add_dependencies(pcg_demo shaders)
-  endif()
-  target_compile_definitions(pcg_demo PRIVATE SHADER_DIR=L\"res/shaders/\")
-  if(MSVC)
-    set_target_properties(pcg_demo PROPERTIES VS_DEBUGGER_WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}")
-  endif()
-  set_property(TARGET pcg_demo PROPERTY FOLDER "tools")
+else()
+  message(STATUS "PCG sources not found under src/pcg; skipping optional pcg library/demo")
 endif()
 
 # ===========================
-#   Factions module (NEW)
+#   Factions module (optional)
 # ===========================
-add_library(Factions STATIC
-    src/sim/factions/FactionGen.cpp
-)
-target_include_directories(Factions PUBLIC ${CMAKE_SOURCE_DIR}/src)
-set_property(TARGET Factions PROPERTY FOLDER "libs")
+if(EXISTS "${CMAKE_SOURCE_DIR}/src/sim/factions/FactionGen.cpp")
+  add_library(Factions STATIC
+      src/sim/factions/FactionGen.cpp
+  )
+  target_include_directories(Factions PUBLIC ${CMAKE_SOURCE_DIR}/src)
+  set_property(TARGET Factions PROPERTY FOLDER "libs")
 
-find_package(nlohmann_json CONFIG REQUIRED)
-target_sources(Factions PRIVATE src/sim/factions/FactionConfigLoader.hpp)
-target_link_libraries(Factions PUBLIC nlohmann_json::nlohmann_json)
+  find_package(nlohmann_json CONFIG QUIET)
+  if(TARGET nlohmann_json::nlohmann_json)
+    target_sources(Factions PRIVATE src/sim/factions/FactionConfigLoader.hpp)
+    target_link_libraries(Factions PUBLIC nlohmann_json::nlohmann_json)
+  else()
+    message(WARNING "nlohmann_json not found; Factions library will be built without JSON support.")
+  endif()
+endif()
 
 # ===========================
 #   Main game sources / target
@@ -754,33 +765,39 @@ if(EXISTS "${CMAKE_SOURCE_DIR}/src/CMakeLists.txt")
   add_subdirectory(src)
 endif()
 
-# --- NEW: add Poisson-disk library and CLI subdirectories ---
-add_subdirectory(src/pcg)
-add_subdirectory(tools/poisson_scatter)
+# --- Optional extra libs/CLIs only if their CMakeLists exist ---
+if(EXISTS "${CMAKE_SOURCE_DIR}/src/pcg/CMakeLists.txt")
+  add_subdirectory(src/pcg)
+endif()
+if(EXISTS "${CMAKE_SOURCE_DIR}/tools/poisson_scatter/CMakeLists.txt")
+  add_subdirectory(tools/poisson_scatter)
+endif()
 
 if(TARGET ColonyGame)
   if(COLONY_THIRDPARTY_LIBS)
     target_link_libraries(ColonyGame PRIVATE ${COLONY_THIRDPARTY_LIBS})
   endif()
 
-  target_link_libraries(ColonyGame PRIVATE pcg)
-  target_link_libraries(ColonyGame PRIVATE Factions)
+  if(TARGET pcg)
+    target_link_libraries(ColonyGame PRIVATE pcg)
+  endif()
+  if(TARGET Factions)
+    target_link_libraries(ColonyGame PRIVATE Factions)
+  endif()
 
   if(TARGET colony_build_options)
     target_link_libraries(ColonyGame PRIVATE colony_build_options)
   endif()
 
   # ---------------------------
-  # Option A — add sources directly to your game target (Refactor)
+  # Option A — add extra sources directly to your game target (Refactor-ready)
   # ---------------------------
-  target_sources(ColonyGame PRIVATE
+  foreach(_maybe_src
       src/app/EntryWinMain.cpp
       src/app/App.h
       src/app/App.cpp
-
       src/core/FixedTimestep.h
       src/core/FixedTimestep.cpp
-
       src/render/HrCheck.h
       src/render/DeviceD3D11.h
       src/render/DeviceD3D11.cpp
@@ -788,18 +805,25 @@ if(TARGET ColonyGame)
       src/render/Shaders.cpp
       src/render/Textures.h
       src/render/Textures.cpp
-
       src/terrain/ThermalErosion.h
       src/terrain/ThermalErosion.cpp
   )
+    if(EXISTS "${CMAKE_SOURCE_DIR}/${_maybe_src}")
+      target_sources(ColonyGame PRIVATE "${_maybe_src}")
+    endif()
+  endforeach()
 
-  # --- NEW: DXC wrapper + thread-pool/job adapters ---
-  target_sources(ColonyGame PRIVATE
+  # --- NEW: DXC wrapper + thread-pool/job adapters (optional) ---
+  foreach(_maybe_src
       src/engine/Renderer/ShaderCompiler.cpp
       src/common/ThreadPool.hpp
       src/pathfinding/PathJobs.hpp
       src/worldgen/WorldgenJobs.hpp
   )
+    if(EXISTS "${CMAKE_SOURCE_DIR}/${_maybe_src}")
+      target_sources(ColonyGame PRIVATE "${_maybe_src}")
+    endif()
+  endforeach()
 
   # ===========================
   # --- PATCH: Terrain & Simulation (determinism + GPU thermal erosion) ---
@@ -816,12 +840,17 @@ if(TARGET ColonyGame)
       src/simulation/Replay.hpp
       src/simulation/Replay.cpp
   )
-  target_sources(ColonyGame PRIVATE ${COLONY_TERRAIN_SOURCES})
+  foreach(_tsrc IN LISTS COLONY_TERRAIN_SOURCES)
+    if(EXISTS "${CMAKE_SOURCE_DIR}/${_tsrc}")
+      target_sources(ColonyGame PRIVATE "${_tsrc}")
+    endif()
+  endforeach()
 
   # Provide an explicit erosion shader source directory and macro for runtime compilation.
-  # (These two HLSL files are compiled at runtime via D3DCompileFromFile.)
   set(COLONY_SHADER_DIR "${CMAKE_SOURCE_DIR}/renderer/Shaders" CACHE PATH "HLSL sources (erosion)")
-  target_compile_definitions(ColonyGame PRIVATE COLONY_SHADER_DIR=L"${COLONY_SHADER_DIR}")
+  if(EXISTS "${COLONY_SHADER_DIR}")
+    target_compile_definitions(ColonyGame PRIVATE COLONY_SHADER_DIR=L"${COLONY_SHADER_DIR}")
+  endif()
 
   # Include root/src (for the headers above)
   target_include_directories(ColonyGame PRIVATE
