@@ -655,7 +655,7 @@ if(NOT CG_HLSL_MSBUILD)
                       -T ${PROFILE} -E ${ENTRY}
                       $<$<CONFIG:Debug>:-Zi>
                       $<$<CONFIG:Debug>:-Qembed_debug>
-                      $<$<NOT:$<CONFIG:Debug>>:-Qstrip_debug>
+                      $<$<CONFIG:Release>:-Qstrip_debug>
                       -Fo "${OUTFILE}"
                       -I "${CMAKE_SOURCE_DIR}/shaders"
                       -I "${CMAKE_SOURCE_DIR}/src/pcg/shaders"
