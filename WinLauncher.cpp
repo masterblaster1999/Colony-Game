@@ -278,7 +278,6 @@ private:
     HANDLE h_;
 };
 
-// Optional: embedded fallback loop
 #ifdef COLONY_EMBED_GAME_LOOP
 // Forward decl; implemented at bottom.
 static LRESULT CALLBACK EmbeddedWndProc(HWND, UINT, WPARAM, LPARAM);
