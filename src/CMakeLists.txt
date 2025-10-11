@@ -75,32 +75,43 @@ if(CMAKE_GENERATOR MATCHES "Visual Studio")
   set(HLSL_INC_ALT      "${CMAKE_SOURCE_DIR}/shaders/include")  # optional secondary include root
   set(_VS_OUTDIR "$(OutDir)res\\shaders")  # place .cso where the runtime expects them
 
-  # Discover shader sources and include-only headers
-  file(GLOB_RECURSE HLSL_ALL
-    CONFIGURE_DEPENDS
-    "${HLSL_DIR}/*.hlsl" "${HLSL_DIR}/*.hlsli"
+  # --- Only compile entrypoint-bearing shaders; treat others as header-only ---
+  # 1) Explicitly collect only compileable HLSL with *_vs/_ps/_cs suffixes
+  file(GLOB_RECURSE HLSL_SOURCES CONFIGURE_DEPENDS
+    "${HLSL_DIR}/*_vs.hlsl"
+    "${HLSL_DIR}/*_ps.hlsl"
+    "${HLSL_DIR}/*_cs.hlsl"
   )
 
-  set(VS_SHADERS "")
-  set(HLSL_INCLUDES "")
-  foreach(_f IN LISTS HLSL_ALL)
-    if(_f MATCHES "\\.hlsli$")
-      list(APPEND HLSL_INCLUDES "${_f}")  # include-only: visible in VS, not compiled
-    else()
-      list(APPEND VS_SHADERS "${_f}")     # .hlsl files to be compiled by MSBuild/FXC
+  # 2) Library/utility .hlsl (no entry point): mark header-only
+  file(GLOB_RECURSE HLSL_ALL_HLSL CONFIGURE_DEPENDS "${HLSL_DIR}/*.hlsl")
+  set(HLSL_LIBRARY "")
+  foreach(_f IN LISTS HLSL_ALL_HLSL)
+    list(FIND HLSL_SOURCES "${_f}" _idx)
+    if(_idx EQUAL -1)
+      list(APPEND HLSL_LIBRARY "${_f}")
     endif()
   endforeach()
 
-  # Add shaders and includes to the project (so they show up in Solution Explorer)
-  if(VS_SHADERS)
-    target_sources(ColonyGame PRIVATE ${VS_SHADERS})
+  # 3) .hlsli files are includes, not compiled
+  file(GLOB_RECURSE HLSL_INCLUDES CONFIGURE_DEPENDS "${HLSL_DIR}/*.hlsli")
+
+  # Add to target so they appear in Solution Explorer
+  if(HLSL_SOURCES)
+    target_sources(ColonyGame PRIVATE ${HLSL_SOURCES})
+  endif()
+  if(HLSL_LIBRARY)
+    target_sources(ColonyGame PRIVATE ${HLSL_LIBRARY})
+    set_source_files_properties(${HLSL_LIBRARY} PROPERTIES HEADER_FILE_ONLY ON)
   endif()
   if(HLSL_INCLUDES)
     target_sources(ColonyGame PRIVATE ${HLSL_INCLUDES})
     set_source_files_properties(${HLSL_INCLUDES} PROPERTIES HEADER_FILE_ONLY ON)
   endif()
 
-  source_group("Shaders\\Sources"  FILES ${VS_SHADERS})
+  # Group them in the IDE
+  source_group("Shaders\\Sources"  FILES ${HLSL_SOURCES})
+  source_group("Shaders\\Library"  FILES ${HLSL_LIBRARY})
   source_group("Shaders\\Includes" FILES ${HLSL_INCLUDES})
 
   # Construct include flags for FXC (support both include roots if they exist)
@@ -112,49 +123,26 @@ if(CMAKE_GENERATOR MATCHES "Visual Studio")
     string(APPEND _HLSL_INC_FLAGS " /I\"${HLSL_INC_ALT}\"")
   endif()
 
-  # Helper to set VS shader properties by suffix: *_vs.hlsl / *_ps.hlsl / *_cs.hlsl
+  # Configure VS shader properties by suffix: *_vs.hlsl / *_ps.hlsl / *_cs.hlsl
   function(_configure_vs_shader _file)
     get_filename_component(_we "${_file}" NAME_WE)
-    # Determine type from common suffixes
     set(_type "")
-    set(_entry "")
-    if(_we MATCHES "_vs$")
-      set(_type  "Vertex")
-      set(_entry "main")   # standardized entrypoint
-    elseif(_we MATCHES "_ps$")
-      set(_type  "Pixel")
-      set(_entry "main")   # standardized entrypoint
-    elseif(_we MATCHES "_cs$")
-      set(_type  "Compute")
-      set(_entry "main")   # standardized entrypoint
+    if(_we MATCHES "_vs$")      set(_type "Vertex")
+    elseif(_we MATCHES "_ps$")  set(_type "Pixel")
+    elseif(_we MATCHES "_cs$")  set(_type "Compute")
+    else()                      return() # Only compile files in HLSL_SOURCES
     endif()
 
-    if(NOT _type)
-      # Fall back to explicit mapping for known names if they don't follow the suffix convention
-      if(_we STREQUAL "mesh_vs")
-        set(_type  "Vertex")
-        set(_entry "main") # standardized entrypoint
-      elseif(_we STREQUAL "mesh_ps")
-        set(_type  "Pixel")
-        set(_entry "main") # standardized entrypoint
-      else()
-        # If we still can't infer the type, don't touch this source (lets user configure manually)
-        return()
-      endif()
-    endif()
-
-    # Apply properties (Shader Model 5.0 via FXC; swap to 6.x + DXC later if desired)
     set_source_files_properties("${_file}" PROPERTIES
       VS_SHADER_TYPE              "${_type}"
       VS_SHADER_MODEL             "5.0"
-      VS_SHADER_ENTRYPOINT        "${_entry}"
+      VS_SHADER_ENTRYPOINT        "main"
       VS_SHADER_OBJECT_FILE_NAME  "${_VS_OUTDIR}\\%(Filename).cso"
-      # Debug-friendly flags in Debug config; also pass include dirs
       VS_SHADER_FLAGS             "$<$<CONFIG:Debug>:/Od;/Zi>${_HLSL_INC_FLAGS}"
     )
   endfunction()
 
-  foreach(_sh IN LISTS VS_SHADERS)
+  foreach(_sh IN LISTS HLSL_SOURCES)
     _configure_vs_shader("${_sh}")
   endforeach()
 
