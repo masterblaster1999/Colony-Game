@@ -1,32 +1,20 @@
+// platform/win/Paths.h
 #pragma once
 #include <filesystem>
-#include <string>
+#include <string_view>
 
-namespace winenv {
+namespace Colony::Win::Paths
+{
+    // Returns (and creates) %USERPROFILE%\Saved Games\<AppName>\
+    std::filesystem::path SavedGames(std::wstring_view appName);
 
-// Directory containing the executable.
-std::filesystem::path exe_dir();
+    // Returns (and creates) %LOCALAPPDATA%\<AppName>\ (good for caches, logs)
+    std::filesystem::path LocalAppData(std::wstring_view appName);
 
-// First ancestor that contains a "res" folder (project root).
-std::filesystem::path project_root();
+    // Returns (and creates) %APPDATA%\<AppName>\ (roaming profile; good for config)
+    std::filesystem::path RoamingAppData(std::wstring_view appName);
 
-// <project_root>/res
-std::filesystem::path resource_dir();
-
-// %LOCALAPPDATA%\<appName>
-std::filesystem::path user_data_dir(const std::wstring& appName = L"Colony-Game");
-
-// Creates %LOCALAPPDATA%\<appName>\{saves,logs}
-void ensure_user_dirs(const std::wstring& appName = L"Colony-Game");
-
-// Call this EARLY in WinMain/main on Windows.
-// - Locks down DLL search path
-// - Adjusts working directory to project root
-// - Sets Per-Monitor-V2 DPI
-// - Checks for res/ and shows a useful error if missing
-void init_process_environment(const std::wstring& appName = L"Colony-Game");
-
-// Tiny helper to send a line to the debugger (and optionally a log file later)
-void log_debug(const std::wstring& line);
-
-} // namespace winenv
+    // Convenience subfolders (created if needed)
+    std::filesystem::path Logs(std::wstring_view appName);
+    std::filesystem::path Config(std::wstring_view appName);
+}
