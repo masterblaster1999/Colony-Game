@@ -1,0 +1,79 @@
+{
+  "model": "USSA1976 up to 86 km + simplified MSIS-style extension (quiet-Sun baseline)",
+  "references": {
+    "ussa1976": "NOAA/NASA/USAF U.S. Standard Atmosphere, 1976",
+    "msis": "NRLMSISE-00 (Mass Spectrometer and Incoherent Scatter Radar) model; simplified param used"
+  },
+  "earth_constants_used": {
+    "mu_m3_s2": 398600435507000.0,
+    "mean_radius_m": 6371008.4,
+    "equatorial_radius_m": 6378136.6,
+    "g0_m_s2": 9.80665
+  },
+  "ussa_layers": [
+    {
+      "base_alt_m": 0.0,
+      "lapse_rate_K_per_m": -0.0065,
+      "base_T_K": 288.15,
+      "base_P_Pa": 101325.0
+    },
+    {
+      "base_alt_m": 11000.0,
+      "lapse_rate_K_per_m": 0.0,
+      "base_T_K": 216.64999999999998,
+      "base_P_Pa": 22632.645891130265
+    },
+    {
+      "base_alt_m": 20000.0,
+      "lapse_rate_K_per_m": 0.001,
+      "base_T_K": 216.64999999999998,
+      "base_P_Pa": 5475.1627233349245
+    },
+    {
+      "base_alt_m": 32000.0,
+      "lapse_rate_K_per_m": 0.0028,
+      "base_T_K": 228.64999999999998,
+      "base_P_Pa": 868.089558034358
+    },
+    {
+      "base_alt_m": 47000.0,
+      "lapse_rate_K_per_m": 0.0,
+      "base_T_K": 270.65,
+      "base_P_Pa": 110.91927557768715
+    },
+    {
+      "base_alt_m": 51000.0,
+      "lapse_rate_K_per_m": -0.0028,
+      "base_T_K": 270.65,
+      "base_P_Pa": 66.94728114099735
+    },
+    {
+      "base_alt_m": 71000.0,
+      "lapse_rate_K_per_m": -0.002,
+      "base_T_K": 214.64999999999998,
+      "base_P_Pa": 3.9571093634086396
+    }
+  ],
+  "ussa_top_at_86km": {
+    "alt_m": 86000.0,
+    "T_K": 184.64999999999998,
+    "P_Pa": 0.3023955326498074
+  },
+  "msis_simplified": {
+    "T_profile_breakpoints": [
+      { "alt_km": 86.0, "T_K": 184.64999999999998 },
+      { "alt_km": 120.0, "T_K": 240.0 },
+      { "alt_km": 200.0, "T_K": 500.0 },
+      { "alt_km": 400.0, "T_K": 1000.0 },
+      { "alt_km": 1000.0, "T_K": 1000.0 }
+    ],
+    "M_profile_breakpoints": [
+      { "alt_km": 86.0, "M_kg_per_mol": 0.028964 },
+      { "alt_km": 150.0, "M_kg_per_mol": 0.024 },
+      { "alt_km": 200.0, "M_kg_per_mol": 0.016 },
+      { "alt_km": 400.0, "M_kg_per_mol": 0.005 },
+      { "alt_km": 1000.0, "M_kg_per_mol": 0.0015 }
+    ],
+    "notes": "Above 86 km, we integrate pressure with variable g(h), T(h), and mean molar mass M(h)."
+  }
+}
