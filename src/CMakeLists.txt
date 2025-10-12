@@ -58,9 +58,9 @@ add_custom_command(TARGET ColonyGame POST_BUILD
   # (Optional) If your shader pipeline emits compiled outputs into build/shaders,
   # uncomment this block. Keep it commented if that folder may not exist.
   # COMMAND ${CMAKE_COMMAND} -E make_directory
-  #         "$<TARGET_FILE_DIR:ColonyGame>/shaders"
+  #         "$<TARGET_FILE_DIR:ColonyGame>/res/shaders"
   # COMMAND ${CMAKE_COMMAND} -E copy_directory
-  #         "${CMAKE_BINARY_DIR}/shaders" "$<TARGET_FILE_DIR:ColonyGame>/shaders"
+  #         "${CMAKE_BINARY_DIR}/shaders/$<CONFIG>" "$<TARGET_FILE_DIR:ColonyGame>/res/shaders"
   VERBATIM
 )
 
