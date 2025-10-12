@@ -1,96 +1,81 @@
 {
   "version": 6,
-  "cmakeMinimumRequired": { "major": 3, "minor": 27 },
+  "cmakeMinimumRequired": { "major": 3, "minor": 24, "patch": 0 },
+
   "configurePresets": [
     {
-      "name": "win-msvc-x64-debug",
-      "generator": "Ninja",
-      "binaryDir": "${sourceDir}/out/build/win-msvc-x64-debug",
-      "cacheVariables": {
-        "CMAKE_BUILD_TYPE": "Debug",
-        "VCPKG_MANIFEST_MODE": "ON",
-        "CMAKE_MSVC_DEBUG_INFORMATION_FORMAT": "ProgramDatabase",
-        "COLONY_ENABLE_MINIDUMPS": "ON"
-      }
-    },
-    {
-      "name": "win-msvc-x64-relwithdebinfo",
-      "inherits": "win-msvc-x64-debug",
-      "cacheVariables": {
-        "CMAKE_BUILD_TYPE": "RelWithDebInfo",
-        "CMAKE_MSVC_DEBUG_INFORMATION_FORMAT": "ProgramDatabase",
-        "COLONY_ENABLE_MINIDUMPS": "ON"
-      }
-    },
-    {
-      "name": "vs-2022-x64-relwithdebinfo",
-      "displayName": "Visual Studio 2022 (x64) — RelWithDebInfo",
-      "description": "VS generator for easy F5 debugging with MSBuild HLSL integration.",
+      "name": "windows-base",
+      "displayName": "Windows (VS 2022, x64)",
+      "description": "Base Windows preset (Visual Studio 2022).",
       "generator": "Visual Studio 17 2022",
       "architecture": { "value": "x64" },
-      "binaryDir": "${sourceDir}/out/build/vs-2022-x64-relwithdebinfo",
+      "binaryDir": "${sourceDir}/out/build/${presetName}",
+      "installDir": "${sourceDir}/out/install/${presetName}",
+      "condition": { "type": "equals", "lhs": "${hostSystemName}", "rhs": "Windows" },
       "cacheVariables": {
-        "VCPKG_MANIFEST_MODE": "ON",
-        "FRONTEND": "win32",
-        "COLONY_STATIC_CRT": "OFF",
-        "COLONY_USE_VS_HLSL": "ON",
-        "COLONY_LTO": "ON",
-        "CMAKE_MSVC_DEBUG_INFORMATION_FORMAT": "ProgramDatabase",
-        "COLONY_ENABLE_MINIDUMPS": "ON",
-        "COLONY_SHIP_PDB": "ON"
+        "CMAKE_CXX_STANDARD": "20",
+        "CMAKE_POLICY_DEFAULT_CMP0069": "NEW",
+        "CMAKE_INTERPROCEDURAL_OPTIMIZATION_RELWITHDEBINFO": "ON",
+
+        // Remove these two if you don't use vcpkg:
+        "CMAKE_TOOLCHAIN_FILE": "$env{VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake",
+        "VCPKG_FEATURE_FLAGS": "manifests,versions"
       }
     },
+
     {
-      "name": "vs-2022-x64-debug",
-      "displayName": "Visual Studio 2022 (x64) — Debug",
-      "inherits": "vs-2022-x64-relwithdebinfo",
-      "binaryDir": "${sourceDir}/out/build/vs-2022-x64-debug",
+      "name": "dev-windows",
+      "displayName": "Dev (Debug, Windows)",
+      "inherits": "windows-base",
       "cacheVariables": {
-        "COLONY_USE_VS_HLSL": "ON",
-        "COLONY_ASAN": "ON",
-        "COLONY_ENABLE_MINIDUMPS": "ON"
+        "COLONY_WERROR": "OFF"              // project-specific toggle if you use it
       }
     },
+
     {
-      "name": "vs-hlsl",
-      "displayName": "VS (HLSL) - x64",
-      "description": "Visual Studio 2022 generator; enables MSBuild HLSL integration gated in CMakeLists.",
-      "generator": "Visual Studio 17 2022",
-      "architecture": { "value": "x64" },
-      "binaryDir": "${sourceDir}/out/build/vs-hlsl",
+      "name": "asan-windows",
+      "displayName": "ASan (Debug, Windows)",
+      "inherits": "windows-base",
       "cacheVariables": {
-        "VCPKG_MANIFEST_MODE": "ON",
-        "FRONTEND": "win32",
-        "COLONY_STATIC_CRT": "OFF",
-        "COLONY_USE_VS_HLSL": "ON",
-        "CMAKE_MSVC_DEBUG_INFORMATION_FORMAT": "ProgramDatabase",
-        "COLONY_ENABLE_MINIDUMPS": "ON"
+        "COLONY_ENABLE_ASAN": "ON",         // we'll read this in CMakeLists.txt
+        "CMAKE_MSVC_DEBUG_INFORMATION_FORMAT": "ProgramDatabase"  // ensures /Zi
       }
     },
+
     {
-      "name": "ninja-dxc",
-      "displayName": "Ninja (DXC/FXC) - RelWithDebInfo",
-      "description": "Single-config Ninja build. Defaults to D3D12 + DXC path; set COLONY_RENDERER=d3d11 if you want FXC.",
-      "generator": "Ninja",
-      "binaryDir": "${sourceDir}/out/build/ninja-dxc-relwithdebinfo",
+      "name": "relwithdebinfo-windows",
+      "displayName": "RelWithDebInfo (IPO on, Windows)",
+      "inherits": "windows-base",
       "cacheVariables": {
-        "CMAKE_BUILD_TYPE": "RelWithDebInfo",
-        "VCPKG_MANIFEST_MODE": "ON",
-        "COLONY_RENDERER": "d3d12",
-        "BUILD_SHADERS_DXC": "ON",
-        "BUILD_SHADERS_FXC": "OFF",
-        "CMAKE_MSVC_DEBUG_INFORMATION_FORMAT": "ProgramDatabase",
-        "COLONY_ENABLE_MINIDUMPS": "ON"
+        "CMAKE_BUILD_TYPE": ""              // ignored by multi-config generators, kept for IDEs
       }
     }
   ],
+
   "buildPresets": [
-    { "name": "build-debug", "configurePreset": "win-msvc-x64-debug" },
-    { "name": "build-rel", "configurePreset": "win-msvc-x64-relwithdebinfo" },
-    { "name": "vs-2022-debug-build", "displayName": "Build — VS 2022 Debug", "configurePreset": "vs-2022-x64-debug", "configuration": "Debug" },
-    { "name": "vs-2022-relwithdebinfo-build", "displayName": "Build — VS 2022 RelWithDebInfo", "configurePreset": "vs-2022-x64-relwithdebinfo", "configuration": "RelWithDebInfo" },
-    { "name": "vs-hlsl-debug", "displayName": "Build VS (HLSL) — Debug", "configurePreset": "vs-hlsl", "configuration": "Debug" },
-    { "name": "vs-hlsl-release", "displayName": "Build VS (HLSL) — Release", "configurePreset": "vs-hlsl", "configuration": "Release" },
-    { "name": "ninja-dxc-build", "displayName": "Build Ninja (DXC/FXC)", "configurePreset": "ninja-dxc", "targets": [ "all" ] }
+    {
+      "name": "dev-windows",
+      "configurePreset": "dev-windows",
+      "configuration": "Debug"
+    },
+    {
+      "name": "asan-windows",
+      "configurePreset": "asan-windows",
+      "configuration": "Debug"
+    },
+    {
+      "name": "relwithdebinfo-windows",
+      "configurePreset": "relwithdebinfo-windows",
+      "configuration": "RelWithDebInfo"
+    }
+  ],
+
+  "testPresets": [
+    {
+      "name": "dev-windows",
+      "configurePreset": "dev-windows",
+      "configuration": "Debug",
+      "output": { "outputOnFailure": true }
+    }
   ]
 }
