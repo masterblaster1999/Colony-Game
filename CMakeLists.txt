@@ -742,7 +742,7 @@ endif()
 # ===========================
 #   Factions module (optional)
 # ===========================
-if(EXISTS "${CMAKE_SOURCE_DIR}/src/sim/factions/FactionGen.cpp")
+if(EXISTS "${CMAKE_SOURCE_DIR}/src/sim/factions/FactionGen.cpp"])
   add_library(Factions STATIC
       src/sim/factions/FactionGen.cpp
   )
