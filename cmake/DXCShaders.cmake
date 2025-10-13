@@ -1,93 +1,174 @@
-# cmake/DXCShaders.cmake
-# Tiny helper to compile one HLSL shader with DXC and produce a .cso next to other build artifacts.
-# Requires: dxc.exe available in PATH (Windows SDK) or explicitly pointed to by DXC_EXE.
-# Flags follow Microsoft's DXC guidance: -E (entry), -T (profile), -Fo (output), -Zi/-Fd (debug), -HV (language).  [1]
-#
-# [1] https://github.com/microsoft/DirectXShaderCompiler/wiki/Using-dxc.exe-and-dxcompiler.dll
+# cmake/DxcShaders.cmake
+# Windows-only DXC helpers to compile HLSL -> DXIL at build time.
 
-function(add_dxc_compute_shader OUT_VAR)
-  # Usage:
-  #   add_dxc_compute_shader( OUT_VAR
-  #     SOURCE  <path/to/shader.hlsl>
-  #     OUTPUT  <name.cso>
-  #     ENTRY   <main>         # optional, default main
-  #     TARGET  <cs_6_7>       # optional, default cs_6_7
-  #     INCLUDES <dir1> <dir2> # optional include dirs
-  #     DEFINES  <K=V> <NAME>  # optional macro defs (no leading -D)
-  #     DEPENDS  <file1> ...   # extra dependencies (e.g., .hlsli)
-  #     SUBDIR   <shaders>     # output subdir under binary dir; default "shaders"
-  #   )
+if(NOT WIN32)
+  return()
+endif()
 
+include(CMakeParseArguments)
+
+# --- Locate dxc.exe (prefers vcpkg's directx-dxc tool) -----------------------
+function(dxc_locate OUT_VAR)
+  if(DEFINED DIRECTX_DXC_TOOL AND EXISTS "${DIRECTX_DXC_TOOL}")
+    set(_dxc "${DIRECTX_DXC_TOOL}")
+  else()
+    # Fall back to PATH / common install locations:
+    find_program(_dxc NAMES dxc.exe dxc PATHS
+      # VS and Windows SDK typical tool folders are searched via PATH as well
+      )
+  endif()
+
+  if(NOT _dxc)
+    message(FATAL_ERROR "DXC not found. Install vcpkg 'directx-dxc' as a host tool or add dxc to PATH.")
+  endif()
+
+  set(${OUT_VAR} "${_dxc}" PARENT_SCOPE)
+endfunction()
+
+# --- Map stage to a default Shader Model profile (can be overridden) ----------
+function(dxc_default_profile STAGE OUT_VAR)
+  string(TOLOWER "${STAGE}" _s)
+  if(_s STREQUAL "vs")
+    set(_p "vs_6_7")
+  elseif(_s STREQUAL "ps")
+    set(_p "ps_6_7")
+  elseif(_s STREQUAL "cs")
+    set(_p "cs_6_7")
+  elseif(_s STREQUAL "gs")
+    set(_p "gs_6_7")
+  elseif(_s STREQUAL "hs")
+    set(_p "hs_6_7")
+  elseif(_s STREQUAL "ds")
+    set(_p "ds_6_7")
+  elseif(_s STREQUAL "ms")
+    set(_p "ms_6_7") # Mesh
+  elseif(_s STREQUAL "as")
+    set(_p "as_6_7") # Amplification
+  elseif(_s STREQUAL "lib")
+    set(_p "lib_6_7") # DXIL library (raytracing, work graphs, etc.)
+  else()
+    message(FATAL_ERROR "Unknown shader stage '${STAGE}'.")
+  endif()
+  set(${OUT_VAR} "${_p}" PARENT_SCOPE)
+endfunction()
+
+# --- Compile a single shader --------------------------------------------------
+# Usage:
+#   dxc_compile_shader(
+#     OUT out_list_var
+#     FILE <path/to/shader.hlsl>
+#     ENTRY <VSMain|PSMain|...>
+#     STAGE <vs|ps|cs|gs|hs|ds|ms|as|lib>
+#     [PROFILE <vs_6_7|...>]
+#     [DEFINES FOO=1 BAR=2 ...]
+#     [INCLUDES dir1 dir2 ...]
+#     [ARGS -enable-16bit-types ...]   # extra raw dxc args if needed
+#   )
+function(dxc_compile_shader)
   set(options)
-  set(oneValue SOURCE OUTPUT ENTRY TARGET SUBDIR)
-  set(multiValue INCLUDES DEFINES DEPENDS)
-  cmake_parse_arguments(DXC "${options}" "${oneValue}" "${multiValue}" ${ARGN})
+  set(oneValueArgs OUT FILE ENTRY STAGE PROFILE)
+  set(multiValueArgs DEFINES INCLUDES ARGS)
+  cmake_parse_arguments(DCX "${options}" "${oneValueArgs}" "${multiValueArgs}" ${ARGN})
 
-  if(NOT DXC_SOURCE)
-    message(FATAL_ERROR "add_dxc_compute_shader: SOURCE is required")
+  if(NOT DCX_OUT OR NOT DCX_FILE OR NOT DCX_ENTRY OR NOT DCX_STAGE)
+    message(FATAL_ERROR "dxc_compile_shader: OUT, FILE, ENTRY, and STAGE are required.")
   endif()
 
-  if(NOT DXC_OUTPUT)
-    get_filename_component(_name "${DXC_SOURCE}" NAME_WE)
-    set(DXC_OUTPUT "${_name}.cso")
+  get_filename_component(_abs "${DCX_FILE}" ABSOLUTE)
+  if(NOT EXISTS "${_abs}")
+    message(FATAL_ERROR "Shader source not found: ${_abs}")
+  endif()
+  get_filename_component(_namewe "${_abs}" NAME_WE)
+  string(TOLOWER "${DCX_STAGE}" _stage_lc)
+
+  # Resolve dxc and profile
+  dxc_locate(DXC_EXE)
+  if(DCX_PROFILE)
+    set(_profile "${DCX_PROFILE}")
+  else()
+    dxc_default_profile("${DCX_STAGE}" _profile)
   endif()
 
-  if(NOT DXC_ENTRY)
-    set(DXC_ENTRY "main")
-  endif()
+  # Output directory and files
+  set(_outdir "${CMAKE_BINARY_DIR}/shaders/${_stage_lc}")
+  set(_dxil   "${_outdir}/${_namewe}.${_stage_lc}.dxil")
+  file(MAKE_DIRECTORY "${_outdir}")
 
-  if(NOT DXC_TARGET)
-    set(DXC_TARGET "cs_6_7")
-  endif()
-
-  if(NOT DXC_SUBDIR)
-    set(DXC_SUBDIR "shaders")
-  endif()
-
-  # Find DXC (Windows SDK typically puts dxc.exe on PATH; if not, let users set DXC_EXE cache var)
-  if(NOT DEFINED DXC_EXE)
-    find_program(DXC_EXE NAMES dxc.exe dxc)
-  endif()
-  if(NOT DXC_EXE)
-    message(FATAL_ERROR "dxc.exe not found. Install the Windows SDK or add DXC_EXE to your CMake cache.")
-  endif()
-
-  # Convert INCLUDES/DEFINES to DXC args
-  set(_inc_args)
-  foreach(dir IN LISTS DXC_INCLUDES)
-    list(APPEND _inc_args -I "$<IF:$<BOOL:${dir}>,${dir},.>")
+  # Compose include/define args
+  set(_inc_args "")
+  foreach(_i IN LISTS DCX_INCLUDES)
+    list(APPEND _inc_args -I "${_i}")
   endforeach()
 
-  set(_def_args)
-  foreach(def IN LISTS DXC_DEFINES)
-    list(APPEND _def_args -D "${def}")
+  set(_def_args "")
+  foreach(_d IN LISTS DCX_DEFINES)
+    list(APPEND _def_args -D "${_d}")
   endforeach()
 
-  # Where to place the compiled object
-  set(_out "${CMAKE_BINARY_DIR}/${DXC_SUBDIR}/${DXC_OUTPUT}")
-  get_filename_component(_out_dir "${_out}" DIRECTORY)
-
-  add_custom_command(
-    OUTPUT "${_out}"
-    COMMAND ${CMAKE_COMMAND} -E make_directory "${_out_dir}"
-    COMMAND "${DXC_EXE}"
-            -nologo
-            -T ${DXC_TARGET}
-            -E ${DXC_ENTRY}
-            -HV 2021
-            $<$<CONFIG:Debug>:-Zi -Fd "${_out}.pdb" -Qembed_debug -Od>
-            $<$<NOT:$<CONFIG:Debug>>:-O3>
-            ${_inc_args}
-            ${_def_args}
-            -Fo "${_out}"
-            "${DXC_SOURCE}"
-    MAIN_DEPENDENCY "${DXC_SOURCE}"
-    DEPENDS ${DXC_DEPENDS}
-    COMMENT "DXC ${DXC_TARGET} ${DXC_SOURCE} -> ${_out}"
-    VERBATIM
-    COMMAND_EXPAND_LISTS
+  # Config-conditional flags:
+  #  Debug / RelWithDebInfo: embed debug info to aid PIX/Nsight
+  #  Release: strip debug + reflection to shrink blobs
+  set(_cfg_args
+    $<$<CONFIG:Debug>:-Zi;-Qembed_debug;-O0>
+    $<$<CONFIG:RelWithDebInfo>:-Zi;-Qembed_debug;-O3>
+    $<$<CONFIG:Release>:-O3;-Qstrip_debug;-Qstrip_reflect>
   )
 
-  # Return the path to the compiled shader
-  set(${OUT_VAR} "${_out}" PARENT_SCOPE)
+  add_custom_command(
+    OUTPUT "${_dxil}"
+    COMMAND "${DXC_EXE}"
+            -nologo
+            -T "${_profile}"
+            -E "${DCX_ENTRY}"
+            ${_inc_args}
+            ${_def_args}
+            ${_cfg_args}
+            ${DCX_ARGS}
+            -Fo "${_dxil}"
+            "${_abs}"
+    DEPENDS "${_abs}"
+    COMMENT "DXC ${_profile} ${_namewe}.${_stage_lc} -> ${_dxil}"
+    VERBATIM
+  )
+
+  # Return generated file
+  set(${DCX_OUT} "${${DCX_OUT}};${_dxil}" PARENT_SCOPE)
+endfunction()
+
+# --- Compile a standalone root signature from HLSL text ----------------------
+#   dxc_compile_rootsig(OUT out_var FILE RootSig.hlsl ENTRY MyRootSig VERSION 1_1)
+function(dxc_compile_rootsig)
+  set(options)
+  set(oneValueArgs OUT FILE ENTRY VERSION)
+  set(multiValueArgs)
+  cmake_parse_arguments(RS "${options}" "${oneValueArgs}" "${multiValueArgs}" ${ARGN})
+
+  if(NOT RS_OUT OR NOT RS_FILE OR NOT RS_ENTRY)
+    message(FATAL_ERROR "dxc_compile_rootsig: OUT, FILE, and ENTRY are required.")
+  endif()
+
+  set(_ver "${RS_VERSION}")
+  if(NOT _ver)
+    set(_ver "1_1")
+  endif()
+
+  get_filename_component(_abs "${RS_FILE}" ABSOLUTE)
+  get_filename_component(_namewe "${_abs}" NAME_WE)
+  set(_outdir "${CMAKE_BINARY_DIR}/shaders/rootsig")
+  file(MAKE_DIRECTORY "${_outdir}")
+  set(_bin "${_outdir}/${_namewe}.rootsig${_ver}.bin")
+
+  dxc_locate(DXC_EXE)
+  add_custom_command(
+    OUTPUT "${_bin}"
+    COMMAND "${DXC_EXE}" -nologo
+            -T "rootsig_${_ver}"
+            -E "${RS_ENTRY}"
+            -Fo "${_bin}"
+            "${_abs}"
+    DEPENDS "${_abs}"
+    COMMENT "DXC rootsig_${_ver} ${_namewe} -> ${_bin}"
+    VERBATIM
+  )
+  set(${RS_OUT} "${${RS_OUT}};${_bin}" PARENT_SCOPE)
 endfunction()
