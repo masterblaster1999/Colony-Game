@@ -320,6 +320,8 @@ include(ShaderSetup OPTIONAL RESULT_VARIABLE _shader_setup_loaded)
 include(cmake/shaders.cmake OPTIONAL)
 # --- Auto HLSL per-file configuration (Visual Studio) ---
 include(AutoHlsl OPTIONAL)
+# --- NEW: prefer DXC helper module when available ---
+include(DxcShaders OPTIONAL)
 
 # --- Fallback HLSL configurator (for VS) if external module is absent ---
 include(ConfigureHLSL OPTIONAL RESULT_VARIABLE _configure_hlsl_loaded)
@@ -575,105 +577,189 @@ if(NOT CG_HLSL_MSBUILD)
       set_property(CACHE DXC_DEFAULT_SM PROPERTY STRINGS 6_6 6_7)
 
       if(BUILD_SHADERS_DXC AND NOT TARGET shaders)
-        # Improved DXC discovery: env var, Vulkan SDK, VS locations, Windows SDK
-        find_program(DXC_EXE NAMES dxc HINTS
-          "$ENV{DXC_PATH}"
-          "$ENV{VULKAN_SDK}/Bin"
-          "$ENV{VCToolsInstallDir}/bin/Hostx64/x64"
-          "C:/Program Files/Microsoft Visual Studio/2022/Community/VC/Tools/Llvm/x64/bin"
-          "C:/Program Files/Microsoft Visual Studio/2022/Professional/VC/Tools/Llvm/x64/bin"
-          "C:/Program Files/Microsoft Visual Studio/2022/Enterprise/VC/Tools/Llvm/x64/bin"
-          "$ENV{WindowsSdkDir}/bin/x64"
-          "$ENV{WindowsSdkDir}/bin"
-        )
-        if(NOT DXC_EXE)
-          message(WARNING "DXC not found on PATH or SDK; set DXC_EXE or install the DirectX Shader Compiler. Shaders will not be compiled.")
-        endif()
 
-        if(DXC_EXE AND (EXISTS "${CMAKE_SOURCE_DIR}/shaders" OR EXISTS "${CMAKE_SOURCE_DIR}/src/pcg/shaders"))
+        # --- NEW preferred path: use DxcShaders.cmake helpers if present ---
+        if(COMMAND dxc_compile_shader)
           file(GLOB_RECURSE HLSL_SOURCES CONFIGURE_DEPENDS
             "${CMAKE_SOURCE_DIR}/shaders/*.hlsl"
             "${CMAKE_SOURCE_DIR}/src/pcg/shaders/*.hlsl"
           )
-          set(SHADER_BIN_DIR "${CMAKE_BINARY_DIR}/res/shaders")
-          file(MAKE_DIRECTORY "${SHADER_BIN_DIR}")
-          set(_HLSL_TOOLCHAIN "DXC (SM6) -> ${SHADER_BIN_DIR}")
+          set(_INCLUDE_DIRS
+            "${CMAKE_SOURCE_DIR}/shaders"
+            "${CMAKE_SOURCE_DIR}/src/pcg/shaders"
+          )
 
-          function(_cg_infer_profile_and_entry_dxc SRC OUT_PROFILE OUT_ENTRY)
+          function(_cg_infer_stage_profile_entry_dxc SRC OUT_STAGE OUT_PROFILE OUT_ENTRY)
             get_filename_component(_name_we "${SRC}" NAME_WE)
             string(TOLOWER "${_name_we}" _lower)
-            set(_prof "")
+            set(_stage "")
             set(_entry "")
             if(_lower MATCHES "(_|\\.)vs$|^vs_")
-              set(_prof "vs_${DXC_DEFAULT_SM}")
+              set(_stage "vs")
               set(_entry "VSMain")
             elseif(_lower MATCHES "(_|\\.)ps$|^ps_")
-              set(_prof "ps_${DXC_DEFAULT_SM}")
+              set(_stage "ps")
               set(_entry "PSMain")
             elseif(_lower MATCHES "(_|\\.)cs$|^cs_")
-              set(_prof "cs_${DXC_DEFAULT_SM}")
+              set(_stage "cs")
               set(_entry "CSMain")
             elseif(_lower MATCHES "(_|\\.)gs$|^gs_")
-              set(_prof "gs_${DXC_DEFAULT_SM}")
+              set(_stage "gs")
               set(_entry "GSMain")
             elseif(_lower MATCHES "(_|\\.)hs$|^hs_")
-              set(_prof "hs_${DXC_DEFAULT_SM}")
+              set(_stage "hs")
               set(_entry "HSMain")
             elseif(_lower MATCHES "(_|\\.)ds$|^ds_")
-              set(_prof "ds_${DXC_DEFAULT_SM}")
+              set(_stage "ds")
               set(_entry "DSMain")
             elseif(_lower MATCHES "(_|\\.)ms$|^ms_")
-              set(_prof "ms_${DXC_DEFAULT_SM}")
+              set(_stage "ms")
               set(_entry "MSMain")
             elseif(_lower MATCHES "(_|\\.)as$|^as_")
-              set(_prof "as_${DXC_DEFAULT_SM}")
+              set(_stage "as")
               set(_entry "ASMain")
             endif()
-            set(${OUT_PROFILE} "${_prof}" PARENT_SCOPE)
+            if("${_name_we}" STREQUAL "noise_fbm_cs")
+              set(_stage "cs")
+              set(_entry "main")
+            endif()
+            if(_stage)
+              set(_prof "${_stage}_${DXC_DEFAULT_SM}")
+            else()
+              set(_prof "")
+            endif()
+            set(${OUT_STAGE}   "${_stage}" PARENT_SCOPE)
+            set(${OUT_PROFILE} "${_prof}"  PARENT_SCOPE)
             set(${OUT_ENTRY}   "${_entry}" PARENT_SCOPE)
           endfunction()
 
-          set(_BUILT_CSOS "")
+          set(_BUILT_DXIL "")
           foreach(SRC IN LISTS HLSL_SOURCES)
-            _cg_infer_profile_and_entry_dxc("${SRC}" PROFILE ENTRY)
-            if(NOT PROFILE)
-              message(STATUS "Skipping shader (stage not inferred): ${SRC}  [Use suffix _vs/_ps/_cs/_gs/_hs/_ds/_ms/_as]")
+            _cg_infer_stage_profile_entry_dxc("${SRC}" STAGE PROFILE ENTRY)
+            if(NOT STAGE)
+              message(STATUS "Skipping shader (stage not inferred): ${SRC}")
               continue()
             endif()
-
-            get_filename_component(NAME_WE "${SRC}" NAME_WE)
-            if("${NAME_WE}" STREQUAL "noise_fbm_cs")
-              set(ENTRY "main")
-            endif()
-
-            set(OUTFILE "${SHADER_BIN_DIR}/${NAME_WE}.cso")
-
-            add_custom_command(
-              OUTPUT "${OUTFILE}"
-              COMMAND ${CMAKE_COMMAND} -E make_directory "${SHADER_BIN_DIR}"
-              COMMAND "${DXC_EXE}" -nologo
-                      -T ${PROFILE} -E ${ENTRY}
-                      $<$<CONFIG:Debug>:-Zi>
-                      $<$<CONFIG:Debug>:-Qembed_debug>
-                      $<$<CONFIG:Release>:-Qstrip_debug>
-                      -Fo "${OUTFILE}"
-                      -I "${CMAKE_SOURCE_DIR}/shaders"
-                      -I "${CMAKE_SOURCE_DIR}/src/pcg/shaders"
-                      "${SRC}"
-              DEPENDS "${SRC}"
-              COMMENT "DXC ${PROFILE} ${SRC} -> ${OUTFILE}"
-              VERBATIM
+            dxc_compile_shader(
+              OUT _BUILT_DXIL
+              FILE "${SRC}"
+              ENTRY "${ENTRY}"
+              STAGE "${STAGE}"
+              PROFILE "${PROFILE}"
+              INCLUDES ${_INCLUDE_DIRS}
             )
-            list(APPEND _BUILT_CSOS "${OUTFILE}")
           endforeach()
 
-          if(_BUILT_CSOS)
-            add_custom_target(shaders ALL DEPENDS ${_BUILT_CSOS})
+          if(_BUILT_DXIL)
+            add_custom_target(shaders ALL DEPENDS ${_BUILT_DXIL})
             set_property(TARGET shaders PROPERTY FOLDER "assets")
+            set(_HLSL_TOOLCHAIN "DXC (module) -> ${CMAKE_BINARY_DIR}/shaders")
           else()
-            message(STATUS "No HLSL shaders compiled for D3D12 (no matching *.hlsl with stage suffix).")
+            message(STATUS "No HLSL shaders compiled with DXC module (no matching *.hlsl with stage suffix).")
           endif()
-        endif()
+
+        # --- Fallback: direct DXC invocation via add_custom_command ---
+        else()
+          # Improved DXC discovery: env var, Vulkan SDK, VS locations, Windows SDK
+          find_program(DXC_EXE NAMES dxc HINTS
+            "$ENV{DXC_PATH}"
+            "$ENV{VULKAN_SDK}/Bin"
+            "$ENV{VCToolsInstallDir}/bin/Hostx64/x64"
+            "C:/Program Files/Microsoft Visual Studio/2022/Community/VC/Tools/Llvm/x64/bin"
+            "C:/Program Files/Microsoft Visual Studio/2022/Professional/VC/Tools/Llvm/x64/bin"
+            "C:/Program Files/Microsoft Visual Studio/2022/Enterprise/VC/Tools/Llvm/x64/bin"
+            "$ENV{WindowsSdkDir}/bin/x64"
+            "$ENV{WindowsSdkDir}/bin"
+          )
+          if(NOT DXC_EXE)
+            message(WARNING "DXC not found on PATH or SDK; set DXC_EXE or install the DirectX Shader Compiler. Shaders will not be compiled.")
+          endif()
+
+          if(DXC_EXE AND (EXISTS "${CMAKE_SOURCE_DIR}/shaders" OR EXISTS "${CMAKE_SOURCE_DIR}/src/pcg/shaders"))
+            file(GLOB_RECURSE HLSL_SOURCES CONFIGURE_DEPENDS
+              "${CMAKE_SOURCE_DIR}/shaders/*.hlsl"
+              "${CMAKE_SOURCE_DIR}/src/pcg/shaders/*.hlsl"
+            )
+            set(SHADER_BIN_DIR "${CMAKE_BINARY_DIR}/res/shaders")
+            file(MAKE_DIRECTORY "${SHADER_BIN_DIR}")
+            set(_HLSL_TOOLCHAIN "DXC (SM6) -> ${SHADER_BIN_DIR}")
+
+            function(_cg_infer_profile_and_entry_dxc SRC OUT_PROFILE OUT_ENTRY)
+              get_filename_component(_name_we "${SRC}" NAME_WE)
+              string(TOLOWER "${_name_we}" _lower)
+              set(_prof "")
+              set(_entry "")
+              if(_lower MATCHES "(_|\\.)vs$|^vs_")
+                set(_prof "vs_${DXC_DEFAULT_SM}")
+                set(_entry "VSMain")
+              elseif(_lower MATCHES "(_|\\.)ps$|^ps_")
+                set(_prof "ps_${DXC_DEFAULT_SM}")
+                set(_entry "PSMain")
+              elseif(_lower MATCHES "(_|\\.)cs$|^cs_")
+                set(_prof "cs_${DXC_DEFAULT_SM}")
+                set(_entry "CSMain")
+              elseif(_lower MATCHES "(_|\\.)gs$|^gs_")
+                set(_prof "gs_${DXC_DEFAULT_SM}")
+                set(_entry "GSMain")
+              elseif(_lower MATCHES "(_|\\.)hs$|^hs_")
+                set(_prof "hs_${DXC_DEFAULT_SM}")
+                set(_entry "HSMain")
+              elseif(_lower MATCHES "(_|\\.)ds$|^ds_")
+                set(_prof "ds_${DXC_DEFAULT_SM}")
+                set(_entry "DSMain")
+              elseif(_lower MATCHES "(_|\\.)ms$|^ms_")
+                set(_prof "ms_${DXC_DEFAULT_SM}")
+                set(_entry "MSMain")
+              elseif(_lower MATCHES "(_|\\.)as$|^as_")
+                set(_prof "as_${DXC_DEFAULT_SM}")
+                set(_entry "ASMain")
+              endif()
+              set(${OUT_PROFILE} "${_prof}" PARENT_SCOPE)
+              set(${OUT_ENTRY}   "${_entry}" PARENT_SCOPE)
+            endfunction()
+
+            set(_BUILT_CSOS "")
+            foreach(SRC IN LISTS HLSL_SOURCES)
+              _cg_infer_profile_and_entry_dxc("${SRC}" PROFILE ENTRY)
+              if(NOT PROFILE)
+                message(STATUS "Skipping shader (stage not inferred): ${SRC}  [Use suffix _vs/_ps/_cs/_gs/_hs/_ds/_ms/_as]")
+                continue()
+              endif()
+
+              get_filename_component(NAME_WE "${SRC}" NAME_WE)
+              if("${NAME_WE}" STREQUAL "noise_fbm_cs")
+                set(ENTRY "main")
+              endif()
+
+              set(OUTFILE "${SHADER_BIN_DIR}/${NAME_WE}.cso")
+
+              add_custom_command(
+                OUTPUT "${OUTFILE}"
+                COMMAND ${CMAKE_COMMAND} -E make_directory "${SHADER_BIN_DIR}"
+                COMMAND "${DXC_EXE}" -nologo
+                        -T ${PROFILE} -E ${ENTRY}
+                        $<$<CONFIG:Debug>:-Zi>
+                        $<$<CONFIG:Debug>:-Qembed_debug>
+                        $<$<CONFIG:Release>:-Qstrip_debug>
+                        -Fo "${OUTFILE}"
+                        -I "${CMAKE_SOURCE_DIR}/shaders"
+                        -I "${CMAKE_SOURCE_DIR}/src/pcg/shaders"
+                        "${SRC}"
+                DEPENDS "${SRC}"
+                COMMENT "DXC ${PROFILE} ${SRC} -> ${OUTFILE}"
+                VERBATIM
+              )
+              list(APPEND _BUILT_CSOS "${OUTFILE}")
+            endforeach()
+
+            if(_BUILT_CSOS)
+              add_custom_target(shaders ALL DEPENDS ${_BUILT_CSOS})
+              set_property(TARGET shaders PROPERTY FOLDER "assets")
+            else()
+              message(STATUS "No HLSL shaders compiled for D3D12 (no matching *.hlsl with stage suffix).")
+            endif()
+          endif()
+        endif() # end DXC module vs fallback
       endif()
     endif()  # renderer select
 
@@ -742,7 +828,7 @@ endif()
 # ===========================
 #   Factions module (optional)
 # ===========================
-if(EXISTS "${CMAKE_SOURCE_DIR}/src/sim/factions/FactionGen.cpp"])
+if(EXISTS "${CMAKE_SOURCE_DIR}/src/sim/factions/FactionGen.cpp")
   add_library(Factions STATIC
       src/sim/factions/FactionGen.cpp
   )
@@ -1074,7 +1160,7 @@ if(WIN32 AND TARGET ColonyGame)
   if(EXISTS "${CMAKE_BINARY_DIR}/res/shaders")
     set(_STAGE_COPY_SHADERS_CMD
         COMMAND ${CMAKE_COMMAND} -E copy_directory
-                "${CMAKE_BINARY_DIR}/res/shaders" "${STAGE_DIR}/shaders")
+                "${CMAKE_BINARY_DIR}/res/shaders" "${STAGE_DIR}/res/shaders")
   elseif(EXISTS "${CMAKE_BINARY_DIR}/shaders")
     set(_STAGE_COPY_SHADERS_CMD
         COMMAND ${CMAKE_COMMAND} -E copy_directory
