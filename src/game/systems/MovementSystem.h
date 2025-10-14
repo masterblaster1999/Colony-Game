@@ -1,30 +1,35 @@
 #pragma once
 #include <entt/entt.hpp>
 
-// Velocity is in game::components (per your include path in the error)
+// Velocity is in game::components (per your include path)
 #include "game/components/Velocity.h"
-// Transform currently appears to be in the global namespace (see compiler note).
-// Include wherever it's defined; path below matches your error dump.
-#include "game/components/Transform.h"  // if this is actually under src/, keep the include as-is to the real header
+// Transform appears to be in the global (or root game) namespace.
+// Keep this include path aligned with your repo layout.
+#include "game/components/Transform.h"
 
 namespace game::systems {
+
 struct MovementSystem {
     void update(entt::registry& registry, float dt) const {
-        // Use the correct EnTT template form.
-        // IMPORTANT: Transform is *not* in game::components in your repo.
+        // EnTT view over Transform + Velocity
         auto view = registry.view<Transform, game::components::Velocity>();
 
-        // Safe, portable EnTT loop without structured bindings (keeps MSVC happy and avoids version differences)
+        // Safe EnTT loop without structured bindings (MSVC-friendly)
         for (auto entity : view) {
             auto& t = view.get<Transform>(entity);
             auto& v = view.get<game::components::Velocity>(entity);
 
-            // Adjust to your Transform layout:
-            // If Transform uses e.g. t.position.{x,y} or t.pos.{x,y}, update both lines accordingly.
-            // The tests expect x/y movement, so default to position.x/y if available.
-            t.position.x += v.x * dt;
-            t.position.y += v.y * dt;
+            // Minimal compile fix:
+            // Transform::position is a float[3], so use array indexing
+            // instead of member access ('.x/.y'), which triggers C2228.
+            t.position[0] += v.x * dt;  // X
+            t.position[1] += v.y * dt;  // Y
+
+            // If you later extend to 3D and Velocity exposes 'z',
+            // uncomment the following line:
+            // t.position[2] += v.z * dt; // Z
         }
     }
 };
+
 } // namespace game::systems
