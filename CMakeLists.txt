@@ -932,6 +932,18 @@ if(TARGET ColonyGame)
     endif()
   endforeach()
 
+  # ===========================
+  # --- PATCH (Step 6): Sky & Weather integration ---
+  # ===========================
+  # Add the new SkyWeatherSystem implementation to the game target.
+  if(EXISTS "${CMAKE_SOURCE_DIR}/src/rendering/SkyWeatherSystem.cpp")
+    target_sources(ColonyGame PRIVATE src/rendering/SkyWeatherSystem.cpp)
+  endif()
+  # Make sure headers under include/ are found (SkyWeatherSystem.h lives in include/rendering).
+  if(EXISTS "${CMAKE_SOURCE_DIR}/include")
+    target_include_directories(ColonyGame PRIVATE "${CMAKE_SOURCE_DIR}/include")
+  endif()
+
   # Provide an explicit erosion shader source directory and macro for runtime compilation.
   set(COLONY_SHADER_DIR "${CMAKE_SOURCE_DIR}/renderer/Shaders" CACHE PATH "HLSL sources (erosion)")
   if(EXISTS "${COLONY_SHADER_DIR}")
@@ -1171,6 +1183,14 @@ if(WIN32 AND TARGET ColonyGame)
                 "${CMAKE_SOURCE_DIR}/shaders" "${STAGE_DIR}/shaders")
   endif()
 
+  # --- PATCH (Step 6): also stage runtime-loaded renderer/Shaders (sky/clouds/precip) ---
+  set(_STAGE_COPY_RENDERER_SHADERS_CMD "")
+  if(EXISTS "${CMAKE_SOURCE_DIR}/renderer/Shaders")
+    set(_STAGE_COPY_RENDERER_SHADERS_CMD
+        COMMAND ${CMAKE_COMMAND} -E copy_directory
+                "${CMAKE_SOURCE_DIR}/renderer/Shaders" "${STAGE_DIR}/renderer/Shaders")
+  endif()
+
   # Try to copy vcpkg runtime DLLs (Release + Debug) if the common locations exist.
   set(_STAGE_COPY_VCPKG_RELEASE_CMD "")
   set(_STAGE_COPY_VCPKG_DEBUG_CMD "")
@@ -1205,6 +1225,7 @@ if(WIN32 AND TARGET ColonyGame)
     COMMAND ${CMAKE_COMMAND} -E make_directory "${STAGE_DIR}/res/shaders"
     ${_STAGE_COPY_RES_CMD}
     ${_STAGE_COPY_SHADERS_CMD}
+    ${_STAGE_COPY_RENDERER_SHADERS_CMD}
     COMMAND ${CMAKE_COMMAND} -E copy "$<TARGET_FILE:ColonyGame>" "${STAGE_DIR}/bin/"
     ${_STAGE_COPY_VCPKG_RELEASE_CMD}
     ${_STAGE_COPY_VCPKG_DEBUG_CMD}
@@ -1229,6 +1250,10 @@ if(WIN32 AND TARGET ColonyGame)
     install(DIRECTORY "${CMAKE_BINARY_DIR}/shaders/" DESTINATION "shaders")
   elseif(EXISTS "${CMAKE_SOURCE_DIR}/shaders")
     install(DIRECTORY "${CMAKE_SOURCE_DIR}/shaders/" DESTINATION "shaders")
+  endif()
+  # --- PATCH (Step 6): also install renderer/Shaders so runtime HLSL loads work out of the box.
+  if(EXISTS "${CMAKE_SOURCE_DIR}/renderer/Shaders")
+    install(DIRECTORY "${CMAKE_SOURCE_DIR}/renderer/Shaders/" DESTINATION "renderer/Shaders")
   endif()
 
   set(CPACK_GENERATOR "ZIP")
