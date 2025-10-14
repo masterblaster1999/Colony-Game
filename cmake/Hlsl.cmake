@@ -362,6 +362,14 @@ function(cg_compile_hlsl_from_table)
   endif()
   file(READ "${CG_TABLE}" _json)
 
+  # --- Fallbacks if init wasn't called ---
+  if(NOT DEFINED CG_SHADER_DIR)
+    set(CG_SHADER_DIR "${CMAKE_SOURCE_DIR}/res/shaders")
+  endif()
+  if(NOT DEFINED CG_SHADER_BIN_DIR)
+    set(CG_SHADER_BIN_DIR "${CMAKE_BINARY_DIR}/shaders/${CMAKE_CFG_INTDIR}")
+  endif()
+
   # Defaults
   _json_try_get(_def_comp "${_json}" defaults compiler)
   _json_try_get(_def_dxcsm "${_json}" defaults dxc_sm)
@@ -633,4 +641,3 @@ function(cg_compile_hlsl_from_table)
     endif()
   endif()
 endfunction()
-
