@@ -11,15 +11,15 @@ file(GLOB_RECURSE SRC_ALL
 list(FILTER SRC_ALL EXCLUDE REGEX ".*/third_party/imgui/.*")
 
 # Remove legacy/duplicate entry points
-list(FILTER SRC_ALL EXCLUDE REGEX ".*/src/main\\.cpp$")
-list(FILTER SRC_ALL EXCLUDE REGEX ".*/src/app/.*\\.(c|cc|cxx|cpp)$")
-list(FILTER SRC_ALL EXCLUDE REGEX ".*/src/render/.*\\.(c|cc|cxx|cpp)$")
-list(FILTER SRC_ALL EXCLUDE REGEX ".*/src/terrain/.*\\.(c|cc|cxx|cpp)$")
-list(FILTER SRC_ALL EXCLUDE REGEX ".*/src/core/.*\\.(c|cc|cxx|cpp)$")
+list(FILTER SRC_ALL EXCLUDE REGEX ".*/src/main\.cpp$")
+list(FILTER SRC_ALL EXCLUDE REGEX ".*/src/app/.*\.(c|cc|cxx|cpp)$")
+list(FILTER SRC_ALL EXCLUDE REGEX ".*/src/render/.*\.(c|cc|cxx|cpp)$")
+list(FILTER SRC_ALL EXCLUDE REGEX ".*/src/terrain/.*\.(c|cc|cxx|cpp)$")
+list(FILTER SRC_ALL EXCLUDE REGEX ".*/src/core/.*\.(c|cc|cxx|cpp)$")
 
 # --- BEGIN: Enable crash-dump TU with per-file /EHa (fixes MSVC C2712) ---
 if(EXISTS "${CMAKE_SOURCE_DIR}/platform/win/CrashDumpWin.cpp")
-  list(FILTER SRC_ALL EXCLUDE REGEX ".*/platform/win/CrashDumpStub\\.cpp$")
+  list(FILTER SRC_ALL EXCLUDE REGEX ".*/platform/win/CrashDumpStub\.cpp$")
   if(MSVC)
     set_source_files_properties("${CMAKE_SOURCE_DIR}/platform/win/CrashDumpWin.cpp"
       PROPERTIES COMPILE_OPTIONS "/EHa")
@@ -29,11 +29,11 @@ endif()
 
 # --- Frontend gating: native Win32 (default) or SDL ---
 if(FRONTEND STREQUAL "sdl")
-  list(FILTER SRC_ALL EXCLUDE REGEX ".*/platform/win32_main\\.cpp$")
-  list(FILTER SRC_ALL EXCLUDE REGEX ".*/launcher/LauncherMain\\.cpp$")
+  list(FILTER SRC_ALL EXCLUDE REGEX ".*/platform/win32_main\.cpp$")
+  list(FILTER SRC_ALL EXCLUDE REGEX ".*/launcher/LauncherMain\.cpp$")
 else()
-  list(FILTER SRC_ALL EXCLUDE REGEX ".*/Launcher_SDL\\.cpp$")
-  list(FILTER SRC_ALL EXCLUDE REGEX ".*/SDL.*\\.(c|cpp)$")
+  list(FILTER SRC_ALL EXCLUDE REGEX ".*/Launcher_SDL\.cpp$")
+  list(FILTER SRC_ALL EXCLUDE REGEX ".*/SDL.*\.(c|cpp)$")
 endif()
 
 add_executable(ColonyGame ${SRC_ALL})
@@ -127,10 +127,14 @@ if(CMAKE_GENERATOR MATCHES "Visual Studio")
   function(_configure_vs_shader _file)
     get_filename_component(_we "${_file}" NAME_WE)
     set(_type "")
-    if(_we MATCHES "_vs$")      set(_type "Vertex")
-    elseif(_we MATCHES "_ps$")  set(_type "Pixel")
-    elseif(_we MATCHES "_cs$")  set(_type "Compute")
-    else()                      return() # Only compile files in HLSL_SOURCES
+    if(_we MATCHES "_vs$")
+      set(_type "Vertex")
+    elseif(_we MATCHES "_ps$")
+      set(_type "Pixel")
+    elseif(_we MATCHES "_cs$")
+      set(_type "Compute")
+    else()
+      return() # Only compile files in HLSL_SOURCES
     endif()
 
     set_source_files_properties("${_file}" PROPERTIES
