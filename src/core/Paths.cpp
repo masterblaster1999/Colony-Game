@@ -1,48 +1,43 @@
 // src/core/Paths.cpp
-#include "Paths.h"
+#include "CG/Paths.hpp"
 #include <Windows.h>
+#include <ShlObj_core.h>
+#include <KnownFolders.h>
+#include <shellapi.h>
+#include <string>
 
-using std::filesystem::path;
+#pragma comment(lib, "Ole32.lib")
+#pragma comment(lib, "Shell32.lib")
 
 namespace {
-    path detect_root(const path& exeDir) {
-        // If running from build tree: .../bin/Debug/YourExe.exe -> climb until we find assets/
-        path p = exeDir;
-        for (int i = 0; i < 4; ++i) {
-            if (exists(p / "assets")) return p;
-            p = p.parent_path();
-        }
-        // Installed layout: assets reside next to exe
-        if (exists(exeDir / "assets")) return exeDir;
-        return exeDir; // best effort
+  std::filesystem::path KnownFolder(REFKNOWNFOLDERID id) {
+    PWSTR wpath = nullptr;
+    if (SUCCEEDED(SHGetKnownFolderPath(id, KF_FLAG_DEFAULT, nullptr, &wpath)) && wpath) {
+      std::filesystem::path p = wpath;
+      CoTaskMemFree(wpath);
+      return p;
     }
+    // Fallback to %LOCALAPPDATA%
+    wchar_t buf[MAX_PATH];
+    if (GetEnvironmentVariableW(L"LOCALAPPDATA", buf, MAX_PATH) > 0)
+      return std::filesystem::path(buf);
+    return std::filesystem::temp_directory_path();
+  }
+
+  const std::wstring kVendor = L"ColonyGame";
 }
 
-namespace paths {
-    path exe_dir() {
-        wchar_t buf[MAX_PATH];
-        const DWORD n = GetModuleFileNameW(nullptr, buf, MAX_PATH);
-        path p(buf, buf + (n ? wcslen(buf) : 0));
-        return p.parent_path();
-    }
+namespace cg::paths {
+  std::filesystem::path LocalAppDataRoot() {
+    return KnownFolder(FOLDERID_LocalAppData) / kVendor;
+  }
+  std::filesystem::path LogsDir()       { return LocalAppDataRoot() / L"logs"; }
+  std::filesystem::path CrashDumpsDir() { return LocalAppDataRoot() / L"crashes"; }
+  std::filesystem::path SavesDir()      { return LocalAppDataRoot() / L"saves"; }
+  std::filesystem::path ConfigDir()     { return LocalAppDataRoot() / L"config"; }
 
-    void set_working_dir_to_exe() {
-        const auto dir = exe_dir();
-        SetCurrentDirectoryW(dir.c_str());
-    }
-
-    const path& root() {
-        static path r = detect_root(exe_dir());
-        return r;
-    }
-
-    path assets()      { return root() / L"assets"; }
-    path audio()       { return root() / L"audio"; }
-    path config()      { return assets() / L"config"; }
-    path shaders_dir() {
-        // Prefer renderer/Shaders if it exists, else top-level shaders
-        const auto a = root() / L"renderer" / L"Shaders";
-        if (exists(a)) return a;
-        return root() / L"shaders";
-    }
+  void EnsureCreated(const std::filesystem::path& p) {
+    std::error_code ec;
+    std::filesystem::create_directories(p, ec);
+  }
 }
