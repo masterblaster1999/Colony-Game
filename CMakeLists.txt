@@ -1264,3 +1264,17 @@ message(STATUS "ASan (Debug)          : ${COLONY_ASAN}")
 message(STATUS "HLSL toolchain        : ${_HLSL_TOOLCHAIN}")
 message(STATUS "Git revision          : ${CG_GIT_HASH}")
 message(STATUS "==========================================================")
+
+
+# ---- Colony Game: Windows hardening & helpers (append-only block) ----
+include(${CMAKE_SOURCE_DIR}/cmake/CGOptions.cmake)
+
+# Example: apply defaults to your real targets (adjust names if different)
+# cg_apply_defaults_to_target(ColonyGame)
+# cg_install_assets(ColonyGame)
+# cg_apply_defaults_to_target(WinLauncher)
+
+# Optionally: enable PDBs in release-with-debinfo on MSVC
+if (MSVC)
+  set(CMAKE_MSVC_DEBUG_INFORMATION_FORMAT "$<$<CONFIG:RelWithDebInfo,Debug>:ProgramDatabase>")
+endif()
