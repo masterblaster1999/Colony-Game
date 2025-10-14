@@ -11,10 +11,10 @@ TEST_CASE("movement integrates position") {
     const entt::entity e = reg.create();
 
     // Create a Transform and initialize to (1, 2).
-    // If your Transform has different member names (e.g., pos.x), adjust the two lines below.
+    // The fallback Transform stores position as a float[3], so index into it.
     auto& t0 = reg.emplace<Transform>(e);
-    t0.position.x = 1.0f;
-    t0.position.y = 2.0f;
+    t0.position[0] = 1.0f; // x
+    t0.position[1] = 2.0f; // y
 
     // Velocity lives in game::components.
     reg.emplace<game::components::Velocity>(e, game::components::Velocity{ 3.0f, -1.0f });
@@ -24,6 +24,6 @@ TEST_CASE("movement integrates position") {
     sys.update(reg, 0.5f); // half a second
 
     const auto& t = reg.get<Transform>(e);
-    CHECK(t.position.x == doctest::Approx(2.5f)); // 1 + 3*0.5
-    CHECK(t.position.y == doctest::Approx(1.5f)); // 2 + (-1)*0.5
+    CHECK(t.position[0] == doctest::Approx(2.5f)); // 1 + 3*0.5
+    CHECK(t.position[1] == doctest::Approx(1.5f)); // 2 + (-1)*0.5
 }
