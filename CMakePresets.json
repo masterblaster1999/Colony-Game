@@ -1,81 +1,58 @@
 {
   "version": 6,
-  "cmakeMinimumRequired": { "major": 3, "minor": 24, "patch": 0 },
-
+  "cmakeMinimumRequired": { "major": 3, "minor": 24 },
+  "include": [],
   "configurePresets": [
     {
-      "name": "windows-base",
-      "displayName": "Windows (VS 2022, x64)",
-      "description": "Base Windows preset (Visual Studio 2022).",
+      "name": "windows-vs2022-debug",
+      "displayName": "VS2022 - Debug",
       "generator": "Visual Studio 17 2022",
-      "architecture": { "value": "x64" },
-      "binaryDir": "${sourceDir}/out/build/${presetName}",
-      "installDir": "${sourceDir}/out/install/${presetName}",
-      "condition": { "type": "equals", "lhs": "${hostSystemName}", "rhs": "Windows" },
+      "binaryDir": "${sourceDir}/build/vs2022-debug",
       "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
         "CMAKE_CXX_STANDARD": "20",
-        "CMAKE_POLICY_DEFAULT_CMP0069": "NEW",
-        "CMAKE_INTERPROCEDURAL_OPTIMIZATION_RELWITHDEBINFO": "ON",
-
-        // Remove these two if you don't use vcpkg:
-        "CMAKE_TOOLCHAIN_FILE": "$env{VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake",
-        "VCPKG_FEATURE_FLAGS": "manifests,versions"
+        "CG_ENABLE_PCH": "ON",
+        "CG_ENABLE_UNITY": "OFF",
+        "CMAKE_MSVC_RUNTIME_LIBRARY": "MultiThreadedDebug", 
+        "CMAKE_TOOLCHAIN_FILE": "$env{VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake"
       }
     },
-
     {
-      "name": "dev-windows",
-      "displayName": "Dev (Debug, Windows)",
-      "inherits": "windows-base",
+      "name": "windows-vs2022-release",
+      "displayName": "VS2022 - Release (/MT)",
+      "generator": "Visual Studio 17 2022",
+      "binaryDir": "${sourceDir}/build/vs2022-release",
       "cacheVariables": {
-        "COLONY_WERROR": "OFF"              // project-specific toggle if you use it
+        "CMAKE_BUILD_TYPE": "Release",
+        "CMAKE_CXX_STANDARD": "20",
+        "CG_ENABLE_PCH": "ON",
+        "CG_ENABLE_UNITY": "ON",
+        "CMAKE_MSVC_RUNTIME_LIBRARY": "MultiThreaded",      
+        "CMAKE_TOOLCHAIN_FILE": "$env{VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake"
       }
     },
-
     {
-      "name": "asan-windows",
-      "displayName": "ASan (Debug, Windows)",
-      "inherits": "windows-base",
+      "name": "windows-ninja-rel",
+      "displayName": "Ninja - RelWithDebInfo (/MT)",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build/ninja-rel",
       "cacheVariables": {
-        "COLONY_ENABLE_ASAN": "ON",         // we'll read this in CMakeLists.txt
-        "CMAKE_MSVC_DEBUG_INFORMATION_FORMAT": "ProgramDatabase"  // ensures /Zi
-      }
-    },
-
-    {
-      "name": "relwithdebinfo-windows",
-      "displayName": "RelWithDebInfo (IPO on, Windows)",
-      "inherits": "windows-base",
-      "cacheVariables": {
-        "CMAKE_BUILD_TYPE": ""              // ignored by multi-config generators, kept for IDEs
+        "CMAKE_BUILD_TYPE": "RelWithDebInfo",
+        "CMAKE_CXX_STANDARD": "20",
+        "CG_ENABLE_PCH": "ON",
+        "CG_ENABLE_UNITY": "ON",
+        "CMAKE_MSVC_RUNTIME_LIBRARY": "MultiThreaded",
+        "CMAKE_TOOLCHAIN_FILE": "$env{VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake"
       }
     }
   ],
-
   "buildPresets": [
-    {
-      "name": "dev-windows",
-      "configurePreset": "dev-windows",
-      "configuration": "Debug"
-    },
-    {
-      "name": "asan-windows",
-      "configurePreset": "asan-windows",
-      "configuration": "Debug"
-    },
-    {
-      "name": "relwithdebinfo-windows",
-      "configurePreset": "relwithdebinfo-windows",
-      "configuration": "RelWithDebInfo"
-    }
+    { "name": "build-vs-debug",   "configurePreset": "windows-vs2022-debug" },
+    { "name": "build-vs-release", "configurePreset": "windows-vs2022-release" },
+    { "name": "build-ninja-rel",  "configurePreset": "windows-ninja-rel" }
   ],
-
   "testPresets": [
-    {
-      "name": "dev-windows",
-      "configurePreset": "dev-windows",
-      "configuration": "Debug",
-      "output": { "outputOnFailure": true }
-    }
+    { "name": "test-vs-debug",   "configurePreset": "windows-vs2022-debug" },
+    { "name": "test-ninja-rel",  "configurePreset": "windows-ninja-rel" }
   ]
 }
