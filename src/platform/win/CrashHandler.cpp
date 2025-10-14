@@ -1,47 +1,61 @@
-#define WIN32_LEAN_AND_MEAN
-#include "CrashHandler.h"
-#include <windows.h>
-#include <dbghelp.h>
+// src/platform/win/CrashHandler.cpp
+#include "CG/Paths.hpp"
+#include "platform/win/CrashHandler.h"
+#include <Windows.h>
+#include <DbgHelp.h>
 #include <string>
+#include <format>
+#include <filesystem>
 
 #pragma comment(lib, "Dbghelp.lib")
 
-static std::wstring g_dumpDir;
+namespace {
+  LPTOP_LEVEL_EXCEPTION_FILTER g_prev = nullptr;
 
-static void EnsureDir(const std::wstring& dir) {
-    CreateDirectoryW(dir.c_str(), nullptr);
-}
-
-static bool WriteMiniDump(EXCEPTION_POINTERS* pInfo) {
+  std::wstring NowStamp() {
     SYSTEMTIME st; GetLocalTime(&st);
-    wchar_t path[MAX_PATH];
-    swprintf(path, L"%s\\ColonyGame_%04u%02u%02u_%02u%02u%02u.dmp",
-             g_dumpDir.c_str(), st.wYear, st.wMonth, st.wDay,
-             st.wHour, st.wMinute, st.wSecond);
+    return std::format(L"{:04}-{:02}-{:02}_{:02}-{:02}-{:02}",
+      st.wYear, st.wMonth, st.wDay, st.wHour, st.wMinute, st.wSecond);
+  }
 
-    HANDLE hFile = CreateFileW(path, GENERIC_WRITE, FILE_SHARE_READ, nullptr,
-                               CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
-    if (hFile == INVALID_HANDLE_VALUE) return false;
+  std::filesystem::path WriteDump(EXCEPTION_POINTERS* ep, const std::filesystem::path& dir) {
+    std::filesystem::path out = dir / std::format(L"colony_{}.dmp", NowStamp());
+    HANDLE hFile = CreateFileW(out.c_str(), GENERIC_WRITE, FILE_SHARE_READ, nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (hFile == INVALID_HANDLE_VALUE) return {};
 
-    MINIDUMP_EXCEPTION_INFORMATION mei{};
-    mei.ClientPointers = FALSE;
-    mei.ExceptionPointers = pInfo;
-    mei.ThreadId = GetCurrentThreadId();
+    MINIDUMP_EXCEPTION_INFORMATION mdei{};
+    mdei.ThreadId          = GetCurrentThreadId();
+    mdei.ExceptionPointers = ep;
+    mdei.ClientPointers    = FALSE;
 
-    BOOL ok = MiniDumpWriteDump(GetCurrentProcess(), GetCurrentProcessId(), hFile,
-                                MiniDumpWithIndirectlyReferencedMemory | MiniDumpScanMemory,
-                                &mei, nullptr, nullptr);
+    MiniDumpWriteDump(GetCurrentProcess(), GetCurrentProcessId(), hFile,
+                      MiniDumpWithIndirectlyReferencedMemory | MiniDumpScanMemory,
+                      &mdei, nullptr, nullptr);
+
     CloseHandle(hFile);
-    return ok == TRUE;
+    return out;
+  }
+
+  LONG WINAPI TopLevel(EXCEPTION_POINTERS* ep) {
+    const auto dumps = cg::paths::CrashDumpsDir();
+    cg::paths::EnsureCreated(dumps);
+    const auto file = WriteDump(ep, dumps);
+    if (!file.empty()) {
+      MessageBoxW(nullptr,
+        (L"Colony Game crashed.\nA crash dump was written to:\n" + file.wstring()).c_str(),
+        L"Crash", MB_OK | MB_ICONERROR);
+    }
+    return EXCEPTION_EXECUTE_HANDLER;
+  }
 }
 
-LONG WINAPI TopLevelExceptionHandler(EXCEPTION_POINTERS* pInfo) {
-    WriteMiniDump(pInfo);
-    return EXCEPTION_EXECUTE_HANDLER; // allow a clean exit after writing the dump
-}
-
-void InitCrashHandler(const wchar_t* dumpDir) {
-    g_dumpDir = dumpDir;
-    EnsureDir(g_dumpDir);
-    SetUnhandledExceptionFilter(TopLevelExceptionHandler);
+namespace cg::win {
+  bool InstallCrashHandler(const std::filesystem::path& dumpsDir) {
+    cg::paths::EnsureCreated(dumpsDir);
+    g_prev = SetUnhandledExceptionFilter(TopLevel);
+    return true;
+  }
+  void UninstallCrashHandler() {
+    SetUnhandledExceptionFilter(g_prev);
+  }
 }
