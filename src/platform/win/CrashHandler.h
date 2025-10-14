@@ -1,6 +1,9 @@
+// src/platform/win/CrashHandler.h
 #pragma once
-#define WIN32_LEAN_AND_MEAN
-#include <windows.h>
+#include <filesystem>
 
-void InitCrashHandler(const wchar_t* dumpDir);
-LONG WINAPI TopLevelExceptionHandler(struct _EXCEPTION_POINTERS* pInfo);
+namespace cg::win {
+  // Install a process-wide crash handler that drops a .dmp in dumpsDir.
+  bool InstallCrashHandler(const std::filesystem::path& dumpsDir);
+  void UninstallCrashHandler();
+}
