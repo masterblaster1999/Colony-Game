@@ -36,7 +36,103 @@ else()
   list(FILTER SRC_ALL EXCLUDE REGEX ".*/SDL.*\\.(c|cpp)$")
 endif()
 
-add_executable(ColonyGame ${SRC_ALL})
+# =========================================================================================
+# Build everything into a reusable core library that both the executable and the tests can link.
+# This resolves unresolved externals in tests and centralizes engine code (Windows-only).
+# =========================================================================================
+add_library(colony_core STATIC ${SRC_ALL})
+
+target_compile_features(colony_core PUBLIC cxx_std_20)
+target_include_directories(colony_core
+  PUBLIC
+    "${CMAKE_SOURCE_DIR}/src"
+    "${CMAKE_BINARY_DIR}/generated"
+)
+
+# Optional PCH for faster compiles
+if(COLONY_USE_PCH AND EXISTS "${CMAKE_SOURCE_DIR}/src/pch.h")
+  target_precompile_headers(colony_core PRIVATE "${CMAKE_SOURCE_DIR}/src/pch.h")
+endif()
+
+# Propagate feature toggles to consumers (exe + tests)
+target_compile_definitions(colony_core
+  PUBLIC
+    $<$<STREQUAL:${FRONTEND},sdl>:COLONY_USE_SDL=1>
+    $<$<BOOL:${ENABLE_IMGUI}>:CG_ENABLE_IMGUI=1>
+    $<$<BOOL:${ENABLE_TRACY}>:TRACY_ENABLE=1>
+)
+
+if(MSVC)
+  # utf-8 for headers/sources
+  target_compile_options(colony_core PRIVATE /utf-8)
+endif()
+
+# Windows system libs needed by path helpers, COM/KnownFolders, etc. -> PUBLIC for tests
+if(WIN32)
+  target_link_libraries(colony_core PUBLIC shell32 ole32)
+endif()
+
+# =========================================================================================
+# Executable: keep the game thin; it links the core lib.
+# (The actual entry point(s) are compiled into colony_core by design.)
+# =========================================================================================
+add_executable(ColonyGame)
+
+# Win32/Console subsystem toggle for the main EXE
+if(WIN32 AND NOT SHOW_CONSOLE)
+  set_target_properties(ColonyGame PROPERTIES WIN32_EXECUTABLE YES)
+endif()
+
+target_compile_features(ColonyGame PRIVATE cxx_std_20)
+target_include_directories(ColonyGame PRIVATE
+  "${CMAKE_SOURCE_DIR}/src"
+  "${CMAKE_BINARY_DIR}/generated"
+)
+
+if(MSVC)
+  target_compile_options(ColonyGame PRIVATE /utf-8)
+endif()
+
+# Link libs (propagate Windows flags/defs from interface target)
+target_link_libraries(ColonyGame
+  PRIVATE
+    colony_core
+    colony_build_options
+    $<$<STREQUAL:${FRONTEND},sdl>:$<TARGET_NAME_IF_EXISTS:SDL2::SDL2main>>
+    $<$<STREQUAL:${FRONTEND},sdl>:SDL2::SDL2>
+)
+
+# Add Windows platform resources and helpers (manifest, version info, crash handler, GPU preference)
+if(WIN32)
+  if(EXISTS "${CMAKE_BINARY_DIR}/generated/Version.rc")
+    target_sources(ColonyGame PRIVATE "${CMAKE_BINARY_DIR}/generated/Version.rc")
+  endif()
+  if(EXISTS "${CMAKE_SOURCE_DIR}/platform/win/Manifest.rc")
+    target_sources(ColonyGame PRIVATE "${CMAKE_SOURCE_DIR}/platform/win/Manifest.rc")
+  endif()
+  foreach(_f IN ITEMS
+      "${CMAKE_SOURCE_DIR}/platform/win/CrashHandler.cpp"
+      "${CMAKE_SOURCE_DIR}/src/platform/win/GpuPreference.cpp"
+    )
+    if(EXISTS "${_f}")
+      target_sources(ColonyGame PRIVATE "${_f}")
+    endif()
+  endforeach()
+  # dbghelp is exe-local; shell32/ole32 are already PUBLIC on colony_core for tests
+  target_link_libraries(ColonyGame PRIVATE dbghelp)
+endif()
+
+# Make the game the startup project in Visual Studio
+set_property(DIRECTORY "${CMAKE_SOURCE_DIR}" PROPERTY VS_STARTUP_PROJECT ColonyGame)
+
+# Output directories per configuration (for multi-config generators like VS)
+if(CMAKE_CONFIGURATION_TYPES)
+  foreach(cfg IN LISTS CMAKE_CONFIGURATION_TYPES)
+    string(TOUPPER "${cfg}" CFGU)
+    set_target_properties(ColonyGame PROPERTIES
+      RUNTIME_OUTPUT_DIRECTORY_${CFGU} "${CMAKE_BINARY_DIR}/bin/${cfg}")
+  endforeach()
+endif()
 
 # ---------------------------------------------------------------------------
 # POST-BUILD: stage runtime assets next to the ColonyGame.exe
@@ -127,12 +223,16 @@ if(CMAKE_GENERATOR MATCHES "Visual Studio")
   function(_configure_vs_shader _file)
     get_filename_component(_we "${_file}" NAME_WE)
     set(_type "")
+    set(_entry "")
     if(_we MATCHES "_vs$")
       set(_type "Vertex")
+      set(_entry "VSMain")  # map to typical entrypoint names to avoid X3501
     elseif(_we MATCHES "_ps$")
       set(_type "Pixel")
+      set(_entry "PSMain")
     elseif(_we MATCHES "_cs$")
       set(_type "Compute")
+      set(_entry "CSMain")
     else()
       return() # Only compile files in HLSL_SOURCES
     endif()
@@ -140,7 +240,7 @@ if(CMAKE_GENERATOR MATCHES "Visual Studio")
     set_source_files_properties("${_file}" PROPERTIES
       VS_SHADER_TYPE              "${_type}"
       VS_SHADER_MODEL             "5.0"
-      VS_SHADER_ENTRYPOINT        "main"
+      VS_SHADER_ENTRYPOINT        "${_entry}"
       VS_SHADER_OBJECT_FILE_NAME  "${_VS_OUTDIR}\\%(Filename).cso"
       VS_SHADER_FLAGS             "$<$<CONFIG:Debug>:/Od;/Zi>${_HLSL_INC_FLAGS}"
     )
@@ -200,77 +300,23 @@ else()
 endif()
 # -------------------------------------------------------------------------------------------
 
-# Win32/Console subsystem toggle for the main EXE
-if(WIN32 AND NOT SHOW_CONSOLE)
-  set_target_properties(ColonyGame PROPERTIES WIN32_EXECUTABLE YES)
-endif()
-
-target_compile_features(ColonyGame PRIVATE cxx_std_20)
-target_include_directories(ColonyGame PRIVATE
-  "${CMAKE_SOURCE_DIR}/src"
-  "${CMAKE_BINARY_DIR}/generated"
-)
-
-# Make sure this target is /utf-8 too (fmt 11.x requires it)
-if(MSVC)
-  target_compile_options(ColonyGame PRIVATE /utf-8)
-endif()
-
-# Precompiled header (optional, gated by COLONY_USE_PCH)
+# Precompiled header (optional, gated by COLONY_USE_PCH) for the EXE as well
 if(COLONY_USE_PCH AND EXISTS "${CMAKE_SOURCE_DIR}/src/pch.h")
   target_precompile_headers(ColonyGame PRIVATE "${CMAKE_SOURCE_DIR}/src/pch.h")
 endif()
 
 # Unity builds (opt‑in)
 if(COLONY_UNITY_BUILD)
-  set_target_properties(ColonyGame PROPERTIES UNITY_BUILD ON UNITY_BUILD_BATCH_SIZE 16)
+  set_target_properties(colony_core   PROPERTIES UNITY_BUILD ON UNITY_BUILD_BATCH_SIZE 16)
+  set_target_properties(ColonyGame    PROPERTIES UNITY_BUILD ON UNITY_BUILD_BATCH_SIZE 16)
 endif()
 
-# Compile-time defines for optional systems + deterministic frontend switch
+# (Keep defines on the EXE too; harmless if duplicated from PUBLIC on colony_core)
 target_compile_definitions(ColonyGame PRIVATE
   $<$<STREQUAL:${FRONTEND},sdl>:COLONY_USE_SDL=1>
   $<$<BOOL:${ENABLE_IMGUI}>:CG_ENABLE_IMGUI=1>
   $<$<BOOL:${ENABLE_TRACY}>:TRACY_ENABLE=1>
 )
-
-# Link libs (propagate Windows flags/defs from interface target)
-target_link_libraries(ColonyGame
-  PRIVATE
-    colony_build_options
-    $<$<STREQUAL:${FRONTEND},sdl>:$<TARGET_NAME_IF_EXISTS:SDL2::SDL2main>>
-    $<$<STREQUAL:${FRONTEND},sdl>:SDL2::SDL2>
-)
-
-# Add Windows platform resources and helpers (manifest, version info, crash handler, GPU preference)
-if(WIN32)
-  if(EXISTS "${CMAKE_BINARY_DIR}/generated/Version.rc")
-    target_sources(ColonyGame PRIVATE "${CMAKE_BINARY_DIR}/generated/Version.rc")
-  endif()
-  if(EXISTS "${CMAKE_SOURCE_DIR}/platform/win/Manifest.rc")
-    target_sources(ColonyGame PRIVATE "${CMAKE_SOURCE_DIR}/platform/win/Manifest.rc")
-  endif()
-  foreach(_f IN ITEMS
-      "${CMAKE_SOURCE_DIR}/platform/win/CrashHandler.cpp"
-      "${CMAKE_SOURCE_DIR}/src/platform/win/GpuPreference.cpp"
-    )
-    if(EXISTS "${_f}")
-      target_sources(ColonyGame PRIVATE "${_f}")
-    endif()
-  endforeach()
-  target_link_libraries(ColonyGame PRIVATE dbghelp shell32 ole32)
-endif()
-
-# Make the game the startup project in Visual Studio
-set_property(DIRECTORY "${CMAKE_SOURCE_DIR}" PROPERTY VS_STARTUP_PROJECT ColonyGame)
-
-# Output directories per configuration (for multi-config generators like VS)
-if(CMAKE_CONFIGURATION_TYPES)
-  foreach(cfg IN LISTS CMAKE_CONFIGURATION_TYPES)
-    string(TOUPPER "${cfg}" CFGU)
-    set_target_properties(ColonyGame PROPERTIES
-      RUNTIME_OUTPUT_DIRECTORY_${CFGU} "${CMAKE_BINARY_DIR}/bin/${cfg}")
-  endforeach()
-endif()
 
 # ---- Optional: copy shared shader header for modding/debugging ----
 if(EXISTS "${CMAKE_SOURCE_DIR}/renderer/Shaders/include/common.hlsli")
