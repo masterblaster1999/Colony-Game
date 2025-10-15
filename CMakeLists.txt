@@ -313,6 +313,23 @@ if(COLONY_THIRDPARTY_INCLUDE_DIRS)
   include_directories(${COLONY_THIRDPARTY_INCLUDE_DIRS})
 endif()
 
+# -------------------- Canonical shader source directories (unified) --------------------
+# We unify discovery across all build paths (VS MSBuild, FXC, DXC, helper modules).
+set(COLONY_SHADER_SOURCE_DIRS "")
+foreach(_cand
+  "${CMAKE_SOURCE_DIR}/shaders"
+  "${CMAKE_SOURCE_DIR}/renderer/Shaders"
+  "${CMAKE_SOURCE_DIR}/src/pcg/shaders")
+  if(EXISTS "${_cand}")
+    list(APPEND COLONY_SHADER_SOURCE_DIRS "${_cand}")
+  endif()
+endforeach()
+if(COLONY_SHADER_SOURCE_DIRS)
+  list(REMOVE_DUPLICATES COLONY_SHADER_SOURCE_DIRS)
+else()
+  message(STATUS "No shader source directories found (looked for shaders/, renderer/Shaders, src/pcg/shaders).")
+endif()
+
 # ---- HLSL shaders helper (DXC/FXC) ----
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_SOURCE_DIR}/cmake")
 include(ColonyHLSL OPTIONAL RESULT_VARIABLE _colony_hlsl_loaded)
@@ -406,11 +423,8 @@ if(NOT CG_HLSL_MSBUILD)
       set(_CS_PROF "cs_5_0")
     endif()
 
-    if(COLONY_RENDERER STREQUAL "d3d12")
-      set(_SHADER_DIRS "${CMAKE_SOURCE_DIR}/src/pcg/shaders" "${CMAKE_SOURCE_DIR}/shaders")
-    else()
-      set(_SHADER_DIRS "${CMAKE_SOURCE_DIR}/shaders")
-    endif()
+    # Unified sources
+    set(_SHADER_DIRS ${COLONY_SHADER_SOURCE_DIRS})
 
     foreach(_dir IN LISTS _SHADER_DIRS)
       if(COLONY_RENDERER STREQUAL "d3d12" AND EXISTS "${_dir}/noise_fbm_cs.hlsl")
@@ -484,13 +498,23 @@ if(NOT CG_HLSL_MSBUILD)
           message(WARNING "FXC not found on PATH or Windows SDK; set FXC_EXE or install the Windows SDK. Shaders will not be compiled.")
         endif()
 
-        if(FXC_EXE AND (EXISTS "${CMAKE_SOURCE_DIR}/shaders"))
-          file(GLOB_RECURSE HLSL_SOURCES CONFIGURE_DEPENDS
-            "${CMAKE_SOURCE_DIR}/shaders/*.hlsl"
-          )
+        if(FXC_EXE AND COLONY_SHADER_SOURCE_DIRS)
+          # Gather all HLSL files from unified dirs
+          set(HLSL_SOURCES "")
+          foreach(_dir IN LISTS COLONY_SHADER_SOURCE_DIRS)
+            file(GLOB_RECURSE _found CONFIGURE_DEPENDS "${_dir}/*.hlsl")
+            list(APPEND HLSL_SOURCES ${_found})
+          endforeach()
+
           set(SHADER_BIN_DIR "${CMAKE_BINARY_DIR}/res/shaders")
           file(MAKE_DIRECTORY "${SHADER_BIN_DIR}")
           set(_HLSL_TOOLCHAIN "FXC (SM5) -> ${SHADER_BIN_DIR}")
+
+          # Build include flags once
+          set(_FXC_INCLUDES "")
+          foreach(_inc IN LISTS COLONY_SHADER_SOURCE_DIRS)
+            list(APPEND _FXC_INCLUDES /I "${_inc}")
+          endforeach()
 
           function(_cg_infer_profile_and_entry_fxc SRC OUT_PROFILE OUT_ENTRY OUT_SKIP)
             get_filename_component(_name_we "${SRC}" NAME_WE)
@@ -551,8 +575,7 @@ if(NOT CG_HLSL_MSBUILD)
                       $<$<CONFIG:Debug>:/Zi>
                       $<$<CONFIG:Debug>:/Od>
                       /Fo "${OUTFILE}"
-                      /I "${CMAKE_SOURCE_DIR}/shaders"
-                      /I "${CMAKE_SOURCE_DIR}/src/pcg/shaders"
+                      ${_FXC_INCLUDES}
                       "${SRC}"
               DEPENDS "${SRC}"
               COMMENT "FXC ${PROFILE} ${SRC} -> ${OUTFILE}"
@@ -580,14 +603,13 @@ if(NOT CG_HLSL_MSBUILD)
 
         # --- NEW preferred path: use DxcShaders.cmake helpers if present ---
         if(COMMAND dxc_compile_shader)
-          file(GLOB_RECURSE HLSL_SOURCES CONFIGURE_DEPENDS
-            "${CMAKE_SOURCE_DIR}/shaders/*.hlsl"
-            "${CMAKE_SOURCE_DIR}/src/pcg/shaders/*.hlsl"
-          )
-          set(_INCLUDE_DIRS
-            "${CMAKE_SOURCE_DIR}/shaders"
-            "${CMAKE_SOURCE_DIR}/src/pcg/shaders"
-          )
+          # Unified source discovery
+          set(HLSL_SOURCES "")
+          foreach(_dir IN LISTS COLONY_SHADER_SOURCE_DIRS)
+            file(GLOB_RECURSE _found CONFIGURE_DEPENDS "${_dir}/*.hlsl")
+            list(APPEND HLSL_SOURCES ${_found})
+          endforeach()
+          set(_INCLUDE_DIRS ${COLONY_SHADER_SOURCE_DIRS})
 
           function(_cg_infer_stage_profile_entry_dxc SRC OUT_STAGE OUT_PROFILE OUT_ENTRY)
             get_filename_component(_name_we "${SRC}" NAME_WE)
@@ -675,14 +697,23 @@ if(NOT CG_HLSL_MSBUILD)
             message(WARNING "DXC not found on PATH or SDK; set DXC_EXE or install the DirectX Shader Compiler. Shaders will not be compiled.")
           endif()
 
-          if(DXC_EXE AND (EXISTS "${CMAKE_SOURCE_DIR}/shaders" OR EXISTS "${CMAKE_SOURCE_DIR}/src/pcg/shaders"))
-            file(GLOB_RECURSE HLSL_SOURCES CONFIGURE_DEPENDS
-              "${CMAKE_SOURCE_DIR}/shaders/*.hlsl"
-              "${CMAKE_SOURCE_DIR}/src/pcg/shaders/*.hlsl"
-            )
+          if(DXC_EXE AND COLONY_SHADER_SOURCE_DIRS)
+            # Unified source discovery
+            set(HLSL_SOURCES "")
+            foreach(_dir IN LISTS COLONY_SHADER_SOURCE_DIRS)
+              file(GLOB_RECURSE _found CONFIGURE_DEPENDS "${_dir}/*.hlsl")
+              list(APPEND HLSL_SOURCES ${_found})
+            endforeach()
+
             set(SHADER_BIN_DIR "${CMAKE_BINARY_DIR}/res/shaders")
             file(MAKE_DIRECTORY "${SHADER_BIN_DIR}")
             set(_HLSL_TOOLCHAIN "DXC (SM6) -> ${SHADER_BIN_DIR}")
+
+            # Build include flags once
+            set(_DXC_INCLUDES "")
+            foreach(_inc IN LISTS COLONY_SHADER_SOURCE_DIRS)
+              list(APPEND _DXC_INCLUDES -I "${_inc}")
+            endforeach()
 
             function(_cg_infer_profile_and_entry_dxc SRC OUT_PROFILE OUT_ENTRY)
               get_filename_component(_name_we "${SRC}" NAME_WE)
@@ -742,8 +773,7 @@ if(NOT CG_HLSL_MSBUILD)
                         $<$<CONFIG:Debug>:-Qembed_debug>
                         $<$<CONFIG:Release>:-Qstrip_debug>
                         -Fo "${OUTFILE}"
-                        -I "${CMAKE_SOURCE_DIR}/shaders"
-                        -I "${CMAKE_SOURCE_DIR}/src/pcg/shaders"
+                        ${_DXC_INCLUDES}
                         "${SRC}"
                 DEPENDS "${SRC}"
                 COMMENT "DXC ${PROFILE} ${SRC} -> ${OUTFILE}"
@@ -898,7 +928,9 @@ if(COLONY_CORE_SOURCES)
     endif()
   endif()
   set_property(TARGET colony_core PROPERTY FOLDER "libs")
-  message(STATUS "colony_core: ${#COLONY_CORE_SOURCES} sources")
+  # (minor fix) print correct count
+  list(LENGTH COLONY_CORE_SOURCES _cg_core_count)
+  message(STATUS "colony_core: ${_cg_core_count} sources")
 endif()
 
 # Thin Windows platform layer (paths, atomic write, etc.)
@@ -1089,7 +1121,7 @@ if(TARGET ColonyGame)
            "${CMAKE_SOURCE_DIR}/src/pcg/shaders/*.hlsl")
       if(GAME_HLSL)
         target_sources(ColonyGame PRIVATE ${GAME_HLSL})
-        configure_hlsl_target(ColonyGame)
+        configure_hlsl_target(ColonyGame) # sets VS_SHADER_TYPE/MODEL/ENTRY on .hlsl sources (VS generators). :contentReference[oaicite:2]{index=2}
         # Set friendly status so summary prints something useful
         set(_HLSL_TOOLCHAIN "VS native HLSL (fallback)")
       endif()
@@ -1098,36 +1130,20 @@ if(TARGET ColonyGame)
 
   # --- HLSL compilation (via Visual Studio integration) ------------------------
   if(CG_HLSL_MSBUILD)
-    # Choose the first shader folder that exists (adjust if your layout differs)
-    set(COLONY_SHADER_DIR "${CMAKE_SOURCE_DIR}/shaders")
-    if(NOT EXISTS "${COLONY_SHADER_DIR}")
-      set(COLONY_SHADER_DIR "${CMAKE_SOURCE_DIR}/renderer/Shaders")
-    endif()
-
-    if(EXISTS "${COLONY_SHADER_DIR}")
-      colony_compile_hlsl(
-        TARGET        ColonyGame
-        DIR           "${COLONY_SHADER_DIR}"
-        RECURSE
-        MODEL         ${COLONY_HLSL_MODEL}
-        OUTPUT_SUBDIR "shaders"
-        INCLUDE_DIRS  "${COLONY_SHADER_DIR}/include"
-        ENTRYPOINT_MAP "noise_fbm_cs.hlsl=main"
-      )
-    endif()
-
-    # PCG shaders (optional second folder)
-    if(EXISTS "${CMAKE_SOURCE_DIR}/src/pcg/shaders")
-      colony_compile_hlsl(
-        TARGET        ColonyGame
-        DIR           "${CMAKE_SOURCE_DIR}/src/pcg/shaders"
-        RECURSE
-        MODEL         ${COLONY_HLSL_MODEL}
-        OUTPUT_SUBDIR "shaders"
-        INCLUDE_DIRS  "${CMAKE_SOURCE_DIR}/src/pcg/shaders/include"
-        ENTRYPOINT_MAP "noise_fbm_cs.hlsl=main"
-      )
-    endif()
+    # Use all unified shader directories that exist
+    foreach(_dir IN LISTS COLONY_SHADER_SOURCE_DIRS)
+      if(EXISTS "${_dir}")
+        colony_compile_hlsl(
+          TARGET        ColonyGame
+          DIR           "${_dir}"
+          RECURSE
+          MODEL         ${COLONY_HLSL_MODEL}
+          OUTPUT_SUBDIR "shaders"
+          INCLUDE_DIRS  "${_dir}/include"
+          ENTRYPOINT_MAP "noise_fbm_cs.hlsl=main"
+        )
+      endif()
+    endforeach()
   endif()
 
   if(TARGET shaders AND NOT CG_HLSL_MSBUILD)
@@ -1160,14 +1176,26 @@ if(TARGET ColonyGame)
   if(COMMAND colony_add_hlsl AND CMAKE_GENERATOR MATCHES "Visual Studio" AND NOT CG_HLSL_MSBUILD)
     message(STATUS "HLSL toolchain: Visual Studio HLSL (MSBuild)")
 
-    set(_SHADERS_DIR "${CMAKE_SOURCE_DIR}/shaders")
-    set(_PCG_DIR     "${CMAKE_SOURCE_DIR}/src/pcg/shaders")
+    # Collect all shader roots present
+    set(_SHADER_DIRS "")
+    foreach(_cand "${CMAKE_SOURCE_DIR}/shaders" "${CMAKE_SOURCE_DIR}/renderer/Shaders" "${CMAKE_SOURCE_DIR}/src/pcg/shaders")
+      if(EXISTS "${_cand}")
+        list(APPEND _SHADER_DIRS "${_cand}")
+      endif()
+    endforeach()
 
-    file(GLOB _VS_SHADERS CONFIGURE_DEPENDS "${_SHADERS_DIR}/*_vs.hlsl")
-    file(GLOB _PS_SHADERS CONFIGURE_DEPENDS "${_SHADERS_DIR}/*_ps.hlsl")
-    file(GLOB _CS_SHADERS CONFIGURE_DEPENDS
-         "${_SHADERS_DIR}/*_cs.hlsl"
-         "${_PCG_DIR}/*_cs.hlsl")
+    # Stage-wise globbing across all dirs
+    set(_VS_SHADERS "")
+    set(_PS_SHADERS "")
+    set(_CS_SHADERS "")
+    foreach(_d IN LISTS _SHADER_DIRS)
+      file(GLOB _tmp_vs CONFIGURE_DEPENDS "${_d}/*_vs.hlsl")
+      file(GLOB _tmp_ps CONFIGURE_DEPENDS "${_d}/*_ps.hlsl")
+      file(GLOB _tmp_cs CONFIGURE_DEPENDS "${_d}/*_cs.hlsl")
+      list(APPEND _VS_SHADERS ${_tmp_vs})
+      list(APPEND _PS_SHADERS ${_tmp_ps})
+      list(APPEND _CS_SHADERS ${_tmp_cs})
+    endforeach()
 
     if(COLONY_RENDERER STREQUAL "d3d12")
       set(_SM_VS "vs_6_7")
@@ -1186,7 +1214,7 @@ if(TARGET ColonyGame)
         SOURCES ${_VS_SHADERS}
         PROFILE ${_SM_VS}
         ENTRY   "VSMain"
-        INCLUDES ${_SHADERS_DIR} ${_PCG_DIR}
+        INCLUDES ${_SHADER_DIRS}
       )
     endif()
 
@@ -1197,11 +1225,13 @@ if(TARGET ColonyGame)
         SOURCES ${_PS_SHADERS}
         PROFILE ${_SM_PS}
         ENTRY   "PSMain"
-        INCLUDES ${_SHADERS_DIR} ${_PCG_DIR}
+        INCLUDES ${_SHADER_DIRS}
       )
     endif()
 
+    # Split noise_fbm_cs (entry=main) from general CS shaders (entry=CSMain)
     set(_CS_GENERAL "")
+    set(_HAS_NOISE_FBM_CS FALSE)
     foreach(_cs ${_CS_SHADERS})
       if(_cs MATCHES ".*/noise_fbm_cs\\.hlsl$")
         set(_HAS_NOISE_FBM_CS TRUE)
@@ -1217,19 +1247,25 @@ if(TARGET ColonyGame)
         SOURCES ${_CS_GENERAL}
         PROFILE ${_SM_CS}
         ENTRY   "CSMain"
-        INCLUDES ${_SHADERS_DIR} ${_PCG_DIR}
+        INCLUDES ${_SHADER_DIRS}
       )
     endif()
 
     if(_HAS_NOISE_FBM_CS)
-      colony_add_hlsl(
-        TARGET  ColonyGame
-        OUTDIR  "res/shaders"
-        SOURCES "${_PCG_DIR}/noise_fbm_cs.hlsl"
-        PROFILE ${_SM_CS}
-        ENTRY   "main"
-        INCLUDES ${_SHADERS_DIR} ${_PCG_DIR}
-      )
+      # search across dirs; first found wins
+      foreach(_d IN LISTS _SHADER_DIRS)
+        if(EXISTS "${_d}/noise_fbm_cs.hlsl")
+          colony_add_hlsl(
+            TARGET  ColonyGame
+            OUTDIR  "res/shaders"
+            SOURCES "${_d}/noise_fbm_cs.hlsl"
+            PROFILE ${_SM_CS}
+            ENTRY   "main"
+            INCLUDES ${_SHADER_DIRS}
+          )
+          break()
+        endif()
+      endforeach()
     endif()
   endif()
 endif()
