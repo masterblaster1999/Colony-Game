@@ -844,6 +844,81 @@ if(EXISTS "${CMAKE_SOURCE_DIR}/src/sim/factions/FactionGen.cpp")
   endif()
 endif()
 
+# ====================================================================================
+#   PATCH (2): Core (engine-only) & Windows platform layers (clean separation)
+# ====================================================================================
+# 'colony_core' aggregates engine/simulation logic without app/GUI sources.
+# The globs are guarded and exclude UI/renderer-facing folders to keep ImGui optional.
+set(COLONY_CORE_SOURCES "")
+foreach(_dir IN LISTS
+        _dummy) # placeholder to allow easy foreach editing
+endforeach()
+# Gather common engine-style directories if present
+foreach(_maybe_dir
+  src/core
+  src/engine
+  src/common
+  src/world
+  src/worldgen
+  src/pathfinding
+  src/nav
+  src/simulation
+)
+  if(EXISTS "${CMAKE_SOURCE_DIR}/${_maybe_dir}")
+    file(GLOB_RECURSE _g CONFIGURE_DEPENDS
+      "${CMAKE_SOURCE_DIR}/${_maybe_dir}/*.cpp"
+      "${CMAKE_SOURCE_DIR}/${_maybe_dir}/*.cxx"
+      "${CMAKE_SOURCE_DIR}/${_maybe_dir}/*.c")
+    list(APPEND COLONY_CORE_SOURCES ${_g})
+  endif()
+endforeach()
+# Exclude obvious app/UI/renderer bindings from core
+if(COLONY_CORE_SOURCES)
+  list(FILTER COLONY_CORE_SOURCES EXCLUDE REGEX ".*/app/.*")
+  list(FILTER COLONY_CORE_SOURCES EXCLUDE REGEX ".*/ui/.*")
+  list(FILTER COLONY_CORE_SOURCES EXCLUDE REGEX ".*/imgui/.*")
+  list(FILTER COLONY_CORE_SOURCES EXCLUDE REGEX ".*/renderer?/.*")
+endif()
+
+if(COLONY_CORE_SOURCES)
+  add_library(colony_core STATIC ${COLONY_CORE_SOURCES})
+  target_include_directories(colony_core PUBLIC
+    "${CMAKE_SOURCE_DIR}/src"
+    "${CMAKE_SOURCE_DIR}/include"
+  )
+  if(TARGET colony_build_options)
+    target_link_libraries(colony_core PUBLIC colony_build_options)
+  endif()
+  # Per-target PCH for core (prefer pch_core.hpp if present)
+  if(COLONY_USE_PCH)
+    if(EXISTS "${CMAKE_SOURCE_DIR}/src/common/pch_core.hpp")
+      target_precompile_headers(colony_core PRIVATE src/common/pch_core.hpp)
+    elseif(EXISTS "${CMAKE_SOURCE_DIR}/src/pch_core.hpp")
+      target_precompile_headers(colony_core PRIVATE src/pch_core.hpp)
+    endif()
+  endif()
+  set_property(TARGET colony_core PROPERTY FOLDER "libs")
+  message(STATUS "colony_core: ${#COLONY_CORE_SOURCES} sources")
+endif()
+
+# Thin Windows platform layer (paths, atomic write, etc.)
+if(WIN32 AND EXISTS "${CMAKE_SOURCE_DIR}/platform/win")
+  file(GLOB PLATFORM_WIN_SRC CONFIGURE_DEPENDS
+       "${CMAKE_SOURCE_DIR}/platform/win/*.cpp"
+       "${CMAKE_SOURCE_DIR}/platform/win/*.cxx"
+       "${CMAKE_SOURCE_DIR}/platform/win/*.c")
+  if(PLATFORM_WIN_SRC)
+    add_library(colony_platform_win STATIC ${PLATFORM_WIN_SRC})
+    target_include_directories(colony_platform_win PUBLIC "${CMAKE_SOURCE_DIR}/platform/win")
+    # Common Win32 libs used by path/file helpers
+    target_link_libraries(colony_platform_win PUBLIC shell32 ole32)
+    if(TARGET colony_build_options)
+      target_link_libraries(colony_platform_win PUBLIC colony_build_options)
+    endif()
+    set_property(TARGET colony_platform_win PROPERTY FOLDER "libs")
+  endif()
+endif()
+
 # ===========================
 #   Main game sources / target
 # ===========================
@@ -869,6 +944,14 @@ if(TARGET ColonyGame)
   endif()
   if(TARGET Factions)
     target_link_libraries(ColonyGame PRIVATE Factions)
+  endif()
+
+  # Link the cleanly separated core + platform layers when available
+  if(TARGET colony_core)
+    target_link_libraries(ColonyGame PRIVATE colony_core)
+  endif()
+  if(TARGET colony_platform_win)
+    target_link_libraries(ColonyGame PRIVATE colony_platform_win)
   endif()
 
   if(TARGET colony_build_options)
@@ -970,9 +1053,17 @@ if(TARGET ColonyGame)
     set_target_properties(ColonyGame PROPERTIES WIN32_EXECUTABLE ON)
   endif()
 
-  # Precompiled headers, if present and allowed
-  if(COLONY_USE_PCH AND EXISTS "${CMAKE_SOURCE_DIR}/src/common/pch.hpp")
-    target_precompile_headers(ColonyGame PRIVATE src/common/pch.hpp)
+  # ---------------------------
+  # Per-target PCH (prefer GUI PCH for the app; fall back to common)
+  # ---------------------------
+  if(COLONY_USE_PCH)
+    if(EXISTS "${CMAKE_SOURCE_DIR}/src/common/pch_gui.hpp")
+      target_precompile_headers(ColonyGame PRIVATE src/common/pch_gui.hpp)
+    elseif(EXISTS "${CMAKE_SOURCE_DIR}/src/pch_gui.hpp")
+      target_precompile_headers(ColonyGame PRIVATE src/pch_gui.hpp)
+    elseif(EXISTS "${CMAKE_SOURCE_DIR}/src/common/pch.hpp")
+      target_precompile_headers(ColonyGame PRIVATE src/common/pch.hpp)
+    endif()
   endif()
 
   # Unity build (opt-in)
@@ -1266,8 +1357,60 @@ endif()
 #        Tests
 # ===========================
 include(CTest)
-if(BUILD_TESTING AND EXISTS "${CMAKE_SOURCE_DIR}/tests/CMakeLists.txt")
-  add_subdirectory(tests)
+if(BUILD_TESTING)
+  # If there is an existing tests/CMakeLists, keep honoring it (project-specific layout).
+  if(EXISTS "${CMAKE_SOURCE_DIR}/tests/CMakeLists.txt")
+    add_subdirectory(tests)
+  # Otherwise, provide a single-runner fallback that avoids multiple 'main' definitions.
+  elseif(EXISTS "${CMAKE_SOURCE_DIR}/tests")
+    file(GLOB TEST_SRCS CONFIGURE_DEPENDS "${CMAKE_SOURCE_DIR}/tests/*.cpp" "${CMAKE_SOURCE_DIR}/tests/*.cxx")
+    # Prefer a single doctest/catch main if present; keep only one main TU.
+    set(_TEST_MAIN "")
+    foreach(_cand IN LISTS TEST_SRCS)
+      if(_cand MATCHES "test_main\\.(cpp|cxx)$")
+        set(_TEST_MAIN "${_cand}")
+      endif()
+    endforeach()
+    if(_TEST_MAIN)
+      list(REMOVE_ITEM TEST_SRCS "${_TEST_MAIN}")
+      add_executable(colony_tests ${_TEST_MAIN} ${TEST_SRCS})
+    else()
+      # If no dedicated main exists, still create a runner from all sources.
+      add_executable(colony_tests ${TEST_SRCS})
+    endif()
+
+    # Link against core/platform + libs if available
+    if(TARGET colony_core)
+      target_link_libraries(colony_tests PRIVATE colony_core)
+    endif()
+    if(TARGET colony_platform_win)
+      target_link_libraries(colony_tests PRIVATE colony_platform_win)
+    endif()
+    if(TARGET pcg)
+      target_link_libraries(colony_tests PRIVATE pcg)
+    endif()
+    if(TARGET Factions)
+      target_link_libraries(colony_tests PRIVATE Factions)
+    endif()
+    if(TARGET colony_build_options)
+      target_link_libraries(colony_tests PRIVATE colony_build_options)
+    endif()
+    target_include_directories(colony_tests PRIVATE "${CMAKE_SOURCE_DIR}/src" "${CMAKE_SOURCE_DIR}/include")
+
+    # Per-target PCH for tests: reuse core PCH if available
+    if(COLONY_USE_PCH)
+      if(EXISTS "${CMAKE_SOURCE_DIR}/src/common/pch_core.hpp")
+        target_precompile_headers(colony_tests PRIVATE src/common/pch_core.hpp)
+      elseif(EXISTS "${CMAKE_SOURCE_DIR}/src/pch_core.hpp")
+        target_precompile_headers(colony_tests PRIVATE src/pch_core.hpp)
+      elseif(EXISTS "${CMAKE_SOURCE_DIR}/src/common/pch.hpp")
+        target_precompile_headers(colony_tests PRIVATE src/common/pch.hpp)
+      endif()
+    endif()
+
+    add_test(NAME colony_tests COMMAND colony_tests)
+    set_property(TARGET colony_tests PROPERTY FOLDER "tests")
+  endif()
 endif()
 
 # ===========================
@@ -1289,7 +1432,6 @@ message(STATUS "ASan (Debug)          : ${COLONY_ASAN}")
 message(STATUS "HLSL toolchain        : ${_HLSL_TOOLCHAIN}")
 message(STATUS "Git revision          : ${CG_GIT_HASH}")
 message(STATUS "==========================================================")
-
 
 # ---- Colony Game: Windows hardening & helpers (append-only block) ----
 include(${CMAKE_SOURCE_DIR}/cmake/CGOptions.cmake)
