@@ -1,15 +1,9 @@
 #pragma once
-#ifndef WIN32_LEAN_AND_MEAN
-#define WIN32_LEAN_AND_MEAN
-#endif
-#ifndef NOMINMAX
-#define NOMINMAX
-#endif
-#include <Windows.h>
-#include <cstdint>
-#include <string>
+// Core-only PCH: STL + Win32+D3D bits used by core libs.
+// (Move your current non-ImGui includes from pch.h here.)
 #include <vector>
-#include <array>
-#include <algorithm>
-#include <span>
+#include <string>
 #include <memory>
+#include <span>
+#include <filesystem>
+// Win32/D3D headers as needed, but NO imgui here.
