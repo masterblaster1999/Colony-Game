@@ -1,0 +1,17 @@
+{
+  "width": 192,
+  "height": 192,
+  "seed": 123456789,
+  "obstacle_density": 0.36,
+  "cellular_steps": 3,
+  "noise_scale": 0.06,
+  "noise_octaves": 4,
+  "noise_lacunarity": 2.0,
+  "noise_gain": 0.5,
+  "water_level": 0.18,
+  "max_cost": 12,
+  "poisson_min_dist": 28.0,
+  "poisson_attempts": 16,
+  "road_cost": 1,
+  "road_radius": 1
+}
