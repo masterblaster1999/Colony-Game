@@ -63,8 +63,9 @@
 #  include <SDL2/SDL.h>
 #endif
 
-// --- ImGui core (keep backend impl headers in .cpp files) ---
-#include <imgui.h>
+// --- ImGui core ---
+// Intentionally excluded from PCH to avoid PCH-time include-path issues.
+// Include <imgui.h> only in UI/renderer .cpp files (or a UI-only PCH).
 
 // --- fmt / spdlog ---
 #ifndef SPDLOG_ACTIVE_LEVEL
