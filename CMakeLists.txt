@@ -12,9 +12,12 @@ project(ColonyGame LANGUAGES CXX)
 include(CGOptions)        # options, MSVC defaults, helpers
 include(CGThirdParty)     # SDL2, ImGui, Tracy, DXC (optional)
 include(CGShaders)        # unified HLSL pipeline (VS/MSBuild, FXC, DXC)
-include(CGCoreTargets)    # colony_core & colony_platform_win (if sources exist)
 
-# Your real game target is typically defined in src/
+# NOTE: Stop defining/creating core/platform targets at the top level.
+# Those targets must be defined once inside subdirectories to avoid CMP0002 collisions.
+# (Removed: include(CGCoreTargets))
+
+# Your real game target (and libraries) are defined under src/
 if(EXISTS "${CMAKE_SOURCE_DIR}/src/CMakeLists.txt")
   add_subdirectory(src)
 endif()
