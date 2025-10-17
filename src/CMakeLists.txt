@@ -72,6 +72,15 @@ if(WIN32)
   target_link_libraries(colony_core PUBLIC shell32 ole32)
 endif()
 
+# -------------------- NEW SECTION: Link all third-party libraries --------------------
+# Ensure core library has all vcpkg-managed dependencies and build options linked in.
+# This ensures fmt, spdlog, EnTT, nlohmann_json, and DirectX headers are visible for PCH.
+target_link_libraries(colony_core
+  PUBLIC
+    ${COLONY_THIRDPARTY_LIBS}
+    colony_build_options
+)
+
 # =========================================================================================
 # Executable: keep the game thin; it links the core lib.
 # (The actual entry point(s) are compiled into colony_core by design.)
@@ -136,50 +145,33 @@ endif()
 
 # ---------------------------------------------------------------------------
 # POST-BUILD: stage runtime assets next to the ColonyGame.exe
-# This must live in the SAME CMake directory where ColonyGame is defined.
-# CMake docs: the <target> in add_custom_command(TARGET ...) must be defined
-# in the current directory; targets in other directories cannot be specified.
 # ---------------------------------------------------------------------------
 add_custom_command(TARGET ColonyGame POST_BUILD
-  # Ensure output folders exist
   COMMAND ${CMAKE_COMMAND} -E make_directory
           "$<TARGET_FILE_DIR:ColonyGame>/assets"
   COMMAND ${CMAKE_COMMAND} -E make_directory
           "$<TARGET_FILE_DIR:ColonyGame>/res"
-  # Copy static assets shipped from the repo
   COMMAND ${CMAKE_COMMAND} -E copy_directory
           "${CMAKE_SOURCE_DIR}/assets" "$<TARGET_FILE_DIR:ColonyGame>/assets"
   COMMAND ${CMAKE_COMMAND} -E copy_directory
           "${CMAKE_SOURCE_DIR}/res"    "$<TARGET_FILE_DIR:ColonyGame>/res"
-  # (Optional) If your shader pipeline emits compiled outputs into build/shaders,
-  # uncomment this block. Keep it commented if that folder may not exist.
-  # COMMAND ${CMAKE_COMMAND} -E make_directory
-  #         "$<TARGET_FILE_DIR:ColonyGame>/res/shaders"
-  # COMMAND ${CMAKE_COMMAND} -E copy_directory
-  #         "${CMAKE_BINARY_DIR}/shaders/$<CONFIG>" "$<TARGET_FILE_DIR:ColonyGame>/res/shaders"
   VERBATIM
 )
 
-# ------------------------- SHADERS: choose ONE route per generator -------------------------
-# A) Visual Studio generator -> let MSBuild compile .hlsl (VS_SHADER_* props)
-# B) Other generators (e.g., Ninja) -> use shaders.json + colony_register_shaders()
-
-# A) Visual Studio path (MSBuild HLSL)
+# ------------------------- SHADERS -------------------------
+# Visual Studio generator path (MSBuild HLSL)
 if(CMAKE_GENERATOR MATCHES "Visual Studio")
   set(HLSL_DIR  "${CMAKE_SOURCE_DIR}/renderer/Shaders")
   set(HLSL_INC_PRIMARY  "${HLSL_DIR}/include")
-  set(HLSL_INC_ALT      "${CMAKE_SOURCE_DIR}/shaders/include")  # optional secondary include root
-  set(_VS_OUTDIR "$(OutDir)res\\shaders")  # place .cso where the runtime expects them
+  set(HLSL_INC_ALT      "${CMAKE_SOURCE_DIR}/shaders/include")
+  set(_VS_OUTDIR "$(OutDir)res\\shaders")
 
-  # --- Only compile entrypoint-bearing shaders; treat others as header-only ---
-  # 1) Explicitly collect only compileable HLSL with *_vs/_ps/_cs suffixes
   file(GLOB_RECURSE HLSL_SOURCES CONFIGURE_DEPENDS
     "${HLSL_DIR}/*_vs.hlsl"
     "${HLSL_DIR}/*_ps.hlsl"
     "${HLSL_DIR}/*_cs.hlsl"
   )
 
-  # 2) Library/utility .hlsl (no entry point): mark header-only
   file(GLOB_RECURSE HLSL_ALL_HLSL CONFIGURE_DEPENDS "${HLSL_DIR}/*.hlsl")
   set(HLSL_LIBRARY "")
   foreach(_f IN LISTS HLSL_ALL_HLSL)
@@ -189,10 +181,8 @@ if(CMAKE_GENERATOR MATCHES "Visual Studio")
     endif()
   endforeach()
 
-  # 3) .hlsli files are includes, not compiled
   file(GLOB_RECURSE HLSL_INCLUDES CONFIGURE_DEPENDS "${HLSL_DIR}/*.hlsli")
 
-  # Add to target so they appear in Solution Explorer
   if(HLSL_SOURCES)
     target_sources(ColonyGame PRIVATE ${HLSL_SOURCES})
   endif()
@@ -205,12 +195,10 @@ if(CMAKE_GENERATOR MATCHES "Visual Studio")
     set_source_files_properties(${HLSL_INCLUDES} PROPERTIES HEADER_FILE_ONLY ON)
   endif()
 
-  # Group them in the IDE
   source_group("Shaders\\Sources"  FILES ${HLSL_SOURCES})
   source_group("Shaders\\Library"  FILES ${HLSL_LIBRARY})
   source_group("Shaders\\Includes" FILES ${HLSL_INCLUDES})
 
-  # Construct include flags for FXC (support both include roots if they exist)
   set(_HLSL_INC_FLAGS "")
   if(EXISTS "${HLSL_INC_PRIMARY}")
     string(APPEND _HLSL_INC_FLAGS " /I\"${HLSL_INC_PRIMARY}\"")
@@ -219,14 +207,13 @@ if(CMAKE_GENERATOR MATCHES "Visual Studio")
     string(APPEND _HLSL_INC_FLAGS " /I\"${HLSL_INC_ALT}\"")
   endif()
 
-  # Configure VS shader properties by suffix: *_vs.hlsl / *_ps.hlsl / *_cs.hlsl
   function(_configure_vs_shader _file)
     get_filename_component(_we "${_file}" NAME_WE)
     set(_type "")
     set(_entry "")
     if(_we MATCHES "_vs$")
       set(_type "Vertex")
-      set(_entry "VSMain")  # map to typical entrypoint names to avoid X3501
+      set(_entry "VSMain")
     elseif(_we MATCHES "_ps$")
       set(_type "Pixel")
       set(_entry "PSMain")
@@ -234,9 +221,8 @@ if(CMAKE_GENERATOR MATCHES "Visual Studio")
       set(_type "Compute")
       set(_entry "CSMain")
     else()
-      return() # Only compile files in HLSL_SOURCES
+      return()
     endif()
-
     set_source_files_properties("${_file}" PROPERTIES
       VS_SHADER_TYPE              "${_type}"
       VS_SHADER_MODEL             "5.0"
@@ -251,10 +237,8 @@ if(CMAKE_GENERATOR MATCHES "Visual Studio")
   endforeach()
 
 else()
-  # B) Manifest + DXC/FXC path (single-config generators)
   include(${CMAKE_SOURCE_DIR}/cmake/ColonyShaders.cmake OPTIONAL RESULT_VARIABLE _colony_shaders_included)
 
-  # Detect a shaders.json manifest in either renderer/Shaders or shaders
   set(_COLONY_MANIFEST "")
   if(EXISTS "${CMAKE_SOURCE_DIR}/renderer/Shaders/shaders.json")
     set(_COLONY_MANIFEST "${CMAKE_SOURCE_DIR}/renderer/Shaders/shaders.json")
@@ -276,12 +260,10 @@ else()
       DXC_ARGS     -nologo
     )
 
-    # Optional install step for 'cmake --install'
     if(COMMAND colony_install_shaders)
       colony_install_shaders(TARGET ColonyGame DESTINATION bin/shaders)
     endif()
 
-    # Stage compiled shader blobs (manifest output) next to the EXE after build.
     add_custom_command(TARGET ColonyGame POST_BUILD
       COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:ColonyGame>/res/shaders"
       COMMAND ${CMAKE_COMMAND} -E copy_directory
@@ -292,48 +274,36 @@ else()
   elseif(_COLONY_MANIFEST)
     message(WARNING
       "Found '${_COLONY_MANIFEST}', but 'colony_register_shaders()' is not defined. "
-      "Ensure cmake/ColonyShaders.cmake provides it, or build with a Visual Studio generator to let MSBuild compile HLSL."
+      "Ensure cmake/ColonyShaders.cmake provides it, or build with a Visual Studio generator."
     )
   else()
     message(STATUS "No shaders.json manifest found; DXC shader registration skipped.")
   endif()
 endif()
-# -------------------------------------------------------------------------------------------
 
-# Precompiled header (optional, gated by COLONY_USE_PCH) for the EXE as well
+# Precompiled header for the EXE
 if(COLONY_USE_PCH AND EXISTS "${CMAKE_SOURCE_DIR}/src/pch.h")
   target_precompile_headers(ColonyGame PRIVATE "${CMAKE_SOURCE_DIR}/src/pch.h")
 endif()
 
-# Unity builds (opt‑in)
+# Unity builds
 if(COLONY_UNITY_BUILD)
-  set_target_properties(colony_core   PROPERTIES UNITY_BUILD ON UNITY_BUILD_BATCH_SIZE 16)
-  set_target_properties(ColonyGame    PROPERTIES UNITY_BUILD ON UNITY_BUILD_BATCH_SIZE 16)
+  set_target_properties(colony_core PROPERTIES UNITY_BUILD ON UNITY_BUILD_BATCH_SIZE 16)
+  set_target_properties(ColonyGame  PROPERTIES UNITY_BUILD ON UNITY_BUILD_BATCH_SIZE 16)
 endif()
 
-# (Keep defines on the EXE too; harmless if duplicated from PUBLIC on colony_core)
 target_compile_definitions(ColonyGame PRIVATE
   $<$<STREQUAL:${FRONTEND},sdl>:COLONY_USE_SDL=1>
   $<$<BOOL:${ENABLE_IMGUI}>:CG_ENABLE_IMGUI=1>
   $<$<BOOL:${ENABLE_TRACY}>:TRACY_ENABLE=1>
 )
 
-# ---- Optional: copy shared shader header for modding/debugging ----
 if(EXISTS "${CMAKE_SOURCE_DIR}/renderer/Shaders/include/common.hlsli")
-  set(COLONY_SHADER_INC_SRC "${CMAKE_SOURCE_DIR}/renderer/Shaders/include/common.hlsli")
-  set(COLONY_SHADER_INC_DST "$<TARGET_FILE_DIR:ColonyGame>/res/shaders/include/common.hlsli")
   add_custom_command(TARGET ColonyGame POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:ColonyGame>/res/shaders/include"
-    COMMAND ${CMAKE_COMMAND} -E copy_if_different "${COLONY_SHADER_INC_SRC}" "${COLONY_SHADER_INC_DST}"
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "${CMAKE_SOURCE_DIR}/renderer/Shaders/include/common.hlsli"
+            "$<TARGET_FILE_DIR:ColonyGame>/res/shaders/include/common.hlsli"
     VERBATIM
   )
 endif()
-
-# ---------------- Quality/security toggles you can enable upstream ----------------
-# Example: MSVC AddressSanitizer in Debug builds:
-#   target_compile_options(ColonyGame PRIVATE $<$<CONFIG:Debug>:/fsanitize=address>)
-#   target_link_options(ColonyGame    PRIVATE $<$<CONFIG:Debug>:/INFERASANLIBS>)
-# Example: Control Flow Guard in Release builds:
-#   target_compile_options(ColonyGame PRIVATE $<$<CONFIG:Release>:/guard:cf>)
-#   target_link_options(ColonyGame    PRIVATE $<$<CONFIG:Release>:/guard:cf>)
-# ------------------------------------------------------------------------------  End of file
