@@ -46,6 +46,8 @@ target_compile_features(colony_core PUBLIC cxx_std_20)
 target_include_directories(colony_core
   PUBLIC
     "${CMAKE_SOURCE_DIR}/src"
+    "${CMAKE_SOURCE_DIR}/include"    # ADDED: expose public headers (e.g., include/rendering/...)
+    "${CMAKE_SOURCE_DIR}"            # ADDED: allow includes like "platform/win/WinApp.h"
     "${CMAKE_BINARY_DIR}/generated"
 )
 
@@ -95,6 +97,8 @@ endif()
 target_compile_features(ColonyGame PRIVATE cxx_std_20)
 target_include_directories(ColonyGame PRIVATE
   "${CMAKE_SOURCE_DIR}/src"
+  "${CMAKE_SOURCE_DIR}/include"    # ADDED
+  "${CMAKE_SOURCE_DIR}"            # ADDED
   "${CMAKE_BINARY_DIR}/generated"
 )
 
