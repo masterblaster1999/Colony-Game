@@ -1,9 +1,16 @@
 #pragma once
 
-// [Colony Game PCH] Windows/DX11/SDL2 + common STL
-// This block defines platform tuning macros BEFORE <Windows.h> and groups headers
-// used widely across the codebase. It is MSVC/Win32 only.
+// =================================================================================================
+// [Colony Game PCH] Windows-only (MSVC) precompiled header
+// - Centralizes platform tuning macros before <Windows.h>
+// - Unifies WRL ComPtr usage via a single alias: template<class T> using ComPtr = Microsoft::WRL::ComPtr<T>;
+// - Gathers widely used STL/Win32/DX11/SDL2/EnTT/fmt/spdlog headers
+// - Adds small, header-only Win32/D3D11 utilities under namespace cg::win
+//
+// Linking for WinMM/DbgHelp/Shcore/etc. is handled in CMake. This file never uses #pragma comment(lib,...).
+// =================================================================================================
 
+// ----- Platform macros (define before including any Windows headers) ------------------------------
 #ifndef NOMINMAX
 #  define NOMINMAX 1
 #endif
@@ -16,8 +23,16 @@
 #ifndef _CRT_SECURE_NO_WARNINGS
 #  define _CRT_SECURE_NO_WARNINGS 1
 #endif
+#ifndef UNICODE
+#  define UNICODE
+#endif
+#ifndef _UNICODE
+#  define _UNICODE
+#endif
 
-// --- C++ standard library (keep stable/commonly used headers here) ---
+// =================================================================================================
+// C++ standard library (safe to put in PCH)
+// =================================================================================================
 #include <cassert>
 #include <cstdint>
 #include <cstddef>
@@ -43,121 +58,23 @@
 #include <filesystem>
 #include <chrono>
 #include <limits>
-
-// --- Win32 / COM / DPI ---
-#include <Windows.h>
-#include <wrl/client.h>       // Microsoft::WRL::ComPtr
-#include <shellscalingapi.h>  // PROCESS_DPI_AWARENESS, etc. (link Shcore.lib)
-
-// --- DirectX 11 / DXGI / Math ---
-#include <d3d11.h>
-#include <dxgi1_6.h>
-#include <d3dcompiler.h>      // for runtime shader compile paths (if used)
-#include <DirectXMath.h>
-#include <DirectXColors.h>
-
-// --- SDL2 ---
-#if __has_include(<SDL.h>)
-#  include <SDL.h>
-#elif __has_include(<SDL2/SDL.h>)
-#  include <SDL2/SDL.h>
-#endif
-
-// --- ImGui core ---
-// Intentionally excluded from PCH to avoid PCH-time include-path issues.
-// Include <imgui.h> only in UI/renderer .cpp files (or a UI-only PCH).
-
-// --- fmt / spdlog ---
-#ifndef SPDLOG_ACTIVE_LEVEL
-#  ifdef NDEBUG
-#    define SPDLOG_ACTIVE_LEVEL SPDLOG_LEVEL_INFO
-#  else
-#    define SPDLOG_ACTIVE_LEVEL SPDLOG_LEVEL_DEBUG
-#  endif
-#endif
-#include <fmt/core.h>
-#include <fmt/format.h>
-#include <spdlog/spdlog.h>
-#include <spdlog/fmt/ostr.h>
-
-// --- EnTT ECS ---
-#include <entt/entt.hpp>
-
-// --- Short-hands used pervasively ---
-#define CG_NODISCARD [[nodiscard]]
-#define CG_UNUSED(x) (void)(x)
-
-template <class T>
-using ComPtr = Microsoft::WRL::ComPtr<T>;
-
-//
-// Colony-Game — Windows-only precompiled header (PCH)
-// Massive utility pack: header-only RAII + helpers for Win32 / D3D11 / DXGI / XAudio2.
-//
-// Linking is handled by CMake. This header does NOT use #pragma comment(lib,...).
-// Keep everything inline to avoid ODR/link issues in Unity/Jumbo builds.
-//
-// Feature toggles (override per TU before including this PCH if you need):
-//   CG_PCH_ENABLE_D3D11        [1]  include D3D11/DXGI headers & helpers
-//   CG_PCH_ENABLE_XAUDIO2      [1]  include XAudio2 header & debug helper
-//   CG_PCH_ENABLE_DXGI_DEBUG   [0]  include dxgidebug.h helpers (needs dxgi debug interface)
-//   CG_PCH_ENABLE_DBGHELP      [1]  include DbgHelp (MiniDump) helpers
-//   CG_PCH_ENABLE_STACKTRACE   [0]  capture + resolve stack traces via DbgHelp (symbols)
-//   CG_PCH_ENABLE_HLSL_COMPILE [1]  enable lightweight D3DCompile helper (needs d3dcompiler)
-//
-// -----------------------------------------------------------------------------------------------
-// Header hygiene (per Microsoft guidance)
-// -----------------------------------------------------------------------------------------------
-#ifndef WIN32_LEAN_AND_MEAN
-#  define WIN32_LEAN_AND_MEAN
-#endif
-#ifndef NOMINMAX
-#  define NOMINMAX
-#endif
-#ifndef STRICT
-#  define STRICT
-#endif
-#ifndef UNICODE
-#  define UNICODE
-#endif
-#ifndef _UNICODE
-#  define _UNICODE
-#endif
-
-// -----------------------------------------------------------------------------------------------
-// C++ standard library (safe to PCH)
-// -----------------------------------------------------------------------------------------------
-#include <cstdint>
-#include <cstddef>
-#include <cstring>
-#include <cassert>
-#include <string>
-#include <string_view>
-#include <vector>
-#include <array>
-#include <optional>
-#include <memory>
-#include <type_traits>
-#include <utility>
-#include <chrono>
-#include <filesystem>
 #include <atomic>
 #include <mutex>
 #include <system_error>
 #include <stdexcept>
-#include <functional>
-#include <limits>
+#include <type_traits>
+#include <utility>
+#include <iterator>
 #include <new>
 #include <cstdio>
-#include <cstdarg>   // va_list, va_* for debug_printf
-#include <iterator>  // std::size for raw arrays
+#include <cstdarg>
 
-// -----------------------------------------------------------------------------------------------
+// =================================================================================================
 // Windows & friends (order matters)
-// -----------------------------------------------------------------------------------------------
+// =================================================================================================
 #include <sdkddkver.h>
 #include <sal.h>
-#include <windows.h>
+#include <Windows.h>
 #include <libloaderapi.h>        // GetModuleFileNameW, LoadLibraryW
 #include <processthreadsapi.h>   // SetThreadDescription, priorities
 #include <synchapi.h>            // Sleep, WaitForSingleObject
@@ -170,24 +87,19 @@ using ComPtr = Microsoft::WRL::ComPtr<T>;
 #include <VersionHelpers.h>      // IsWindows* helpers
 #include <winreg.h>              // Registry helpers
 #include <wrl/client.h>          // Microsoft::WRL::ComPtr
+#include <shellscalingapi.h>     // PROCESS_DPI_AWARENESS, etc. (link Shcore.lib)
 
+// =================================================================================================
+// DirectX 11 / DXGI / Math
+// =================================================================================================
 #ifndef CG_PCH_ENABLE_D3D11
 #  define CG_PCH_ENABLE_D3D11 1
 #endif
-#ifndef CG_PCH_ENABLE_XAUDIO2
-#  define CG_PCH_ENABLE_XAUDIO2 1
+#ifndef CG_PCH_ENABLE_HLSL_COMPILE
+#  define CG_PCH_ENABLE_HLSL_COMPILE 1
 #endif
 #ifndef CG_PCH_ENABLE_DXGI_DEBUG
 #  define CG_PCH_ENABLE_DXGI_DEBUG 0
-#endif
-#ifndef CG_PCH_ENABLE_DBGHELP
-#  define CG_PCH_ENABLE_DBGHELP 1
-#endif
-#ifndef CG_PCH_ENABLE_STACKTRACE
-#  define CG_PCH_ENABLE_STACKTRACE 0
-#endif
-#ifndef CG_PCH_ENABLE_HLSL_COMPILE
-#  define CG_PCH_ENABLE_HLSL_COMPILE 1
 #endif
 
 #if CG_PCH_ENABLE_D3D11
@@ -202,10 +114,10 @@ using ComPtr = Microsoft::WRL::ComPtr<T>;
     #include <dxgi.h>
   #endif
   #if __has_include(<d3dcompiler.h>)
-    #include <d3dcompiler.h>
-  #else
-    // If d3dcompiler.h isn't present, downstream should disable CG_PCH_ENABLE_HLSL_COMPILE.
+    #include <d3dcompiler.h>     // runtime shader compile helper (see cg::win::hlsl_compile)
   #endif
+  #include <DirectXMath.h>
+  #include <DirectXColors.h>
   #if CG_PCH_ENABLE_DXGI_DEBUG
     #if __has_include(<dxgidebug.h>)
       #include <dxgidebug.h>
@@ -213,22 +125,77 @@ using ComPtr = Microsoft::WRL::ComPtr<T>;
   #endif
 #endif
 
+// =================================================================================================
+// XAudio2 (optional)
+// =================================================================================================
+#ifndef CG_PCH_ENABLE_XAUDIO2
+#  define CG_PCH_ENABLE_XAUDIO2 1
+#endif
+
 #if CG_PCH_ENABLE_XAUDIO2
   #if __has_include(<xaudio2.h>)
-    #include <xaudio2.h> // XAudio2.9 in Windows SDK
+    #include <xaudio2.h> // XAudio2.9 (Windows SDK)
     #define CG_HAS_XAUDIO2 1
   #else
     #define CG_HAS_XAUDIO2 0
   #endif
 #endif
 
-#if CG_PCH_ENABLE_DBGHELP
-  #include <dbghelp.h>   // MiniDumpWriteDump, symbol APIs
+// =================================================================================================
+// Debug help (MiniDump / optional stack tracing)
+// =================================================================================================
+#ifndef CG_PCH_ENABLE_DBGHELP
+#  define CG_PCH_ENABLE_DBGHELP 1
+#endif
+#ifndef CG_PCH_ENABLE_STACKTRACE
+#  define CG_PCH_ENABLE_STACKTRACE 0
 #endif
 
-// -----------------------------------------------------------------------------------------------
-// Compiler conveniences & attributes
-// -----------------------------------------------------------------------------------------------
+#if CG_PCH_ENABLE_DBGHELP
+  #include <dbghelp.h>
+#endif
+
+// =================================================================================================
+/* SDL2 */
+// =================================================================================================
+#if __has_include(<SDL.h>)
+#  include <SDL.h>
+#elif __has_include(<SDL2/SDL.h>)
+#  include <SDL2/SDL.h>
+#endif
+
+// =================================================================================================
+/* Logging (fmt + spdlog) */
+// =================================================================================================
+#ifndef SPDLOG_ACTIVE_LEVEL
+#  ifdef NDEBUG
+#    define SPDLOG_ACTIVE_LEVEL SPDLOG_LEVEL_INFO
+#  else
+#    define SPDLOG_ACTIVE_LEVEL SPDLOG_LEVEL_DEBUG
+#  endif
+#endif
+#if __has_include(<fmt/core.h>)
+#  include <fmt/core.h>
+#  include <fmt/format.h>
+#endif
+#if __has_include(<spdlog/spdlog.h>)
+#  include <spdlog/spdlog.h>
+#  include <spdlog/fmt/ostr.h>
+#endif
+
+// =================================================================================================
+/* EnTT ECS */
+// =================================================================================================
+#if __has_include(<entt/entt.hpp>)
+#  include <entt/entt.hpp>
+#endif
+
+// =================================================================================================
+// Short-hands & attributes used pervasively
+// =================================================================================================
+#define CG_NODISCARD [[nodiscard]]
+#define CG_UNUSED(x) (void)(x)
+
 #ifndef CG_ALWAYS_INLINE
 #  if defined(_MSC_VER)
 #    define CG_ALWAYS_INLINE __forceinline
@@ -261,9 +228,13 @@ using ComPtr = Microsoft::WRL::ComPtr<T>;
 #  endif
 #endif
 
-// -----------------------------------------------------------------------------------------------
+// Unified WRL smart pointer alias (use this everywhere)
+template <class T>
+using ComPtr = Microsoft::WRL::ComPtr<T>;
+
+// -------------------------------------------------------------------------------------------------
 // Tiny scope guard (DEFER)
-// -----------------------------------------------------------------------------------------------
+// -------------------------------------------------------------------------------------------------
 namespace cg::detail {
   template<class F>
   class scope_exit {
@@ -283,12 +254,10 @@ namespace cg::detail {
 #define CG_CONCAT(a,b) CG_CONCAT_INNER(a,b)
 #define CG_DEFER auto CG_CONCAT(_defer_, __COUNTER__) = ::cg::detail::scope_exit([&]()
 
-// -----------------------------------------------------------------------------------------------
-// cg::win — header-only helpers
-// -----------------------------------------------------------------------------------------------
+// -------------------------------------------------------------------------------------------------
+// cg::win — header-only helpers (RAII + utilities for Win32 / D3D11 / etc.)
+// -------------------------------------------------------------------------------------------------
 namespace cg::win {
-
-using Microsoft::WRL::ComPtr;
 
 // ---------- RAII: COM initialization ----------
 class ComInit {
@@ -327,7 +296,7 @@ public:
   }
   HANDLE release() noexcept { HANDLE t = h_; h_ = nullptr; return t; }
 private:
-  HANDLE h_{};
+  HANDLE h_{}; // nullptr | INVALID_HANDLE_VALUE means "empty"
 };
 
 // ---------- RAII: HMODULE ----------
@@ -392,8 +361,7 @@ CG_ALWAYS_INLINE std::string  last_error_u8(DWORD code = ::GetLastError()) { ret
 CG_ALWAYS_INLINE bool hr_ok(HRESULT hr, const wchar_t* context = L"") {
 #ifdef _DEBUG
   if (FAILED(hr)) {
-    wchar_t code[16]{};
-    _snwprintf_s(code, _TRUNCATE, L"0x%08X", static_cast<unsigned>(hr));
+    wchar_t code[16]{}; _snwprintf_s(code, _TRUNCATE, L"0x%08X", static_cast<unsigned>(hr));
     std::wstring msg = L"[HR] ";
     if (context && *context) { msg += context; msg += L" "; }
     msg += code; msg += L" ";
@@ -434,6 +402,7 @@ CG_ALWAYS_INLINE void debug_printf(const wchar_t* fmt, ...) {
   if (buf[0] && buf[wcslen(buf)-1] != L'\n') ::OutputDebugStringW(L"\n");
 #endif
 }
+
 // Lightweight log macros (can be unified later with your engine logger)
 #ifndef CG_LOG_ENABLED
 #  define CG_LOG_ENABLED 1
@@ -559,8 +528,7 @@ public:
   // Sleep for given microseconds using negative relative due time (100-ns ticks)
   bool sleep_us(int64_t usec) {
     if (!h_) return false;
-    LARGE_INTEGER due{};
-    due.QuadPart = -static_cast<LONGLONG>(usec) * 10; // 1us = 10 * 100ns
+    LARGE_INTEGER due{}; due.QuadPart = -static_cast<LONGLONG>(usec) * 10; // 1us = 10 * 100ns
     return ::SetWaitableTimer(h_.get(), &due, 0, nullptr, nullptr, FALSE) && (::WaitForSingleObject(h_.get(), INFINITE) == WAIT_OBJECT_0);
   }
 private:
@@ -598,9 +566,7 @@ struct MemoryStatus {
 CG_ALWAYS_INLINE MemoryStatus memory_status() {
   MEMORYSTATUSEX ms{ sizeof(ms) };
   ::GlobalMemoryStatusEx(&ms);
-  return MemoryStatus{
-    ms.ullTotalPhys, ms.ullAvailPhys, ms.ullTotalVirtual, ms.ullAvailVirtual
-  };
+  return MemoryStatus{ ms.ullTotalPhys, ms.ullAvailPhys, ms.ullTotalVirtual, ms.ullAvailVirtual };
 }
 
 // ---------- Process / thread priority + RAII ----------
@@ -625,7 +591,7 @@ private:
   int old_{THREAD_PRIORITY_NORMAL};
 };
 
-// ---------- Thread naming (runtime: SetThreadDescription) ----------
+// ---------- Thread naming (SetThreadDescription) ----------
 CG_ALWAYS_INLINE bool set_thread_description(HANDLE thread, std::wstring_view name) {
   using Fn = HRESULT (WINAPI *)(HANDLE, PCWSTR);
   static Fn pSetThreadDescription = []() -> Fn {
@@ -773,8 +739,7 @@ CG_ALWAYS_INLINE bool read_all(const std::filesystem::path& file, std::string& o
   Handle h(::CreateFileW(ensure_long_path(file).c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr,
                          OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr));
   if (!h) { if (err) *err = last_error_u8(); return false; }
-  LARGE_INTEGER sz{};
-  if (!::GetFileSizeEx(h.get(), &sz)) { if (err) *err = last_error_u8(); return false; }
+  LARGE_INTEGER sz{}; if (!::GetFileSizeEx(h.get(), &sz)) { if (err) *err = last_error_u8(); return false; }
   out.resize(static_cast<size_t>(sz.QuadPart));
   DWORD rd = 0;
   if (!out.empty()) {
