@@ -1,4 +1,8 @@
 #include "TerrainMesh.hpp"
+#include "WorldChunk.hpp"   // include full definition to access chunk fields
+
+#include <cstdint>
+#include <cstddef>
 #include <cmath>
 #include <algorithm>
 #include <cassert>
@@ -42,9 +46,9 @@ MeshData BuildTerrainMesh(const WorldChunk& chunk,
     const float hScale = params.heightScale;
 
     // Reserve to avoid reallocations:
-    mesh.vertices.reserve(static_cast<size_t>(N) * static_cast<size_t>(N));
+    mesh.vertices.reserve(static_cast<std::size_t>(N) * static_cast<std::size_t>(N));
     const int cells = (N - 1) * (N - 1);
-    mesh.indices.reserve(static_cast<size_t>(cells) * 6u);
+    mesh.indices.reserve(static_cast<std::size_t>(cells) * 6u);
 
     // Centering offset (if requested)
     const float half = params.centerChunk ? (cs * (N - 1)) * 0.5f : 0.0f;
