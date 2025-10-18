@@ -9,6 +9,8 @@
 #if __has_include("worldgen/Hydrology.hpp")
   #include "worldgen/Hydrology.hpp"
   #define CG_HAS_HYDROLOGY 1
+#else
+  #define CG_HAS_HYDROLOGY 0
 #endif
 
 namespace colony::worldgen {
@@ -28,12 +30,19 @@ struct DebugParams {
     int  seed             = 42;   // -1 => randomize elsewhere
 };
 
+// Backward‑compat shim: keep cfg.stage.params.* working without pulling in a heavy StageContext.
+struct StageTuning {
+    StageParams params{};
+};
+
 // Aggregate runtime config loaded from INI.
 struct StagesRuntimeConfig {
-    StageContext stage{};    // contains StageParams (tile size, MU scale, grid dims)
+    // Contains StageParams (tile size, MU scale, grid dims) via a lightweight wrapper.
+    StageTuning stage{};
 #if CG_HAS_HYDROLOGY
     cg::ClimateParams climate{};
-    cg::HydroParams   hydro{};
+    // Name matches .cpp usage (cfg.hydrology.*) to avoid C2039.
+    cg::HydroParams   hydrology{};
 #endif
     NoiseParams noise{};
     DebugParams debug{};
