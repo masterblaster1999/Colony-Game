@@ -46,6 +46,9 @@
 #ifndef LOAD_LIBRARY_SEARCH_USER_DIRS
 #  define LOAD_LIBRARY_SEARCH_USER_DIRS 0x00000400
 #endif
+#ifndef DLL_DIRECTORY_COOKIE
+typedef PVOID DLL_DIRECTORY_COOKIE; // fallback for older SDKs
+#endif
 
 // Fallbacks for older SDKs so this compiles on more Windows toolchains.
 #ifndef DPI_AWARENESS_CONTEXT
