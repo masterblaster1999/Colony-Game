@@ -1,5 +1,6 @@
 // src/worldgen/stages/Biome.cpp
 #include "worldgen/WorldGen.hpp"
+#include "worldgen/WorldChunk.hpp"   // needed to access ctx.out.* members
 #include <cstdint>
 
 namespace colony::worldgen {
@@ -19,9 +20,11 @@ void BiomeStage::generate(StageContext& ctx)
         return                 (tempC >  0.f) ? 7 /*Rainforest*/      : 8 /*Tundra*/;
     };
 
-    for (int y = 0; y < N; ++y)
-        for (int x = 0; x < N; ++x)
+    for (int y = 0; y < N; ++y) {
+        for (int x = 0; x < N; ++x) {
             B.at(x, y) = classify(T.at(x, y), M.at(x, y));
+        }
+    }
 }
 
 } // namespace colony::worldgen
