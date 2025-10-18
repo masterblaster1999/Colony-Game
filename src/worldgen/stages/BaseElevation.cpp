@@ -1,8 +1,9 @@
 // src/worldgen/stages/BaseElevation.cpp
 #include "worldgen/WorldGen.hpp"
-#include "worldgen/Math.hpp"    // lerp(), smoothstep()
-#include <algorithm>            // std::clamp
-#include <cmath>                // std::floor, std::pow
+#include "worldgen/WorldChunk.hpp"  // needed: we access ctx.out.* members (WorldChunk)
+#include "worldgen/Math.hpp"        // lerp(), smoothstep()
+#include <algorithm>                // std::clamp
+#include <cmath>                    // std::floor, std::pow
 #include <cstdint>
 
 namespace colony::worldgen {
