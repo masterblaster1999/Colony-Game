@@ -1,5 +1,22 @@
 // src/worldgen/RNGAlias.hpp
 #pragma once
+
+// Windows-specific macro hygiene:
+// Some Windows headers (via rpcndr.h) define `small` as `char`, which can
+// corrupt identifiers named `small`. Undefine it defensively so this header
+// remains safe regardless of include order.
+#if defined(_WIN32)
+  #ifdef small
+    #undef small
+  #endif
+  #ifdef min
+    #undef min
+  #endif
+  #ifdef max
+    #undef max
+  #endif
+#endif
+
 #include <vector>
 #include <cstdint>
 #include "RNGCore.hpp"
@@ -29,19 +46,20 @@ public:
         else { for(size_t i=0;i<n;++i) scaled[i]=(weights[i]>0.0?weights[i]:0.0); }
         for(double& v: scaled) v *= ((double)n)/sum;
 
-        std::vector<size_t> small, large; small.reserve(n); large.reserve(n);
-        for (size_t i=0;i<n;++i) (scaled[i]<1.0?small:large).push_back(i);
+        // NOTE: renamed to avoid Windows macro collisions (e.g., `small` from rpcndr.h)
+        std::vector<size_t> small_bins, large_bins; small_bins.reserve(n); large_bins.reserve(n);
+        for (size_t i=0;i<n;++i) (scaled[i]<1.0?small_bins:large_bins).push_back(i);
 
-        while(!small.empty() && !large.empty()){
-            size_t s = small.back(); small.pop_back();
-            size_t l = large.back();
+        while(!small_bins.empty() && !large_bins.empty()){
+            size_t s = small_bins.back(); small_bins.pop_back();
+            size_t l = large_bins.back();
             prob_[s]  = scaled[s];
             alias_[s] = (uint32_t)l;
             scaled[l] = (scaled[l] + scaled[s]) - 1.0;
-            if (scaled[l] < 1.0) { large.pop_back(); small.push_back(l); }
+            if (scaled[l] < 1.0) { large_bins.pop_back(); small_bins.push_back(l); }
         }
-        while(!large.empty()){ prob_[large.back()] = 1.0; large.pop_back(); }
-        while(!small.empty()){ prob_[small.back()] = 1.0; small.pop_back(); }
+        while(!large_bins.empty()){ prob_[large_bins.back()] = 1.0; large_bins.pop_back(); }
+        while(!small_bins.empty()){ prob_[small_bins.back()] = 1.0; small_bins.pop_back(); }
     }
 
     template<class Rng>
@@ -54,7 +72,7 @@ public:
     [[nodiscard]] size_t size() const noexcept { return prob_.size(); }
 
 private:
-    std::vector<double>  prob_;
+    std::vector<double>   prob_;
     std::vector<uint32_t> alias_;
 };
 
