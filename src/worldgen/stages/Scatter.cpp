@@ -1,14 +1,10 @@
-#include "ScatterStage.hpp"   // your per-stage header from earlier
-// "ScatterStage.hpp" already includes "StagesTypes.hpp" and "StageContext.hpp".
+// src/worldgen/stages/Scatter.cpp
 
-// Prefer your project's RNG if available; otherwise use the C++ standard engine.
-#if __has_include("Random.hpp")
-  #include "Random.hpp"
-  #define COLONY_HAVE_CUSTOM_RANDOM 1
-#else
-  #include <random>
-#endif
+#include "worldgen/WorldGen.hpp"      // ScatterStage declaration lives here
+#include "worldgen/StageContext.hpp"  // StageContext (ctx)
+#include "worldgen/Random.hpp"        // project RNG + sub_rng helpers
 
+#include <random>
 #include <cstdint>   // std::uint64_t
 #include <algorithm> // (optional expansions later)
 
@@ -16,18 +12,9 @@ namespace colony::worldgen {
 
 void ScatterStage::generate(StageContext& ctx)
 {
-    // --- 1) Pull the per-stage seed from the context.
-    // Assumes WorldGenerator::run_ called ctx.reseed(StageSeed(...)) beforehand.
-    // If your StageContext named it differently, change "seed()" accordingly.
-    const std::uint64_t seed = ctx.seed();
-
-    // --- 2) Spin up a *local* RNG for this stage invocation.
-    //       This keeps stages deterministic and isolated from each other.
-    #if COLONY_HAVE_CUSTOM_RANDOM
-        [[maybe_unused]] Random rng{ seed };
-    #else
-        [[maybe_unused]] std::mt19937_64 rng{ seed };
-    #endif
+    // Derive a local RNG for this stage (deterministic, isolated).
+    // Keeps stages reproducible and avoids cross-stage RNG coupling.
+    [[maybe_unused]] auto rng = ctx.sub_rng(StageId::Scatter, "Scatter");
 
     // ---------------------------------------------------------------------
     // Minimal skeleton: at this point you have a deterministic RNG "rng".
@@ -39,6 +26,7 @@ void ScatterStage::generate(StageContext& ctx)
     const int w = ctx.chunkWidth();     // <- or ctx.map().width()
     const int h = ctx.chunkHeight();    // <- or ctx.map().height()
 
+    // If your RNG wrapper provides uniform distributions, prefer those.
     std::uniform_int_distribution<int> X(0, w - 1), Y(0, h - 1);
 
     // Derive a tiny density from settings; tweak as needed.
