@@ -1,11 +1,12 @@
 #pragma once
 #include <windows.h>
-#include <d3d11.h>
 
-// Dear ImGui
-#include "imgui.h"
-#include "backends/imgui_impl_win32.h"
-#include "backends/imgui_impl_dx11.h"
+// Dear ImGui (core only; backends are included in the .cpp)
+#include <imgui.h>
+
+// Forward declarations to avoid leaking renderer headers from the public interface
+struct ID3D11Device;
+struct ID3D11DeviceContext;
 
 namespace cg::ui
 {
