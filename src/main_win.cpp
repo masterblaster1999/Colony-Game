@@ -1,6 +1,11 @@
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
 #include <windows.h>
+
+#if defined(TRACY_ENABLE)
+  #include <tracy/Tracy.hpp>   // ZoneScoped*, FrameMark*, tracy::SetThreadName
+#endif
+
 #include "platform/win/WinApp.h"
 #include "platform/win/CrashHandler.h"
 #include "platform/win/FilesystemWin.h"
@@ -31,6 +36,12 @@ static void GameShutdown(WinApp& app) {
 
 int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int)
 {
+#if defined(TRACY_ENABLE)
+    ZoneScopedN("wWinMain");                    // earliest CPU zone
+    tracy::SetThreadName("Main Thread");        // readable thread name in Tracy
+    FrameMarkStart("Startup");                  // begin discontinuous "Startup" frame
+#endif
+
     // Crash dumps in %LOCALAPPDATA%\ColonyGame\crashdumps
     InstallCrashHandler(CrashConfig{
         .appName = L"ColonyGame",
