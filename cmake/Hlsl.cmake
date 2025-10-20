@@ -45,6 +45,25 @@ function(_stage_suffix out stage)
   endif()
 endfunction()
 
+# VS shader type mapping
+function(_vs_type_for_stage stage out_vs_type)
+  string(TOLOWER "${stage}" _s)
+  if(_s STREQUAL "vs")      set(${out_vs_type} "Vertex"   PARENT_SCOPE)
+  elseif(_s STREQUAL "ps")  set(${out_vs_type} "Pixel"    PARENT_SCOPE)
+  elseif(_s STREQUAL "cs")  set(${out_vs_type} "Compute"  PARENT_SCOPE)
+  elseif(_s STREQUAL "gs")  set(${out_vs_type} "Geometry" PARENT_SCOPE)
+  elseif(_s STREQUAL "hs")  set(${out_vs_type} "Hull"     PARENT_SCOPE)
+  elseif(_s STREQUAL "ds")  set(${out_vs_type} "Domain"   PARENT_SCOPE)
+  else()                    set(${out_vs_type} ""         PARENT_SCOPE)
+  endif()
+endfunction()
+
+# Convert "6_3" or "6.3" to "6.3" (VS expects dotted)
+function(_dot_model in out)
+  string(REPLACE "_" "." _m "${in}")
+  set(${out} "${_m}" PARENT_SCOPE)
+endfunction()
+
 # ---------- Inference from filename ----------
 function(_infer_stage_and_entry rel out_stage out_entry)
   string(TOLOWER "${rel}" _rel)
@@ -639,5 +658,276 @@ function(cg_compile_hlsl_from_table)
         endforeach()
       endforeach()
     endif()
+  endif()
+endfunction()
+
+# ==================================================================================================
+# Visual Studio property-based HLSL path
+#   cg_configure_vs_hlsl(TARGET <tgt> [MODEL <6.3>] [MANIFEST <path>] [ROOT <shader_root>])
+#   - Uses VS per-file HLSL properties; SM 6.x => DXC; SM 5.x => FXC.
+#   - MANIFEST supports two schemas:
+#       A) Simple: { "shaders":[{ "file": "...", "type":"vs|ps|cs|...", "entry":"...", "model":"6.3", "defines":[...], "includes":[...] }, ...] }
+#       B) Table:  { "defaults":{...}, "shaders":[{ "src":"...", "stages":[{ "stage":"vs", "entry":"...", "profile":"vs_6_3", "defines":[...], "includes":[...] }, ...]}] }
+#   - If MANIFEST is missing/empty, glob ROOT/*.hlsl and infer stage/entry from filename.
+# ==================================================================================================
+function(cg_configure_vs_hlsl TARGET)
+  if(NOT MSVC OR NOT CMAKE_GENERATOR MATCHES "Visual Studio")
+    message(STATUS "cg_configure_vs_hlsl: not a Visual Studio generator; skipping.")
+    return()
+  endif()
+
+  set(oneValueArgs MODEL MANIFEST ROOT)
+  cmake_parse_arguments(CGVS "" "${oneValueArgs}" "" ${ARGN})
+
+  if(NOT TARGET ${TARGET})
+    message(FATAL_ERROR "cg_configure_vs_hlsl: Target '${TARGET}' does not exist.")
+  endif()
+
+  # Root directory for shaders
+  if(CGVS_ROOT)
+    set(_root "${CGVS_ROOT}")
+  elseif(DEFINED CG_SHADER_DIR)
+    set(_root "${CG_SHADER_DIR}")
+  else()
+    set(_root "${CMAKE_SOURCE_DIR}/res/shaders")
+  endif()
+
+  # Default model (dotted)
+  set(_model_dot "")
+  if(CGVS_MODEL)
+    _dot_model("${CGVS_MODEL}" _model_dot)
+  else()
+    _dot_model("${DXC_SHADER_MODEL}" _model_dot) # Prefer DXC by default
+  endif()
+
+  # Helper to set VS props for one file/stage
+  function(_apply_vs_props _abs _stage _entry _model _defines _includes)
+    _vs_type_for_stage("${_stage}" _vstype)
+    if(NOT _vstype)
+      message(FATAL_ERROR "cg_configure_vs_hlsl: unknown stage '${_stage}' for ${_abs}")
+    endif()
+
+    # Build flags string with includes/defines
+    set(_flags "")
+    foreach(inc IN LISTS _includes)
+      if(NOT IS_ABSOLUTE "${inc}")
+        set(inc "${_root}/${inc}")
+      endif()
+      string(APPEND _flags " /I\"${inc}\"")
+    endforeach()
+    # Always include the root
+    string(APPEND _flags " /I\"${_root}\"")
+    foreach(def IN LISTS _defines)
+      # Accept NAME or NAME=VALUE
+      string(APPEND _flags " /D${def}")
+    endforeach()
+
+    # Apply per-file properties
+    set_source_files_properties("${_abs}" PROPERTIES
+      VS_SHADER_TYPE                   "${_vstype}"
+      VS_SHADER_MODEL                  "${_model}"
+      VS_SHADER_ENTRYPOINT             "${_entry}"
+      VS_SHADER_ENABLE_DEBUG           "$<$<CONFIG:Debug>:true>"
+      VS_SHADER_DISABLE_OPTIMIZATIONS  "$<$<CONFIG:Debug>:true>"
+      VS_SHADER_FLAGS                  "$<$<CONFIG:Debug>:/Zi /Od>${_flags}"
+      VS_SHADER_OBJECT_FILE_NAME       "$(IntDir)%(Filename).%(Extension)"
+    )
+  endfunction()
+
+  # Try manifest first
+  set(_manifest "${CGVS_MANIFEST}")
+  if(NOT _manifest)
+    set(_manifest "${_root}/shaders.json")
+  endif()
+
+  set(_handled FALSE)
+  if(EXISTS "${_manifest}")
+    file(READ "${_manifest}" _json)
+
+    # Detect schema
+    _json_try_type(_sh_type "${_json}" shaders)
+    if(_sh_type STREQUAL "ARRAY")
+      _json_array_length(_sh_len "${_json}" shaders)
+      if(_sh_len GREATER 0)
+        # Peek first element to decide schema A vs B
+        _json_try_type(_file_t "${_json}" shaders 0 file)
+        _json_try_type(_src_t  "${_json}" shaders 0 src)
+
+        # -------- Schema A: simple {"file","type","entry","model","defines","includes"} --------
+        if(_file_t)
+          math(EXPR _last "${_sh_len}-1")
+          foreach(i RANGE 0 ${_last})
+            _json_try_get(_file  "${_json}" shaders ${i} file)
+            _json_try_get(_type  "${_json}" shaders ${i} type)
+            _json_try_get(_entry "${_json}" shaders ${i} entry)
+            _json_try_get(_mdl   "${_json}" shaders ${i} model)
+
+            set(_defs "")
+            _json_try_type(_defs_t "${_json}" shaders ${i} defines)
+            if(_defs_t STREQUAL "ARRAY")
+              _json_array_length(_dl "${_json}" shaders ${i} defines)
+              if(_dl GREATER 0)
+                math(EXPR _dlm1 "${_dl}-1")
+                foreach(di RANGE 0 ${_dlm1})
+                  _json_try_get(_d "${_json}" shaders ${i} defines ${di})
+                  if(_d) list(APPEND _defs "${_d}") endif()
+                endforeach()
+              endif()
+            endif()
+
+            set(_incs "")
+            _json_try_type(_incs_t "${_json}" shaders ${i} includes)
+            if(_incs_t STREQUAL "ARRAY")
+              _json_array_length(_il "${_json}" shaders ${i} includes)
+              if(_il GREATER 0)
+                math(EXPR _ilm1 "${_il}-1")
+                foreach(ii RANGE 0 ${_ilm1})
+                  _json_try_get(_inc "${_json}" shaders ${i} includes ${ii})
+                  if(_inc) list(APPEND _incs "${_inc}") endif()
+                endforeach()
+              endif()
+            endif()
+
+            # Normalize stage + model
+            set(_stage "")
+            if(_type) _norm_stage("${_type}" _stage) endif()
+            if(NOT _stage)
+              message(FATAL_ERROR "Manifest entry ${i}: unknown 'type'")
+            endif()
+
+            set(_model_use "${_model_dot}")
+            if(_mdl) _dot_model("${_mdl}" _model_use) endif()
+
+            # Absolute path and add
+            if(NOT IS_ABSOLUTE "${_file}")
+              set(_abs "${_root}/${_file}")
+            else()
+              set(_abs "${_file}")
+            endif()
+            if(NOT EXISTS "${_abs}")
+              message(FATAL_ERROR "Shader not found: ${_abs}")
+            endif()
+
+            target_sources(${TARGET} PRIVATE "${_abs}")
+            _apply_vs_props("${_abs}" "${_stage}" "${_entry}" "${_model_use}" "${_defs}" "${_incs}")
+          endforeach()
+          set(_handled TRUE)
+        # -------- Schema B: table {"src","stages":[{...}]} (+ defaults) --------
+        elseif(_src_t)
+          # Defaults
+          set(_def_defs "") ; set(_def_incs "") ; set(_def_model "${_model_dot}")
+          _json_try_type(_def_defs_t "${_json}" defaults defines)
+          if(_def_defs_t STREQUAL "ARRAY")
+            _json_array_length(_dl "${_json}" defaults defines)
+            if(_dl GREATER 0)
+              math(EXPR _dlm1 "${_dl}-1")
+              foreach(di RANGE 0 ${_dlm1})
+                _json_try_get(_d "${_json}" defaults defines ${di})
+                if(_d) list(APPEND _def_defs "${_d}") endif()
+              endforeach()
+            endif()
+          endif()
+          _json_try_type(_def_incs_t "${_json}" defaults includes)
+          if(_def_incs_t STREQUAL "ARRAY")
+            _json_array_length(_il "${_json}" defaults includes)
+            if(_il GREATER 0)
+              math(EXPR _ilm1 "${_il}-1")
+              foreach(ii RANGE 0 ${_ilm1})
+                _json_try_get(_inc "${_json}" defaults includes ${ii})
+                if(_inc) list(APPEND _def_incs "${_inc}") endif()
+              endforeach()
+            endif()
+          endif()
+
+          math(EXPR _last "${_sh_len}-1")
+          foreach(i RANGE 0 ${_last})
+            _json_try_get(_src "${_json}" shaders ${i} src)
+            if(NOT _src) message(FATAL_ERROR "shaders[${i}] missing 'src'") endif()
+
+            # Resolve the source file path
+            if(NOT IS_ABSOLUTE "${_src}")
+              set(_abs_src "${_root}/${_src}")
+            else()
+              set(_abs_src "${_src}")
+            endif()
+            if(NOT EXISTS "${_abs_src}")
+              message(FATAL_ERROR "Shader file not found: ${_abs_src}")
+            endif()
+
+            _json_try_type(_stg_t "${_json}" shaders ${i} stages)
+            if(NOT _stg_t STREQUAL "ARRAY")
+              message(FATAL_ERROR "shaders[${i}].stages must be an array")
+            endif()
+            _json_array_length(_sl "${_json}" shaders ${i} stages)
+            if(_sl GREATER 0)
+              math(EXPR _slm1 "${_sl}-1")
+              foreach(si RANGE 0 ${_slm1})
+                _json_try_get(_stage_in "${_json}" shaders ${i} stages ${si} stage)
+                _json_try_get(_entry     "${_json}" shaders ${i} stages ${si} entry)
+                _json_try_get(_profile   "${_json}" shaders ${i} stages ${si} profile)
+                # stage & entry inference if missing
+                set(_stage "")
+                if(_stage_in) _norm_stage("${_stage_in}" _stage) endif()
+                if(NOT _stage OR NOT _entry)
+                  # Try to infer from filename
+                  get_filename_component(_rel "${_abs_src}" RELATIVE "${_root}")
+                  _infer_stage_and_entry("${_rel}" _inf_stage _inf_entry)
+                  if(NOT _stage) set(_stage "${_inf_stage}") endif()
+                  if(NOT _entry) set(_entry "${_inf_entry}") endif()
+                endif()
+                if(NOT _stage OR NOT _entry)
+                  message(FATAL_ERROR "shaders[${i}].stages[${si}] missing stage/entry and inference failed")
+                endif()
+
+                # Defines/includes (merge defaults and per-stage)
+                set(_defs "${_def_defs}") ; set(_incs "${_def_incs}")
+                foreach(_k IN ITEMS defines includes)
+                  _json_try_type(_kt "${_json}" shaders ${i} stages ${si} ${_k})
+                  if(_kt STREQUAL "ARRAY")
+                    _json_array_length(_kl "${_json}" shaders ${i} stages ${si} ${_k})
+                    if(_kl GREATER 0)
+                      math(EXPR _klm1 "${_kl}-1")
+                      foreach(ki RANGE 0 ${_klm1})
+                        _json_try_get(_v "${_json}" shaders ${i} stages ${si} ${_k} ${ki})
+                        if(_v)
+                          if(_k STREQUAL "defines") list(APPEND _defs "${_v}") else() list(APPEND _incs "${_v}") endif()
+                        endif()
+                      endforeach()
+                    endif()
+                  endif()
+                endforeach()
+
+                # Shader model: use profile if given (e.g., "vs_6_3" / "ps_5_0"), otherwise default
+                set(_model_use "${_def_model}")
+                if(_profile)
+                  # Extract part after the stage underscore: vs_6_3 -> 6_3
+                  string(REGEX REPLACE "^([a-z]+_)" "" _mdl_raw "${_profile}")
+                  _dot_model("${_mdl_raw}" _model_use)
+                endif()
+
+                target_sources(${TARGET} PRIVATE "${_abs_src}")
+                _apply_vs_props("${_abs_src}" "${_stage}" "${_entry}" "${_model_use}" "${_defs}" "${_incs}")
+              endforeach()
+            endif()
+          endforeach()
+          set(_handled TRUE)
+        endif()
+      endif()
+    endif()
+  endif()
+
+  # Fallback: glob all .hlsl and infer
+  if(NOT _handled)
+    file(GLOB_RECURSE _files RELATIVE "${_root}" "${_root}/*.hlsl")
+    foreach(rel IN LISTS _files)
+      set(_abs "${_root}/${rel}")
+      _infer_stage_and_entry("${rel}" _stage _entry)
+      if(NOT _stage OR NOT _entry)
+        # Skip unknowns; explicit manifest is recommended
+        continue()
+      endif()
+      target_sources(${TARGET} PRIVATE "${_abs}")
+      _apply_vs_props("${_abs}" "${_stage}" "${_entry}" "${_model_dot}" "" "")
+    endforeach()
   endif()
 endfunction()
