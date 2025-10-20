@@ -70,8 +70,11 @@ __declspec(dllexport) int   AmdPowerXpressRequestHighPerformance  = 1;
 #include "platform/win/CrashHandlerWin.h"
 
 // === Fixed-timestep hookup (embedded fallback) ===
+// (Wrapped so projects without these headers still build unless COLONY_EMBED_GAME_LOOP is enabled.)
+#ifdef COLONY_EMBED_GAME_LOOP
 #include "colony/world/World.h"
 #include "colony/loop/GameLoop.h"
+#endif
 
 namespace fs = std::filesystem;
 
