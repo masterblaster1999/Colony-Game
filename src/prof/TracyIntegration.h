@@ -1,42 +1,47 @@
 // src/prof/TracyIntegration.h
 #pragma once
-#include <d3d11.h>
 
-// ---- CPU/GPU profiling integration for Tracy ------------------
-// Build-time:
-//   * Add TRACY_ENABLE to your compile definitions when you want profiling.
-//   * Compile tracy/public/TracyClient.cpp into your target.
-//   * Run Tracy.exe (the UI) and press "Connect".
-//
-// We provide no-op fallbacks so you can include this unconditionally.
-
-#ifdef TRACY_ENABLE
-  #include "Tracy.hpp"
-  #include "TracyD3D11.hpp"
-#else
-  // ---- No-op fallbacks when Tracy is disabled -----------------
-  // CPU zones
-  #define ZoneScoped                 do {} while(0)
-  #define ZoneScopedN(x)             do { (void)sizeof(x); } while(0)
-  #define FrameMark                  do {} while(0)
-
-  // Optional helpers often used in codebases that include Tracy
-  // (defined as no-ops here so you can use them freely).
-  #define TracyPlot(name, value)     do { (void)sizeof(name); (void)sizeof(value); } while(0)
-  #define TracyMessage(msg, len)     do { (void)sizeof(msg); (void)sizeof(len); } while(0)
+#if defined(_WIN32)
+  #define CG_WINDOWS 1
 #endif
 
-namespace cg::prof
-{
-    // Initialize GPU profiling (safe to call multiple times).
-    void InitD3D11(ID3D11Device* dev, ID3D11DeviceContext* ctx);
+#if defined(TRACY_ENABLE)
+  #include <tracy/Tracy.hpp>     // ZoneScoped, FrameMark*, TracyMessage, etc.
+  // If you later add fibers/async zones, also include <tracy/TracyC.h>.
+#else
+  // Minimal no-op fallbacks (subset)
+  #define ZoneScoped          do{}while(0)
+  #define ZoneScopedN(x)      do{}while(0)
+  #define FrameMark           do{}while(0)
+  #define FrameMarkStart(x)   do{}while(0)
+  #define FrameMarkEnd(x)     do{}while(0)
+  #define TracyMessage(x,y)   do{}while(0)
+  namespace tracy { inline void SetThreadName(const char*){} }
+#endif
 
-    // Collect GPU events; call once per frame (best right after Present()).
-    void CollectD3D11();
+namespace cg::prof {
 
-    // Shutdown on exit.
-    void ShutdownD3D11();
+// Call once very early (WinMain / wWinMain)
+void InitTracy(const char* programName);
 
-    // Optional helpers for CPU zones in code without TRACY_ENABLE checks:
-    inline void FrameMarkCPU() { FrameMark; }
-}
+// Optional: attach a short “build / runtime” blurb to the trace
+void AppInfo(const char* text);
+
+} // namespace cg::prof
+
+// --------- short local macros you can drop anywhere ----------
+#define CG_ZONE()                  ZoneScoped
+#define CG_ZONE_N(name)            ZoneScopedN(name)     // name must be a literal
+#define CG_FRAME()                 FrameMark
+#define CG_STARTUP_BEGIN()         FrameMarkStart("Startup")
+#define CG_STARTUP_END()           FrameMarkEnd("Startup")
+#define CG_THREAD(name)            ::tracy::SetThreadName(name)
+
+#if defined(TRACY_ENABLE)
+// attach short text to the *current* zone; length must fit uint16_t
+#define CG_ZONE_TEXT(txt, len)     ZoneText(txt, (uint16_t)(len))
+#define CG_MSG_L(text)             TracyMessage(text, (uint16_t)strlen(text))
+#else
+#define CG_ZONE_TEXT(txt, len)     do{}while(0)
+#define CG_MSG_L(text)             do{}while(0)
+#endif
