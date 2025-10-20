@@ -10,10 +10,12 @@
       "binaryDir": "${sourceDir}/build/vs2022-debug",
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "Debug",
-        "CMAKE_CXX_STANDARD": "20",
-        "CG_ENABLE_PCH": "ON",
-        "CG_ENABLE_UNITY": "OFF",
-        "CMAKE_MSVC_RUNTIME_LIBRARY": "MultiThreadedDebug", 
+        "CMAKE_CXX_STANDARD": "23",
+        "COLONY_USE_PCH": "ON",
+        "COLONY_UNITY_BUILD": "OFF",
+        "FRONTEND": "win32",
+        "COLONY_RENDERER": "d3d11",
+        "CMAKE_MSVC_RUNTIME_LIBRARY": "MultiThreadedDebugDLL",
         "CMAKE_TOOLCHAIN_FILE": "$env{VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake"
       }
     },
@@ -24,10 +26,13 @@
       "binaryDir": "${sourceDir}/build/vs2022-release",
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "Release",
-        "CMAKE_CXX_STANDARD": "20",
-        "CG_ENABLE_PCH": "ON",
-        "CG_ENABLE_UNITY": "ON",
-        "CMAKE_MSVC_RUNTIME_LIBRARY": "MultiThreaded",      
+        "CMAKE_CXX_STANDARD": "23",
+        "COLONY_USE_PCH": "ON",
+        "COLONY_UNITY_BUILD": "ON",
+        "COLONY_LTO": "OFF",
+        "FRONTEND": "win32",
+        "COLONY_RENDERER": "d3d11",
+        "CMAKE_MSVC_RUNTIME_LIBRARY": "MultiThreaded",
         "CMAKE_TOOLCHAIN_FILE": "$env{VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake"
       }
     },
@@ -38,9 +43,11 @@
       "binaryDir": "${sourceDir}/build/ninja-rel",
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "RelWithDebInfo",
-        "CMAKE_CXX_STANDARD": "20",
-        "CG_ENABLE_PCH": "ON",
-        "CG_ENABLE_UNITY": "ON",
+        "CMAKE_CXX_STANDARD": "23",
+        "COLONY_USE_PCH": "ON",
+        "COLONY_UNITY_BUILD": "ON",
+        "FRONTEND": "win32",
+        "COLONY_RENDERER": "d3d11",
         "CMAKE_MSVC_RUNTIME_LIBRARY": "MultiThreaded",
         "CMAKE_TOOLCHAIN_FILE": "$env{VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake"
       }
