@@ -105,6 +105,23 @@ if(MSVC AND COLONY_ASAN)
   target_link_options(ColonyGame   PRIVATE "$<$<CONFIG:Debug>:/fsanitize=address>")
 endif()
 
-# ---- HLSL pipeline hookup (unified) ----
-# Adds 'shaders' custom target when using offline compilation; makes ColonyGame depend on it.
-cg_setup_hlsl_pipeline(TARGET ColonyGame RENDERER ${COLONY_RENDERER})
+# ---- HLSL pipeline hookup (fixed & aligned with repo) ----
+# Use Visual Studio per-file HLSL integration if available, otherwise use JSON shader manifest.
+
+if(MSVC AND CMAKE_GENERATOR MATCHES "Visual Studio")
+  include(${CMAKE_SOURCE_DIR}/cmake/CGShaders.cmake OPTIONAL)
+  cg_configure_vs_hlsl(ColonyGame)
+else()
+  include(${CMAKE_SOURCE_DIR}/cmake/ColonyShaders.cmake OPTIONAL)
+  if(EXISTS "${CMAKE_SOURCE_DIR}/renderer/Shaders/shaders.json")
+    colony_register_shaders(
+      TARGET     ColonyGame
+      MANIFEST   "${CMAKE_SOURCE_DIR}/renderer/Shaders/shaders.json"
+      OUTPUT_DIR "${CMAKE_BINARY_DIR}/shaders"
+    )
+    colony_install_shaders(
+      TARGET      ColonyGame
+      DESTINATION bin/shaders
+    )
+  endif()
+endif()
