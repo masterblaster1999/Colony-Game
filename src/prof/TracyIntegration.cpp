@@ -1,32 +1,39 @@
+// src/prof/TracyIntegration.cpp
 #include "TracyIntegration.h"
 
-namespace cg::prof
+#if defined(TRACY_ENABLE)
+  #include <cstring>
+  #include <tracy/common/TracySystem.hpp>   // tracy::SetThreadName on some versions
+  #include <tracy/Tracy.hpp>
+#endif
+
+namespace cg::prof {
+
+void InitTracy(const char* programName)
 {
-#ifdef TRACY_ENABLE
-    // TracyD3D11Ctx is an opaque type from the header; keep it TU-local.
-    static TracyD3D11Ctx s_gpuCtx;
+#if defined(TRACY_ENABLE)
+    // Program name in the UI (optional – available in recent versions)
+    #if defined(TracySetProgramName)
+      TracySetProgramName(programName);
+    #endif
 
-    void InitD3D11(ID3D11Device* dev, ID3D11DeviceContext* ctx)
-    {
-        static bool inited = false;
-        if (inited) return;
-        s_gpuCtx = TracyD3D11Context(dev, ctx);
-        TracyGpuContextName("D3D11", 5);
-        inited = true;
-    }
+    // Name the main thread before any zones, so captured callstacks look nice
+    ::tracy::SetThreadName("Main Thread");
+    // Mark that we are entering the startup phase
+    CG_STARTUP_BEGIN();
 
-    void CollectD3D11()
-    {
-        TracyD3D11Collect(s_gpuCtx);
-    }
-
-    void ShutdownD3D11()
-    {
-        TracyD3D11Destroy(s_gpuCtx);
-    }
-#else
-    void InitD3D11(ID3D11Device*, ID3D11DeviceContext*) {}
-    void CollectD3D11() {}
-    void ShutdownD3D11() {}
+    // Minimal “build stamp” in the capture
+    static const char kBuild[] = "Build: " __DATE__ " " __TIME__;
+    TracyAppInfo(kBuild, (uint16_t)sizeof(kBuild)-1);
 #endif
 }
+
+void AppInfo(const char* text)
+{
+#if defined(TRACY_ENABLE)
+    if (!text) return;
+    TracyAppInfo(text, (uint16_t)std::min<size_t>(std::strlen(text), 0xFFFF));
+#endif
+}
+
+} // namespace cg::prof
