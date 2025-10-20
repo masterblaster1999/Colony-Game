@@ -93,21 +93,36 @@ endif()
 # Shader runtime define (kept for hot-reload paths)
 target_compile_definitions(ColonyGame PRIVATE SHADER_DIR=L\"res/shaders/\")
 
-# Link D3D bits commonly needed (harmless if unused)
+# --------------------------------------------------------------------------
+# Link Direct3D libraries conditionally based on selected renderer
+# --------------------------------------------------------------------------
 if(MSVC)
-  target_link_libraries(ColonyGame PRIVATE d3d11 dxgi d3dcompiler)
-  set_target_properties(ColonyGame PROPERTIES VS_DEBUGGER_WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}")
+  if(COLONY_RENDERER STREQUAL "d3d12")
+    message(STATUS "Linking Direct3D 12 renderer libraries")
+    target_link_libraries(ColonyGame PRIVATE d3d12 dxgi)
+    if(TARGET Microsoft::DirectXShaderCompiler)
+      target_link_libraries(ColonyGame PRIVATE Microsoft::DirectXShaderCompiler)
+    endif()
+  else()
+    message(STATUS "Linking Direct3D 11 renderer libraries")
+    target_link_libraries(ColonyGame PRIVATE d3d11 dxgi d3dcompiler)
+  endif()
+
+  set_target_properties(ColonyGame PROPERTIES
+    VS_DEBUGGER_WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}")
 endif()
 
+# --------------------------------------------------------------------------
 # AddressSanitizer (Debug only)
+# --------------------------------------------------------------------------
 if(MSVC AND COLONY_ASAN)
   target_compile_options(ColonyGame PRIVATE "$<$<CONFIG:Debug>:/fsanitize=address>")
   target_link_options(ColonyGame   PRIVATE "$<$<CONFIG:Debug>:/fsanitize=address>")
 endif()
 
-# ---- HLSL pipeline hookup (fixed & aligned with repo) ----
-# Use Visual Studio per-file HLSL integration if available, otherwise use JSON shader manifest.
-
+# --------------------------------------------------------------------------
+# HLSL pipeline hookup (Visual Studio or offline manifest)
+# --------------------------------------------------------------------------
 if(MSVC AND CMAKE_GENERATOR MATCHES "Visual Studio")
   include(${CMAKE_SOURCE_DIR}/cmake/CGShaders.cmake OPTIONAL)
   cg_configure_vs_hlsl(ColonyGame)
