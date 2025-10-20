@@ -3,7 +3,7 @@
 // =================================================================================================
 // [Colony Game PCH] Windows-only (MSVC) precompiled header
 // - Centralizes platform tuning macros before <Windows.h>
-// - Unifies WRL ComPtr usage via a single alias: template<class T> using ComPtr = Microsoft::WRL::ComPtr<T>;
+// - Unifies WRL ComPtr usage via a single alias under cg:: (no global alias)
 // - Gathers widely used STL/Win32/DX11/SDL2/EnTT/fmt/spdlog headers
 // - Adds small, header-only Win32/D3D11 utilities under namespace cg::win
 //
@@ -70,7 +70,7 @@
 #include <cstdarg>
 
 // =================================================================================================
-// Windows & friends (order matters)
+/* Windows & friends (order matters) */
 // =================================================================================================
 #include <sdkddkver.h>
 #include <sal.h>
@@ -126,12 +126,23 @@
 #endif
 
 // =================================================================================================
+// WIC (for PNG/JPEG encode/decode GUIDs like GUID_ContainerFormatPng)
+// =================================================================================================
+#ifndef CG_PCH_ENABLE_WIC
+#  define CG_PCH_ENABLE_WIC 1
+#endif
+#if CG_PCH_ENABLE_WIC
+  #if __has_include(<wincodec.h>)
+    #include <wincodec.h>        // IWIC*, GUID_ContainerFormatPng
+  #endif
+#endif
+
+// =================================================================================================
 // XAudio2 (optional)
 // =================================================================================================
 #ifndef CG_PCH_ENABLE_XAUDIO2
 #  define CG_PCH_ENABLE_XAUDIO2 1
 #endif
-
 #if CG_PCH_ENABLE_XAUDIO2
   #if __has_include(<xaudio2.h>)
     #include <xaudio2.h> // XAudio2.9 (Windows SDK)
@@ -191,6 +202,26 @@
 #endif
 
 // =================================================================================================
+/* Taskflow (job system) */
+// =================================================================================================
+#if __has_include(<taskflow/taskflow.hpp>)
+#  include <taskflow/taskflow.hpp>
+#endif
+
+// =================================================================================================
+/* Dear ImGui (and backends, if present in include path) */
+// =================================================================================================
+#if __has_include(<imgui.h>)
+#  include <imgui.h>
+#endif
+#if __has_include(<backends/imgui_impl_win32.h>)
+#  include <backends/imgui_impl_win32.h>
+#endif
+#if __has_include(<backends/imgui_impl_dx11.h>)
+#  include <backends/imgui_impl_dx11.h>
+#endif
+
+// =================================================================================================
 // Short-hands & attributes used pervasively
 // =================================================================================================
 #define CG_NODISCARD [[nodiscard]]
@@ -228,9 +259,11 @@
 #  endif
 #endif
 
-// Unified WRL smart pointer alias (use this everywhere)
-template <class T>
-using ComPtr = Microsoft::WRL::ComPtr<T>;
+// ---- WRL smart pointer alias lives under cg:: to avoid global collisions (C2874) ----------------
+namespace cg {
+  template <class T>
+  using ComPtr = Microsoft::WRL::ComPtr<T>;
+}
 
 // -------------------------------------------------------------------------------------------------
 // Tiny scope guard (DEFER)
@@ -258,6 +291,8 @@ namespace cg::detail {
 // cg::win — header-only helpers (RAII + utilities for Win32 / D3D11 / etc.)
 // -------------------------------------------------------------------------------------------------
 namespace cg::win {
+
+using ::cg::ComPtr; // keep short 'ComPtr<...>' inside cg::win helpers
 
 // ---------- RAII: COM initialization ----------
 class ComInit {
