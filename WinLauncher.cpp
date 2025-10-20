@@ -58,6 +58,18 @@ typedef HANDLE DPI_AWARENESS_CONTEXT;
 #  define DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2 ((DPI_AWARENESS_CONTEXT)-4)
 #endif
 
+// Windows 10+ power throttling (optional performance hint).
+#ifndef PROCESS_POWER_THROTTLING_CURRENT_VERSION
+#  define PROCESS_POWER_THROTTLING_CURRENT_VERSION 1
+typedef struct _PROCESS_POWER_THROTTLING_STATE {
+    ULONG Version;
+    ULONG ControlMask;
+    ULONG StateMask;
+} PROCESS_POWER_THROTTLING_STATE, *PPROCESS_POWER_THROTTLING_STATE;
+#  define PROCESS_POWER_THROTTLING_EXECUTION_SPEED 0x1
+#  define ProcessPowerThrottling 0x00000009
+#endif
+
 // --- Prefer discrete GPU on hybrid laptops (hint; not guaranteed) ---
 extern "C" {
 __declspec(dllexport) DWORD NvOptimusEnablement                   = 0x00000001;
@@ -90,10 +102,11 @@ static std::wstring LastErrorMessage(DWORD err = GetLastError())
     return out;
 }
 
-// Small helper for message boxes.
+// Small helper for message boxes (topmost/task-modal so users actually see it).
 static void MsgBox(const std::wstring& title, const std::wstring& text, UINT flags = MB_ICONERROR | MB_OK)
 {
-    MessageBoxW(nullptr, text.c_str(), title.c_str(), flags);
+    MessageBoxW(nullptr, text.c_str(), title.c_str(),
+                flags | MB_SETFOREGROUND | MB_TASKMODAL | MB_TOPMOST);
 }
 
 // Fail‑fast on heap corruption for improved crash diagnosability.
@@ -179,6 +192,22 @@ static void EnableHighDpiAwareness()
     }
 }
 
+// Optional: disable Windows power throttling (helps laptop performance a bit).
+static void DisablePowerThrottling()
+{
+    using PFN_SetProcessInformation = BOOL (WINAPI*)(HANDLE, PROCESS_INFORMATION_CLASS, LPVOID, DWORD);
+    auto pSetProcessInformation =
+        reinterpret_cast<PFN_SetProcessInformation>(GetProcAddress(GetModuleHandleW(L"kernel32.dll"), "SetProcessInformation"));
+    if (!pSetProcessInformation) return;
+
+    PROCESS_POWER_THROTTLING_STATE state{};
+    state.Version     = PROCESS_POWER_THROTTLING_CURRENT_VERSION;
+    state.ControlMask = PROCESS_POWER_THROTTLING_EXECUTION_SPEED;
+    state.StateMask   = 0; // 0 = disable throttling
+    pSetProcessInformation(GetCurrentProcess(), (PROCESS_INFORMATION_CLASS)ProcessPowerThrottling,
+                           &state, sizeof(state));
+}
+
 // Simple file logger under %LOCALAPPDATA%\ColonyGame\logs (UTF‑16LE with BOM)
 static fs::path LogsDir()
 {
@@ -208,48 +237,73 @@ static std::wofstream OpenLogFile()
     return f;
 }
 
-// Friendly preflight checks for essential asset directories.
-static bool CheckEssentialFiles()
+static inline void WriteLog(std::wofstream& log, const std::wstring& line)
 {
-    const wchar_t* const folders[] = { L"res", L"assets", L"shaders" };
-    for (auto* folder : folders)
+    if (log)
     {
-        if (!fs::exists(folder))
-        {
-            std::wstring msg = L"Missing required folder: ";
-            msg += folder;
-            MsgBox(L"Colony Game - Startup Error", msg, MB_ICONERROR | MB_OK);
-            return false;
-        }
+        log << line << L"\n";
+        log.flush();
     }
-    return true;
+#if defined(_DEBUG)
+    std::wstring dbg = line + L"\r\n";
+    OutputDebugStringW(dbg.c_str());
+#endif
 }
 
-// Quote a single argument if it has spaces or quotes (Windows rules).
-static std::wstring QuoteArg(const std::wstring& arg)
+// Robust Windows argument quoting (matches CommandLineToArgvW rules).
+static std::wstring QuoteArgWindows(const std::wstring& arg)
 {
-    bool needsQuotes = arg.find_first_of(L" \t\"") != std::wstring::npos;
-    if (!needsQuotes) return arg;
-    std::wstring out = L"\"";
+    if (arg.empty()) return L"\"\"";
+
+    bool needsQuotes = false;
     for (wchar_t ch : arg)
     {
-        if (ch == L'"') out += L"\\\"";
-        else out += ch;
+        if (iswspace(ch) || ch == L'"')
+        {
+            needsQuotes = true;
+            break;
+        }
     }
-    out += L"\"";
+    if (!needsQuotes) return arg;
+
+    std::wstring out;
+    out.push_back(L'"');
+    size_t backslashes = 0;
+    for (wchar_t ch : arg)
+    {
+        if (ch == L'\\')
+        {
+            backslashes++;
+        }
+        else if (ch == L'"')
+        {
+            out.append(backslashes * 2 + 1, L'\\'); // escape backslashes + the quote
+            out.push_back(L'"');
+            backslashes = 0;
+        }
+        else
+        {
+            if (backslashes) { out.append(backslashes, L'\\'); backslashes = 0; }
+            out.push_back(ch);
+        }
+    }
+    // Escape any trailing backslashes before the closing quote
+    if (backslashes) out.append(backslashes * 2, L'\\');
+    out.push_back(L'"');
     return out;
 }
 
-// Build child command line from our own args (skip argv[0]).
-static std::wstring BuildChildCommandLine(const std::wstring& childExe)
+// Build child *arguments only* from our own args (skip argv[0]).
+// We'll pass the application name separately to CreateProcessW.
+static std::wstring BuildChildArguments()
 {
     int argc = 0;
     LPWSTR* argv = CommandLineToArgvW(GetCommandLineW(), &argc);
-    std::wstring cmd = QuoteArg(childExe);
+    std::wstring cmd;
     for (int i = 1; i < argc; ++i)
     {
-        cmd.push_back(L' ');
-        cmd += QuoteArg(argv[i]);
+        if (!cmd.empty()) cmd.push_back(L' ');
+        cmd += QuoteArgWindows(argv[i]);
     }
     if (argv) LocalFree(argv);
     return cmd;
@@ -290,11 +344,71 @@ static LRESULT CALLBACK EmbeddedWndProc(HWND, UINT, WPARAM, LPARAM);
 static int RunEmbeddedGameLoop(std::wostream& log);
 #endif
 
+// ---- Friendly preflight checks ----
+// We consider the following groups:
+//
+//  - Content group (at least one must exist):  "assets", "res"
+//  - Shader group  (at least one must exist):  "renderer/Shaders", "shaders"
+//
+static bool CheckEssentialFiles(const fs::path& root, std::wstring& errorOut, std::wofstream& log)
+{
+    struct Group {
+        std::vector<fs::path> anyOf;
+        const wchar_t*        label;
+    };
+    std::vector<Group> groups = {
+        { { root / L"assets", root / L"res" }, L"Content (assets or res)" },
+        { { root / L"renderer" / L"Shaders", root / L"shaders" }, L"Shaders (renderer/Shaders or shaders)" }
+    };
+
+    std::wstringstream missing;
+    bool ok = true;
+    for (const auto& g : groups)
+    {
+        bool found = false;
+        for (const auto& p : g.anyOf)
+        {
+            if (fs::exists(p))
+            {
+                WriteLog(log, L"[Launcher] Found: " + p.wstring());
+                found = true;
+                break;
+            }
+        }
+        if (!found)
+        {
+            ok = false;
+            missing << L" - " << g.label << L"\n";
+        }
+    }
+
+    if (!ok)
+    {
+        errorOut = L"Missing required content folders:\n\n" + missing.str() +
+                   L"\nPlease verify your installation directory contains the folders above.";
+    }
+    return ok;
+}
+
+// Optional: allow forcing embedded safe mode via command line (if compiled with COLONY_EMBED_GAME_LOOP).
+static bool CommandLineHasFlag(const wchar_t* flag)
+{
+    int argc = 0;
+    LPWSTR* argv = CommandLineToArgvW(GetCommandLineW(), &argc);
+    bool found = false;
+    for (int i = 1; i < argc && !found; ++i)
+    {
+        if (_wcsicmp(argv[i], flag) == 0) found = true;
+    }
+    if (argv) LocalFree(argv);
+    return found;
+}
+
 // ---------- Entry point ----------
 int APIENTRY wWinMain(HINSTANCE, HINSTANCE, PWSTR, int)
 {
     // Initialize crash dumps as early as possible (Saved Games\Colony Game\Crashes).
-    wincrash::InitCrashHandler(L"Colony Game"); // writes MiniDump via vectored handler. (MS docs)
+    wincrash::InitCrashHandler(L"Colony Game"); // writes MiniDump via vectored handler.
 
     // Enable fail-fast behavior on heap corruption as early as possible.
     EnableHeapTerminationOnCorruption();
@@ -311,13 +425,22 @@ int APIENTRY wWinMain(HINSTANCE, HINSTANCE, PWSTR, int)
     // Make message boxes crisp under high DPI scaling. (0.2)
     EnableHighDpiAwareness();
 
+    // Hint: avoid laptop power throttling a bit (best-effort).
+    DisablePowerThrottling();
+
 #ifdef _DEBUG
     AttachParentConsoleOrAlloc();
 #endif
 
+    // Improve taskbar grouping / notifications identity.
+    SetCurrentProcessExplicitAppUserModelID(L"ColonyGame.Colony");
+
     // Start logging.
     std::wofstream log = OpenLogFile();
-    log << L"[Launcher] Colony Game Windows launcher starting.\n";
+    WriteLog(log, L"[Launcher] Colony Game Windows launcher starting.");
+    WriteLog(log, L"[Launcher] EXE dir  : " + winpath::exe_dir().wstring());
+    WriteLog(log, L"[Launcher] CWD      : " + fs::current_path().wstring());
+    WriteLog(log, L"[Launcher] UserData : " + winpath::writable_data_dir().wstring());
 
     // Single instance (0.2).
     SingleInstanceGuard guard;
@@ -327,45 +450,70 @@ int APIENTRY wWinMain(HINSTANCE, HINSTANCE, PWSTR, int)
         return 0;
     }
 
-    // (0.3) Friendly preflight checks for folders users commonly misplace.
-    if (!CheckEssentialFiles())
+#ifdef COLONY_EMBED_GAME_LOOP
+    // Optional switch to force embedded safe mode.
+    if (CommandLineHasFlag(L"--safe") || CommandLineHasFlag(L"/safe"))
     {
-        log << L"[Launcher] Preflight checks failed due to missing folders.\n";
+        WriteLog(log, L"[Launcher] --safe specified: running embedded safe mode.");
+        return RunEmbeddedGameLoop(log);
+    }
+#endif
+
+    // (0.3) Friendly preflight checks for folders users commonly misplace.
+    std::wstring preflightError;
+    if (!CheckEssentialFiles(fs::current_path(), preflightError, log))
+    {
+        WriteLog(log, L"[Launcher] Preflight checks failed.");
+        MsgBox(L"Colony Game - Startup Error", preflightError);
         return 2;
     }
 
     // Build path to the game executable (same directory as the launcher).
-    const fs::path exeDir  = fs::current_path();
-    const fs::path gameExe = exeDir / L"ColonyGame.exe"; // keep in sync with your CMake target name
-    if (!fs::exists(gameExe))
+    const fs::path exeDir = fs::current_path();
+
+    // Try common target names to reduce friction between Debug/Release or hyphenated targets.
+    const fs::path candidates[] = {
+        exeDir / L"ColonyGame.exe",
+        exeDir / L"Colony-Game.exe",
+        exeDir / L"Colony.exe"
+    };
+
+    fs::path gameExe;
+    for (auto& c : candidates) { if (fs::exists(c)) { gameExe = c; break; } }
+
+    if (gameExe.empty())
     {
-        std::wstring msg = L"Could not find game executable at:\n";
-        msg += gameExe.wstring();
-        MsgBox(L"Colony Game - Startup Error", msg);
+        std::wstring msg = L"Could not find the game executable. Tried:\n";
+        for (auto& c : candidates) { msg += L"  - " + c.wstring() + L"\n"; }
 #ifdef COLONY_EMBED_GAME_LOOP
-        log << L"[Launcher] EXE missing; falling back to embedded safe mode.\n";
+        WriteLog(log, L"[Launcher] EXE missing; falling back to embedded safe mode.");
+        MsgBox(L"Colony Game - Safe Mode", L"Game EXE not found. Launching embedded safe mode.");
         return RunEmbeddedGameLoop(log);
 #else
+        MsgBox(L"Colony Game - Startup Error", msg);
+        WriteLog(log, L"[Launcher] " + msg);
         return 3;
 #endif
     }
 
-    // Prepare to spawn the game process.
-    std::wstring cmd = BuildChildCommandLine(gameExe.wstring());
+    // Prepare to spawn the game process with inherited environment.
+    std::wstring args = BuildChildArguments();
+    std::wstring cmd  = args; // only arguments; lpApplicationName specifies the EXE
 
     STARTUPINFOW si{};
     si.cb = sizeof(si);
     PROCESS_INFORMATION pi{};
-    // Note: CREATE_UNICODE_ENVIRONMENT is relevant only when lpEnvironment != nullptr; harmless otherwise.
     DWORD creationFlags = CREATE_UNICODE_ENVIRONMENT | CREATE_DEFAULT_ERROR_MODE; // child does not inherit our error mode
 
-    log << L"[Launcher] Spawning: " << cmd << L"\n";
+    // Create mutable command-line buffer (Windows API requirement).
     std::vector<wchar_t> cmdMutable(cmd.begin(), cmd.end());
     cmdMutable.push_back(L'\0');
 
+    WriteLog(log, L"[Launcher] Spawning: " + gameExe.wstring() + (cmd.empty() ? L"" : (L" ") ) + cmd);
+
     BOOL ok = CreateProcessW(
         gameExe.c_str(),          // lpApplicationName
-        cmdMutable.data(),        // lpCommandLine (mutable!)
+        cmdMutable.data(),        // lpCommandLine (arguments only; mutable!)
         nullptr, nullptr, FALSE,
         creationFlags,
         nullptr,                  // inherit our environment
@@ -375,9 +523,11 @@ int APIENTRY wWinMain(HINSTANCE, HINSTANCE, PWSTR, int)
     if (!ok)
     {
         DWORD err = GetLastError();
-        log << L"[Launcher] CreateProcessW failed (" << err << L"): " << LastErrorMessage(err) << L"\n";
+        WriteLog(log, L"[Launcher] CreateProcessW failed (" + std::to_wstring(err) + L"): " + LastErrorMessage(err));
 #ifdef COLONY_EMBED_GAME_LOOP
-        log << L"[Launcher] Falling back to embedded safe mode.\n";
+        WriteLog(log, L"[Launcher] Falling back to embedded safe mode.");
+        MsgBox(L"Colony Game - Safe Mode",
+               L"Failed to start the main game process.\nLaunching embedded safe mode instead.");
         return RunEmbeddedGameLoop(log);
 #else
         std::wstring msg = L"Failed to start game process.\n\nError "
@@ -394,7 +544,7 @@ int APIENTRY wWinMain(HINSTANCE, HINSTANCE, PWSTR, int)
     CloseHandle(pi.hThread);
     CloseHandle(pi.hProcess);
 
-    log << L"[Launcher] Game exited with code " << code << L"\n";
+    WriteLog(log, L"[Launcher] Game exited with code " + std::to_wstring(code));
     return static_cast<int>(code);
 }
 
@@ -522,7 +672,7 @@ static int RunEmbeddedGameLoop(std::wostream& log)
         InvalidateRect(hwnd, nullptr, FALSE);
     };
 
-    log << L"[Embedded] Running fixed-timestep loop.\n";
+    WriteLog(reinterpret_cast<std::wofstream&>(log), L"[Embedded] Running fixed-timestep loop.");
     const int exitCode = colony::RunGameLoop(world, render, hwnd, cfg);
 
     DestroyWindow(hwnd);
