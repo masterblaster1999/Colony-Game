@@ -33,6 +33,28 @@ if(DEFINED CG_ENABLE_UNITY AND NOT DEFINED COLONY_UNITY_BUILD)
 endif()
 
 # ------------------------------------------------------------------------------
+# Windows: unify common macros & MSVC options at the top level.
+# This suppresses per-file #define spam (WIN32_LEAN_AND_MEAN/NOMINMAX/etc.)
+# and ensures consistent compiler behavior across all subdirectories/targets.
+# ------------------------------------------------------------------------------
+if(MSVC)
+  add_compile_definitions(
+    WIN32_LEAN_AND_MEAN
+    NOMINMAX
+    _CRT_SECURE_NO_WARNINGS
+  )
+  add_compile_options(
+    /permissive-        # conforming mode
+    /Zc:__cplusplus     # proper __cplusplus
+    /Zc:preprocessor    # modern preprocessor
+    /EHsc               # C++ exceptions (synchronous)
+    /utf-8              # UTF-8 source and execution char set
+    /W4                 # strong warnings
+    /MP                 # parallel compilation
+  )
+endif()
+
+# ------------------------------------------------------------------------------
 # Modules: options, third-party deps, shader pipeline
 # ------------------------------------------------------------------------------
 include(CGOptions)        # options, MSVC defaults, helpers
