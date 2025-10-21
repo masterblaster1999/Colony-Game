@@ -6,7 +6,7 @@
 #ifndef NOMINMAX
   #define NOMINMAX
 #endif
-#include <Windows.h> // GetPrivateProfileStringW, GetPrivateProfileIntW, GetModuleFileNameW
+#include <Windows.h> // GetPrivateProfileStringW, GetPrivateProfileIntW, GetModuleFileNameW, WideCharToMultiByte
 #include <stdexcept>
 #include <filesystem>
 #include <string>
@@ -17,6 +17,28 @@
 using namespace std::string_literals;
 
 namespace colony::worldgen {
+
+// ---------- UTF-8 helper (Windows-only, no data loss) ----------
+
+static inline std::string utf8_from_wstring(const std::wstring& w)
+{
+    if (w.empty()) return {};
+    const int in_len = static_cast<int>(w.size());
+
+    // Query required size (bytes, no terminator)
+    const int needed = ::WideCharToMultiByte(
+        CP_UTF8, 0, w.c_str(), in_len, nullptr, 0, nullptr, nullptr);
+
+    if (needed <= 0) return {};
+
+    std::string out(static_cast<size_t>(needed), '\0');
+
+    // Perform the conversion (no default char fallback -> fail-safe for debugging)
+    ::WideCharToMultiByte(
+        CP_UTF8, 0, w.c_str(), in_len, out.data(), needed, nullptr, nullptr);
+
+    return out;
+}
 
 // ---------- small parsing helpers ----------
 
@@ -136,7 +158,8 @@ StagesRuntimeConfig StagesConfig::load(const std::wstring& iniPath)
 {
     StagesRuntimeConfig cfg{};
     if (!try_load(iniPath, cfg)) {
-        throw std::runtime_error("Failed to load INI: " + std::string(iniPath.begin(), iniPath.end()));
+        // Avoid lossy wchar_t -> char narrowing by converting to UTF-8 explicitly.
+        throw std::runtime_error(std::string("Failed to load INI: ") + utf8_from_wstring(iniPath));
     }
     return cfg;
 }
