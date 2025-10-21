@@ -1,6 +1,8 @@
 // SkyWeatherSystem.cpp  (Windows / MSVC / D3D11)
 
+#ifndef NOMINMAX
 #define NOMINMAX
+#endif
 #include <Windows.h>
 #include <d3d11.h>
 #include <d3dcompiler.h>   // ID3DBlob, D3DCompileFromFile
@@ -19,6 +21,9 @@ using Microsoft::WRL::ComPtr;
 
 namespace cg {
 
+// ---------------------------
+// Constant-buffer structures
+// ---------------------------
 struct AtmosphereCB {
     XMFLOAT3 sunDir; float sunIntensity;
     XMFLOAT3 cameraPos; float mieG;
@@ -27,7 +32,8 @@ struct AtmosphereCB {
     float planetRadius; float atmosphereRadius; XMFLOAT2 pad2;
 };
 
-struct CameraCB { XMMATRIX invViewProj; };
+// Use XMFLOAT4X4 (not XMMATRIX) to ensure trivially copyable layout for Map/Unmap.
+struct CameraCB { XMFLOAT4X4 invViewProj; };
 
 struct CloudGenCB {
     XMFLOAT3 volumeSize; float densityScale;
@@ -50,9 +56,9 @@ struct PrecipUpdateCB {
 };
 
 struct PrecipDrawCB {
-    XMMATRIX viewProj;
-    XMFLOAT3 camRight; float size;
-    XMFLOAT3 camUp;    float opacity;
+    XMFLOAT4X4 viewProj;
+    XMFLOAT3   camRight; float size;
+    XMFLOAT3   camUp;    float opacity;
 };
 
 static void SafeReleaseUAV(ID3D11DeviceContext* ctx) {
@@ -60,6 +66,9 @@ static void SafeReleaseUAV(ID3D11DeviceContext* ctx) {
     ctx->CSSetUnorderedAccessViews(0, 1, nullUAV, nullptr);
 }
 
+// ------------------------------------------
+// Shader compilation (HLSL -> D3D11 shader)
+// ------------------------------------------
 bool SkyWeatherSystem::compileShader(const std::wstring& path,
                                      const char* entry,
                                      const char* profile,
@@ -79,8 +88,8 @@ bool SkyWeatherSystem::compileShader(const std::wstring& path,
         profile,
         flags,
         0,
-        blobOut.ReleaseAndGetAddressOf(),     // <-- correct ComPtr address-taking
-        errors.ReleaseAndGetAddressOf());     // <-- correct ComPtr address-taking
+        blobOut.ReleaseAndGetAddressOf(),
+        errors.ReleaseAndGetAddressOf());
 
     if (FAILED(hr)) {
         if (errors) ::OutputDebugStringA(static_cast<const char*>(errors->GetBufferPointer()));
@@ -89,134 +98,166 @@ bool SkyWeatherSystem::compileShader(const std::wstring& path,
     return true;
 }
 
+// ---------------------------
+// Fixed-function D3D states
+// ---------------------------
 bool SkyWeatherSystem::createStates() {
+    // Samplers
     D3D11_SAMPLER_DESC s{};
     s.Filter = D3D11_FILTER_MIN_MAG_MIP_LINEAR;
     s.AddressU = s.AddressV = s.AddressW = D3D11_TEXTURE_ADDRESS_CLAMP;
-    m_dev->CreateSamplerState(&s, m_linearClamp.ReleaseAndGetAddressOf());
+    if (FAILED(m_dev->CreateSamplerState(&s, m_linearClamp.ReleaseAndGetAddressOf())))
+        return false;
 
     s.AddressU = s.AddressV = s.AddressW = D3D11_TEXTURE_ADDRESS_BORDER;
     float border[4] = {0,0,0,0};
     std::memcpy(s.BorderColor, border, sizeof(border));
-    m_dev->CreateSamplerState(&s, m_linearBorder.ReleaseAndGetAddressOf());
+    if (FAILED(m_dev->CreateSamplerState(&s, m_linearBorder.ReleaseAndGetAddressOf())))
+        return false;
 
+    // Alpha blend
     D3D11_BLEND_DESC bd{};
-    bd.RenderTarget[0].BlendEnable = TRUE;
-    bd.RenderTarget[0].SrcBlend = D3D11_BLEND_SRC_ALPHA;
-    bd.RenderTarget[0].DestBlend = D3D11_BLEND_INV_SRC_ALPHA;
-    bd.RenderTarget[0].BlendOp = D3D11_BLEND_OP_ADD;
-    bd.RenderTarget[0].SrcBlendAlpha = D3D11_BLEND_ONE;
-    bd.RenderTarget[0].DestBlendAlpha = D3D11_BLEND_INV_SRC_ALPHA;
-    bd.RenderTarget[0].BlendOpAlpha = D3D11_BLEND_OP_ADD;
+    bd.RenderTarget[0].BlendEnable           = TRUE;
+    bd.RenderTarget[0].SrcBlend              = D3D11_BLEND_SRC_ALPHA;
+    bd.RenderTarget[0].DestBlend             = D3D11_BLEND_INV_SRC_ALPHA;
+    bd.RenderTarget[0].BlendOp               = D3D11_BLEND_OP_ADD;
+    bd.RenderTarget[0].SrcBlendAlpha         = D3D11_BLEND_ONE;
+    bd.RenderTarget[0].DestBlendAlpha        = D3D11_BLEND_INV_SRC_ALPHA;
+    bd.RenderTarget[0].BlendOpAlpha          = D3D11_BLEND_OP_ADD;
     bd.RenderTarget[0].RenderTargetWriteMask = D3D11_COLOR_WRITE_ENABLE_ALL;
-    m_dev->CreateBlendState(&bd, m_alphaBlend.ReleaseAndGetAddressOf());
+    if (FAILED(m_dev->CreateBlendState(&bd, m_alphaBlend.ReleaseAndGetAddressOf())))
+        return false;
 
+    // Depth (disabled for sky/clouds/precip pass)
     D3D11_DEPTH_STENCIL_DESC dd{};
-    dd.DepthEnable = FALSE;
+    dd.DepthEnable    = FALSE;
     dd.DepthWriteMask = D3D11_DEPTH_WRITE_MASK_ZERO;
-    dd.DepthFunc = D3D11_COMPARISON_ALWAYS;
-    m_dev->CreateDepthStencilState(&dd, m_depthDisabled.ReleaseAndGetAddressOf());
+    dd.DepthFunc      = D3D11_COMPARISON_ALWAYS;
+    if (FAILED(m_dev->CreateDepthStencilState(&dd, m_depthDisabled.ReleaseAndGetAddressOf())))
+        return false;
 
     return true;
 }
 
+// ---------------------------
+// Shaders + constant buffers
+// ---------------------------
 bool SkyWeatherSystem::createShaders() {
     ComPtr<ID3DBlob> vs, ps, cs;
 
     // Fullscreen VS
     if (!compileShader(L"renderer/Shaders/Common/FullScreenTriangleVS.hlsl","main","vs_5_0",vs)) return false;
-    m_dev->CreateVertexShader(vs->GetBufferPointer(), vs->GetBufferSize(), nullptr, m_fullscreenVS.ReleaseAndGetAddressOf());
+    if (FAILED(m_dev->CreateVertexShader(vs->GetBufferPointer(), vs->GetBufferSize(), nullptr, m_fullscreenVS.ReleaseAndGetAddressOf())))
+        return false;
 
     // Sky PS
     if (!compileShader(L"renderer/Shaders/Atmosphere/SkyPS.hlsl","main","ps_5_0",ps)) return false;
-    m_dev->CreatePixelShader(ps->GetBufferPointer(), ps->GetBufferSize(), nullptr, m_skyPS.ReleaseAndGetAddressOf());
+    if (FAILED(m_dev->CreatePixelShader(ps->GetBufferPointer(), ps->GetBufferSize(), nullptr, m_skyPS.ReleaseAndGetAddressOf())))
+        return false;
 
     // Cloud raymarch PS
     if (!compileShader(L"renderer/Shaders/Clouds/CloudRaymarchPS.hlsl","main","ps_5_0",ps)) return false;
-    m_dev->CreatePixelShader(ps->GetBufferPointer(), ps->GetBufferSize(), nullptr, m_cloudPS.ReleaseAndGetAddressOf());
+    if (FAILED(m_dev->CreatePixelShader(ps->GetBufferPointer(), ps->GetBufferSize(), nullptr, m_cloudPS.ReleaseAndGetAddressOf())))
+        return false;
 
     // Cloud gen CS
     if (!compileShader(L"renderer/Shaders/Clouds/CloudNoiseCS.hlsl","main","cs_5_0",cs)) return false;
-    m_dev->CreateComputeShader(cs->GetBufferPointer(), cs->GetBufferSize(), nullptr, m_cloudGenCS.ReleaseAndGetAddressOf());
+    if (FAILED(m_dev->CreateComputeShader(cs->GetBufferPointer(), cs->GetBufferSize(), nullptr, m_cloudGenCS.ReleaseAndGetAddressOf())))
+        return false;
 
     // Precip update CS
     if (!compileShader(L"renderer/Shaders/Weather/PrecipitationCS.hlsl","main","cs_5_0",cs)) return false;
-    m_dev->CreateComputeShader(cs->GetBufferPointer(), cs->GetBufferSize(), nullptr, m_precipCS.ReleaseAndGetAddressOf());
+    if (FAILED(m_dev->CreateComputeShader(cs->GetBufferPointer(), cs->GetBufferSize(), nullptr, m_precipCS.ReleaseAndGetAddressOf())))
+        return false;
 
     // Precip draw VS/PS
     if (!compileShader(L"renderer/Shaders/Weather/PrecipitationVS.hlsl","main","vs_5_0",vs)) return false;
-    m_dev->CreateVertexShader(vs->GetBufferPointer(), vs->GetBufferSize(), nullptr, m_precipVS.ReleaseAndGetAddressOf());
+    if (FAILED(m_dev->CreateVertexShader(vs->GetBufferPointer(), vs->GetBufferSize(), nullptr, m_precipVS.ReleaseAndGetAddressOf())))
+        return false;
 
     if (!compileShader(L"renderer/Shaders/Weather/PrecipitationPS.hlsl","main","ps_5_0",ps)) return false;
-    m_dev->CreatePixelShader(ps->GetBufferPointer(), ps->GetBufferSize(), nullptr, m_precipPS.ReleaseAndGetAddressOf());
+    if (FAILED(m_dev->CreatePixelShader(ps->GetBufferPointer(), ps->GetBufferSize(), nullptr, m_precipPS.ReleaseAndGetAddressOf())))
+        return false;
 
-    // Constant buffers (16-byte ByteWidth)
+    // ---- Constant buffers (16-byte ByteWidth) ----
     auto makeCB = [&](UINT size, ComPtr<ID3D11Buffer>& cb) {
         D3D11_BUFFER_DESC bd{};
-        bd.BindFlags = D3D11_BIND_CONSTANT_BUFFER;
-        bd.ByteWidth = (size + 15u) & ~15u; // 16-byte multiple requirement
-        bd.Usage = D3D11_USAGE_DYNAMIC;
+        bd.BindFlags      = D3D11_BIND_CONSTANT_BUFFER;
+        bd.ByteWidth      = (size + 15u) & ~15u; // round up to 16-byte multiple
+        bd.Usage          = D3D11_USAGE_DYNAMIC;
         bd.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
         cb.Reset();
         return SUCCEEDED(m_dev->CreateBuffer(&bd, nullptr, cb.GetAddressOf()));
     };
-    makeCB(sizeof(AtmosphereCB),    m_cbAtmosphere);
-    makeCB(sizeof(CameraCB),        m_cbCamera);
-    makeCB(sizeof(CloudGenCB),      m_cbCloudGen);
-    makeCB(sizeof(CloudRaymarchCB), m_cbCloudRaymarch);
-    makeCB(sizeof(PrecipUpdateCB),  m_cbPrecipUpdate);
-    makeCB(sizeof(PrecipDrawCB),    m_cbPrecipDraw);
+
+    if (!makeCB(sizeof(AtmosphereCB),    m_cbAtmosphere))    return false;
+    if (!makeCB(sizeof(CameraCB),        m_cbCamera))        return false;
+    if (!makeCB(sizeof(CloudGenCB),      m_cbCloudGen))      return false;
+    if (!makeCB(sizeof(CloudRaymarchCB), m_cbCloudRaymarch)) return false;
+    if (!makeCB(sizeof(PrecipUpdateCB),  m_cbPrecipUpdate))  return false;
+    if (!makeCB(sizeof(PrecipDrawCB),    m_cbPrecipDraw))    return false;
 
     return true;
 }
 
+// ---------------------------
+// 3D cloud volume (UAV/SRV)
+// ---------------------------
 bool SkyWeatherSystem::createCloudVolume(const CloudParams& p) {
     D3D11_TEXTURE3D_DESC td{};
-    td.Width  = p.volumeSize.x;
-    td.Height = p.volumeSize.y;
-    td.Depth  = p.volumeSize.z;
-    td.Format = DXGI_FORMAT_R16_FLOAT;
-    td.BindFlags = D3D11_BIND_SHADER_RESOURCE | D3D11_BIND_UNORDERED_ACCESS;
+    td.Width     = p.volumeSize.x;
+    td.Height    = p.volumeSize.y;
+    td.Depth     = p.volumeSize.z;
     td.MipLevels = 1;
+    td.Format    = DXGI_FORMAT_R16_FLOAT;
+    td.Usage     = D3D11_USAGE_DEFAULT;
+    td.BindFlags = D3D11_BIND_SHADER_RESOURCE | D3D11_BIND_UNORDERED_ACCESS;
 
     m_cloudTex3D.Reset();
     HRESULT hr = m_dev->CreateTexture3D(&td, nullptr, m_cloudTex3D.ReleaseAndGetAddressOf());
     if (FAILED(hr)) return false;
 
     D3D11_UNORDERED_ACCESS_VIEW_DESC uavd{};
-    uavd.Format = td.Format;
-    uavd.ViewDimension = D3D11_UAV_DIMENSION_TEXTURE3D;
-    uavd.Texture3D.MipSlice = 0;
-    uavd.Texture3D.FirstWSlice = 0;
-    uavd.Texture3D.WSize = td.Depth;
-    m_dev->CreateUnorderedAccessView(m_cloudTex3D.Get(), &uavd, m_cloudUAV.ReleaseAndGetAddressOf());
+    uavd.Format                    = td.Format;
+    uavd.ViewDimension             = D3D11_UAV_DIMENSION_TEXTURE3D;
+    uavd.Texture3D.MipSlice        = 0;
+    uavd.Texture3D.FirstWSlice     = 0;
+    uavd.Texture3D.WSize           = td.Depth;
+    if (FAILED(m_dev->CreateUnorderedAccessView(m_cloudTex3D.Get(), &uavd, m_cloudUAV.ReleaseAndGetAddressOf())))
+        return false;
 
     D3D11_SHADER_RESOURCE_VIEW_DESC srvd{};
-    srvd.Format = td.Format;
-    srvd.ViewDimension = D3D11_SRV_DIMENSION_TEXTURE3D;
+    srvd.Format                    = td.Format;
+    srvd.ViewDimension             = D3D11_SRV_DIMENSION_TEXTURE3D;
     srvd.Texture3D.MostDetailedMip = 0;
-    srvd.Texture3D.MipLevels = 1;
-    m_dev->CreateShaderResourceView(m_cloudTex3D.Get(), &srvd, m_cloudSRV.ReleaseAndGetAddressOf());
+    srvd.Texture3D.MipLevels       = 1;
+    if (FAILED(m_dev->CreateShaderResourceView(m_cloudTex3D.Get(), &srvd, m_cloudSRV.ReleaseAndGetAddressOf())))
+        return false;
+
     return true;
 }
 
+// ---------------------------------------------
+// Precipitation particles (structured buffer)
+// ---------------------------------------------
 bool SkyWeatherSystem::createParticles(uint32_t count) {
-    // Structured buffer with UAV+SRV
     struct Particle { XMFLOAT3 pos; float life; XMFLOAT3 vel; float seed; };
 
     std::vector<Particle> initial(count);
-    std::mt19937 rng(42); std::uniform_real_distribution<float> U(0,1);
+    std::mt19937 rng(42);
+    std::uniform_real_distribution<float> U(0,1);
     for (auto& p : initial) {
-        p.pos = XMFLOAT3(0, 50, 0);
-        p.vel = XMFLOAT3(0, -12, 0);
+        p.pos  = XMFLOAT3(0, 50, 0);
+        p.vel  = XMFLOAT3(0, -12, 0);
         p.life = 6.0f * U(rng);
         p.seed = 100.0f * U(rng);
     }
 
     D3D11_BUFFER_DESC bd{};
-    bd.ByteWidth = static_cast<UINT>(sizeof(Particle) * count);
-    bd.BindFlags = D3D11_BIND_SHADER_RESOURCE | D3D11_BIND_UNORDERED_ACCESS;
-    bd.MiscFlags = D3D11_RESOURCE_MISC_BUFFER_STRUCTURED;
+    bd.ByteWidth           = static_cast<UINT>(sizeof(Particle) * count);
+    bd.BindFlags           = D3D11_BIND_SHADER_RESOURCE | D3D11_BIND_UNORDERED_ACCESS;
+    bd.Usage               = D3D11_USAGE_DEFAULT;
+    bd.MiscFlags           = D3D11_RESOURCE_MISC_BUFFER_STRUCTURED;
     bd.StructureByteStride = sizeof(Particle);
 
     D3D11_SUBRESOURCE_DATA init{ initial.data(), 0, 0 };
@@ -225,37 +266,45 @@ bool SkyWeatherSystem::createParticles(uint32_t count) {
     if (FAILED(hr)) return false;
 
     D3D11_UNORDERED_ACCESS_VIEW_DESC uavd{};
-    uavd.Format = DXGI_FORMAT_UNKNOWN;
+    uavd.Format        = DXGI_FORMAT_UNKNOWN;
     uavd.ViewDimension = D3D11_UAV_DIMENSION_BUFFER;
     uavd.Buffer.FirstElement = 0;
-    uavd.Buffer.NumElements = count;
-    m_dev->CreateUnorderedAccessView(m_particles.Get(), &uavd, m_particlesUAV.ReleaseAndGetAddressOf());
+    uavd.Buffer.NumElements  = count;
+    if (FAILED(m_dev->CreateUnorderedAccessView(m_particles.Get(), &uavd, m_particlesUAV.ReleaseAndGetAddressOf())))
+        return false;
 
     D3D11_SHADER_RESOURCE_VIEW_DESC srvd{};
-    srvd.Format = DXGI_FORMAT_UNKNOWN;
-    srvd.ViewDimension = D3D11_SRV_DIMENSION_BUFFEREX;
+    srvd.Format              = DXGI_FORMAT_UNKNOWN;
+    srvd.ViewDimension       = D3D11_SRV_DIMENSION_BUFFEREX;
     srvd.BufferEx.FirstElement = 0;
-    srvd.BufferEx.NumElements = count;
-    m_dev->CreateShaderResourceView(m_particles.Get(), &srvd, m_particlesSRV.ReleaseAndGetAddressOf());
+    srvd.BufferEx.NumElements  = count;
+    if (FAILED(m_dev->CreateShaderResourceView(m_particles.Get(), &srvd, m_particlesSRV.ReleaseAndGetAddressOf())))
+        return false;
 
     return true;
 }
 
+// ---------------------------
+// Lifecycle
+// ---------------------------
 bool SkyWeatherSystem::init(ID3D11Device* dev, ID3D11DeviceContext* ctx, int w, int h) {
     m_dev = dev; m_ctx = ctx; m_width = w; m_height = h;
-    if (!createStates()) return false;
-    if (!createShaders()) return false;
-    if (!createCloudVolume(m_clouds)) return false;
-    if (!createParticles(12000)) return false;
+    if (!createStates())                    return false;
+    if (!createShaders())                   return false;
+    if (!createCloudVolume(m_clouds))       return false;
+    if (!createParticles(12000))            return false;
     return true;
 }
 
 void SkyWeatherSystem::resize(int w, int h) { m_width = w; m_height = h; }
 
 void SkyWeatherSystem::shutdown() {
-    // ComPtrs auto-release
+    // ComPtrs auto-release on destruction; nothing required here.
 }
 
+// ---------------------------
+// Per-frame update
+// ---------------------------
 void SkyWeatherSystem::update(double timeSec, float dt,
     const XMFLOAT3& cameraPos,
     const XMMATRIX& viewProj,
@@ -319,7 +368,7 @@ void SkyWeatherSystem::update(double timeSec, float dt,
         SafeReleaseUAV(m_ctx);
     }
 
-    // Update shared cbuffers
+    // 3) Update shared cbuffers
     {
         // Atmosphere
         D3D11_MAPPED_SUBRESOURCE ms{};
@@ -334,7 +383,7 @@ void SkyWeatherSystem::update(double timeSec, float dt,
         // Camera
         m_ctx->Map(m_cbCamera.Get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &ms);
         auto* cc = reinterpret_cast<CameraCB*>(ms.pData);
-        cc->invViewProj = XMMatrixTranspose(invViewProj);
+        XMStoreFloat4x4(&cc->invViewProj, XMMatrixTranspose(invViewProj));
         m_ctx->Unmap(m_cbCamera.Get(), 0);
 
         // Cloud raymarch
@@ -348,6 +397,9 @@ void SkyWeatherSystem::update(double timeSec, float dt,
     }
 }
 
+// ---------------------------
+// Rendering passes
+// ---------------------------
 void SkyWeatherSystem::renderSky(ID3D11RenderTargetView* rtv) {
     float blendFactor[4] = {0,0,0,0};
     m_ctx->OMSetRenderTargets(1, &rtv, nullptr);
@@ -405,7 +457,7 @@ void SkyWeatherSystem::renderPrecipitation(ID3D11RenderTargetView* rtv,
     D3D11_MAPPED_SUBRESOURCE ms{};
     m_ctx->Map(m_cbPrecipDraw.Get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &ms);
     auto* cd = reinterpret_cast<PrecipDrawCB*>(ms.pData);
-    cd->viewProj = XMMatrixTranspose(viewProj);
+    XMStoreFloat4x4(&cd->viewProj, XMMatrixTranspose(viewProj));
     cd->camRight = camRight; cd->camUp = camUp;
     cd->size = m_precip.size; cd->opacity = m_precip.opacity;
     m_ctx->Unmap(m_cbPrecipDraw.Get(), 0);
