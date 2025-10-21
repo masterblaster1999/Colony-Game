@@ -39,6 +39,7 @@
 #include <ctime>        // localtime_s
 #include <cstdio>       // freopen_s
 #include <system_error>
+#include <optional>     // (patch) CLI/env overrides
 
 #ifndef LOAD_LIBRARY_SEARCH_DEFAULT_DIRS
 #  define LOAD_LIBRARY_SEARCH_DEFAULT_DIRS 0x00001000
@@ -128,7 +129,7 @@ static void EnableHeapTerminationOnCorruption()
 // Dynamically resolves SetDefaultDllDirectories for broad OS/SDK compatibility.
 // Note: LOAD_LIBRARY_SEARCH_DEFAULT_DIRS sets the recommended base search order;
 //       we *also* include LOAD_LIBRARY_SEARCH_USER_DIRS so AddDllDirectory()
-//       entries (like .\D3D12 for Agility) apply process‑wide. (MS Docs)
+//       entries (like .\D3D12 for Agility) apply process‑wide.
 static void EnableSafeDllSearch()
 {
     HMODULE hKernel32 = GetModuleHandleW(L"kernel32.dll");
@@ -197,8 +198,11 @@ static void DisablePowerThrottling()
 {
     using PFN_SetProcessInformation = BOOL (WINAPI*)(HANDLE, PROCESS_INFORMATION_CLASS, LPVOID, DWORD);
     auto pSetProcessInformation =
-        reinterpret_cast<PFN_SetProcessInformation>(GetProcAddress(GetModuleHandleW(L"kernel32.dll"), "SetProcessInformation"));
-    if (!pSetProcessInformation) return;
+        reinterpret_cast<PFN_SetProcessInformation>(GetProcAddress(GetModuleFileNameW ? GetModuleHandleW(L"kernel32.dll") : nullptr, "SetProcessInformation"));
+    if (!pSetProcessInformation) {
+        pSetProcessInformation = reinterpret_cast<PFN_SetProcessInformation>(GetProcAddress(GetModuleHandleW(L"kernel32.dll"), "SetProcessInformation"));
+        if (!pSetProcessInformation) return;
+    }
 
     PROCESS_POWER_THROTTLING_STATE state{};
     state.Version     = PROCESS_POWER_THROTTLING_CURRENT_VERSION;
@@ -244,6 +248,17 @@ static inline void WriteLog(std::wofstream& log, const std::wstring& line)
         log << line << L"\n";
         log.flush();
     }
+#if defined(_DEBUG)
+    std::wstring dbg = line + L"\r\n";
+    OutputDebugStringW(dbg.c_str());
+#endif
+}
+
+// (patch) Overload for generic std::wostream (e.g., embedded safe-mode uses std::wostream&).
+static inline void WriteLog(std::wostream& log, const std::wstring& line)
+{
+    log << line << L"\n";
+    log.flush();
 #if defined(_DEBUG)
     std::wstring dbg = line + L"\r\n";
     OutputDebugStringW(dbg.c_str());
@@ -338,6 +353,54 @@ private:
     HANDLE h_;
 };
 
+// -------- Minimal CLI helpers (no third-party deps) --------
+// Supports:  --exe <file>   |  --exe=<file>
+//            --skip-preflight | --no-singleton
+static bool TryGetArgValue(const wchar_t* name, std::wstring& out)
+{
+    int argc = 0;
+    LPWSTR* argv = CommandLineToArgvW(GetCommandLineW(), &argc);
+    if (!argv) return false;
+
+    const std::wstring eq1 = std::wstring(L"--") + name + L"=";
+    const std::wstring eq2 = std::wstring(L"/")  + name + L"=";
+    const std::wstring flag1 = std::wstring(L"--") + name;
+    const std::wstring flag2 = std::wstring(L"/")  + name;
+
+    for (int i = 1; i < argc; ++i)
+    {
+        if (_wcsnicmp(argv[i], eq1.c_str(), (unsigned)eq1.size()) == 0) {
+            out.assign(argv[i] + eq1.size()); LocalFree(argv); return true;
+        }
+        if (_wcsnicmp(argv[i], eq2.c_str(), (unsigned)eq2.size()) == 0) {
+            out.assign(argv[i] + eq2.size()); LocalFree(argv); return true;
+        }
+        if (_wcsicmp(argv[i], flag1.c_str()) == 0 || _wcsicmp(argv[i], flag2.c_str()) == 0) {
+            if (i + 1 < argc) { out.assign(argv[i + 1]); LocalFree(argv); return true; }
+            break;
+        }
+    }
+    LocalFree(argv);
+    return false;
+}
+
+static bool HasFlag(const wchar_t* name)
+{
+    int argc = 0;
+    LPWSTR* argv = CommandLineToArgvW(GetCommandLineW(), &argc);
+    bool found = false;
+    if (argv) {
+        const std::wstring flag1 = std::wstring(L"--") + name;
+        const std::wstring flag2 = std::wstring(L"/")  + name;
+        for (int i = 1; i < argc && !found; ++i) {
+            if (_wcsicmp(argv[i], flag1.c_str()) == 0 || _wcsicmp(argv[i], flag2.c_str()) == 0)
+                found = true;
+        }
+        LocalFree(argv);
+    }
+    return found;
+}
+
 #ifdef COLONY_EMBED_GAME_LOOP
 // Forward decl; implemented at bottom.
 static LRESULT CALLBACK EmbeddedWndProc(HWND, UINT, WPARAM, LPARAM);
@@ -348,6 +411,7 @@ static int RunEmbeddedGameLoop(std::wostream& log);
 // We consider the following groups:
 //
 //  - Content group (at least one must exist):  "assets", "res"
+//
 //  - Shader group  (at least one must exist):  "renderer/Shaders", "shaders"
 //
 static bool CheckEssentialFiles(const fs::path& root, std::wstring& errorOut, std::wofstream& log)
@@ -357,7 +421,8 @@ static bool CheckEssentialFiles(const fs::path& root, std::wstring& errorOut, st
         const wchar_t*        label;
     };
     std::vector<Group> groups = {
-        { { root / L"assets", root / L"res" }, L"Content (assets or res)" },
+        // (patch) include "resources" as valid content root too
+        { { root / L"assets", root / L"res", root / L"resources" }, L"Content (assets, res, or resources)" },
         { { root / L"renderer" / L"Shaders", root / L"shaders" }, L"Shaders (renderer/Shaders or shaders)" }
     };
 
@@ -404,11 +469,26 @@ static bool CommandLineHasFlag(const wchar_t* flag)
     return found;
 }
 
+// (patch) Optional env override for exe name: COLONY_GAME_EXE
+static std::optional<fs::path> EnvExeOverride()
+{
+    wchar_t buf[1024];
+    DWORD n = GetEnvironmentVariableW(L"COLONY_GAME_EXE", buf, 1024);
+    if (n && n < 1024) return fs::path(buf);
+    return std::nullopt;
+}
+
 // ---------- Entry point ----------
 int APIENTRY wWinMain(HINSTANCE, HINSTANCE, PWSTR, int)
 {
     // Initialize crash dumps as early as possible (Saved Games\Colony Game\Crashes).
     wincrash::InitCrashHandler(L"Colony Game"); // writes MiniDump via vectored handler.
+
+    // (patch) CLI toggles (Windows-only, dev/QA friendly)
+    const bool skipPreflight = HasFlag(L"skip-preflight");
+    const bool noSingleton   = HasFlag(L"no-singleton");
+    std::wstring exeOverride;
+    (void)TryGetArgValue(L"exe", exeOverride); // --exe=Foo.exe or --exe Foo.exe
 
     // Enable fail-fast behavior on heap corruption as early as possible.
     EnableHeapTerminationOnCorruption();
@@ -442,12 +522,15 @@ int APIENTRY wWinMain(HINSTANCE, HINSTANCE, PWSTR, int)
     WriteLog(log, L"[Launcher] CWD      : " + fs::current_path().wstring());
     WriteLog(log, L"[Launcher] UserData : " + winpath::writable_data_dir().wstring());
 
-    // Single instance (0.2).
+    // Single instance (0.2). (patch) Allow opt-out with --no-singleton
     SingleInstanceGuard guard;
-    if (!guard.acquire(L"Global\\ColonyGame_Singleton_1E2D13F1_B96C_471B_82F5_829B0FF5D4AF"))
+    if (!noSingleton)
     {
-        MsgBox(L"Colony Game", L"Another instance is already running.");
-        return 0;
+        if (!guard.acquire(L"Global\\ColonyGame_Singleton_1E2D13F1_B96C_471B_82F5_829B0FF5D4AF"))
+        {
+            MsgBox(L"Colony Game", L"Another instance is already running.");
+            return 0;
+        }
     }
 
 #ifdef COLONY_EMBED_GAME_LOOP
@@ -459,24 +542,33 @@ int APIENTRY wWinMain(HINSTANCE, HINSTANCE, PWSTR, int)
     }
 #endif
 
-    // (0.3) Friendly preflight checks for folders users commonly misplace.
-    std::wstring preflightError;
-    if (!CheckEssentialFiles(fs::current_path(), preflightError, log))
+    // (0.3) Friendly preflight checks for folders users commonly misplace. (patch) Allow --skip-preflight
+    if (!skipPreflight)
     {
-        WriteLog(log, L"[Launcher] Preflight checks failed.");
-        MsgBox(L"Colony Game - Startup Error", preflightError);
-        return 2;
+        std::wstring preflightError;
+        if (!CheckEssentialFiles(fs::current_path(), preflightError, log))
+        {
+            WriteLog(log, L"[Launcher] Preflight checks failed.");
+            MsgBox(L"Colony Game - Startup Error", preflightError);
+            return 2;
+        }
+    }
+    else
+    {
+        WriteLog(log, L"[Launcher] Preflight checks skipped via --skip-preflight.");
     }
 
     // Build path to the game executable (same directory as the launcher).
     const fs::path exeDir = fs::current_path();
 
-    // Try common target names to reduce friction between Debug/Release or hyphenated targets.
-    const fs::path candidates[] = {
-        exeDir / L"ColonyGame.exe",
-        exeDir / L"Colony-Game.exe",
-        exeDir / L"Colony.exe"
-    };
+    // (patch) Try overrides first (CLI and environment), then common target names; also look under .\bin\
+    std::vector<fs::path> candidates;
+    if (!exeOverride.empty())                         candidates.push_back(exeDir / exeOverride);
+    if (auto e = EnvExeOverride())                    candidates.push_back(e->is_absolute() ? *e : (exeDir / *e));
+                                                     candidates.push_back(exeDir / L"ColonyGame.exe");
+                                                     candidates.push_back(exeDir / L"Colony-Game.exe");
+                                                     candidates.push_back(exeDir / L"Colony.exe");
+                                                     candidates.push_back(exeDir / L"bin" / L"ColonyGame.exe");
 
     fs::path gameExe;
     for (auto& c : candidates) { if (fs::exists(c)) { gameExe = c; break; } }
@@ -672,7 +764,8 @@ static int RunEmbeddedGameLoop(std::wostream& log)
         InvalidateRect(hwnd, nullptr, FALSE);
     };
 
-    WriteLog(reinterpret_cast<std::wofstream&>(log), L"[Embedded] Running fixed-timestep loop.");
+    // (patch) no reinterpret_cast; use the wostream overload
+    WriteLog(log, L"[Embedded] Running fixed-timestep loop.");
     const int exitCode = colony::RunGameLoop(world, render, hwnd, cfg);
 
     DestroyWindow(hwnd);
