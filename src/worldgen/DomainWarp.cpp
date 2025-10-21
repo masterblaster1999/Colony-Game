@@ -13,15 +13,17 @@
 //
 // Copyright (c) 2025
 
+#if defined(_WIN32) && !defined(NOMINMAX)
+#define NOMINMAX // prevent Windows <windows.h> from defining min/max macros
+#endif
+
 #include "DomainWarp.hpp"
 #include <algorithm>
-#include <atomic>
 #include <cmath>
 #include <cstdint>
 #include <limits>
 #include <thread>
 #include <vector>
-#include <functional>
 
 namespace cg {
 
@@ -79,7 +81,7 @@ static inline uint32_t hash2(uint32_t x, uint32_t y, uint32_t seed) {
     return mix32(h);
 }
 
-// Quintic fade (Perlin 2002): 6t^5 - 15t^4 + 10t^3 — C2 continuous at 0 and 1.  :contentReference[oaicite:1]{index=1}
+// Quintic fade (Perlin 2002): 6t^5 - 15t^4 + 10t^3 — C2 continuous at 0 and 1.
 static inline float fade5(float t) {
     return ((6.0f*t - 15.0f)*t + 10.0f)*t*t*t;
 }
@@ -109,7 +111,7 @@ static inline void grad2_from_hash(uint32_t h, float& gx, float& gy) {
 // ============================== 2D gradient noise (periodic or not) ==============================
 // We provide both a non-periodic and periodic version so you can make tileable maps. For tiling
 // set periodX/periodY > 0 and keep the same period across octaves (or wrap freq accordingly).
-// For background, see "Implementing Improved Perlin Noise" and Perlin 2002. :contentReference[oaicite:2]{index=2}
+// For background, see "Implementing Improved Perlin Noise" and Perlin 2002.
 
 struct Noise2Result {
     float value;
@@ -149,8 +151,7 @@ static inline Noise2Result gradNoise2(float x, float y, uint32_t seed)
     float nx1 = lerp(n01, n11, u);
     float n   = lerp(nx0, nx1, v);
 
-    // Interpolation derivatives (ignoring tiny dependence of nXY on tx/ty in gradient noise,
-    // which is standard practice for normals). Good tradeoff for terrain.  :contentReference[oaicite:3]{index=3}
+    // Interpolation derivatives (ignoring tiny dependence of nXY on tx/ty in gradient noise).
     float dnx0_du = (n10 - n00);
     float dnx1_du = (n11 - n01);
     float dn_du   = lerp(dnx0_du, dnx1_du, v);
@@ -158,12 +159,12 @@ static inline Noise2Result gradNoise2(float x, float y, uint32_t seed)
 
     Noise2Result out;
     out.value = n * 1.41421f; // normalize to ~[-1,1]
-    out.dx = dn_du * du;      // chain rule: du/dx ≈ 1 inside cell
-    out.dy = dn_dv * dv;      // dv/dy ≈ 1 inside cell
+    out.dx = dn_du * du;      // du/dx = dfade5(tx) and dt/dx ~= 1 in-cell
+    out.dy = dn_dv * dv;      // dv/dy = dfade5(ty)
     return out;
 }
 
-// Periodic version: gradients repeat every (periodX, periodY). Useful for tileable maps.  :contentReference[oaicite:4]{index=4}
+// Periodic version: gradients repeat every (periodX, periodY). Useful for tileable maps.
 static inline Noise2Result gradNoise2Periodic(float x, float y, uint32_t seed, int periodX, int periodY)
 {
     auto imod = [](int a, int m){ int r=a % m; return (r<0)? r+m : r; };
@@ -211,7 +212,7 @@ static inline Noise2Result gradNoise2Periodic(float x, float y, uint32_t seed, i
 }
 
 // ============================== fBm & multifractals ==============================
-// Classic fBm (value in [-1,1]), ridged (Musgrave), and billowed variants.  :contentReference[oaicite:5]{index=5}
+// Classic fBm (value in [-1,1]), ridged (Musgrave), and billowed variants.
 
 enum class FractalKind : uint32_t { FBM, RIDGED, BILLOWED };
 
@@ -254,19 +255,18 @@ static float fbm2_core(float x, float y, const FBMParams& fp, FractalKind kind)
         norm += amp;
         amp  *= fp.gain;
         freq *= fp.lacunarity;
-        if (fp.periodX > 0 && fp.periodY > 0) { // wrap periods across octaves
-            // keep frequency integral so periodicity holds
-            // (approximate: if period not divisible, you can alternatively set periods=0 for high octaves)
+        if (fp.periodX > 0 && fp.periodY > 0) {
+            // keep frequency integral so periodicity holds across octaves (optional)
         }
     }
 
-    return sum / std::max(1e-6f, norm);
+    return sum / (std::max)(1e-6f, norm);
 }
 
 // ============================== warp fields ==============================
-// - Standard 2-channel warp (domain warping): p' = p + k * W(p).  :contentReference[oaicite:6]{index=6}
+// - Standard 2-channel warp (domain warping): p' = p + k * W(p).
 // - Warp-of-warp for extra complexity.
-// - Optional curl-noise blend to get divergence-free component for wind/flows.  :contentReference[oaicite:7]{index=7}
+// - Optional curl-noise blend to get divergence-free component for wind/flows.
 
 struct WarpParams {
     FBMParams fbm;        // generator for warp field components
@@ -301,7 +301,7 @@ static inline void warpVec2(float x, float y, const WarpParams& wp, float& wx, f
 #endif
 
 #if CG_DW_ENABLE_CURL
-    // Curl component from a scalar stream function ψ → v = (∂ψ/∂y, -∂ψ/∂x)  :contentReference[oaicite:8]{index=8}
+    // Curl component from a scalar stream function ψ → v = (∂ψ/∂y, -∂ψ/∂x)
     float gx, gy;
     scalarNoiseGrad(x, y, wp.fbm, FractalKind::FBM, CG_DW_DIFF_EPS, gx, gy);
     float cx =  gy, cy = -gx;
@@ -312,7 +312,6 @@ static inline void warpVec2(float x, float y, const WarpParams& wp, float& wx, f
 
 // ============================== band-limited supersampling ==============================
 // For very high frequencies, simple multisampling (2x2 or 8 taps in a disc) reduces aliasing.
-// See IQ on band-limiting/filtering procedural textures.  :contentReference[oaicite:9]{index=9}
 
 template <typename F>
 static inline float supersample2D(F&& fn, float x, float y)
@@ -349,7 +348,7 @@ HeightField generateDomainWarpHeight(int W, int H, const DomainWarpParams& p)
     // --- Build the warp field parameters ---
     WarpParams wp;
     wp.strength = p.warpStrength;
-    wp.fbm.octaves       = std::max(1, p.warpOctaves);
+    wp.fbm.octaves       = (std::max)(1, p.warpOctaves);
     wp.fbm.lacunarity    = p.warpLacunarity;
     wp.fbm.gain          = p.warpGain;
     wp.fbm.baseFrequency = p.warpFrequency;
@@ -357,7 +356,7 @@ HeightField generateDomainWarpHeight(int W, int H, const DomainWarpParams& p)
 
     // --- Build the base fractal parameters ---
     FBMParams base;
-    base.octaves       = std::max(1, p.baseOctaves);
+    base.octaves       = (std::max)(1, p.baseOctaves);
     base.lacunarity    = p.baseLacunarity;
     base.gain          = p.baseGain;
     base.baseFrequency = p.baseFrequency;
@@ -376,13 +375,7 @@ HeightField generateDomainWarpHeight(int W, int H, const DomainWarpParams& p)
 
                 // Compute warp vector W(p)
                 float wx, wy;
-                // We supersample the *warped* evaluation to reduce aliasing at high freqs.
-                auto warpSampler = [&](float sx, float sy){
-                    warpVec2(sx, sy, wp, wx, wy);
-                    return 0.0f; // dummy for signature
-                };
-                (void)warpSampler; // silence unused warning (we only need warp result)
-
+                // (We could supersample the warp too; for now, sample once.)
                 warpVec2(px, py, wp, wx, wy);
 
                 // Apply domain warp
@@ -415,7 +408,7 @@ HeightField generateDomainWarpHeight(int W, int H, const DomainWarpParams& p)
     }
 #elif CG_DW_ENABLE_THREADS
     {
-        const unsigned hw = std::max(1u, std::thread::hardware_concurrency());
+        const unsigned hw = (std::max)(1u, std::thread::hardware_concurrency());
         const int jobs = (int)hw;
         std::vector<std::thread> pool;
         pool.reserve(jobs);
@@ -423,7 +416,7 @@ HeightField generateDomainWarpHeight(int W, int H, const DomainWarpParams& p)
         int y = 0;
         for (int j=0; j<jobs; ++j) {
             int y0 = y;
-            int y1 = std::min(H, y0 + rowsPerJob);
+            int y1 = (std::min)(H, y0 + rowsPerJob);
             y = y1;
             pool.emplace_back([=](){ rowTask(y0, y1); });
         }
@@ -440,15 +433,13 @@ HeightField generateDomainWarpHeight(int W, int H, const DomainWarpParams& p)
 
 // Compute a *tileable* domain-warped heightfield by specifying tiling periods (in cells).
 // Keeps the same parameterization as generateDomainWarpHeight but adds tile periods.
-// Note: for strict periodicity across octaves, you should choose frequencies that are
-// integer multiples of (1/period). For convenience we just wrap via periodic noise.
 HeightField generateDomainWarpHeightTiled(int W, int H, const DomainWarpParams& p, int periodX, int periodY)
 {
     HeightField Hf(W, H);
 
     WarpParams wp;
     wp.strength = p.warpStrength;
-    wp.fbm.octaves       = std::max(1, p.warpOctaves);
+    wp.fbm.octaves       = (std::max)(1, p.warpOctaves);
     wp.fbm.lacunarity    = p.warpLacunarity;
     wp.fbm.gain          = p.warpGain;
     wp.fbm.baseFrequency = p.warpFrequency;
@@ -457,7 +448,7 @@ HeightField generateDomainWarpHeightTiled(int W, int H, const DomainWarpParams& 
     wp.fbm.periodY       = periodY;
 
     FBMParams base;
-    base.octaves       = std::max(1, p.baseOctaves);
+    base.octaves       = (std::max)(1, p.baseOctaves);
     base.lacunarity    = p.baseLacunarity;
     base.gain          = p.baseGain;
     base.baseFrequency = p.baseFrequency;
@@ -503,7 +494,6 @@ HeightField generateDomainWarpHeightTiled(int W, int H, const DomainWarpParams& 
 }
 
 // Build a slope map (in radians) from a heightfield using central differences.
-// Returns a vector size W*H. Use for erosion heuristics, masks, etc.
 std::vector<float> computeSlopeMap(const HeightField& Hf, float xyScale, float zScale)
 {
     const int W = Hf.w, H = Hf.h;
@@ -516,7 +506,7 @@ std::vector<float> computeSlopeMap(const HeightField& Hf, float xyScale, float z
             float hy0 = at(x,y-1), hy1 = at(x,y+1);
             float dzdx = (hx1 - hx0) / (2.0f * xyScale);
             float dzdy = (hy1 - hy0) / (2.0f * xyScale);
-            float s = std::atan(std::sqrt((dzdx*dzdx + dzdy*dzdy)) / std::max(1e-6f, (1.0f/zScale)));
+            float s = std::atan(std::sqrt((dzdx*dzdx + dzdy*dzdy)) / (std::max)(1e-6f, (1.0f/zScale)));
             slope[size_t(y)*W + x] = s;
         }
     }
@@ -554,7 +544,7 @@ struct MinMax { float minv, maxv; };
 MinMax scanMinMax(const HeightField& Hf)
 {
     MinMax mm{ std::numeric_limits<float>::infinity(), -std::numeric_limits<float>::infinity() };
-    for (float v : Hf.data) { mm.minv = std::min(mm.minv, v); mm.maxv = std::max(mm.maxv, v); }
+    for (float v : Hf.data) { mm.minv = (std::min)(mm.minv, v); mm.maxv = (std::max)(mm.maxv, v); }
     return mm;
 }
 
