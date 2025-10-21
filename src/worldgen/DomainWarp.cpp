@@ -50,9 +50,13 @@ namespace cg {
 #define CG_DW_WARP_OF_WARP 1
 #endif
 
-// Optional curl-noise contribution in the warp field (0..1). 0 = off, 1 = full strength.
+// Optional curl-noise contribution in the warp field.
+// Split into: (a) compile-time enable flag (integral) and (b) runtime blend factor (float).
+#ifndef CG_DW_ENABLE_CURL
+#define CG_DW_ENABLE_CURL 0     // 0 or 1 (MSVC #if needs an integral constant)
+#endif
 #ifndef CG_DW_CURL_BLEND
-#define CG_DW_CURL_BLEND 0.0f
+#define CG_DW_CURL_BLEND 0.0f   // 0.0f .. 1.0f (used at runtime when enabled)
 #endif
 
 // ============================== small math & hashing utils ==============================
@@ -296,7 +300,7 @@ static inline void warpVec2(float x, float y, const WarpParams& wp, float& wx, f
     wy = lerp(wy, wy + 0.5f*m1, 0.5f);
 #endif
 
-#if (CG_DW_CURL_BLEND > 0)
+#if CG_DW_ENABLE_CURL
     // Curl component from a scalar stream function ψ → v = (∂ψ/∂y, -∂ψ/∂x)  :contentReference[oaicite:8]{index=8}
     float gx, gy;
     scalarNoiseGrad(x, y, wp.fbm, FractalKind::FBM, CG_DW_DIFF_EPS, gx, gy);
