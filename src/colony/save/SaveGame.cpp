@@ -56,7 +56,9 @@ void from_json(const json& j, Vec3f& v) {
         v.y = j.value("y", 0.0f);
         v.z = j.value("z", 0.0f);
     } else {
-        throw nlohmann::json::type_error::create(302, "Vec3f expects array[3] or object");
+        // nlohmann/json v3.12+ requires a BasicJsonContext as the 3rd argument.
+        throw nlohmann::json::type_error::create(
+            302, "Vec3f expects array[3] or object", &j);
     }
 }
 
