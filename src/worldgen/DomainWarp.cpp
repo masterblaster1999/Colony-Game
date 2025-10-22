@@ -37,6 +37,11 @@ namespace cg {
 #define CG_DW_ENABLE_THREADS 1  // Fallback to std::thread parallel-for if OpenMP off/unavailable
 #endif
 
+// Upper bound for worker threads (prevents oversubscription on laptops/VMs).
+#ifndef CG_DW_MAX_THREADS
+#define CG_DW_MAX_THREADS 12
+#endif
+
 // Finite difference epsilon for gradients/normals (in *domain* units)
 #ifndef CG_DW_DIFF_EPS
 #define CG_DW_DIFF_EPS 0.5f
@@ -60,6 +65,18 @@ namespace cg {
 #ifndef CG_DW_CURL_BLEND
 #define CG_DW_CURL_BLEND 0.0f   // 0.0f .. 1.0f (used at runtime when enabled)
 #endif
+
+// ============================== constants & small utils ==============================
+
+static constexpr float kSQRT2 = 1.41421356237f; // normalization factor for grad noise
+
+// Warp offsets (kept identical to the previous code, just centralized)
+static constexpr float kWarpOff0x =  37.2f;
+static constexpr float kWarpOff0y = -91.7f;
+static constexpr float kWOW0x     =  11.3f;
+static constexpr float kWOW0y     =  -7.1f;
+static constexpr float kWOW1x     =  -5.7f;
+static constexpr float kWOW1y     =   3.9f;
 
 // ============================== small math & hashing utils ==============================
 
@@ -158,9 +175,9 @@ static inline Noise2Result gradNoise2(float x, float y, uint32_t seed)
     float dn_dv   = (nx1 - nx0);
 
     Noise2Result out;
-    out.value = n * 1.41421f; // normalize to ~[-1,1]
-    out.dx = dn_du * du;      // du/dx = dfade5(tx) and dt/dx ~= 1 in-cell
-    out.dy = dn_dv * dv;      // dv/dy = dfade5(ty)
+    out.value = n * kSQRT2; // normalize to ~[-1,1]
+    out.dx = dn_du * du;    // du/dx = dfade5(tx) and dt/dx ~= 1 in-cell
+    out.dy = dn_dv * dv;    // dv/dy = dfade5(ty)
     return out;
 }
 
@@ -205,7 +222,7 @@ static inline Noise2Result gradNoise2Periodic(float x, float y, uint32_t seed, i
     float dn_dv   = (nx1 - nx0);
 
     Noise2Result out;
-    out.value = n * 1.41421f;
+    out.value = n * kSQRT2;
     out.dx = dn_du * du;
     out.dy = dn_dv * dv;
     return out;
@@ -260,7 +277,8 @@ static float fbm2_core(float x, float y, const FBMParams& fp, FractalKind kind)
         }
     }
 
-    return sum / (std::max)(1e-6f, norm);
+    // PATCH: force type for MSVC template deduction; prevents the C2672 failure
+    return sum / (std::max<float>)(1e-6f, norm);
 }
 
 // ============================== warp fields ==============================
@@ -287,15 +305,15 @@ static inline void warpVec2(float x, float y, const WarpParams& wp, float& wx, f
 {
     // Two decorrelated channels for vector warp
     float n0 = fbm2_core(x, y, wp.fbm, FractalKind::FBM);
-    float n1 = fbm2_core(x + 37.2f, y - 91.7f, wp.fbm, FractalKind::FBM);
+    float n1 = fbm2_core(x + kWarpOff0x, y + kWarpOff0y, wp.fbm, FractalKind::FBM);
     wx = n0; wy = n1;
 
 #if CG_DW_WARP_OF_WARP
     // Tiny "warp of warp": sample a secondary field to subtly bend the field itself
     FBMParams fp2 = wp.fbm;
     fp2.baseFrequency *= 2.0f;
-    float m0 = fbm2_core(x + 11.3f, y - 7.1f, fp2, FractalKind::FBM);
-    float m1 = fbm2_core(x - 5.7f,  y + 3.9f, fp2, FractalKind::FBM);
+    float m0 = fbm2_core(x + kWOW0x, y + kWOW0y, fp2, FractalKind::FBM);
+    float m1 = fbm2_core(x + kWOW1x, y + kWOW1y, fp2, FractalKind::FBM);
     wx = lerp(wx, wx + 0.5f*m0, 0.5f);
     wy = lerp(wy, wy + 0.5f*m1, 0.5f);
 #endif
@@ -343,12 +361,15 @@ static inline float supersample2D(F&& fn, float x, float y)
 
 HeightField generateDomainWarpHeight(int W, int H, const DomainWarpParams& p)
 {
+    if (W <= 0 || H <= 0) return HeightField(0,0);
+
     HeightField Hf(W, H);
 
     // --- Build the warp field parameters ---
     WarpParams wp;
     wp.strength = p.warpStrength;
-    wp.fbm.octaves       = (std::max)(1, p.warpOctaves);
+    // PATCH: explicit template args to avoid MSVC max deduction issues
+    wp.fbm.octaves       = (std::max<int>)(1, p.warpOctaves);
     wp.fbm.lacunarity    = p.warpLacunarity;
     wp.fbm.gain          = p.warpGain;
     wp.fbm.baseFrequency = p.warpFrequency;
@@ -356,7 +377,7 @@ HeightField generateDomainWarpHeight(int W, int H, const DomainWarpParams& p)
 
     // --- Build the base fractal parameters ---
     FBMParams base;
-    base.octaves       = (std::max)(1, p.baseOctaves);
+    base.octaves       = (std::max<int>)(1, p.baseOctaves);
     base.lacunarity    = p.baseLacunarity;
     base.gain          = p.baseGain;
     base.baseFrequency = p.baseFrequency;
@@ -408,15 +429,20 @@ HeightField generateDomainWarpHeight(int W, int H, const DomainWarpParams& p)
     }
 #elif CG_DW_ENABLE_THREADS
     {
-        const unsigned hw = (std::max)(1u, std::thread::hardware_concurrency());
-        const int jobs = (int)hw;
+        const unsigned hw   = (std::max<unsigned>)(1u, std::thread::hardware_concurrency());
+        const unsigned cap  = (unsigned)(CG_DW_MAX_THREADS < 1 ? 1 : CG_DW_MAX_THREADS);
+        const unsigned rows = (unsigned)H;
+        const unsigned jobsU = (std::max<unsigned>)(1u, (std::min<unsigned>)(rows, (std::min<unsigned>)(hw, cap)));
+        const int jobs = (int)jobsU;
+
         std::vector<std::thread> pool;
         pool.reserve(jobs);
-        int rowsPerJob = (H + jobs - 1) / jobs;
+        const int rowsPerJob = (H + jobs - 1) / jobs;
+
         int y = 0;
         for (int j=0; j<jobs; ++j) {
-            int y0 = y;
-            int y1 = (std::min)(H, y0 + rowsPerJob);
+            const int y0 = y;
+            const int y1 = (std::min)(H, y0 + rowsPerJob);
             y = y1;
             pool.emplace_back([=](){ rowTask(y0, y1); });
         }
@@ -435,11 +461,13 @@ HeightField generateDomainWarpHeight(int W, int H, const DomainWarpParams& p)
 // Keeps the same parameterization as generateDomainWarpHeight but adds tile periods.
 HeightField generateDomainWarpHeightTiled(int W, int H, const DomainWarpParams& p, int periodX, int periodY)
 {
+    if (W <= 0 || H <= 0) return HeightField(0,0);
+
     HeightField Hf(W, H);
 
     WarpParams wp;
     wp.strength = p.warpStrength;
-    wp.fbm.octaves       = (std::max)(1, p.warpOctaves);
+    wp.fbm.octaves       = (std::max<int>)(1, p.warpOctaves);
     wp.fbm.lacunarity    = p.warpLacunarity;
     wp.fbm.gain          = p.warpGain;
     wp.fbm.baseFrequency = p.warpFrequency;
@@ -448,7 +476,7 @@ HeightField generateDomainWarpHeightTiled(int W, int H, const DomainWarpParams& 
     wp.fbm.periodY       = periodY;
 
     FBMParams base;
-    base.octaves       = (std::max)(1, p.baseOctaves);
+    base.octaves       = (std::max<int>)(1, p.baseOctaves);
     base.lacunarity    = p.baseLacunarity;
     base.gain          = p.baseGain;
     base.baseFrequency = p.baseFrequency;
@@ -487,6 +515,27 @@ HeightField generateDomainWarpHeightTiled(int W, int H, const DomainWarpParams& 
         for (int y = 0; y < H; ++y)
             rowTask(y, y+1);
     }
+#elif CG_DW_ENABLE_THREADS
+    {
+        const unsigned hw   = (std::max<unsigned>)(1u, std::thread::hardware_concurrency());
+        const unsigned cap  = (unsigned)(CG_DW_MAX_THREADS < 1 ? 1 : CG_DW_MAX_THREADS);
+        const unsigned rows = (unsigned)H;
+        const unsigned jobsU = (std::max<unsigned>)(1u, (std::min<unsigned>)(rows, (std::min<unsigned>)(hw, cap)));
+        const int jobs = (int)jobsU;
+
+        std::vector<std::thread> pool;
+        pool.reserve(jobs);
+        const int rowsPerJob = (H + jobs - 1) / jobs;
+
+        int y = 0;
+        for (int j=0; j<jobs; ++j) {
+            const int y0 = y;
+            const int y1 = (std::min)(H, y0 + rowsPerJob);
+            y = y1;
+            pool.emplace_back([=](){ rowTask(y0, y1); });
+        }
+        for (auto& th: pool) th.join();
+    }
 #else
     rowTask(0, H);
 #endif
@@ -494,19 +543,24 @@ HeightField generateDomainWarpHeightTiled(int W, int H, const DomainWarpParams& 
 }
 
 // Build a slope map (in radians) from a heightfield using central differences.
+struct Nrm { float x,y,z; }; // forward for normal map below
 std::vector<float> computeSlopeMap(const HeightField& Hf, float xyScale, float zScale)
 {
     const int W = Hf.w, H = Hf.h;
     std::vector<float> slope(size_t(W)*H, 0.0f);
     auto at = [&](int x, int y){ x=std::clamp(x,0,W-1); y=std::clamp(y,0,H-1); return Hf.at(x,y); };
 
+    // Avoid division by zero if xyScale is extremely small
+    const float inv2xy = 1.0f / (std::max<float>)(1e-6f, 2.0f * xyScale);
+
     for (int y=0; y<H; ++y) {
         for (int x=0; x<W; ++x) {
             float hx0 = at(x-1,y), hx1 = at(x+1,y);
             float hy0 = at(x,y-1), hy1 = at(x,y+1);
-            float dzdx = (hx1 - hx0) / (2.0f * xyScale);
-            float dzdy = (hy1 - hy0) / (2.0f * xyScale);
-            float s = std::atan(std::sqrt((dzdx*dzdx + dzdy*dzdy)) / (std::max)(1e-6f, (1.0f/zScale)));
+            float dzdx = (hx1 - hx0) * inv2xy;
+            float dzdy = (hy1 - hy0) * inv2xy;
+            float denom = (std::max<float>)(1e-6f, (1.0f / zScale)); // stable slope when zScale ~ 0
+            float s = std::atan(std::sqrt((dzdx*dzdx + dzdy*dzdy)) / denom);
             slope[size_t(y)*W + x] = s;
         }
     }
@@ -514,20 +568,21 @@ std::vector<float> computeSlopeMap(const HeightField& Hf, float xyScale, float z
 }
 
 // Estimate per-pixel normals from a heightfield (Tangent space: X right, Z forward, Y up)
-struct Nrm { float x,y,z; };
 std::vector<Nrm> computeNormalMap(const HeightField& Hf, float xyScale, float zScale)
 {
     const int W = Hf.w, H = Hf.h;
     std::vector<Nrm> N(size_t(W)*H);
     auto at = [&](int x, int y){ x=std::clamp(x,0,W-1); y=std::clamp(y,0,H-1); return Hf.at(x,y); };
 
+    const float inv2xy = 1.0f / (std::max<float>)(1e-6f, 2.0f * xyScale);
+
     for (int y=0; y<H; ++y) {
         for (int x=0; x<W; ++x) {
             float hl = at(x-1,y), hr = at(x+1,y);
             float hd = at(x,y-1), hu = at(x,y+1);
             // central differences
-            float dx = (hr - hl) / (2.0f * xyScale);
-            float dz = (hu - hd) / (2.0f * xyScale);
+            float dx = (hr - hl) * inv2xy;
+            float dz = (hu - hd) * inv2xy;
             // normal ~ (-dzdx, 1/zScale, -dzdy) → normalize
             float nx = -dx * zScale;
             float ny =  1.0f;
