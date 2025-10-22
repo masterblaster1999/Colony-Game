@@ -174,8 +174,9 @@ static Map2D generate_height(const Params& P) {
     Map2D H(P.width, P.height, 0.f);
 
     // precompute pixel->uv scale so warp_amp_px works in pixel space
-    float invW = 1.0f / float(P.width);
-    float invH = 1.0f / float(P.height);
+    [[maybe_unused]] const float invW = (P.width  > 0) ? (1.0f / float(P.width))  : 0.0f;
+    [[maybe_unused]] const float invH = (P.height > 0) ? (1.0f / float(P.height)) : 0.0f;
+    (void)invW; (void)invH; // touch unconditionally so MSVC never flags them as “not referenced”
 
     for (int y=0; y<P.height; ++y) {
         for (int x=0; x<P.width; ++x) {
