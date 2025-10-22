@@ -109,6 +109,15 @@ include(CGThirdParty)     # SDL2, ImGui, Tracy, DXC (optional)
 include(CGShaders)        # unified HLSL pipeline (VS/MSBuild, FXC, DXC)
 
 # ------------------------------------------------------------------------------
+# Manual vcpkg package imports (SDL2, ImGui, Tracy)
+# - Kept explicit here so the top-level always knows about these key deps.
+# - These work with vcpkg manifest mode (CONFIG packages).
+# ------------------------------------------------------------------------------
+find_package(SDL2 CONFIG REQUIRED)
+find_package(imgui CONFIG REQUIRED)
+find_package(Tracy CONFIG QUIET)  # optional; only links if present
+
+# ------------------------------------------------------------------------------
 # NOTE: Stop defining/creating core/platform targets at the top level.
 # Those targets must be defined once inside subdirectories to avoid CMP0002
 # collisions.
@@ -120,6 +129,21 @@ include(CGShaders)        # unified HLSL pipeline (VS/MSBuild, FXC, DXC)
 # ------------------------------------------------------------------------------
 if(EXISTS "${CMAKE_SOURCE_DIR}/src/CMakeLists.txt")
   add_subdirectory(src)
+endif()
+
+# ------------------------------------------------------------------------------
+# Link third-party libs to the core game target once it's defined
+# ------------------------------------------------------------------------------
+if(TARGET colony_core)
+  target_link_libraries(colony_core PRIVATE
+    SDL2::SDL2
+    SDL2::SDL2main
+    imgui::imgui
+  )
+  if(TARGET Tracy::TracyClient)
+    target_link_libraries(colony_core PRIVATE Tracy::TracyClient)
+    target_compile_definitions(colony_core PRIVATE TRACY_ENABLE=1)
+  endif()
 endif()
 
 # ------------------------------------------------------------------------------
