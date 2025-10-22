@@ -1,8 +1,14 @@
 #pragma once
 
+#ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
+#endif
+
+#ifndef NOMINMAX
 #define NOMINMAX
-#include <windows.h>
+#endif
+
+#include <Windows.h>
 #include <shlobj.h>      // SHGetKnownFolderPath
 #include <filesystem>
 #include <string>
