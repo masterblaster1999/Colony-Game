@@ -3,6 +3,9 @@
 #ifndef NOMINMAX
 #define NOMINMAX
 #endif
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
 #include <Windows.h>
 #include <d3d11.h>
 #include <d3dcompiler.h>   // ID3DBlob, D3DCompileFromFile
@@ -13,6 +16,12 @@
 #include <random>
 #include <vector>
 #include <cstring>
+#include <string>
+#include <cstdint>
+
+#pragma comment(lib, "d3d11.lib")
+#pragma comment(lib, "dxgi.lib")
+#pragma comment(lib, "d3dcompiler.lib")
 
 #include "rendering/SkyWeatherSystem.h"
 
