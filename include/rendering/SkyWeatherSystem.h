@@ -11,6 +11,9 @@
 
 namespace cg {
 
+// -----------------------------------------------------------------------------
+// Parameter structures
+// -----------------------------------------------------------------------------
 struct AtmosphereParams {
     DirectX::XMFLOAT3 sunDir = { 0.3f, 0.7f, 0.6f };
     float             sunIntensity = 20.0f;
@@ -22,7 +25,7 @@ struct AtmosphereParams {
 };
 
 struct CloudParams {
-    DirectX::XMUINT3 volumeSize = {128,64,128};
+    DirectX::XMUINT3 volumeSize = {128, 64, 128};
     float densityScale = 1.0f;
     DirectX::XMFLOAT3 noiseScale = {0.006f, 0.012f, 0.006f};
     float coverage = 0.45f;
@@ -30,7 +33,7 @@ struct CloudParams {
     float perlinWeight = 0.65f, worleyWeight = 0.35f, heightSharp = 4.5f, heightBase = 0.55f;
     DirectX::XMFLOAT3 worldMin = {-1000.f, 1000.f, -1000.f};
     float worldMaxY = 2500.f;
-    DirectX::XMFLOAT3 worldMax = { 1000.f, 0.f,  1000.f};
+    DirectX::XMFLOAT3 worldMax = { 1000.f, 0.f, 1000.f };
     float stepCount = 64.f;
     float sigmaExt = 2.0f, sigmaScat = 1.5f, shadowStep = 50.f, shadowSigma = 4.0f;
 };
@@ -42,11 +45,14 @@ struct PrecipParams {
     float spawnRadiusXZ = 45.0f;
     float gravity = 9.8f;
     float windStrength = 6.0f;
-    float size = 0.08f; // raindrop billboard half-size
+    float size = 0.08f;  // raindrop billboard half-size
     float opacity = 0.7f;
     uint32_t particleCount = 12000;
 };
 
+// -----------------------------------------------------------------------------
+// SkyWeatherSystem
+// -----------------------------------------------------------------------------
 class SkyWeatherSystem {
 public:
     bool init(ID3D11Device* dev, ID3D11DeviceContext* ctx, int backbufferW, int backbufferH);
@@ -70,24 +76,24 @@ public:
                              const DirectX::XMMATRIX& viewProj);
 
 private:
-    using ComPtr = Microsoft::WRL::ComPtr<ID3D11Device>;
-    ID3D11Device*        m_dev = nullptr;
-    ID3D11DeviceContext* m_ctx = nullptr;
-    int m_width = 0, m_height = 0;
+    ID3D11Device*        m_dev  = nullptr;
+    ID3D11DeviceContext* m_ctx  = nullptr;
+    int m_width  = 0;
+    int m_height = 0;
 
     // Shaders
-    Microsoft::WRL::ComPtr<ID3D11VertexShader> m_fullscreenVS;
-    Microsoft::WRL::ComPtr<ID3D11PixelShader>  m_skyPS;
-    Microsoft::WRL::ComPtr<ID3D11PixelShader>  m_cloudPS;
+    Microsoft::WRL::ComPtr<ID3D11VertexShader>  m_fullscreenVS;
+    Microsoft::WRL::ComPtr<ID3D11PixelShader>   m_skyPS;
+    Microsoft::WRL::ComPtr<ID3D11PixelShader>   m_cloudPS;
     Microsoft::WRL::ComPtr<ID3D11ComputeShader> m_cloudGenCS;
     Microsoft::WRL::ComPtr<ID3D11ComputeShader> m_precipCS;
     Microsoft::WRL::ComPtr<ID3D11VertexShader>  m_precipVS;
     Microsoft::WRL::ComPtr<ID3D11PixelShader>   m_precipPS;
 
     // States
-    Microsoft::WRL::ComPtr<ID3D11SamplerState> m_linearClamp;
-    Microsoft::WRL::ComPtr<ID3D11SamplerState> m_linearBorder;
-    Microsoft::WRL::ComPtr<ID3D11BlendState>   m_alphaBlend;
+    Microsoft::WRL::ComPtr<ID3D11SamplerState>      m_linearClamp;
+    Microsoft::WRL::ComPtr<ID3D11SamplerState>      m_linearBorder;
+    Microsoft::WRL::ComPtr<ID3D11BlendState>        m_alphaBlend;
     Microsoft::WRL::ComPtr<ID3D11DepthStencilState> m_depthDisabled;
 
     // Constant buffers
@@ -99,16 +105,16 @@ private:
     Microsoft::WRL::ComPtr<ID3D11Buffer> m_cbPrecipDraw;
 
     // Cloud volume
-    Microsoft::WRL::ComPtr<ID3D11Texture3D>         m_cloudTex3D;
+    Microsoft::WRL::ComPtr<ID3D11Texture3D>           m_cloudTex3D;
     Microsoft::WRL::ComPtr<ID3D11UnorderedAccessView> m_cloudUAV;
     Microsoft::WRL::ComPtr<ID3D11ShaderResourceView>  m_cloudSRV;
 
-    // Particles buffer
+    // Particle buffer
     Microsoft::WRL::ComPtr<ID3D11Buffer>              m_particles; // structured buffer
     Microsoft::WRL::ComPtr<ID3D11UnorderedAccessView> m_particlesUAV;
     Microsoft::WRL::ComPtr<ID3D11ShaderResourceView>  m_particlesSRV;
 
-    // Cached params
+    // Cached parameters
     AtmosphereParams m_atm{};
     CloudParams      m_clouds{};
     PrecipParams     m_precip{};
@@ -117,7 +123,10 @@ private:
     DirectX::XMMATRIX m_viewProj{};
 
     // Helpers
-    bool compileShader(const std::wstring& path, const char* entry, const char* profile, Microsoft::WRL::ComPtr<ID3DBlob>& blobOut);
+    bool compileShader(const std::wstring& path,
+                       const char* entry,
+                       const char* profile,
+                       Microsoft::WRL::ComPtr<ID3DBlob>& blobOut);
     bool createShaders();
     bool createStates();
     bool createCloudVolume(const CloudParams& params);
