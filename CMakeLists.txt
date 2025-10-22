@@ -33,6 +33,53 @@ if(DEFINED CG_ENABLE_UNITY AND NOT DEFINED COLONY_UNITY_BUILD)
 endif()
 
 # ------------------------------------------------------------------------------
+# 11.1: ASan, PCH, and clang-tidy toggles (Windows-first)
+# - COLONY_USE_PCH: already supported by project; provide a default + header path.
+# - COLONY_ENABLE_TIDY: wire up clang-tidy if found (off by default).
+# - COLONY_ENABLE_ASAN: enable AddressSanitizer for MSVC/Clang on Windows.
+# ------------------------------------------------------------------------------
+if(NOT DEFINED COLONY_USE_PCH)
+  option(COLONY_USE_PCH "Enable precompiled headers" ON)
+endif()
+set(COLONY_PCH_HEADER "src/pch.hpp" CACHE STRING "Path to the common precompiled header used by game targets")
+
+option(COLONY_ENABLE_TIDY "Run clang-tidy static analysis during build (may slow builds)" OFF)
+option(COLONY_ENABLE_ASAN "Enable AddressSanitizer for supported compilers/configs" OFF)
+
+# clang-tidy (global, applies to targets created after this point)
+if(COLONY_ENABLE_TIDY)
+  find_program(CLANG_TIDY_EXE NAMES clang-tidy clang-tidy.exe)
+  if(CLANG_TIDY_EXE)
+    # Treat all diagnostics as errors inside tidy to keep the codebase clean.
+    # Projects can override per-target if needed.
+    set(CMAKE_CXX_CLANG_TIDY "${CLANG_TIDY_EXE};-warnings-as-errors=*")
+  else()
+    message(WARNING "COLONY_ENABLE_TIDY is ON, but clang-tidy was not found on PATH.")
+  endif()
+endif()
+
+# AddressSanitizer (directory-wide flags; affect targets created later)
+# NOTE:
+#   * MSVC supports /fsanitize=address for x64. Prefer Debug/RelWithDebInfo.
+#   * clang-cl uses the GCC-style -fsanitize=address flags.
+if(COLONY_ENABLE_ASAN)
+  if(MSVC)
+    add_compile_options(
+      $<$<CONFIG:Debug,RelWithDebInfo>:/fsanitize=address>
+      $<$<CONFIG:Debug,RelWithDebInfo>:/Zi>
+    )
+    add_link_options(
+      $<$<CONFIG:Debug,RelWithDebInfo>:/fsanitize=address>
+    )
+    add_compile_definitions(ASAN_ENABLED=1)
+  elseif(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+    add_compile_options(-fsanitize=address -fno-omit-frame-pointer -g)
+    add_link_options(-fsanitize=address)
+    add_compile_definitions(ASAN_ENABLED=1)
+  endif()
+endif()
+
+# ------------------------------------------------------------------------------
 # Windows: unify common macros & MSVC options at the top level.
 # This suppresses per-file #define spam (WIN32_LEAN_AND_MEAN/NOMINMAX/etc.)
 # and ensures consistent compiler behavior across all subdirectories/targets.
