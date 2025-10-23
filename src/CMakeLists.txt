@@ -1,6 +1,26 @@
 # src/CMakeLists.txt
 cmake_minimum_required(VERSION 3.20) # genex in OUTPUT requires 3.20+; VS HLSL props are 3.1+/3.2+
 
+# ---- Windows-only global defines (set once, apply to all targets in this dir tree) ----
+if(WIN32)
+  add_compile_definitions(
+    WIN32_LEAN_AND_MEAN
+    NOMINMAX
+    _CRT_SECURE_NO_WARNINGS
+  )
+endif()
+
+# ---- Third-party via package manager (vcpkg) ----
+# Enable these only if you actually use the subsystems (guards keep CI configurable)
+if(ENABLE_IMGUI)
+  find_package(imgui CONFIG REQUIRED)        # provides imgui::imgui and (via features) Win32/DX11 backends
+endif()
+# Taskflow is header-only; some vcpkg ports have CONFIG, others don't. Try CONFIG first.
+find_package(taskflow CONFIG QUIET)
+if(ENABLE_TRACY)
+  find_package(tracy CONFIG REQUIRED)        # provides Tracy::TracyClient on vcpkg
+endif()
+
 # -------- Discover sources (exclude vendored imgui if present) --------
 file(GLOB_RECURSE SRC_ALL
   CONFIGURE_DEPENDS
@@ -65,8 +85,8 @@ target_compile_definitions(colony_core
 )
 
 if(MSVC)
-  # utf-8 for headers/sources
-  target_compile_options(colony_core PRIVATE /utf-8)
+  # Stricter conformance and UTF-8 for headers/sources
+  target_compile_options(colony_core PRIVATE /permissive- /Zc:preprocessor /utf-8)
 endif()
 
 # Windows system libs needed by path helpers, COM/KnownFolders, etc. -> PUBLIC for tests
@@ -82,6 +102,38 @@ target_link_libraries(colony_core
     ${COLONY_THIRDPARTY_LIBS}
     colony_build_options
 )
+
+# ImGui (Win32 + DX11 backends), only if enabled and available
+if(ENABLE_IMGUI)
+  if(TARGET imgui::imgui)
+    target_link_libraries(colony_core PRIVATE imgui::imgui)
+  endif()
+  # Backends are exposed as separate targets by vcpkg features; guard in case of naming changes
+  if(TARGET imgui::imgui-win32-binding)
+    target_link_libraries(colony_core PRIVATE imgui::imgui-win32-binding)
+  endif()
+  if(TARGET imgui::imgui-dx11-binding)
+    target_link_libraries(colony_core PRIVATE imgui::imgui-dx11-binding)
+  endif()
+endif()
+
+# Tracy client library, only if enabled
+if(ENABLE_TRACY)
+  if(TARGET Tracy::TracyClient)
+    target_link_libraries(colony_core PRIVATE Tracy::TracyClient)
+  else()
+    message(FATAL_ERROR "Tracy enabled but CMake target Tracy::TracyClient not found. Install tracy via vcpkg or add TracyClient.cpp manually.")
+  endif()
+endif()
+
+# Taskflow header-only include path fallback if CONFIG wasn't found
+if(NOT taskflow_FOUND)
+  find_path(TASKFLOW_INCLUDE_DIR taskflow/taskflow.hpp)
+  if(NOT TASKFLOW_INCLUDE_DIR)
+    message(FATAL_ERROR "Taskflow not found. Install via vcpkg (taskflow) or set TASKFLOW_INCLUDE_DIR.")
+  endif()
+  target_include_directories(colony_core PUBLIC "${TASKFLOW_INCLUDE_DIR}")
+endif()
 
 # =========================================================================================
 # Executable: keep the game thin; it links the core lib.
@@ -103,7 +155,7 @@ target_include_directories(ColonyGame PRIVATE
 )
 
 if(MSVC)
-  target_compile_options(ColonyGame PRIVATE /utf-8)
+  target_compile_options(ColonyGame PRIVATE /permissive- /Zc:preprocessor /utf-8)
 endif()
 
 # Link libs (propagate Windows flags/defs from interface target)
