@@ -28,19 +28,25 @@ struct HeightField {
     HeightField() = default;
     HeightField(int W, int H) : w(W), h(H), data(std::size_t(W) * std::size_t(H), 0.f) {}
 
-    inline float& at(int x, int y)             { return data[std::size_t(y) * std::size_t(w) + std::size_t(x)]; }
-    inline float  at(int x, int y) const       { return data[std::size_t(y) * std::size_t(w) + std::size_t(x)]; }
+    inline float&       at(int x, int y)             { return data[std::size_t(y) * std::size_t(w) + std::size_t(x)]; }
+    inline const float& at(int x, int y) const       { return data[std::size_t(y) * std::size_t(w) + std::size_t(x)]; }
 };
 
 // Axis-aligned min/max of a heightfield (useful for auto-scaling, debug)
 struct MinMax {
-    float minv;
-    float maxv;
+    float minv{};
+    float maxv{};
+    constexpr MinMax() = default;
+    constexpr MinMax(float min_val, float max_val) : minv(min_val), maxv(max_val) {}
 };
 
 // Simple normal (X right, Y up, Z forward)
 struct Nrm {
-    float x, y, z;
+    float x{};
+    float y{};
+    float z{};
+    constexpr Nrm() = default;
+    constexpr Nrm(float x_, float y_, float z_) : x(x_), y(y_), z(z_) {}
 };
 
 // ----------------------------- Parameters -----------------------------
