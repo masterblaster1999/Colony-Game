@@ -12,6 +12,7 @@
 //   CG_DW_CURL_BLEND      (default 0)  : 0..1, blend curl-noise into the warp field
 
 #include <cstdint>
+#include <cstddef>
 #include <vector>
 
 namespace cg {
