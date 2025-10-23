@@ -36,6 +36,7 @@
 #include <iomanip>
 #include <chrono>
 #include <cwctype>      // iswspace
+#include <cwchar>       // _wcsicmp/_wcsnicmp
 #include <ctime>        // localtime_s
 #include <cstdio>       // freopen_s
 #include <system_error>
@@ -196,20 +197,20 @@ static void EnableHighDpiAwareness()
 // Optional: disable Windows power throttling (helps laptop performance a bit).
 static void DisablePowerThrottling()
 {
+    HMODULE hKernel = GetModuleHandleW(L"kernel32.dll");
+    if (!hKernel) return;
+
     using PFN_SetProcessInformation = BOOL (WINAPI*)(HANDLE, PROCESS_INFORMATION_CLASS, LPVOID, DWORD);
     auto pSetProcessInformation =
-        reinterpret_cast<PFN_SetProcessInformation>(GetProcAddress(GetModuleFileNameW ? GetModuleHandleW(L"kernel32.dll") : nullptr, "SetProcessInformation"));
-    if (!pSetProcessInformation) {
-        pSetProcessInformation = reinterpret_cast<PFN_SetProcessInformation>(GetProcAddress(GetModuleHandleW(L"kernel32.dll"), "SetProcessInformation"));
-        if (!pSetProcessInformation) return;
-    }
+        reinterpret_cast<PFN_SetProcessInformation>(GetProcAddress(hKernel, "SetProcessInformation"));
+    if (!pSetProcessInformation) return;
 
     PROCESS_POWER_THROTTLING_STATE state{};
     state.Version     = PROCESS_POWER_THROTTLING_CURRENT_VERSION;
     state.ControlMask = PROCESS_POWER_THROTTLING_EXECUTION_SPEED;
     state.StateMask   = 0; // 0 = disable throttling
-    pSetProcessInformation(GetCurrentProcess(), (PROCESS_INFORMATION_CLASS)ProcessPowerThrottling,
-                           &state, sizeof(state));
+    (void)pSetProcessInformation(GetCurrentProcess(), (PROCESS_INFORMATION_CLASS)ProcessPowerThrottling,
+                                 &state, sizeof(state));
 }
 
 // Simple file logger under %LOCALAPPDATA%\ColonyGame\logs (UTF‑16LE with BOM)
