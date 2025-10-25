@@ -129,7 +129,9 @@ using MiniDumpWriteDump_t = BOOL (WINAPI*)(
     const PMINIDUMP_USER_STREAM_INFORMATION,
     const PMINIDUMP_CALLBACK_INFORMATION);
 
-enum class DumpLevel { Tiny=0, Small=1, Balanced=2, Heavy=3, Full=4 };
+// *** PATCH B (enum mismatch fix): unify on the public type ***
+using DumpLevel = CrashDumpWin::DumpLevel;
+
 enum class PostCrash { Return=0, ExitProcess=1, TerminateProcess=2 };
 
 struct Strings {
