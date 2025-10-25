@@ -1,4 +1,6 @@
+#ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
+#endif
 #include "platform/win/Bootstrap.h"
 #include "core/Log.h"
 #include <windows.h>
@@ -49,7 +51,8 @@ std::filesystem::path SetCurrentDirToExe() {
     SetDllDirectoryW(exeDir.c_str()); // Prefer local DLLs
     SetCurrentDirectoryW(exeDir.c_str());
 
-    cg::Log::Info(std::string("Working dir set to: ") + exeDir.string());
+    const std::string exeDirNarrow = exeDir.string();
+    cg::Log::Info("Working dir set to: %s", exeDirNarrow.c_str());
     return exeDir;
 }
 
