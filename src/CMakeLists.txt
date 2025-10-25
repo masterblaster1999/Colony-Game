@@ -89,7 +89,7 @@ if(MSVC)
   target_compile_options(colony_core PRIVATE /permissive- /Zc:preprocessor /utf-8)
 endif()
 
-# Windows system libs needed by path helpers, COM/KnownFolders, etc. -> PUBLIC for tests
+# Windows system libs needed by path helpers, COM/KnownFolders, etc. (PUBLIC for tests)
 if(WIN32)
   target_link_libraries(colony_core PUBLIC shell32 ole32)
 endif()
@@ -163,9 +163,15 @@ target_link_libraries(ColonyGame
   PRIVATE
     colony_core
     colony_build_options
-    $<$<STREQUAL:${FRONTEND},sdl>:$<TARGET_NAME_IF_EXISTS:SDL2::SDL2main>>
-    $<$<STREQUAL:${FRONTEND},sdl>:SDL2::SDL2>
 )
+
+# Clean, readable SDL link gating (Windows-only SDL frontend)
+if(FRONTEND STREQUAL "sdl")
+  if(TARGET SDL2::SDL2main)
+    target_link_libraries(ColonyGame PRIVATE SDL2::SDL2main)
+  endif()
+  target_link_libraries(ColonyGame PRIVATE SDL2::SDL2)
+endif()
 
 # Add Windows platform resources and helpers (manifest, version info, crash handler, GPU preference)
 if(WIN32)
@@ -199,18 +205,21 @@ if(CMAKE_CONFIGURATION_TYPES)
   endforeach()
 endif()
 
+# Reusable runtime dir (works for single- and multi-config generators)
+set(_RUNTIME_DIR "$<TARGET_FILE_DIR:ColonyGame>")
+
 # ---------------------------------------------------------------------------
 # POST-BUILD: stage runtime assets next to the ColonyGame.exe
 # ---------------------------------------------------------------------------
 add_custom_command(TARGET ColonyGame POST_BUILD
   COMMAND ${CMAKE_COMMAND} -E make_directory
-          "$<TARGET_FILE_DIR:ColonyGame>/assets"
+          "${_RUNTIME_DIR}/assets"
   COMMAND ${CMAKE_COMMAND} -E make_directory
-          "$<TARGET_FILE_DIR:ColonyGame>/res"
+          "${_RUNTIME_DIR}/res"
   COMMAND ${CMAKE_COMMAND} -E copy_directory
-          "${CMAKE_SOURCE_DIR}/assets" "$<TARGET_FILE_DIR:ColonyGame>/assets"
+          "${CMAKE_SOURCE_DIR}/assets" "${_RUNTIME_DIR}/assets"
   COMMAND ${CMAKE_COMMAND} -E copy_directory
-          "${CMAKE_SOURCE_DIR}/res"    "$<TARGET_FILE_DIR:ColonyGame>/res"
+          "${CMAKE_SOURCE_DIR}/res"    "${_RUNTIME_DIR}/res"
   VERBATIM
 )
 
@@ -321,10 +330,10 @@ else()
     endif()
 
     add_custom_command(TARGET ColonyGame POST_BUILD
-      COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:ColonyGame>/res/shaders"
+      COMMAND ${CMAKE_COMMAND} -E make_directory "${_RUNTIME_DIR}/res/shaders"
       COMMAND ${CMAKE_COMMAND} -E copy_directory
               "${CMAKE_BINARY_DIR}/shaders/$<CONFIG>"
-              "$<TARGET_FILE_DIR:ColonyGame>/res/shaders"
+              "${_RUNTIME_DIR}/res/shaders"
       VERBATIM
     )
   elseif(_COLONY_MANIFEST)
@@ -356,10 +365,10 @@ target_compile_definitions(ColonyGame PRIVATE
 
 if(EXISTS "${CMAKE_SOURCE_DIR}/renderer/Shaders/include/common.hlsli")
   add_custom_command(TARGET ColonyGame POST_BUILD
-    COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:ColonyGame>/res/shaders/include"
+    COMMAND ${CMAKE_COMMAND} -E make_directory "${_RUNTIME_DIR}/res/shaders/include"
     COMMAND ${CMAKE_COMMAND} -E copy_if_different
             "${CMAKE_SOURCE_DIR}/renderer/Shaders/include/common.hlsli"
-            "$<TARGET_FILE_DIR:ColonyGame>/res/shaders/include/common.hlsli"
+            "${_RUNTIME_DIR}/res/shaders/include/common.hlsli"
     VERBATIM
   )
 endif()
