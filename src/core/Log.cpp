@@ -3,6 +3,8 @@
 #include <cstdio>
 #include <mutex>
 #include <cstdarg>
+#include <string>
+#include <filesystem>
 
 namespace core {
 static std::mutex g_mutex;
@@ -24,7 +26,10 @@ void LogInit(const std::filesystem::path& logDir) {
     std::filesystem::create_directories(logDir, ec);
     const auto file = logDir / "game.log";
     _wfopen_s(&g_file, file.wstring().c_str(), L"w, ccs=UTF-8");
-    LOG_INFO("Logger initialized at %ls", file.c_str());
+
+    // Convert filesystem path to a narrow string for the narrow logger.
+    const std::string fileN = file.string();
+    LOG_INFO("Logger initialized at %s", fileN.c_str());
 }
 
 void LogShutdown() {
