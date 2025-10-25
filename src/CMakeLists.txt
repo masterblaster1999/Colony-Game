@@ -37,15 +37,13 @@ list(FILTER SRC_ALL EXCLUDE REGEX ".*/src/render/.*\\.(c|cc|cxx|cpp)$")
 list(FILTER SRC_ALL EXCLUDE REGEX ".*/src/terrain/.*\\.(c|cc|cxx|cpp)$")
 list(FILTER SRC_ALL EXCLUDE REGEX ".*/src/core/.*\\.(c|cc|cxx|cpp)$")
 
-# --- BEGIN: Enable crash-dump TU with per-file /EHa (fixes MSVC C2712) ---
+# --- Crash-dump TU: Option 2 (no /EHa) ---
+# We keep the normal /EHsc model; __try blocks are isolated into tiny leaf helpers in code.
+# Still exclude any stub implementation from the build on Windows.
 if(EXISTS "${CMAKE_SOURCE_DIR}/platform/win/CrashDumpWin.cpp")
   list(FILTER SRC_ALL EXCLUDE REGEX ".*/platform/win/CrashDumpStub\\.cpp$")
-  if(MSVC)
-    set_source_files_properties("${CMAKE_SOURCE_DIR}/platform/win/CrashDumpWin.cpp"
-      PROPERTIES COMPILE_OPTIONS "/EHa")
-  endif()
+  # NOTE: Intentionally no per-file /EHa here (Option 2).
 endif()
-# --- END: Enable crash-dump TU with per-file /EHa ---
 
 # --- Frontend gating: native Win32 (default) or SDL ---
 if(FRONTEND STREQUAL "sdl")
