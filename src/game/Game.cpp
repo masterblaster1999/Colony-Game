@@ -1,4 +1,4 @@
-// Slimmed "loop + wiring" implementation for Windows (SDL2 front-end).
+// Windows/D3D path "loop + wiring" implementation (no SDL).
 // The simulation (world/economy/agents) and UI (camera/HUD) live in sim/* and ui/*.
 //
 // Main loop = fixed timestep with interpolation (see Gaffer on Games).
@@ -8,158 +8,162 @@
 
 #include "game/Game.h"
 
+// --- Simulation & UI state ---------------------------------------------------
 #include "sim/World.h"
 #include "sim/Economy.h"
 #include "sim/Colonist.h"
 #include "sim/Hostile.h"
-
 #include "ui/Camera.h"
 #include "ui/Hud.h"
 
-#include <SDL.h>
+// --- Windows message pump (no SDL) ------------------------------------------
+#ifndef WIN32_LEAN_AND_MEAN
+#  define WIN32_LEAN_AND_MEAN
+#endif
+#ifndef NOMINMAX
+#  define NOMINMAX
+#endif
+#include <Windows.h>
+
+// --- Standard library --------------------------------------------------------
 #include <chrono>
 #include <cstdint>
-#include <vector>
 #include <algorithm>
 
+// Anonymous namespace for loop constants
 namespace {
 
 // Fixed simulation rate
-constexpr double kSimHz                 = 60.0;
-constexpr double kDtSeconds             = 1.0 / kSimHz;
-constexpr int    kMaxStepsPerFrame      = 8;    // clamp catch-up
-constexpr Uint8  kClearR = 0, kClearG = 0, kClearB = 0, kClearA = 255;
+constexpr double kSimHz            = 60.0;
+constexpr double kDtSeconds        = 1.0 / kSimHz;
+constexpr int    kMaxStepsPerFrame = 8;   // clamp catch-up
 
-// Simple RAII for SDL renderer state if you ever add render targets later
-struct FrameGuard {
-    SDL_Renderer* r{};
-    explicit FrameGuard(SDL_Renderer* ren) : r(ren) {}
-    ~FrameGuard() = default;
-};
+using clock_t    = std::chrono::steady_clock;
+using seconds_d  = std::chrono::duration<double>;
 
-static inline void set_initial_sdl_hints()
-{
-    // Nice default scaling and click-through when the window regains focus.
-    SDL_SetHint(SDL_HINT_RENDER_SCALE_QUALITY, "1");
-    SDL_SetHint(SDL_HINT_MOUSE_FOCUS_CLICKTHROUGH, "1");
+// Basic keyboard helpers (minimal; expand as needed)
+static inline bool is_keydown(const MSG& msg, WPARAM vk) {
+    return msg.message == WM_KEYDOWN && msg.wParam == vk;
 }
 
 } // namespace
 
 // ---- Game wiring (constructor/destructor) -----------------------------------
 
-Game::Game(SDL_Window* win, SDL_Renderer* ren)
-    : window_(win),
-      renderer_(ren),
-      paused_(false),
-      running_(false),
-      lastFrameSec_(0.0)
-{
-    set_initial_sdl_hints();
-
-    // Initialize simulation state
-    // World/colony sizes, tiles, etc. should be defined in your sim/World.h
-    const uint32_t seed = static_cast<uint32_t>(
-        std::chrono::high_resolution_clock::now().time_since_epoch().count()
-    );
-    worldGenerate(world_, seed);
-    colonyInit(colony_);
-
-    // Optional: if your Camera has an init helper, feed it the viewport size.
-    // We query the renderer so this file doesn’t need to know window opts.
-    int vpW = 0, vpH = 0;
-    if (renderer_) {
-        SDL_GetRendererOutputSize(renderer_, &vpW, &vpH);
-    }
-    // If you exposed an initializer in ui/Camera.h, call it here:
-    // cameraInit(camera_, vpW, vpH, world_.width, world_.height);
-}
-
+Game::Game() = default;
 Game::~Game() = default;
 
 // ---- Main loop --------------------------------------------------------------
-
+//
+// NOTE: This function intentionally avoids storing/using SDL members and does
+// not own D3D objects. Rendering is routed via your D3D render path (e.g. a
+// renderer system) that should already be integrated elsewhere.
+//
+// If your Game.h declares a different return type for run(), adjust just
+// the signature below to match. Everything else is header-agnostic.
 int Game::run()
 {
-    using clock      = std::chrono::steady_clock;
-    using seconds_d  = std::chrono::duration<double>;
+    // --- Runtime flags (kept local to avoid mismatching private members) -----
+    bool   running       = true;
+    bool   paused        = false;
+    double lastFrameSec  = 0.0;
 
-    running_ = true;
+    // --- Simulation state (lifetime = whole run) -----------------------------
+    // These types/functions come from your existing sim/ui modules.
+    // If you split them differently, just keep the init/update order.
+    World     world{};
+    Colony    colony{};
+    Colonists colonists{};
+    Hostiles  hostiles{};
+    Camera    camera{};
 
+    // Initialize simulation state
+    const uint32_t seed = static_cast<uint32_t>(
+        std::chrono::high_resolution_clock::now().time_since_epoch().count()
+    );
+    worldGenerate(world, seed);
+    colonyInit(colony);
+    // If you have camera/world viewport init helpers, call them here.
+
+    // --- Fixed-step loop setup -----------------------------------------------
     const seconds_d dt{kDtSeconds};
     seconds_d accumulator{0.0};
-    auto t0 = clock::now();
+    auto t0 = clock_t::now();
 
-    while (running_) {
+    // --- Win32 message struct (non-blocking) ---------------------------------
+    MSG msg{};
+    while (running) {
         // --- frame timing
-        const auto t1 = clock::now();
+        const auto t1    = clock_t::now();
         const auto frame = t1 - t0;
-        t0 = t1;
-        lastFrameSec_ = std::chrono::duration<double>(frame).count();
-        accumulator  += std::chrono::duration_cast<seconds_d>(frame);
+        t0               = t1;
+        lastFrameSec     = std::chrono::duration<double>(frame).count();
+        accumulator     += std::chrono::duration_cast<seconds_d>(frame);
 
-        // --- events / input (keep it here so sim sees latest decisions)
-        SDL_Event ev;
-        while (SDL_PollEvent(&ev)) {
-            switch (ev.type) {
-            case SDL_QUIT:
-                running_ = false;
+        // --- process OS messages (do not block the loop)
+        //     This is the canonical non-blocking pump for realtime apps.
+        //     Use GetMessage if you prefer to block when idle.
+        //     Docs: Using Messages and Message Queues (learn.microsoft.com)
+        while (PeekMessageW(&msg, nullptr, 0, 0, PM_REMOVE)) {
+            if (msg.message == WM_QUIT) {
+                running = false;
                 break;
-            case SDL_KEYDOWN:
-                if (ev.key.keysym.scancode == SDL_SCANCODE_ESCAPE) {
-                    running_ = false;
-                } else if (ev.key.keysym.scancode == SDL_SCANCODE_P) {
-                    paused_ = !paused_;
-                }
-                break;
-            case SDL_WINDOWEVENT:
-                if (ev.window.event == SDL_WINDOWEVENT_FOCUS_LOST) {
-                    // Pause simulation on focus loss; keep rendering.
-                    paused_ = true;
-                }
-                break;
-            default: break;
             }
+
+            // Minimal hotkeys (Esc: quit, P: pause toggle).
+            if (is_keydown(msg, VK_ESCAPE)) {
+                running = false;
+            } else if (is_keydown(msg, 'P')) {
+                paused = !paused;
+            } else if (msg.message == WM_SETFOCUS) {
+                // Optional: unpause on focus.
+                // paused = false;
+            } else if (msg.message == WM_KILLFOCUS) {
+                // Pause simulation when focus is lost.
+                paused = true;
+            }
+
+            TranslateMessage(&msg);
+            DispatchMessageW(&msg);
         }
 
         // --- fixed-step simulation
         int steps = 0;
-        if (!paused_) {
+        if (!paused) {
             while (accumulator >= dt) {
                 // Order: colony systems -> agents -> hostiles -> camera
-                colonyUpdate(colony_, kDtSeconds);
-                colonistsUpdate(colonists_, world_, colony_, kDtSeconds);
-                hostilesUpdate(hostiles_, world_, colony_, kDtSeconds);
-                cameraUpdate(camera_, kDtSeconds);
+                colonyUpdate(colony, kDtSeconds);
+                colonistsUpdate(colonists, world, colony, kDtSeconds);
+                hostilesUpdate(hostiles, world, colony, kDtSeconds);
+                cameraUpdate(camera, kDtSeconds);
 
                 accumulator -= dt;
                 if (++steps >= kMaxStepsPerFrame) {
-                    // Drop excess time if the machine is struggling.
+                    // Drop excess time if machine is struggling (spiral prevention).
                     accumulator = seconds_d::zero();
                     break;
                 }
             }
         } else {
-            // If paused, don't accumulate unbounded time debt.
+            // If paused, do not accumulate unbounded time debt.
             accumulator = seconds_d::zero();
         }
 
-        // Interpolation factor for rendering between fixed ticks, if desired.
-        const double alpha = (dt.count() > 0.0) ? (accumulator.count() / dt.count()) : 0.0;
+        // Interpolation factor (for render interpolation if desired).
+        const double alpha = (dt.count() > 0.0)
+                           ? (accumulator.count() / dt.count())
+                           : 0.0;
         (void)alpha; // pass to your renderer if/when you add visual interpolation
 
-        // --- render frame
-        if (renderer_) {
-            FrameGuard guard(renderer_);
-            SDL_SetRenderDrawColor(renderer_, kClearR, kClearG, kClearB, kClearA);
-            SDL_RenderClear(renderer_);
-
-            // You can move world rendering into a ui::Renderer later.
-            // HUD should stay read-only: it inspects World/Colony/Camera only.
-            hudRender(renderer_, world_, colony_, camera_);
-
-            SDL_RenderPresent(renderer_);
-        }
+        // --- render frame via your D3D path
+        // Typical place to invoke your render systems (kept API-neutral here).
+        // Examples:
+        //   RenderCtx rc = renderer.begin_frame();
+        //   worldRender(rc, world, camera, alpha);
+        //   hudRender(rc, world, colony, camera);
+        //   renderer.end_frame();
+        //
+        // TODO: Call your D3D render system here.
     }
 
     return 0;
