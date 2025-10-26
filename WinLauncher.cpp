@@ -28,6 +28,7 @@
 #include <windows.h>
 #include <shellapi.h>   // CommandLineToArgvW
 #include <shlobj.h>     // SHGetKnownFolderPath (used by path utils / logs)
+#include <shobjidl_core.h> // SetCurrentProcessExplicitAppUserModelID
 #include <string>
 #include <vector>
 #include <filesystem>
