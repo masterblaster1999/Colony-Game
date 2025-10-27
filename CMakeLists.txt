@@ -46,6 +46,9 @@ set(COLONY_PCH_HEADER "src/pch.hpp" CACHE STRING "Path to the common precompiled
 option(COLONY_ENABLE_TIDY "Run clang-tidy static analysis during build (may slow builds)" OFF)
 option(COLONY_ENABLE_ASAN "Enable AddressSanitizer for supported compilers/configs" OFF)
 
+# Compile CrashDump TU with /EHa while keeping /EHsc globally (avoids C2712 for __try)
+option(COLONY_SEH_CRASHDUMP "Compile CrashDumpWin.cpp with /EHa (Structured Exceptions) while keeping /EHsc globally" ON)
+
 # clang-tidy (global, applies to targets created after this point)
 if(COLONY_ENABLE_TIDY)
   find_program(CLANG_TIDY_EXE NAMES clang-tidy clang-tidy.exe)
@@ -94,7 +97,7 @@ if(MSVC)
     /permissive-        # conforming mode
     /Zc:__cplusplus     # proper __cplusplus
     /Zc:preprocessor    # modern preprocessor
-    /EHsc               # C++ exceptions (synchronous)
+    /EHsc               # C++ exceptions (synchronous) - centralized default
     /utf-8              # UTF-8 source and execution char set
     /W4                 # strong warnings
     /MP                 # parallel compilation
@@ -143,6 +146,23 @@ if(TARGET colony_core)
   if(TARGET Tracy::TracyClient)
     target_link_libraries(colony_core PRIVATE Tracy::TracyClient)
     target_compile_definitions(colony_core PRIVATE TRACY_ENABLE=1)
+  endif()
+
+  # --------------------------------------------------------------------------
+  # Per-TU exception model override for CrashDump on MSVC:
+  # Keep /EHsc globally, but for CrashDumpWin.cpp use /EHa to permit __try/__except
+  # without triggering C2712 (object unwinding). This searches the target's
+  # sources and applies the flag only to that TU if present.
+  # --------------------------------------------------------------------------
+  if(MSVC AND COLONY_SEH_CRASHDUMP)
+    get_target_property(_core_srcs colony_core SOURCES)
+    if(_core_srcs)
+      foreach(_src IN LISTS _core_srcs)
+        if(_src MATCHES "CrashDumpWin\\.cpp$")
+          set_source_files_properties(${_src} PROPERTIES COMPILE_OPTIONS "/EHa")
+        endif()
+      endforeach()
+    endif()
   endif()
 endif()
 
