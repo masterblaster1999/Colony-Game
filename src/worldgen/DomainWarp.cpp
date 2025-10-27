@@ -543,7 +543,6 @@ HeightField generateDomainWarpHeightTiled(int W, int H, const DomainWarpParams& 
 }
 
 // Build a slope map (in radians) from a heightfield using central differences.
-struct Nrm { float x,y,z; }; // forward for normal map below
 std::vector<float> computeSlopeMap(const HeightField& Hf, float xyScale, float zScale)
 {
     const int W = Hf.w, H = Hf.h;
@@ -595,7 +594,6 @@ std::vector<Nrm> computeNormalMap(const HeightField& Hf, float xyScale, float zS
 }
 
 // Convenience: scan min/max of a heightfield.
-struct MinMax { float minv, maxv; };
 MinMax scanMinMax(const HeightField& Hf)
 {
     MinMax mm{ std::numeric_limits<float>::infinity(), -std::numeric_limits<float>::infinity() };
