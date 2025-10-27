@@ -12,14 +12,9 @@ endif()
 
 # ---- Third-party via package manager (vcpkg) ----
 # Enable these only if you actually use the subsystems (guards keep CI configurable)
-if(ENABLE_IMGUI)
-  find_package(imgui CONFIG REQUIRED)        # provides imgui::imgui and (via features) Win32/DX11 backends
-endif()
+# NOTE (Patch A): imgui/tracy discovery is centralized at the top-level; don't re-find here.
 # Taskflow is header-only; some vcpkg ports have CONFIG, others don't. Try CONFIG first.
 find_package(taskflow CONFIG QUIET)
-if(ENABLE_TRACY)
-  find_package(tracy CONFIG REQUIRED)        # provides Tracy::TracyClient on vcpkg
-endif()
 
 # -------- Discover sources (exclude vendored imgui if present) --------
 file(GLOB_RECURSE SRC_ALL
@@ -60,18 +55,34 @@ endif()
 # =========================================================================================
 add_library(colony_core STATIC ${SRC_ALL})
 
-target_compile_features(colony_core PUBLIC cxx_std_20)
+# ---- (Patch A) Use C++23 when available; fall back to C++20 for older CMake toolchains ----
+if(CMAKE_VERSION VERSION_LESS 3.21)
+  target_compile_features(colony_core PUBLIC cxx_std_20)
+else()
+  target_compile_features(colony_core PUBLIC cxx_std_23)
+endif()
+
 target_include_directories(colony_core
   PUBLIC
     "${CMAKE_SOURCE_DIR}/src"
-    "${CMAKE_SOURCE_DIR}/include"    # ADDED: expose public headers (e.g., include/rendering/...)
-    "${CMAKE_SOURCE_DIR}"            # ADDED: allow includes like "platform/win/WinApp.h"
+    "${CMAKE_SOURCE_DIR}/include"    # expose public headers (e.g., include/rendering/…)
+    "${CMAKE_SOURCE_DIR}"            # allow includes like "platform/win/WinApp.h"
     "${CMAKE_BINARY_DIR}/generated"
 )
 
-# Optional PCH for faster compiles
-if(COLONY_USE_PCH AND EXISTS "${CMAKE_SOURCE_DIR}/src/pch.h")
-  target_precompile_headers(colony_core PRIVATE "${CMAKE_SOURCE_DIR}/src/pch.h")
+# ---- (Patch A) Optional PCH for faster compiles; unified through COLONY_PCH_HEADER ----
+# Prefer user-configurable header; fall back to common names.
+set(_PCH_HEADER "")
+if(DEFINED COLONY_PCH_HEADER AND EXISTS "${CMAKE_SOURCE_DIR}/${COLONY_PCH_HEADER}")
+  set(_PCH_HEADER "${CMAKE_SOURCE_DIR}/${COLONY_PCH_HEADER}")
+elseif(EXISTS "${CMAKE_SOURCE_DIR}/src/pch.h")
+  set(_PCH_HEADER "${CMAKE_SOURCE_DIR}/src/pch.h")
+elseif(EXISTS "${CMAKE_SOURCE_DIR}/src/pch.hpp")
+  set(_PCH_HEADER "${CMAKE_SOURCE_DIR}/src/pch.hpp")
+endif()
+
+if(COLONY_USE_PCH AND _PCH_HEADER)
+  target_precompile_headers(colony_core PRIVATE "${_PCH_HEADER}")
 endif()
 
 # Propagate feature toggles to consumers (exe + tests)
@@ -92,9 +103,8 @@ if(WIN32)
   target_link_libraries(colony_core PUBLIC shell32 ole32)
 endif()
 
-# -------------------- NEW SECTION: Link all third-party libraries --------------------
-# Ensure core library has all vcpkg-managed dependencies and build options linked in.
-# This ensures fmt, spdlog, EnTT, nlohmann_json, and DirectX headers are visible for PCH.
+# -------------------- Link third-party aggregate + build options --------------------
+# Expect ${COLONY_THIRDPARTY_LIBS} to be assembled at top-level.
 target_link_libraries(colony_core
   PUBLIC
     ${COLONY_THIRDPARTY_LIBS}
@@ -115,13 +125,9 @@ if(ENABLE_IMGUI)
   endif()
 endif()
 
-# Tracy client library, only if enabled
-if(ENABLE_TRACY)
-  if(TARGET Tracy::TracyClient)
-    target_link_libraries(colony_core PRIVATE Tracy::TracyClient)
-  else()
-    message(FATAL_ERROR "Tracy enabled but CMake target Tracy::TracyClient not found. Install tracy via vcpkg or add TracyClient.cpp manually.")
-  endif()
+# Tracy client library, only if enabled and already provided by top-level
+if(ENABLE_TRACY AND TARGET Tracy::TracyClient)
+  target_link_libraries(colony_core PRIVATE Tracy::TracyClient)
 endif()
 
 # Taskflow header-only include path fallback if CONFIG wasn't found
@@ -144,11 +150,17 @@ if(WIN32 AND NOT SHOW_CONSOLE)
   set_target_properties(ColonyGame PROPERTIES WIN32_EXECUTABLE YES)
 endif()
 
-target_compile_features(ColonyGame PRIVATE cxx_std_20)
+# ---- (Patch A) Use C++23 when available; fall back to C++20 ----
+if(CMAKE_VERSION VERSION_LESS 3.21)
+  target_compile_features(ColonyGame PRIVATE cxx_std_20)
+else()
+  target_compile_features(ColonyGame PRIVATE cxx_std_23)
+endif()
+
 target_include_directories(ColonyGame PRIVATE
   "${CMAKE_SOURCE_DIR}/src"
-  "${CMAKE_SOURCE_DIR}/include"    # ADDED
-  "${CMAKE_SOURCE_DIR}"            # ADDED
+  "${CMAKE_SOURCE_DIR}/include"
+  "${CMAKE_SOURCE_DIR}"
   "${CMAKE_BINARY_DIR}/generated"
 )
 
@@ -344,9 +356,9 @@ else()
   endif()
 endif()
 
-# Precompiled header for the EXE
-if(COLONY_USE_PCH AND EXISTS "${CMAKE_SOURCE_DIR}/src/pch.h")
-  target_precompile_headers(ColonyGame PRIVATE "${CMAKE_SOURCE_DIR}/src/pch.h")
+# ---- (Patch A) Precompiled header for the EXE (same unified header as core) ----
+if(COLONY_USE_PCH AND _PCH_HEADER)
+  target_precompile_headers(ColonyGame PRIVATE "${_PCH_HEADER}")
 endif()
 
 # Unity builds
