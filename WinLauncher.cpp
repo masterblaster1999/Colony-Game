@@ -457,20 +457,6 @@ static bool CheckEssentialFiles(const fs::path& root, std::wstring& errorOut, st
     return ok;
 }
 
-// Optional: allow forcing embedded safe mode via command line (if compiled with COLONY_EMBED_GAME_LOOP).
-static bool CommandLineHasFlag(const wchar_t* flag)
-{
-    int argc = 0;
-    LPWSTR* argv = CommandLineToArgvW(GetCommandLineW(), &argc);
-    bool found = false;
-    for (int i = 1; i < argc && !found; ++i)
-    {
-        if (_wcsicmp(argv[i], flag) == 0) found = true;
-    }
-    if (argv) LocalFree(argv);
-    return found;
-}
-
 // (patch) Optional env override for exe name: COLONY_GAME_EXE
 static std::optional<fs::path> EnvExeOverride()
 {
@@ -536,8 +522,8 @@ int APIENTRY wWinMain(HINSTANCE, HINSTANCE, PWSTR, int)
     }
 
 #ifdef COLONY_EMBED_GAME_LOOP
-    // Optional switch to force embedded safe mode.
-    if (CommandLineHasFlag(L"--safe") || CommandLineHasFlag(L"/safe"))
+    // Optional switch to force embedded safe mode (use --safe or /safe).
+    if (HasFlag(L"safe"))
     {
         WriteLog(log, L"[Launcher] --safe specified: running embedded safe mode.");
         return RunEmbeddedGameLoop(log);
@@ -592,7 +578,14 @@ int APIENTRY wWinMain(HINSTANCE, HINSTANCE, PWSTR, int)
 
     // Prepare to spawn the game process with inherited environment.
     std::wstring args = BuildChildArguments();
-    std::wstring cmd  = args; // only arguments; lpApplicationName specifies the EXE
+
+    // IMPROVEMENT: Include quoted EXE as argv[0] in the child command line to satisfy
+    // libraries that read argv[0]. We still set lpApplicationName explicitly.
+    std::wstring cmd = QuoteArgWindows(gameExe.wstring());
+    if (!args.empty()) {
+        cmd.push_back(L' ');
+        cmd.append(args);
+    }
 
     STARTUPINFOW si{};
     si.cb = sizeof(si);
@@ -603,11 +596,11 @@ int APIENTRY wWinMain(HINSTANCE, HINSTANCE, PWSTR, int)
     std::vector<wchar_t> cmdMutable(cmd.begin(), cmd.end());
     cmdMutable.push_back(L'\0');
 
-    WriteLog(log, L"[Launcher] Spawning: " + gameExe.wstring() + (cmd.empty() ? L"" : (L" ") ) + cmd);
+    WriteLog(log, L"[Launcher] Spawning: " + gameExe.wstring() + (args.empty() ? L"" : (L" ") ) + args);
 
     BOOL ok = CreateProcessW(
         gameExe.c_str(),          // lpApplicationName
-        cmdMutable.data(),        // lpCommandLine (arguments only; mutable!)
+        cmdMutable.data(),        // lpCommandLine (includes quoted EXE + arguments; mutable)
         nullptr, nullptr, FALSE,
         creationFlags,
         nullptr,                  // inherit our environment
