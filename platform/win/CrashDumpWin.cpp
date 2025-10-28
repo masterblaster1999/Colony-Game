@@ -1,4 +1,4 @@
-// CrashDumpWin.cpp
+// CrashDumpWin.cpp 
 //
 // Robust Windows minidump facility with dump levels, retention, throttling,
 // CRT/signal integration, user streams, breadcrumbs, crash keys, optional WER helpers,
@@ -90,7 +90,9 @@ void Shutdown() {}
 #ifndef NOMINMAX
   #define NOMINMAX
 #endif
-#define WIN32_LEAN_AND_MEAN
+#ifndef WIN32_LEAN_AND_MEAN
+  #define WIN32_LEAN_AND_MEAN
+#endif
 
 #include <windows.h>
 #include <dbghelp.h>     // types; function is loaded dynamically
@@ -316,6 +318,30 @@ struct Globals {
     size_t logMaxBytes = 0;
 };
 static Globals G;
+
+// ---------------------- SEH wrappers (fix C2712) ---------------------
+// Place all __try/__except in functions that have *no* C++ objects with dtors.
+static inline void SehInvokeVoid(void (*fn)()) {
+    if (!fn) return;
+    __try { fn(); } __except(EXCEPTION_EXECUTE_HANDLER) {}
+}
+static inline void SehInvokePostDump(void (*fn)(const wchar_t*, bool), const wchar_t* path, bool ok) {
+    if (!fn) return;
+    __try { fn(path, ok); } __except(EXCEPTION_EXECUTE_HANDLER) {}
+}
+using LogTailCallback_t = size_t (*)(void*, char*, size_t);
+static inline size_t SehInvokeLogCb(LogTailCallback_t cb, void* user, char* dst, size_t cap) {
+    if (!cb) return 0;
+    size_t wrote = 0;
+    __try { wrote = cb(user, dst, cap); } __except(EXCEPTION_EXECUTE_HANDLER) { wrote = 0; }
+    return wrote;
+}
+static inline LONG SehInvokePrevUnhandled(LPTOP_LEVEL_EXCEPTION_FILTER prev, EXCEPTION_POINTERS* ep) {
+    if (!prev) return EXCEPTION_EXECUTE_HANDLER;
+    LONG ret = EXCEPTION_EXECUTE_HANDLER;
+    __try { ret = prev(ep); } __except(EXCEPTION_EXECUTE_HANDLER) { ret = EXCEPTION_EXECUTE_HANDLER; }
+    return ret;
+}
 
 // SRW lock RAII
 struct SRWExclusive {
@@ -587,8 +613,8 @@ static void BuildUserStreams(EXCEPTION_POINTERS* ep, const wchar_t* reason, User
     if (G.logCb && G.logMaxBytes > 0) {
         u.logTail.resize(G.logMaxBytes);
         size_t wrote = 0;
-        __try { wrote = G.logCb(G.logUser, u.logTail.data(), u.logTail.size()); }
-        __except(EXCEPTION_EXECUTE_HANDLER) { wrote = 0; }
+        // ---- SEH moved to no-unwind helper (fix C2712)
+        wrote = SehInvokeLogCb(G.logCb, G.logUser, u.logTail.data(), u.logTail.size());
         if (wrote > u.logTail.size()) wrote = u.logTail.size();
         u.logTail.resize(wrote);
         if (!u.logTail.empty()) {
@@ -630,9 +656,8 @@ static bool WriteDumpCore(EXCEPTION_POINTERS* ep, const wchar_t* reason, std::ws
     if (G.skipIfDebuggerPresent && IsDebuggerPresent()) return false;
     if (ShouldThrottle()) return false;
 
-    if (G.preDumpCb) {
-        __try { G.preDumpCb(); } __except(EXCEPTION_EXECUTE_HANDLER) {}
-    }
+    // ---- SEH moved to no-unwind helper (fix C2712)
+    SehInvokeVoid(G.preDumpCb);
 
     std::wstring path = ComposeDumpPath(reason);
     HANDLE h = CreateFileW(path.c_str(), GENERIC_WRITE, FILE_SHARE_READ, nullptr,
@@ -663,15 +688,13 @@ static bool WriteDumpCore(EXCEPTION_POINTERS* ep, const wchar_t* reason, std::ws
     if (ok) {
         DeleteOldDumpsIfNeeded();
         if (outPath) *outPath = path;
-        if (G.postDumpCb) {
-            __try { G.postDumpCb(path.c_str(), true); } __except(EXCEPTION_EXECUTE_HANDLER) {}
-        }
+        // ---- SEH moved to no-unwind helper (fix C2712)
+        SehInvokePostDump(G.postDumpCb, path.c_str(), true);
         DebugOut(L"[CrashDump] Dump written: %s\n", path.c_str());
         return true;
     } else {
-        if (G.postDumpCb) {
-            __try { G.postDumpCb(path.c_str(), false); } __except(EXCEPTION_EXECUTE_HANDLER) {}
-        }
+        // ---- SEH moved to no-unwind helper (fix C2712)
+        SehInvokePostDump(G.postDumpCb, path.c_str(), false);
         DebugOut(L"[CrashDump] MiniDumpWriteDump failed (GLE=%lu)\n", GetLastError());
         return false;
     }
@@ -711,11 +734,8 @@ static LONG WINAPI Unhandled(EXCEPTION_POINTERS* ep) {
             case PostCrash::TerminateProcess: TerminateProcess(GetCurrentProcess(), ep && ep->ExceptionRecord ? ep->ExceptionRecord->ExceptionCode : 1); break;
         }
     }
-    LONG ret = EXCEPTION_EXECUTE_HANDLER;
-    if (G.prevUnhandled) {
-        __try { ret = G.prevUnhandled(ep); } __except(EXCEPTION_EXECUTE_HANDLER) {}
-    }
-    return ret;
+    // ---- SEH moved to no-unwind helper (fix C2712)
+    return SehInvokePrevUnhandled(G.prevUnhandled, ep);
 }
 
 // --------------------------- Sidecar .txt (optional) --------------------------
