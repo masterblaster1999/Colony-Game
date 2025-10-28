@@ -38,8 +38,8 @@ constexpr double kSimHz            = 60.0;
 constexpr double kDtSeconds        = 1.0 / kSimHz;
 constexpr int    kMaxStepsPerFrame = 8;   // clamp catch-up
 
-using clock_t    = std::chrono::steady_clock;
-using seconds_d  = std::chrono::duration<double>;
+using Clock     = std::chrono::steady_clock;   // avoid CRT clock_t collision
+using seconds_d = std::chrono::duration<double>;
 
 // Basic keyboard helpers (minimal; expand as needed)
 static inline bool is_keydown(const MSG& msg, WPARAM vk) {
@@ -88,13 +88,13 @@ int Game::run()
     // --- Fixed-step loop setup -----------------------------------------------
     const seconds_d dt{kDtSeconds};
     seconds_d accumulator{0.0};
-    auto t0 = clock_t::now();
+    auto t0 = Clock::now();
 
     // --- Win32 message struct (non-blocking) ---------------------------------
     MSG msg{};
     while (running) {
         // --- frame timing
-        const auto t1    = clock_t::now();
+        const auto t1    = Clock::now();
         const auto frame = t1 - t0;
         t0               = t1;
         lastFrameSec     = std::chrono::duration<double>(frame).count();
