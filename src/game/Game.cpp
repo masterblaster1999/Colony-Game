@@ -8,6 +8,11 @@
 
 #include "game/Game.h"
 
+// --- Game systems (new wiring) -----------------------------------------------
+#include "game/GameSystems_Simulation.h"
+#include "game/GameSystems_Input.h"
+#include "game/GameSystems_Render.h"
+
 // --- Simulation & UI state ---------------------------------------------------
 #include "sim/World.h"
 #include "sim/Economy.h"
@@ -77,13 +82,11 @@ int Game::run()
     Hostiles  hostiles{};
     Camera    camera{};
 
-    // Initialize simulation state
+    // Initialize simulation state via the new GameSystems_* layer
     const uint32_t seed = static_cast<uint32_t>(
         std::chrono::high_resolution_clock::now().time_since_epoch().count()
     );
-    worldGenerate(world, seed);
-    colonyInit(colony);
-    // If you have camera/world viewport init helpers, call them here.
+    GameSystems::Simulation::Init(world, colony, colonists, hostiles, seed);
 
     // --- Fixed-step loop setup -----------------------------------------------
     const seconds_d dt{kDtSeconds};
@@ -101,9 +104,6 @@ int Game::run()
         accumulator     += std::chrono::duration_cast<seconds_d>(frame);
 
         // --- process OS messages (do not block the loop)
-        //     This is the canonical non-blocking pump for realtime apps.
-        //     Use GetMessage if you prefer to block when idle.
-        //     Docs: Using Messages and Message Queues (learn.microsoft.com)
         while (PeekMessageW(&msg, nullptr, 0, 0, PM_REMOVE)) {
             if (msg.message == WM_QUIT) {
                 running = false;
@@ -131,11 +131,9 @@ int Game::run()
         int steps = 0;
         if (!paused) {
             while (accumulator >= dt) {
-                // Order: colony systems -> agents -> hostiles -> camera
-                colonyUpdate(colony, kDtSeconds);
-                colonistsUpdate(colonists, world, colony, kDtSeconds);
-                hostilesUpdate(hostiles, world, colony, kDtSeconds);
-                cameraUpdate(camera, kDtSeconds);
+                // Drive the new systems instead of legacy free functions
+                GameSystems::Simulation::Update(world, colony, colonists, hostiles, kDtSeconds);
+                GameSystems::Input::Update(camera, kDtSeconds);
 
                 accumulator -= dt;
                 if (++steps >= kMaxStepsPerFrame) {
@@ -156,14 +154,10 @@ int Game::run()
         (void)alpha; // pass to your renderer if/when you add visual interpolation
 
         // --- render frame via your D3D path
-        // Typical place to invoke your render systems (kept API-neutral here).
-        // Examples:
-        //   RenderCtx rc = renderer.begin_frame();
-        //   worldRender(rc, world, camera, alpha);
-        //   hudRender(rc, world, colony, camera);
-        //   renderer.end_frame();
+        // Typical place to invoke your render systems:
+        // GameSystems::Render::Frame(world, colony, camera, alpha);
         //
-        // TODO: Call your D3D render system here.
+        // If your Render system needs a context (device/swapchain), thread that through here.
     }
 
     return 0;
