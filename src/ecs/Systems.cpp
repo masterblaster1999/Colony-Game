@@ -3,7 +3,11 @@
 #include "ecs/Components.h"
 
 #include <vector>
-#include <algorithm>
+#include <algorithm>   // max, min
+#include <iterator>    // std::distance
+#if CG_WITH_TASKFLOW
+  #include <atomic>    // std::atomic_size_t
+#endif
 
 namespace colony::ecs {
 
@@ -13,8 +17,8 @@ std::size_t UpdateTickables(entt::registry& r, double dt_seconds) {
     auto view = r.view<Tickable>();
     std::size_t count = 0;
 
-    for (auto e : view) {
-        auto& t = view.get<Tickable>(e);
+    // Use view.each() to avoid repeated lookups and keep things tidy.
+    for (auto [e, t] : view.each()) {
         if (t.active && t.tick) {
             CG_ZONE("ECS::Tickables::Entity");
             t.tick(r, e, dt_seconds);
@@ -34,45 +38,59 @@ std::size_t UpdateGrowthParallel(entt::registry& r,
                                  std::size_t chunk_size) {
     CG_ZONE("ECS::GrowthJobs");
 
-    std::size_t processed = 0;
     auto view = r.view<Growth>();
-    if (view.begin() == view.end()) return 0;
+    if (view.begin() == view.end()) {
+        return 0;
+    }
+
+    const float dtf = static_cast<float>(dt_seconds);
 
 #if CG_WITH_TASKFLOW
+    // Atomic metric to avoid a data race in parallel region.
+    std::atomic_size_t processed{0};
+
+    // Portable reservation for EnTT views: size_hint() is only available
+    // when deletion_policy == in_place; use iterator distance instead.
+    // Ref: entt::basic_storage_view::size_hint SFINAE docs. 
+    // (https://skypjack.github.io/entt/classentt_1_1basic__storage__view.html)
     std::vector<entt::entity> items;
-    items.reserve(view.size_hint());
+    const auto approx = static_cast<std::size_t>(std::distance(view.begin(), view.end()));
+    items.reserve(approx);
     for (auto e : view) items.push_back(e);
 
     tf::Taskflow flow;
     const std::size_t N = items.size();
     const std::size_t step = std::max<std::size_t>(1, chunk_size);
 
+    // Assumption: no structural changes to the registry for the duration
+    // of this pass; we only write to Growth components of distinct entities.
     for (std::size_t start = 0; start < N; start += step) {
         const std::size_t end = std::min<std::size_t>(N, start + step);
-        flow.emplace([&r, &items, start, end, dt_seconds, &processed]() {
+        flow.emplace([&r, &items, start, end, dtf, &processed]() {
             CG_ZONE("ECS::GrowthJobs::Chunk");
             std::size_t local = 0;
             for (std::size_t i = start; i < end; ++i) {
                 const entt::entity e = items[i];
                 auto& g = r.get<Growth>(e);
-                g.value += g.rate * static_cast<float>(dt_seconds);
+                g.value += g.rate * dtf;
                 ++local;
             }
-            // Not atomic on purpose; minor race acceptable for a metric.
-            processed += local;
+            processed.fetch_add(local, std::memory_order_relaxed);
         });
     }
 
     exec.run(flow).wait();
+    return processed.load(std::memory_order_relaxed);
 #else
-    // Serial fallback
-    for (auto e : view) {
-        auto& g = view.get<Growth>(e);
-        g.value += g.rate * static_cast<float>(dt_seconds);
+    // Serial fallback: use view.each() to avoid extra lookups.
+    std::size_t processed = 0;
+    for (auto [e, g] : view.each()) {
+        (void)e; // e is currently unused in this loop
+        g.value += g.rate * dtf;
         ++processed;
     }
-#endif
     return processed;
+#endif
 }
 
 std::size_t RenderPass(entt::registry& r, float alpha) {
@@ -81,8 +99,7 @@ std::size_t RenderPass(entt::registry& r, float alpha) {
     auto view = r.view<Renderable>();
     std::size_t count = 0;
 
-    for (auto e : view) {
-        auto& rr = view.get<Renderable>(e);
+    for (auto [e, rr] : view.each()) {
         if (rr.visible && rr.draw) {
             CG_ZONE("ECS::Renderables::Entity");
             rr.draw(r, e, alpha);
