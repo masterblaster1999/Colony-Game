@@ -13,6 +13,10 @@ include(CGToolchain)
 
 project(ColonyGame LANGUAGES CXX)
 
+# Helpful for IDE tooling (JSON compile commands) and folder organization
+set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
+set_property(GLOBAL PROPERTY USE_FOLDERS ON)
+
 # ------------------------------------------------------------------------------
 # Back-compat & preset hygiene
 # ------------------------------------------------------------------------------
@@ -39,6 +43,9 @@ set(COLONY_PCH_HEADER "src/pch.hpp" CACHE STRING "Path to the common precompiled
 option(COLONY_ENABLE_TIDY "Run clang-tidy static analysis during build (may slow builds)" OFF)
 option(COLONY_ENABLE_ASAN "Enable AddressSanitizer for supported compilers/configs" OFF)
 option(COLONY_SEH_CRASHDUMP "Compile CrashDumpWin.cpp with /EHa while keeping /EHsc globally" ON)
+
+# NEW: Make Tracy optional (OFF by default)
+option(COLONY_ENABLE_TRACY "Build with Tracy profiler instrumentation (vcpkg port 'tracy')" OFF)
 
 # ------------------------------------------------------------------------------
 # clang-tidy
@@ -104,7 +111,37 @@ include(CGShaders)
 # ------------------------------------------------------------------------------
 find_package(SDL2 CONFIG REQUIRED)
 find_package(imgui CONFIG REQUIRED)
-find_package(Tracy CONFIG QUIET)
+
+# Tracy wiring (optional)
+# Prefer the lowercase 'tracy' package name (vcpkg port), but accept 'Tracy' too.
+# When COLONY_ENABLE_TRACY=ON, we require it; otherwise we try quietly and skip if absent.
+set(_CG_TRACY_REQUEST_MODE QUIET)
+if(COLONY_ENABLE_TRACY)
+  set(_CG_TRACY_REQUEST_MODE REQUIRED)
+endif()
+
+# Try lowercase first (vcpkg port name)
+find_package(tracy CONFIG ${_CG_TRACY_REQUEST_MODE})
+# Fallback to capitalized package name if not found
+if(NOT tracy_FOUND)
+  find_package(Tracy CONFIG ${_CG_TRACY_REQUEST_MODE})
+endif()
+
+# Normalize the imported target name if present
+set(COLONY_TRACY_TARGET "")
+if(TARGET tracy::TracyClient)
+  set(COLONY_TRACY_TARGET tracy::TracyClient)
+elseif(TARGET Tracy::TracyClient)
+  set(COLONY_TRACY_TARGET Tracy::TracyClient)
+endif()
+
+# If the option is ON but no client target was found, fail early
+if(COLONY_ENABLE_TRACY AND NOT COLONY_TRACY_TARGET)
+  message(FATAL_ERROR
+    "COLONY_ENABLE_TRACY=ON but Tracy client target was not found.\n"
+    "Install the vcpkg port 'tracy' (manifest mode recommended) or vendor Tracy.\n"
+    "See: https://vcpkg.io/en/package/tracy")
+endif()
 
 # ------------------------------------------------------------------------------
 # Core game source tree
@@ -122,9 +159,18 @@ if(TARGET colony_core)
     SDL2::SDL2main
     imgui::imgui
   )
-  if(TARGET Tracy::TracyClient)
-    target_link_libraries(colony_core PRIVATE Tracy::TracyClient)
-    target_compile_definitions(colony_core PRIVATE TRACY_ENABLE=1)
+
+  # Link Tracy only when enabled and available
+  if(COLONY_TRACY_TARGET)
+    if(COLONY_ENABLE_TRACY)
+      target_link_libraries(colony_core PRIVATE ${COLONY_TRACY_TARGET})
+      target_compile_definitions(colony_core PRIVATE TRACY_ENABLE=1)
+      # Ensure include directories from the imported target are visible, just in case
+      get_target_property(_TRACY_INC ${COLONY_TRACY_TARGET} INTERFACE_INCLUDE_DIRECTORIES)
+      if(_TRACY_INC)
+        target_include_directories(colony_core PRIVATE ${_TRACY_INC})
+      endif()
+    endif()
   endif()
 
   # --------------------------------------------------------------------------
