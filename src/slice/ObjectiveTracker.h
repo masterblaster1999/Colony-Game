@@ -40,7 +40,7 @@
 #include <iomanip>
 #include <limits>
 #include <optional>
-#include <sstream>
+#include <sstream>   // (patch) ensure istringstream is available everywhere we parse
 #include <string>
 #include <string_view>
 #include <type_traits>
@@ -561,7 +561,7 @@ public:
         SLICE_OT_LOCK_GUARD;
         auto& v = state_.counters[std::string(name)];
         auto delta = value - v; v = value;
-        logEvent_("ctr:"+std::string(name), delta, v);
+        logEvent_(makeKey_("ctr:", name), delta, v);
         advance_();
     }
     std::int64_t getCounter(std::string_view name) const {
@@ -573,7 +573,7 @@ public:
         const std::string k(name);
         bool changed=false;
         if (value) changed = state_.flags.insert(k).second; else changed = state_.flags.erase(k)>0;
-        if (changed) logEvent_("flg:"+k, value ? 1 : -1, value ? 1 : 0);
+        if (changed) logEvent_(makeKey_("flg:", k), value ? 1 : -1, value ? 1 : 0);
         advance_();
     }
     bool getFlag(std::string_view name) const { return state_.flags.count(std::string(name)) != 0; }
@@ -599,6 +599,9 @@ public:
         if (isFailed())   { const auto* c = current(); out.emplace_back("Vertical Slice: FAILED — " + (c ? c->lastFailReason : "unknown")); return out; }
 
         const Objective* cur = current(); SLICE_OT_ASSERT(cur);
+        // (improvement) reserve a bit to avoid re-allocations on every call
+        out.reserve(16 + cur->criteria.size() + cur->subs.size()*3);
+
         out.emplace_back("Objective: " + loc_(cur->title) + (opt.showCompletedCheck ? "  [ ]" : ""));
         if (!cur->description.empty()) out.emplace_back(loc_(cur->description));
 
@@ -900,6 +903,15 @@ public:
 
 // ============================= Implementation ================================
 private:
+    // -------- Small string helper (improvement) --------
+    static std::string makeKey_(std::string_view ns, std::string_view name) {
+        std::string s;
+        s.reserve(ns.size() + name.size());
+        s.append(ns);
+        s.append(name);
+        return s;
+    }
+
     // -------- Activation & sequencing --------
     void activateObjective_(std::size_t idx) {
         SLICE_OT_ASSERT(idx < objectives_.size());
@@ -1032,9 +1044,9 @@ private:
             case Criterion::Kind::CounterInWindowAtLeast:
                 result = (counterDeltaInWindow_(c.key, c.windowSecs) >= c.target); break;
             case Criterion::Kind::EventCountInWindowAtLeast:
-                result = (eventCountInWindow_("ev:"+c.key, c.windowSecs) >= c.target); break;
+                result = (eventCountInWindow_(makeKey_("ev:", c.key), c.windowSecs) >= c.target); break;
             case Criterion::Kind::NoEventInWindow:
-                result = noEventInWindow_("ev:"+c.key, c.windowSecs); break;
+                result = noEventInWindow_(makeKey_("ev:", c.key), c.windowSecs); break;
             case Criterion::Kind::FlagEquals:
                 result = ((state_.flags.count(c.key)!=0) == c.expectedFlag); break;
             case Criterion::Kind::TimeElapsed:
@@ -1075,12 +1087,12 @@ private:
                 if (c.target <= 0) return 1.f; return clamp01(v / double(c.target));
             }
             case Criterion::Kind::EventCountInWindowAtLeast: {
-                const double v = double(eventCountInWindow_("ev:"+c.key, c.windowSecs));
+                const double v = double(eventCountInWindow_(makeKey_("ev:", c.key), c.windowSecs));
                 if (c.target <= 0) return 1.f; return clamp01(v / double(c.target));
             }
             case Criterion::Kind::NoEventInWindow: {
-                const bool ok = noEventInWindow_("ev:"+c.key, c.windowSecs);
-                const double last = timeSinceLastEvent_("ev:"+c.key);
+                const bool ok = noEventInWindow_(makeKey_("ev:", c.key), c.windowSecs);
+                const double last = timeSinceLastEvent_(makeKey_("ev:", c.key));
                 const double p = (c.windowSecs<=0.0) ? (ok?1.0:0.0) : std::clamp(1.0 - (last / c.windowSecs), 0.0, 1.0);
                 return clamp01(ok ? 1.0 : p);
             }
@@ -1135,7 +1147,7 @@ private:
 #if SLICE_OT_ENABLE_TELEMETRY
         if (windowSecs <= 0.0) return readCounter_(ctrName);
         const double t0 = state_.elapsedSeconds - windowSecs;
-        const std::string full = "ctr:"+ctrName;
+        const std::string full = makeKey_("ctr:", ctrName);
         std::int64_t sum=0;
         for (auto it = log_.rbegin(); it != log_.rend(); ++it) {
             if (it->t < t0) break;
@@ -1151,7 +1163,7 @@ private:
 #if SLICE_OT_ENABLE_TELEMETRY
         // Sum deltas since activation
         const double t0 = activatedAt;
-        const std::string full = "ctr:"+ctrName;
+        const std::string full = makeKey_("ctr:", ctrName);
         std::int64_t sum=0;
         for (auto it = log_.rbegin(); it != log_.rend(); ++it) {
             if (it->t < t0) break;
@@ -1214,12 +1226,12 @@ private:
     void notifyCounterImpl_(std::string_view name, std::int64_t delta) {
         auto& v = state_.counters[std::string(name)];
         v += delta;
-        logEvent_("ctr:"+std::string(name), delta, v);
+        logEvent_(makeKey_("ctr:", name), delta, v);
         advance_();
     }
 
     void notifyEventUnlocked_(std::string_view eventName, std::int64_t count) {
-        logEvent_("ev:"+std::string(eventName), count, count);
+        logEvent_(makeKey_("ev:", eventName), count, count);
     }
 
     std::int64_t readCounter_(const std::string& name) const {
@@ -1227,11 +1239,12 @@ private:
         return (it==state_.counters.end()) ? 0 : it->second;
     }
 
-    void logEvent_(const std::string& name, std::int64_t delta, std::int64_t value) {
+    // (improvement) take 'name' by value and move it into the record to avoid an extra allocation
+    void logEvent_(std::string name, std::int64_t delta, std::int64_t value) {
 #if SLICE_OT_ENABLE_TELEMETRY
         if constexpr (SLICE_OT_LOG_CAPACITY > 0) {
             if (log_.size() >= SLICE_OT_LOG_CAPACITY) log_.pop_front();
-            log_.push_back(EventRecord{ state_.elapsedSeconds, name, delta, value });
+            log_.push_back(EventRecord{ state_.elapsedSeconds, std::move(name), delta, value });
         }
 #else
         (void)name; (void)delta; (void)value;
@@ -1328,7 +1341,7 @@ private:
             oss << "  (" << counterDeltaInWindow_(c.key, c.windowSecs) << " / " << c.target
                 << " in " << int(c.windowSecs) << "s)";
         } else if (c.kind == Criterion::Kind::EventCountInWindowAtLeast) {
-            oss << "  (" << eventCountInWindow_("ev:"+c.key, c.windowSecs) << " / " << c.target
+            oss << "  (" << eventCountInWindow_(makeKey_("ev:", c.key), c.windowSecs) << " / " << c.target
                 << " in " << int(c.windowSecs) << "s)";
         } else if (c.kind == Criterion::Kind::TimeElapsed) {
             const double since = state_.elapsedSeconds - activatedAt;
