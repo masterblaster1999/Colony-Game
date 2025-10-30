@@ -596,7 +596,7 @@ int APIENTRY wWinMain(HINSTANCE, HINSTANCE, PWSTR, int)
     std::vector<wchar_t> cmdMutable(cmd.begin(), cmd.end());
     cmdMutable.push_back(L'\0');
 
-    WriteLog(log, L"[Launcher] Spawning: " + gameExe.wstring() + (args.empty() ? L"" : (L" ") ) + args);
+    WriteLog(log, L"[Launcher] Spawning: " + gameExe.wstring() + (args.empty() ? L"" : L" ") + args);
 
     BOOL ok = CreateProcessW(
         gameExe.c_str(),          // lpApplicationName
