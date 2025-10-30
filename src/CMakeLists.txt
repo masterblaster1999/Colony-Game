@@ -1,22 +1,54 @@
 # src/CMakeLists.txt
 cmake_minimum_required(VERSION 3.20) # genex in OUTPUT requires 3.20+; VS HLSL props are 3.1+/3.2+
 
-# ---- Windows-only global defines (set once, apply to all targets in this dir tree) ----
+# -------------------------------------------------------------------------------------------------
+# Global conveniences
+# -------------------------------------------------------------------------------------------------
+set_property(GLOBAL PROPERTY USE_FOLDERS ON)
+include(FetchContent)
+
+# Expose FRONTEND selector ("", "sdl")
+set(FRONTEND "" CACHE STRING "Frontend: '' (Win32 native) or 'sdl'")
+
+# Windows-only feature toggles (can be overridden by parent/toolchain)
+if(WIN32)
+  option(ENABLE_IMGUI "Enable Dear ImGui UI (Win32 + D3D11 backends)" ON)
+  option(ENABLE_TRACY "Enable Tracy instrumentation client" ON)
+else()
+  option(ENABLE_IMGUI "Enable Dear ImGui UI (Win32 + D3D11 backends)" OFF)
+  option(ENABLE_TRACY "Enable Tracy instrumentation client" OFF)
+endif()
+
+option(SHOW_CONSOLE "Show console for the Win32 executable" OFF)
+option(COLONY_USE_PCH "Enable precompiled headers" ON)
+option(COLONY_UNITY_BUILD "Enable CMake Unity builds (jumbo)" OFF)
+
+# Allow specifying a custom PCH header (relative to source root)
+set(COLONY_PCH_HEADER "" CACHE STRING "Path to the shared PCH header (relative to source root)")
+
+# -------------------------------------------------------------------------------------------------
+# Windows-only global defines (set once, apply to all targets in this dir tree)
+# -------------------------------------------------------------------------------------------------
 if(WIN32)
   add_compile_definitions(
     WIN32_LEAN_AND_MEAN
     NOMINMAX
     _CRT_SECURE_NO_WARNINGS
+    UNICODE
+    _UNICODE
   )
 endif()
 
-# ---- Third-party via package manager (vcpkg) ----
-# Enable these only if you actually use the subsystems (guards keep CI configurable)
+# -------------------------------------------------------------------------------------------------
+# Third-party via package manager (vcpkg)
+# - We try vcpkg/CONFIG packages first. If not present, we add a clean FetchContent fallback below.
+# -------------------------------------------------------------------------------------------------
 # NOTE (Patch A): imgui/tracy discovery is centralized at the top-level; don't re-find here.
-# Taskflow is header-only; some vcpkg ports have CONFIG, others don't. Try CONFIG first.
 find_package(taskflow CONFIG QUIET)
 
-# -------- Discover sources (exclude vendored imgui if present) --------
+# -------------------------------------------------------------------------------------------------
+# Source discovery (exclude vendored imgui if present)
+# -------------------------------------------------------------------------------------------------
 file(GLOB_RECURSE SRC_ALL
   CONFIGURE_DEPENDS
   "${CMAKE_SOURCE_DIR}/src/*.cpp" "${CMAKE_SOURCE_DIR}/src/*.c"
@@ -49,13 +81,12 @@ else()
   list(FILTER SRC_ALL EXCLUDE REGEX ".*/SDL.*\\.(c|cpp)$")
 endif()
 
-# =========================================================================================
-# Build everything into a reusable core library that both the executable and the tests can link.
-# This resolves unresolved externals in tests and centralizes engine code (Windows-only).
-# =========================================================================================
+# -------------------------------------------------------------------------------------------------
+# Library: colony_core (engine + game code)
+# -------------------------------------------------------------------------------------------------
 add_library(colony_core STATIC ${SRC_ALL})
 
-# ---- (Patch A) Use C++23 when available; fall back to C++20 for older CMake toolchains ----
+# Use C++23 when available; fall back to C++20 for older CMake toolchains
 if(CMAKE_VERSION VERSION_LESS 3.21)
   target_compile_features(colony_core PUBLIC cxx_std_20)
 else()
@@ -70,8 +101,7 @@ target_include_directories(colony_core
     "${CMAKE_BINARY_DIR}/generated"
 )
 
-# ---- (Patch A) Optional PCH for faster compiles; unified through COLONY_PCH_HEADER ----
-# Prefer user-configurable header; fall back to common names.
+# ---------- Optional PCH ----------
 set(_PCH_HEADER "")
 if(DEFINED COLONY_PCH_HEADER AND EXISTS "${CMAKE_SOURCE_DIR}/${COLONY_PCH_HEADER}")
   set(_PCH_HEADER "${CMAKE_SOURCE_DIR}/${COLONY_PCH_HEADER}")
@@ -95,7 +125,7 @@ target_compile_definitions(colony_core
 
 if(MSVC)
   # Stricter conformance and UTF-8 for headers/sources
-  target_compile_options(colony_core PRIVATE /permissive- /Zc:preprocessor /utf-8)
+  target_compile_options(colony_core PRIVATE /permissive- /Zc:preprocessor /Zc:__cplusplus /utf-8 /W4 /MP)
 endif()
 
 # Windows system libs needed by path helpers, COM/KnownFolders, etc. (PUBLIC for tests)
@@ -103,34 +133,111 @@ if(WIN32)
   target_link_libraries(colony_core PUBLIC shell32 ole32)
 endif()
 
-# -------------------- Link third-party aggregate + build options --------------------
-# Expect ${COLONY_THIRDPARTY_LIBS} to be assembled at top-level.
+# -------------------------------------------------------------------------------------------------
+# Third-party aggregation + build options
+# -------------------------------------------------------------------------------------------------
+# Create a harmless fallback interface target if the top-level didn't define one.
+if(NOT TARGET colony_build_options)
+  add_library(colony_build_options INTERFACE)
+endif()
+
+# Expect ${COLONY_THIRDPARTY_LIBS} to be assembled at top-level; ok if empty.
 target_link_libraries(colony_core
   PUBLIC
     ${COLONY_THIRDPARTY_LIBS}
     colony_build_options
 )
 
-# ImGui (Win32 + DX11 backends), only if enabled and available
-if(ENABLE_IMGUI)
+# -------------------------------------------------------------------------------------------------
+# Dear ImGui (Win32 + D3D11 backends)
+# - Strategy:
+#     1) Prefer vcpkg-config targets if present.
+#     2) Fallback: FetchContent + build minimal backends into a private static lib.
+# -------------------------------------------------------------------------------------------------
+if(WIN32 AND ENABLE_IMGUI)
+  # If a vcpkg (or parent) package already provided imgui targets, use them.
+  set(_imgui_ok FALSE)
+  if(TARGET imgui::imgui)
+    set(_imgui_ok TRUE)
+  endif()
+
+  # Fallback to FetchContent only if we didn't find a proper package
+  if(NOT _imgui_ok)
+    message(STATUS "[ImGui] vcpkg target not found; using FetchContent fallback.")
+    FetchContent_Declare(
+      imgui
+      GIT_REPOSITORY https://github.com/ocornut/imgui.git
+      GIT_TAG v1.90.5
+    )
+    FetchContent_MakeAvailable(imgui)
+
+    # Build core + Win32/DX11 backends into a small static lib
+    set(IMGUI_SOURCES
+      ${imgui_SOURCE_DIR}/imgui.cpp
+      ${imgui_SOURCE_DIR}/imgui_draw.cpp
+      ${imgui_SOURCE_DIR}/imgui_tables.cpp
+      ${imgui_SOURCE_DIR}/imgui_widgets.cpp
+      ${imgui_SOURCE_DIR}/backends/imgui_impl_win32.cpp
+      ${imgui_SOURCE_DIR}/backends/imgui_impl_dx11.cpp
+    )
+    add_library(imgui_backend STATIC ${IMGUI_SOURCES})
+    target_include_directories(imgui_backend PUBLIC
+      ${imgui_SOURCE_DIR}
+      ${imgui_SOURCE_DIR}/backends
+    )
+    target_compile_definitions(imgui_backend PUBLIC IMGUI_DISABLE_OBSOLETE_FUNCTIONS)
+    target_link_libraries(imgui_backend PUBLIC d3d11 dxgi)
+  endif()
+
+  # Link whichever form is available
   if(TARGET imgui::imgui)
     target_link_libraries(colony_core PRIVATE imgui::imgui)
   endif()
-  # Backends are exposed as separate targets by vcpkg features; guard in case of naming changes
   if(TARGET imgui::imgui-win32-binding)
     target_link_libraries(colony_core PRIVATE imgui::imgui-win32-binding)
+  elseif(TARGET imgui_backend)
+    target_link_libraries(colony_core PRIVATE imgui_backend)
   endif()
   if(TARGET imgui::imgui-dx11-binding)
     target_link_libraries(colony_core PRIVATE imgui::imgui-dx11-binding)
   endif()
 endif()
 
-# Tracy client library, only if enabled and already provided by top-level
-if(ENABLE_TRACY AND TARGET Tracy::TracyClient)
+# -------------------------------------------------------------------------------------------------
+# Tracy (client)
+# - Strategy:
+#     1) Prefer an existing packaged target (Tracy::TracyClient).
+#     2) Fallback: FetchContent and build public/TracyClient.cpp.
+# -------------------------------------------------------------------------------------------------
+if(WIN32 AND ENABLE_TRACY)
+  if(NOT TARGET Tracy::TracyClient)
+    message(STATUS "[Tracy] packaged target not found; using FetchContent fallback.")
+    FetchContent_Declare(
+      tracy
+      GIT_REPOSITORY https://github.com/wolfpld/tracy.git
+      GIT_TAG v0.11.0
+    )
+    FetchContent_MakeAvailable(tracy)
+
+    add_library(tracy_client STATIC
+      ${tracy_SOURCE_DIR}/public/TracyClient.cpp
+    )
+    target_include_directories(tracy_client PUBLIC
+      ${tracy_SOURCE_DIR}/public
+      ${tracy_SOURCE_DIR}       # allows tracy/Tracy.hpp to include common/TracySystem.hpp
+    )
+    if(MSVC)
+      target_link_libraries(tracy_client PUBLIC ws2_32 dbghelp)
+    endif()
+    add_library(Tracy::TracyClient ALIAS tracy_client)
+  endif()
+
   target_link_libraries(colony_core PRIVATE Tracy::TracyClient)
 endif()
 
+# -------------------------------------------------------------------------------------------------
 # Taskflow header-only include path fallback if CONFIG wasn't found
+# -------------------------------------------------------------------------------------------------
 if(NOT taskflow_FOUND)
   find_path(TASKFLOW_INCLUDE_DIR taskflow/taskflow.hpp)
   if(NOT TASKFLOW_INCLUDE_DIR)
@@ -139,10 +246,10 @@ if(NOT taskflow_FOUND)
   target_include_directories(colony_core PUBLIC "${TASKFLOW_INCLUDE_DIR}")
 endif()
 
-# =========================================================================================
+# -------------------------------------------------------------------------------------------------
 # Executable: keep the game thin; it links the core lib.
 # (The actual entry point(s) are compiled into colony_core by design.)
-# =========================================================================================
+# -------------------------------------------------------------------------------------------------
 add_executable(ColonyGame)
 
 # Win32/Console subsystem toggle for the main EXE
@@ -150,7 +257,7 @@ if(WIN32 AND NOT SHOW_CONSOLE)
   set_target_properties(ColonyGame PROPERTIES WIN32_EXECUTABLE YES)
 endif()
 
-# ---- (Patch A) Use C++23 when available; fall back to C++20 ----
+# Use C++23 when available; fall back to C++20
 if(CMAKE_VERSION VERSION_LESS 3.21)
   target_compile_features(ColonyGame PRIVATE cxx_std_20)
 else()
@@ -165,7 +272,7 @@ target_include_directories(ColonyGame PRIVATE
 )
 
 if(MSVC)
-  target_compile_options(ColonyGame PRIVATE /permissive- /Zc:preprocessor /utf-8)
+  target_compile_options(ColonyGame PRIVATE /permissive- /Zc:preprocessor /Zc:__cplusplus /utf-8 /W4 /MP)
 endif()
 
 # Link libs (propagate Windows flags/defs from interface target)
@@ -213,14 +320,18 @@ if(CMAKE_CONFIGURATION_TYPES)
     set_target_properties(ColonyGame PROPERTIES
       RUNTIME_OUTPUT_DIRECTORY_${CFGU} "${CMAKE_BINARY_DIR}/bin/${cfg}")
   endforeach()
+else()
+  # Single-config generators (Ninja, Makefiles)
+  set_target_properties(ColonyGame PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
 endif()
 
 # Reusable runtime dir (works for single- and multi-config generators)
 set(_RUNTIME_DIR "$<TARGET_FILE_DIR:ColonyGame>")
 
-# ---------------------------------------------------------------------------
+# -------------------------------------------------------------------------------------------------
 # POST-BUILD: stage runtime assets next to the ColonyGame.exe
-# ---------------------------------------------------------------------------
+# -------------------------------------------------------------------------------------------------
 add_custom_command(TARGET ColonyGame POST_BUILD
   COMMAND ${CMAKE_COMMAND} -E make_directory
           "${_RUNTIME_DIR}/assets"
@@ -233,7 +344,9 @@ add_custom_command(TARGET ColonyGame POST_BUILD
   VERBATIM
 )
 
-# ------------------------- SHADERS -------------------------
+# -------------------------------------------------------------------------------------------------
+# SHADERS
+# -------------------------------------------------------------------------------------------------
 # Visual Studio generator path (MSBuild HLSL)
 if(CMAKE_GENERATOR MATCHES "Visual Studio")
   set(HLSL_DIR  "${CMAKE_SOURCE_DIR}/renderer/Shaders")
@@ -356,7 +469,7 @@ else()
   endif()
 endif()
 
-# ---- (Patch A) Precompiled header for the EXE (same unified header as core) ----
+# ---------- Precompiled header for the EXE (same unified header as core) ----------
 if(COLONY_USE_PCH AND _PCH_HEADER)
   target_precompile_headers(ColonyGame PRIVATE "${_PCH_HEADER}")
 endif()
@@ -373,6 +486,7 @@ target_compile_definitions(ColonyGame PRIVATE
   $<$<BOOL:${ENABLE_TRACY}>:TRACY_ENABLE=1>
 )
 
+# Make sure a frequently-included HLSL header is copied alongside compiled shaders for runtime
 if(EXISTS "${CMAKE_SOURCE_DIR}/renderer/Shaders/include/common.hlsli")
   add_custom_command(TARGET ColonyGame POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E make_directory "${_RUNTIME_DIR}/res/shaders/include"
