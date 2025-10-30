@@ -2,10 +2,6 @@
 #include <string>
 #include <cstdint>
 
-// Forward-declare SDL types (avoid including heavy SDL headers here)
-struct SDL_Window;
-struct SDL_Renderer;
-
 // ----------------------------------------------------------------------------
 // Game bootstrap options passed from the launcher
 // ----------------------------------------------------------------------------
@@ -26,10 +22,12 @@ struct GameOptions {
 // ----------------------------------------------------------------------------
 class Game {
 public:
-    Game(SDL_Window* window, SDL_Renderer* renderer, const GameOptions& opts);
+    // No SDL — default constructor/destructor
+    Game();
+    ~Game();
 
     // Runs the main loop until quit. Returns exit code.
-    int Run();
+    int run();
 
     // ------------------------------------------------------------------------
     // Runtime state helpers
@@ -46,10 +44,7 @@ private:
     // ------------------------------------------------------------------------
     // Members
     // ------------------------------------------------------------------------
-    SDL_Window*   window_   = nullptr;
-    SDL_Renderer* renderer_ = nullptr;
-    GameOptions   opts_{};
+    GameOptions opts_{};
 
-    // Fix: previously undeclared variable causing C2065
     bool paused_ = false;
 };
