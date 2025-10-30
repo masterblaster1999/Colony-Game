@@ -22,6 +22,8 @@
 #include "ui/Hud.h"
 
 // --- Windows message pump (no SDL) ------------------------------------------
+// These guards avoid macro redefinition warnings if your build already defines
+// WIN32_LEAN_AND_MEAN/NOMINMAX on the command line (preferred).
 #ifndef WIN32_LEAN_AND_MEAN
 #  define WIN32_LEAN_AND_MEAN
 #endif
@@ -43,19 +45,20 @@ constexpr double kSimHz            = 60.0;
 constexpr double kDtSeconds        = 1.0 / kSimHz;
 constexpr int    kMaxStepsPerFrame = 8;   // clamp catch-up
 
-using Clock     = std::chrono::steady_clock;   // avoid CRT clock_t collision
+using Clock     = std::chrono::steady_clock;   // monotonic clock
 using seconds_d = std::chrono::duration<double>;
 
-// Basic keyboard helpers (minimal; expand as needed)
+// Basic keyboard helpers (handles both normal and "system" keydowns like Alt+F4)
 static inline bool is_keydown(const MSG& msg, WPARAM vk) {
-    return msg.message == WM_KEYDOWN && msg.wParam == vk;
+    const bool kd  = (msg.message == WM_KEYDOWN) || (msg.message == WM_SYSKEYDOWN);
+    return kd && (msg.wParam == vk);
 }
 
 } // namespace
 
 // ---- Game wiring (constructor/destructor) -----------------------------------
 
-Game::Game() = default;
+Game::Game()  = default;
 Game::~Game() = default;
 
 // ---- Main loop --------------------------------------------------------------
@@ -143,8 +146,9 @@ int Game::run()
                 }
             }
         } else {
-            // If paused, do not accumulate unbounded time debt.
+            // If paused, do not accumulate unbounded time debt and don't spin a core.
             accumulator = seconds_d::zero();
+            ::Sleep(1); // tiny yield while paused to reduce CPU burn
         }
 
         // Interpolation factor (for render interpolation if desired).
