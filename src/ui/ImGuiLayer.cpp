@@ -1,12 +1,48 @@
 // src/ui/ImGuiLayer.cpp
 #include "ImGuiLayer.h"
 
-// ✅ Core + Win32/DX11 backend headers
+// ---------- Dear ImGui: core + robust Win32/DX11 backend includes ----------
 #include <imgui.h>
-#include <imgui/backends/imgui_impl_win32.h>
-#include <imgui/backends/imgui_impl_dx11.h>
+
+#ifndef __has_include
+  #define __has_include(x) 0
+#endif
+
+// Try common layouts in order:
+//  1) <imgui/backends/...>   (include path points at parent of 'imgui')
+//  2) <backends/...>         (include path points at the 'imgui' folder itself)
+//  3) <imgui_impl_*.h>       (flat include path containing the backends)
+#if __has_include(<imgui/backends/imgui_impl_win32.h>)
+  #include <imgui/backends/imgui_impl_win32.h>
+#elif __has_include(<backends/imgui_impl_win32.h>)
+  #include <backends/imgui_impl_win32.h>
+#elif __has_include(<imgui_impl_win32.h>)
+  #include <imgui_impl_win32.h>
+#else
+  #error "imgui_impl_win32.h not found. Ensure Dear ImGui 'backends' are present and on the include path."
+#endif
+
+#if __has_include(<imgui/backends/imgui_impl_dx11.h>)
+  #include <imgui/backends/imgui_impl_dx11.h>
+#elif __has_include(<backends/imgui_impl_dx11.h>)
+  #include <backends/imgui_impl_dx11.h>
+#elif __has_include(<imgui_impl_dx11.h>)
+  #include <imgui_impl_dx11.h>
+#else
+  #error "imgui_impl_dx11.h not found. Ensure Dear ImGui 'backends' are present and on the include path."
+#endif
+// ---------------------------------------------------------------------------
 
 #include <cassert>
+#include <cmath>   // fabsf
+
+// (Optional) Avoid macro collisions if Windows headers get pulled later.
+#ifndef NOMINMAX
+  #define NOMINMAX
+#endif
+#ifndef WIN32_LEAN_AND_MEAN
+  #define WIN32_LEAN_AND_MEAN 1
+#endif
 
 using namespace cg::ui;
 
@@ -26,16 +62,20 @@ static void ConfigureStyleForViewports()
 }
 
 // Build fonts sized to the monitor DPI for crisp text.
-// Recreates the DX11 font atlas on the GPU.
+// Recreates the DX11 font atlas on the GPU (no-op if scale didn't change).
 static void RebuildFontsForDpi(HWND hwnd)
 {
-    // Backend helper is declared by imgui_impl_win32.h
-    float scale = 1.0f;
-    // If the backend DPI functions are available, use them.
-    scale = ImGui_ImplWin32_GetDpiScaleForHwnd(hwnd);
+    float scale = ImGui_ImplWin32_GetDpiScaleForHwnd(hwnd);
     if (scale <= 0.0f) scale = 1.0f;
 
+    static float s_lastScale = 0.0f;
     ImGuiIO& io = ImGui::GetIO();
+
+    // Skip work if we already built for an equivalent scale and an atlas exists.
+    if (io.Fonts && io.Fonts->IsBuilt() && std::fabs(scale - s_lastScale) < 0.01f)
+        return;
+    s_lastScale = scale;
+
     io.Fonts->Clear();
 
     ImFontConfig cfg;
@@ -104,7 +144,11 @@ void ImGuiLayer::shutdown()
     ImGui_ImplDX11_Shutdown();
     ImGui_ImplWin32_Shutdown();
     ImGui::DestroyContext();
+
     m_initialized = false;
+    m_hwnd = nullptr;
+    m_device = nullptr;
+    m_context = nullptr;
 }
 
 void ImGuiLayer::newFrame()
@@ -131,6 +175,7 @@ void ImGuiLayer::render()
     {
         ImGui::UpdatePlatformWindows();
         ImGui::RenderPlatformWindowsDefault();
+        // If your engine keeps a bound main RTV/DSV, consider restoring them here.
     }
 }
 
