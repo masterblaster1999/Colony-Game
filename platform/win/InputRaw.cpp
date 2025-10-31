@@ -11,7 +11,12 @@
 // so this translation unit can compile standalone. Adjust to your project
 // conventions as needed.
 
-#define WIN32_LEAN_AND_MEAN
+#ifndef WIN32_LEAN_AND_MEAN
+#  define WIN32_LEAN_AND_MEAN
+#endif
+#ifndef NOMINMAX
+#  define NOMINMAX
+#endif
 #include <windows.h>
 #include <hidsdi.h>   // Some SDKs pull in hidusage via this; include both to be safe.
 #include <hidusage.h> // HID_USAGE_PAGE_GENERIC / HID_USAGE_GENERIC_MOUSE / KEYBOARD
