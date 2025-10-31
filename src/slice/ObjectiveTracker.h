@@ -711,7 +711,7 @@ public:
         SLICE_OT_LOCK_GUARD;
 
         // Patch: use a *real* istringstream instance for robust parsing
-        std::istringstream iss(std::string(data));
+        std::istringstream iss{ std::string(data) };
 
         std::string tag;
         int vmaj=0, vmin=0;
