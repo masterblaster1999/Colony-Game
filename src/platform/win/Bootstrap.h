@@ -227,7 +227,7 @@ inline bool EarlyInit() { return Initialize(InitOptions{}, nullptr, {}); }
 inline void EarlyInit(const wchar_t* mutexName) {
   InitOptions o;
   o.instance_mutex_name = mutexName ? mutexName : L"ColonyGame_SingleInstance";
-  Initialize(o, nullptr, {});
+  (void)Initialize(o, nullptr, {}); // explicit discard: resolves C4834
 }
 
 // --- Handy utilities --------------------------------------------------------
