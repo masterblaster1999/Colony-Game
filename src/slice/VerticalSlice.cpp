@@ -22,7 +22,12 @@
 //   Slice_TerrainVS.hlsl, Slice_TerrainPS.hlsl, Slice_ColorVS.hlsl, Slice_ColorPS.hlsl
 //   OrbitalSphereVS.hlsl, OrbitalSpherePS.hlsl, OrbitLineVS.hlsl, OrbitLinePS.hlsl
 //
-#define WIN32_LEAN_AND_MEAN
+#ifndef WIN32_LEAN_AND_MEAN
+#  define WIN32_LEAN_AND_MEAN
+#endif
+#ifndef NOMINMAX
+#  define NOMINMAX
+#endif
 #include <windows.h>
 #include <windowsx.h>
 #include <d3d11.h>
@@ -38,6 +43,8 @@
 #include <cassert>
 #include <fstream>
 #include <sstream>
+#include <algorithm>   // std::min / std::max
+#include <limits>      // std::numeric_limits
 #if defined(_DEBUG)
   #include <d3d11sdklayers.h>
 #endif
@@ -66,6 +73,21 @@ static const wchar_t* kColorVS   = L"res/shaders/Slice_ColorVS.hlsl";
 static const wchar_t* kColorPS   = L"res/shaders/Slice_ColorPS.hlsl";
 
 #define HR(x) do { HRESULT _hr = (x); if (FAILED(_hr)) { assert(false); ExitProcess((UINT)_hr); } } while(0)
+
+// ---- local helpers (file-local, safe) ---------------------------------------
+namespace {
+    // Checked narrowing: use at D3D11 API boundaries that require UINT.
+    inline UINT to_uint_checked(size_t value) {
+        assert(value <= static_cast<size_t>(std::numeric_limits<UINT>::max()));
+        return static_cast<UINT>(value);
+    }
+    // Align up to 16 bytes and return as UINT (for constant buffers).
+    inline UINT align16_uint_size(size_t value) {
+        size_t a = (value + 15u) & ~size_t(15u);
+        assert(a <= static_cast<size_t>(std::numeric_limits<UINT>::max()));
+        return static_cast<UINT>(a);
+    }
+}
 
 template<class T>
 static void UpdateCB(ID3D11DeviceContext* ctx, ID3D11Buffer* cb, const T& data) {
@@ -307,14 +329,31 @@ static Mesh makeGrid(ID3D11Device* dev, int N, float tileWorld) {
         idx.push_back(i1); idx.push_back(i2); idx.push_back(i3);
     }
 
-    Mesh m; m.indexCount = (UINT)idx.size();
-    D3D11_BUFFER_DESC vb{}; vb.BindFlags = D3D11_BIND_VERTEX_BUFFER; vb.ByteWidth = UINT(v.size()*sizeof(Vtx)); vb.Usage = D3D11_USAGE_DEFAULT;
-    D3D11_SUBRESOURCE_DATA sdv{ v.data(), 0, 0 };
-    HR(dev->CreateBuffer(&vb, &sdv, m.vbo.GetAddressOf()));
+    Mesh m; 
+    m.indexCount = to_uint_checked(idx.size());
 
-    D3D11_BUFFER_DESC ib{}; ib.BindFlags = D3D11_BIND_INDEX_BUFFER; ib.ByteWidth = UINT(idx.size()*sizeof(uint32_t)); ib.Usage = D3D11_USAGE_DEFAULT;
-    D3D11_SUBRESOURCE_DATA sdi{ idx.data(), 0, 0 };
-    HR(dev->CreateBuffer(&ib, &sdi, m.ibo.GetAddressOf()));
+    // VB
+    {
+        const size_t vbBytes = v.size() * sizeof(Vtx);
+        assert(vbBytes <= std::numeric_limits<UINT>::max());
+        D3D11_BUFFER_DESC vb{};
+        vb.BindFlags = D3D11_BIND_VERTEX_BUFFER;
+        vb.ByteWidth = static_cast<UINT>(vbBytes);
+        vb.Usage = D3D11_USAGE_DEFAULT;
+        D3D11_SUBRESOURCE_DATA sdv{ v.data(), 0, 0 };
+        HR(dev->CreateBuffer(&vb, &sdv, m.vbo.GetAddressOf()));
+    }
+    // IB
+    {
+        const size_t ibBytes = idx.size() * sizeof(uint32_t);
+        assert(ibBytes <= std::numeric_limits<UINT>::max());
+        D3D11_BUFFER_DESC ib{};
+        ib.BindFlags = D3D11_BIND_INDEX_BUFFER;
+        ib.ByteWidth = static_cast<UINT>(ibBytes);
+        ib.Usage = D3D11_USAGE_DEFAULT;
+        D3D11_SUBRESOURCE_DATA sdi{ idx.data(), 0, 0 };
+        HR(dev->CreateBuffer(&ib, &sdi, m.ibo.GetAddressOf()));
+    }
     return m;
 }
 static Mesh makeCube(ID3D11Device* dev, float s) {
@@ -332,12 +371,20 @@ static Mesh makeCube(ID3D11Device* dev, float s) {
         12,13,14, 12,14,15,  16,17,18, 16,18,19,  20,21,22, 20,22,23
     };
 
-    Mesh m; m.indexCount = _countof(idx);
-    D3D11_BUFFER_DESC vb{}; vb.BindFlags = D3D11_BIND_VERTEX_BUFFER; vb.ByteWidth = sizeof(verts); vb.Usage = D3D11_USAGE_DEFAULT;
+    Mesh m; 
+    m.indexCount = to_uint_checked(_countof(idx));
+
+    D3D11_BUFFER_DESC vb{}; 
+    vb.BindFlags = D3D11_BIND_VERTEX_BUFFER; 
+    vb.ByteWidth = to_uint_checked(sizeof(verts)); 
+    vb.Usage = D3D11_USAGE_DEFAULT;
     D3D11_SUBRESOURCE_DATA sdv{ verts, 0, 0 };
     HR(dev->CreateBuffer(&vb, &sdv, m.vbo.GetAddressOf()));
 
-    D3D11_BUFFER_DESC ib{}; ib.BindFlags = D3D11_BIND_INDEX_BUFFER; ib.ByteWidth = sizeof(idx); ib.Usage = D3D11_USAGE_DEFAULT;
+    D3D11_BUFFER_DESC ib{}; 
+    ib.BindFlags = D3D11_BIND_INDEX_BUFFER; 
+    ib.ByteWidth = to_uint_checked(sizeof(idx)); 
+    ib.Usage = D3D11_USAGE_DEFAULT;
     D3D11_SUBRESOURCE_DATA sdi{ idx, 0, 0 };
     HR(dev->CreateBuffer(&ib, &sdi, m.ibo.GetAddressOf()));
     return m;
@@ -397,10 +444,13 @@ struct GPUTimer {
         auto& s = sets[cur];
         ctx->End(s.end.Get());
         ctx->End(s.disjoint.Get());
-        cur = (cur + 1) % sets.size();
+        const UINT ring = to_uint_checked(sets.size());
+        cur = (cur + 1u) % ring;
     }
     bool resolve(ID3D11DeviceContext* ctx) {
-        UINT prev = (cur + sets.size() - 1) % sets.size();
+        assert(!sets.empty());
+        const UINT ring = to_uint_checked(sets.size());
+        UINT prev = (cur + ring - 1u) % ring;
         auto& s = sets[prev];
         D3D11_QUERY_DATA_TIMESTAMP_DISJOINT dj{};
         if (ctx->GetData(s.disjoint.Get(), &dj, sizeof(dj), 0) != S_OK) return false;
@@ -579,13 +629,22 @@ struct Slice {
         };
         HR(d->dev->CreateInputLayout(il2, 2, vsb2->GetBufferPointer(), vsb2->GetBufferSize(), colorIL.GetAddressOf()));
 
-        // CBuffers
-        D3D11_BUFFER_DESC cbd{}; cbd.BindFlags=D3D11_BIND_CONSTANT_BUFFER; cbd.ByteWidth=sizeof(CameraCB); cbd.Usage=D3D11_USAGE_DYNAMIC; cbd.CPUAccessFlags=D3D11_CPU_ACCESS_WRITE;
+        // CBuffers (align ByteWidth to 16 as required)
+        D3D11_BUFFER_DESC cbd{}; 
+        cbd.BindFlags = D3D11_BIND_CONSTANT_BUFFER; 
+        cbd.Usage = D3D11_USAGE_DYNAMIC; 
+        cbd.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
+        cbd.ByteWidth = align16_uint_size(sizeof(CameraCB));
         HR(d->dev->CreateBuffer(&cbd, nullptr, cbCamera.GetAddressOf()));
+        cbd.ByteWidth = align16_uint_size(sizeof(CameraCB));
         HR(d->dev->CreateBuffer(&cbd, nullptr, cbCameraCube.GetAddressOf()));
-        D3D11_BUFFER_DESC cbd2=cbd; cbd2.ByteWidth=sizeof(TerrainCB);
+
+        D3D11_BUFFER_DESC cbd2 = cbd; 
+        cbd2.ByteWidth = align16_uint_size(sizeof(TerrainCB));
         HR(d->dev->CreateBuffer(&cbd2, nullptr, cbTerrain.GetAddressOf()));
-        D3D11_BUFFER_DESC cbd3=cbd; cbd3.ByteWidth=sizeof(ColorCB);
+
+        D3D11_BUFFER_DESC cbd3 = cbd; 
+        cbd3.ByteWidth = align16_uint_size(sizeof(ColorCB));
         HR(d->dev->CreateBuffer(&cbd3, nullptr, cbColor.GetAddressOf()));
 
         // Sampler
@@ -865,7 +924,8 @@ struct Slice {
         tcb.HeightTexel = XMFLOAT2(1.f / HM, 1.f / HM);
         UpdateCB(d->ctx.Get(), cbTerrain.Get(), tcb);
 
-        UINT stride = sizeof(Vtx), offs = 0;
+        const UINT stride = static_cast<UINT>(sizeof(Vtx));
+        const UINT offs = 0;
         d->ctx->IASetVertexBuffers(0, 1, grid.vbo.GetAddressOf(), &stride, &offs);
         d->ctx->IASetIndexBuffer(grid.ibo.Get(), DXGI_FORMAT_R32_UINT, 0);
         d->ctx->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
@@ -892,7 +952,8 @@ struct Slice {
             ColorCB ccb{}; ccb.LightDir = lightDir; ccb.Albedo = XMFLOAT3(0.7f, 0.2f, 0.2f);
             UpdateCB(d->ctx.Get(), cbColor.Get(), ccb);
 
-            UINT stride2 = sizeof(VtxN), offs2 = 0;
+            const UINT stride2 = static_cast<UINT>(sizeof(VtxN));
+            const UINT offs2 = 0;
             d->ctx->IASetVertexBuffers(0, 1, cube.vbo.GetAddressOf(), &stride2, &offs2);
             d->ctx->IASetIndexBuffer(cube.ibo.Get(), DXGI_FORMAT_R16_UINT, 0);
             d->ctx->IASetInputLayout(colorIL.Get());
