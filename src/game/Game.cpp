@@ -77,12 +77,12 @@ int Game::run()
     double lastFrameSec  = 0.0;
 
     // --- Simulation state (lifetime = whole run) -----------------------------
-    // These types/functions come from your existing sim/ui modules.
-    // If you split them differently, just keep the init/update order.
-    World     world{};
-    Colony    colony{};
-    Colonists colonists{};
-    Hostiles  hostiles{};
+    // World is concrete under sim::; Colony/Colonists/Hostiles are placeholders
+    // until the real types are finalized in sim/*. Keeping them local avoids ODR issues.
+    sim::World world{};
+    struct Colony{};                Colony    colony{};
+    struct Colonists{};             Colonists colonists{};
+    struct Hostiles{};              Hostiles  hostiles{};
     Camera    camera{};
 
     // Initialize simulation state via the new GameSystems_* layer
