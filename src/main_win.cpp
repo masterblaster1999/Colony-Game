@@ -18,6 +18,14 @@
 
 using namespace winplat;
 
+// -----------------------------------------------------------------------------
+// Hybrid-GPU preference (helps laptops pick the discrete GPU)
+// -----------------------------------------------------------------------------
+extern "C" {
+  __declspec(dllexport) unsigned long NvOptimusEnablement = 0x00000001; // NVIDIA
+  __declspec(dllexport) int AmdPowerXpressRequestHighPerformance = 1;    // AMD
+}
+
 // ---- Runtime bootstrap helpers (Windows-only hardening + DPI) ----------------
 namespace {
   // Fallbacks for older SDKs if needed:
@@ -27,6 +35,55 @@ namespace {
   #ifndef DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2
   #  define DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2 ((HANDLE)-4)
   #endif
+  #ifndef PROCESS_PER_MONITOR_DPI_AWARE
+  #  define PROCESS_PER_MONITOR_DPI_AWARE 2
+  #endif
+
+  // Try Per-Monitor-V2; fall back to Per-Monitor; then legacy system DPI aware.
+  static void EnableModernDPI()
+  {
+    if (HMODULE user32 = ::GetModuleHandleW(L"user32.dll")) {
+      using SetProcessDpiAwarenessContext_t = BOOL (WINAPI*)(HANDLE);
+      if (auto p = reinterpret_cast<SetProcessDpiAwarenessContext_t>(
+              ::GetProcAddress(user32, "SetProcessDpiAwarenessContext"))) {
+        if (p(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2)) {
+          return; // success
+        }
+      }
+    }
+
+    if (HMODULE shcore = ::LoadLibraryW(L"shcore.dll")) {
+      using SetProcessDpiAwareness_t = HRESULT (WINAPI*)(int /*PROCESS_DPI_AWARENESS*/);
+      if (auto p2 = reinterpret_cast<SetProcessDpiAwareness_t>(
+              ::GetProcAddress(shcore, "SetProcessDpiAwareness"))) {
+        if (SUCCEEDED(p2(PROCESS_PER_MONITOR_DPI_AWARE))) {
+          ::FreeLibrary(shcore);
+          return; // success
+        }
+      }
+      ::FreeLibrary(shcore);
+    }
+
+    if (HMODULE user32 = ::GetModuleHandleW(L"user32.dll")) {
+      using SetProcessDPIAware_t = BOOL (WINAPI*)();
+      if (auto legacy = reinterpret_cast<SetProcessDPIAware_t>(
+              ::GetProcAddress(user32, "SetProcessDPIAware"))) {
+        legacy(); // best-effort legacy fallback
+      }
+    }
+  }
+
+  // Optional: name the thread at the OS level for debuggers (Win10+).
+  static void SetMainThreadDescription()
+  {
+    if (HMODULE kernelbase = ::GetModuleHandleW(L"kernelbase.dll")) {
+      using SetThreadDescription_t = HRESULT (WINAPI*)(HANDLE, PCWSTR);
+      if (auto p = reinterpret_cast<SetThreadDescription_t>(
+              ::GetProcAddress(kernelbase, "SetThreadDescription"))) {
+        p(::GetCurrentThread(), L"Main Thread");
+      }
+    }
+  }
 
   static void PreBootstrapHardeningAndDpi()
   {
@@ -42,14 +99,11 @@ namespace {
     // 2) Terminate on heap corruption (recommended, no-ops on very old systems).
     ::HeapSetInformation(nullptr, HeapEnableTerminationOnCorruption, nullptr, 0);
 
-    // 3) Per-Monitor v2 DPI awareness if available (kept robust via runtime check).
-    if (HMODULE user32 = ::GetModuleHandleW(L"user32.dll")) {
-      using SetProcessDpiAwarenessContext_t = BOOL (WINAPI*)(HANDLE);
-      if (auto p = reinterpret_cast<SetProcessDpiAwarenessContext_t>(
-              ::GetProcAddress(user32, "SetProcessDpiAwarenessContext"))) {
-        (void)p(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2); // ignore failure on older OS
-      }
-    }
+    // 3) Per-Monitor v2 DPI awareness (with fallbacks).
+    EnableModernDPI();
+
+    // 4) Helpful for native debuggers and ETW traces.
+    SetMainThreadDescription();
   }
 }
 
@@ -82,7 +136,7 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int)
   PreBootstrapHardeningAndDpi();
 
   // Crash dumps in %LOCALAPPDATA%\ColonyGame\crashdumps
-  winplat::InstallCrashHandler(L"ColonyGame"); // fully-qualified; matches header
+  InstallCrashHandler(L"ColonyGame"); // call the signature that actually exists
 
   WinApp app;
   WinCreateDesc desc;
@@ -98,8 +152,8 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int)
   cbs.onRender   = GameRender;
   cbs.onResize   = GameResize;
   cbs.onShutdown = GameShutdown;
-  cbs.onFileDrop = [](WinApp&, const std::vector<std::wstring>& /*files*/) {
-    // Handle dropped files (e.g., load save, config) ...
+  cbs.onFileDrop = [](WinApp&, const std::vector<std::wstring>& files) {
+    (void)files; // Handle dropped files (e.g., load save, config) as needed
   };
 
   if (!app.create(desc, cbs)) {
