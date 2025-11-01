@@ -43,11 +43,7 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int)
 #endif
 
     // Crash dumps in %LOCALAPPDATA%\ColonyGame\crashdumps
-    InstallCrashHandler(CrashConfig{
-        .appName = L"ColonyGame",
-        .dumpDir = {},            // use default
-        .showMessageBox = true
-    });
+    InstallCrashHandler(L"ColonyGame");
 
     WinApp app;
     WinCreateDesc desc;
