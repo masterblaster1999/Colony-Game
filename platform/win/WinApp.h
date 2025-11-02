@@ -4,9 +4,11 @@
 #  error "UNICODE must be defined for WinApp (wide-char APIs)."
 #endif
 
-#define WIN32_LEAN_AND_MEAN
-#define NOMINMAX
-#include <windows.h>
+// Use the centralized, guarded Windows include to avoid C4005 macro redefinitions
+// and min/max collisions. This header defines WIN32_LEAN_AND_MEAN and NOMINMAX
+// only if they aren't already defined, then includes <windows.h>.
+#include "platform/win/WinCommon.h"
+
 #include <shellapi.h> // file drop
 #include <string>
 #include <functional>
