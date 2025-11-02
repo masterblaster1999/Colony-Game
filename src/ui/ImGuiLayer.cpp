@@ -34,7 +34,8 @@
 // ---------------------------------------------------------------------------
 
 #include <cassert>
-#include <cmath>   // fabsf
+#include <cmath>
+#include <d3d11.h>   // for state backup constants (safe even if already included)
 
 // (Optional) Avoid macro collisions if Windows headers get pulled later.
 #ifndef NOMINMAX
@@ -87,6 +88,36 @@ static void RebuildFontsForDpi(HWND hwnd)
     ImGui_ImplDX11_CreateDeviceObjects();
 }
 
+// RAII guard to preserve OM render targets and viewports during platform window rendering.
+// This prevents ImGui multi-viewport path from leaving your state altered.
+struct D3D11StateGuard
+{
+    ID3D11DeviceContext* ctx = nullptr;
+    ID3D11RenderTargetView* rtvs[D3D11_SIMULTANEOUS_RENDER_TARGET_COUNT]{};
+    ID3D11DepthStencilView* dsv = nullptr;
+    UINT numViewports = 0;
+    D3D11_VIEWPORT viewports[D3D11_VIEWPORT_AND_SCISSORRECT_OBJECT_COUNT_PER_PIPELINE]{};
+
+    explicit D3D11StateGuard(ID3D11DeviceContext* c) : ctx(c)
+    {
+        if (!ctx) return;
+        ctx->OMGetRenderTargets(D3D11_SIMULTANEOUS_RENDER_TARGET_COUNT, rtvs, &dsv);
+        UINT count = D3D11_VIEWPORT_AND_SCISSORRECT_OBJECT_COUNT_PER_PIPELINE;
+        ctx->RSGetViewports(&count, viewports);
+        numViewports = count;
+    }
+
+    ~D3D11StateGuard()
+    {
+        if (!ctx) return;
+        ctx->OMSetRenderTargets(D3D11_SIMULTANEOUS_RENDER_TARGET_COUNT, rtvs, dsv);
+        ctx->RSSetViewports(numViewports, viewports);
+
+        for (auto*& r : rtvs) { if (r) { r->Release(); r = nullptr; } }
+        if (dsv) { dsv->Release(); dsv = nullptr; }
+    }
+};
+
 } // namespace
 
 bool ImGuiLayer::initialize(HWND hwnd, ID3D11Device* device, ID3D11DeviceContext* context)
@@ -109,9 +140,10 @@ bool ImGuiLayer::initialize(HWND hwnd, ID3D11Device* device, ID3D11DeviceContext
     // -------------------------------
     ImGui::StyleColorsDark();
     io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
-    io.ConfigFlags |= ImGuiConfigFlags_DockingEnable;   // 🚀 docking support
-    io.ConfigFlags |= ImGuiConfigFlags_ViewportsEnable; // 🚀 multi-viewport OS windows
-    io.IniFilename = "imgui.ini";                       // saved next to exe
+    io.ConfigFlags |= ImGuiConfigFlags_NavEnableGamepad;   // enable gamepad nav by default
+    io.ConfigFlags |= ImGuiConfigFlags_DockingEnable;      // 🚀 docking support
+    io.ConfigFlags |= ImGuiConfigFlags_ViewportsEnable;    // 🚀 multi-viewport OS windows
+    io.IniFilename = "imgui.ini";                          // saved next to exe (adjust if you want per-user path)
 
     // -------------------------------
     // DPI awareness (Win32 helper)
@@ -173,9 +205,11 @@ void ImGuiLayer::render()
     ImGuiIO& io = ImGui::GetIO();
     if (io.ConfigFlags & ImGuiConfigFlags_ViewportsEnable)
     {
+        // Preserve your RT/DSV + viewport bindings while backend renders platform windows.
+        D3D11StateGuard guard(m_context);
         ImGui::UpdatePlatformWindows();
         ImGui::RenderPlatformWindowsDefault();
-        // If your engine keeps a bound main RTV/DSV, consider restoring them here.
+        // guard dtor restores state here
     }
 }
 
