@@ -1,6 +1,5 @@
 // Lightweight, header-free dynamic loading so you don't need extra SDK includes.
-#define WIN32_LEAN_AND_MEAN
-#include <windows.h>
+#include "platform/win/WinCommon.h"
 
 namespace win {
 
