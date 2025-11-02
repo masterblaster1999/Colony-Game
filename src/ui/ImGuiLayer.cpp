@@ -1,6 +1,9 @@
 // src/ui/ImGuiLayer.cpp
 #include "ImGuiLayer.h"
 
+// Pull Windows.h with proper guards (WIN32_LEAN_AND_MEAN/NOMINMAX) once.
+#include "platform/win/WinCommon.h"
+
 // ---------- Dear ImGui: core + robust Win32/DX11 backend includes ----------
 #include <imgui.h>
 
@@ -36,14 +39,6 @@
 #include <cassert>
 #include <cmath>
 #include <d3d11.h>   // for state backup constants (safe even if already included)
-
-// (Optional) Avoid macro collisions if Windows headers get pulled later.
-#ifndef NOMINMAX
-  #define NOMINMAX
-#endif
-#ifndef WIN32_LEAN_AND_MEAN
-  #define WIN32_LEAN_AND_MEAN 1
-#endif
 
 using namespace cg::ui;
 
