@@ -87,11 +87,10 @@
 #endif
 
 #if CRASHDUMPWIN_ENABLED
-  #ifndef NOMINMAX
-    #define NOMINMAX
-  #endif
-  #define WIN32_LEAN_AND_MEAN
-  #include <windows.h>
+  // Replaces local macro defines with a single, guarded include.
+  // WinCommon.h defines WIN32_LEAN_AND_MEAN/NOMINMAX only if not already defined,
+  // then includes <windows.h>.
+  #include "platform/win/WinCommon.h"
   #include <DbgHelp.h> // for MINIDUMP_TYPE and MINIDUMP_* flags
 #else
   // Minimal Windows types for cross-platform consumers invoking no-op stubs.
