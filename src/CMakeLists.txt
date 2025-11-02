@@ -27,12 +27,12 @@ option(COLONY_UNITY_BUILD "Enable CMake Unity builds (jumbo)" OFF)
 set(COLONY_PCH_HEADER "" CACHE STRING "Path to the shared PCH header (relative to source root)")
 
 # -------------------------------------------------------------------------------------------------
-# Windows-only global defines (set once, apply to all targets in this dir tree)
+# Windows-only global defines (apply to all targets in this dir tree)
+# NOTE: We moved WIN32_LEAN_AND_MEAN and NOMINMAX to *per-target* definitions below
+#       to avoid accidental redefinitions and improve scoping.
 # -------------------------------------------------------------------------------------------------
 if(WIN32)
   add_compile_definitions(
-    WIN32_LEAN_AND_MEAN
-    NOMINMAX
     _CRT_SECURE_NO_WARNINGS
     UNICODE
     _UNICODE
@@ -85,6 +85,11 @@ endif()
 # Library: colony_core (engine + game code)
 # -------------------------------------------------------------------------------------------------
 add_library(colony_core STATIC ${SRC_ALL})
+
+# >>> PATCH: Scope WIN32_LEAN_AND_MEAN and NOMINMAX to this target <<<
+if(WIN32)
+  target_compile_definitions(colony_core PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX)
+endif()
 
 # Use C++23 when available; fall back to C++20 for older CMake toolchains
 if(CMAKE_VERSION VERSION_LESS 3.21)
@@ -251,6 +256,15 @@ endif()
 # (The actual entry point(s) are compiled into colony_core by design.)
 # -------------------------------------------------------------------------------------------------
 add_executable(ColonyGame)
+
+# >>> PATCH: Scope WIN32_LEAN_AND_MEAN and NOMINMAX to this target as well <<<
+if(WIN32)
+  target_compile_definitions(ColonyGame PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX)
+  # Optional: if a separate launcher target exists in your tree.
+  if(TARGET colony_launcher)
+    target_compile_definitions(colony_launcher PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX)
+  endif()
+endif()
 
 # Win32/Console subsystem toggle for the main EXE
 if(WIN32 AND NOT SHOW_CONSOLE)
