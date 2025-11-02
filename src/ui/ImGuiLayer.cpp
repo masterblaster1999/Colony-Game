@@ -62,7 +62,7 @@ static void ConfigureStyleForViewports()
     }
 }
 
-// Build fonts sized to the monitor DPI for crisp text.
+// Build fonts sized to the monitor DPI for crisp text, and scale style sizes.
 // Recreates the DX11 font atlas on the GPU (no-op if scale didn't change).
 static void RebuildFontsForDpi(HWND hwnd)
 {
@@ -75,17 +75,25 @@ static void RebuildFontsForDpi(HWND hwnd)
     // Skip work if we already built for an equivalent scale and an atlas exists.
     if (io.Fonts && io.Fonts->IsBuilt() && std::fabs(scale - s_lastScale) < 0.01f)
         return;
+
+    // Scale style sizes proportionally (do this before rebuilding fonts).
+    {
+        ImGuiStyle& style = ImGui::GetStyle();
+        const float ratio = (s_lastScale <= 0.0f) ? scale : (scale / s_lastScale);
+        if (ratio > 0.0f && std::fabs(ratio - 1.0f) > 0.01f)
+            style.ScaleAllSizes(ratio);
+    }
+
     s_lastScale = scale;
 
     io.Fonts->Clear();
-
     ImFontConfig cfg;
     cfg.SizePixels = 13.0f * scale; // default ImGui font is ~13px at 96 DPI
     io.Fonts->AddFontDefault(&cfg);
 
     // Recreate the font atlas GPU resources immediately.
     ImGui_ImplDX11_InvalidateDeviceObjects();
-    ImGui_ImplDX11_CreateDeviceObjects();
+    (void)ImGui_ImplDX11_CreateDeviceObjects(); // ignore return; backend will lazily retry if device is lost
 }
 
 // RAII guard to preserve OM render targets and viewports during platform window rendering.
@@ -93,18 +101,32 @@ static void RebuildFontsForDpi(HWND hwnd)
 struct D3D11StateGuard
 {
     ID3D11DeviceContext* ctx = nullptr;
+
+    // OM
     ID3D11RenderTargetView* rtvs[D3D11_SIMULTANEOUS_RENDER_TARGET_COUNT]{};
     ID3D11DepthStencilView* dsv = nullptr;
+
+    // RS
     UINT numViewports = 0;
     D3D11_VIEWPORT viewports[D3D11_VIEWPORT_AND_SCISSORRECT_OBJECT_COUNT_PER_PIPELINE]{};
+
+    // (Optional) Keep scissor rects as well for safety.
+    UINT numScissors = 0;
+    D3D11_RECT scissors[D3D11_VIEWPORT_AND_SCISSORRECT_OBJECT_COUNT_PER_PIPELINE]{};
 
     explicit D3D11StateGuard(ID3D11DeviceContext* c) : ctx(c)
     {
         if (!ctx) return;
+
         ctx->OMGetRenderTargets(D3D11_SIMULTANEOUS_RENDER_TARGET_COUNT, rtvs, &dsv);
-        UINT count = D3D11_VIEWPORT_AND_SCISSORRECT_OBJECT_COUNT_PER_PIPELINE;
-        ctx->RSGetViewports(&count, viewports);
-        numViewports = count;
+
+        UINT vpCount = D3D11_VIEWPORT_AND_SCISSORRECT_OBJECT_COUNT_PER_PIPELINE;
+        ctx->RSGetViewports(&vpCount, viewports);
+        numViewports = vpCount;
+
+        UINT scCount = D3D11_VIEWPORT_AND_SCISSORRECT_OBJECT_COUNT_PER_PIPELINE;
+        ctx->RSGetScissorRects(&scCount, scissors);
+        numScissors = scCount;
     }
 
     ~D3D11StateGuard()
@@ -112,6 +134,7 @@ struct D3D11StateGuard
         if (!ctx) return;
         ctx->OMSetRenderTargets(D3D11_SIMULTANEOUS_RENDER_TARGET_COUNT, rtvs, dsv);
         ctx->RSSetViewports(numViewports, viewports);
+        ctx->RSSetScissorRects(numScissors, scissors);
 
         for (auto*& r : rtvs) { if (r) { r->Release(); r = nullptr; } }
         if (dsv) { dsv->Release(); dsv = nullptr; }
@@ -143,6 +166,7 @@ bool ImGuiLayer::initialize(HWND hwnd, ID3D11Device* device, ID3D11DeviceContext
     io.ConfigFlags |= ImGuiConfigFlags_NavEnableGamepad;   // enable gamepad nav by default
     io.ConfigFlags |= ImGuiConfigFlags_DockingEnable;      // 🚀 docking support
     io.ConfigFlags |= ImGuiConfigFlags_ViewportsEnable;    // 🚀 multi-viewport OS windows
+    io.ConfigWindowsMoveFromTitleBarOnly = true;           // small UX improvement
     io.IniFilename = "imgui.ini";                          // saved next to exe (adjust if you want per-user path)
 
     // -------------------------------
@@ -158,6 +182,10 @@ bool ImGuiLayer::initialize(HWND hwnd, ID3D11Device* device, ID3D11DeviceContext
         return false;
     if (!ImGui_ImplDX11_Init(m_device, m_context))
         return false;
+
+    // Optional: enable per‑pixel alpha for popped‑out OS windows (nice with transparent clear)
+    // Note: this is safe to call even if viewports are disabled.
+    ImGui_ImplWin32_EnableAlphaCompositing(m_hwnd);
 
     // Match style to viewport setting and build a DPI-appropriate font atlas.
     ConfigureStyleForViewports();
@@ -188,6 +216,7 @@ void ImGuiLayer::newFrame()
     if (!m_initialized || !enabled)
         return;
 
+    // Order matches examples; either order typically works.
     ImGui_ImplDX11_NewFrame();
     ImGui_ImplWin32_NewFrame();
     ImGui::NewFrame();
@@ -205,7 +234,7 @@ void ImGuiLayer::render()
     ImGuiIO& io = ImGui::GetIO();
     if (io.ConfigFlags & ImGuiConfigFlags_ViewportsEnable)
     {
-        // Preserve your RT/DSV + viewport bindings while backend renders platform windows.
+        // Preserve your RT/DSV + viewport/scissor bindings while backend renders platform windows.
         D3D11StateGuard guard(m_context);
         ImGui::UpdatePlatformWindows();
         ImGui::RenderPlatformWindowsDefault();
@@ -216,10 +245,10 @@ void ImGuiLayer::render()
 bool ImGuiLayer::handleWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam)
 {
     // Forward to ImGui first. If it handles the message, we can consume it.
-    const bool consumed = ImGui_ImplWin32_WndProcHandler(hWnd, msg, wParam, lParam) != 0;
+    const bool consumed = (ImGui_ImplWin32_WndProcHandler(hWnd, msg, wParam, lParam) != 0);
 
     // Handle DPI changes to keep fonts sharp when moving across monitors.
-    // (The backend already adjusts scaling; we rebuild the atlas to match.)
+    // (The backend already adjusts scaling; we rebuild the atlas and scale style sizes to match.)
     if (msg == WM_DPICHANGED && m_initialized)
     {
         RebuildFontsForDpi(hWnd);
