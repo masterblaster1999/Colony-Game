@@ -1,39 +1,34 @@
-// src/prof/TracyIntegration.cpp
 #include "TracyIntegration.h"
 
-#if defined(TRACY_ENABLE)
-  #include <cstring>
-  #include <tracy/common/TracySystem.hpp>   // tracy::SetThreadName on some versions
-  #include <tracy/Tracy.hpp>
-#endif
+// IMPORTANT: Starting with Tracy v0.9, you must add tracy/public to include dirs
+// and include with <tracy/Tracy.hpp>. See Tracy NEWS and docs.
+#include <tracy/Tracy.hpp>   // provides FrameMark, ZoneScoped, etc. (safe if TRACY_ENABLE is off)
 
-namespace cg::prof {
+// Optional: if you enable GPU capture later (D3D11)
+// #include <tracy/TracyD3D11.hpp>
 
-void InitTracy(const char* programName)
-{
-#if defined(TRACY_ENABLE)
-    // Program name in the UI (optional – available in recent versions)
-    #if defined(TracySetProgramName)
-      TracySetProgramName(programName);
-    #endif
+namespace prof {
 
-    // Name the main thread before any zones, so captured callstacks look nice
-    ::tracy::SetThreadName("Main Thread");
-    // Mark that we are entering the startup phase
-    CG_STARTUP_BEGIN();
-
-    // Minimal “build stamp” in the capture
-    static const char kBuild[] = "Build: " __DATE__ " " __TIME__;
-    TracyAppInfo(kBuild, (uint16_t)sizeof(kBuild)-1);
-#endif
+void FrameMark() {
+  // Marks the end of a frame in the capture.
+  // Put this at the end of your game loop.
+  FrameMark; // Semicolon intentionally present; Tracy requires it.
 }
 
-void AppInfo(const char* text)
-{
-#if defined(TRACY_ENABLE)
-    if (!text) return;
-    TracyAppInfo(text, (uint16_t)std::min<size_t>(std::strlen(text), 0xFFFF));
-#endif
+void Message(const char* text) {
+  // Posts a message into the timeline.
+  // Safe to call even if TRACY_ENABLE is undefined (becomes no-op).
+  TracyMessage(text, std::strlen(text));
 }
 
-} // namespace cg::prof
+Scope::Scope(const char* name) {
+  // Creates a named zone for the lifetime of this object.
+  // Prefer explicit macro if you want zero overhead in release builds.
+  ZoneScopedN(name);
+}
+
+Scope::~Scope() {
+  // ZoneScopedN ends automatically on destruction.
+}
+
+} // namespace prof
