@@ -49,10 +49,8 @@
 using namespace cg::ui;
 
 // ---------------------------------------------------------------------------
-// FIX for C3861: Dear ImGui Win32 backend asks you to forward-declare this.
-// Official examples do exactly this before using it in WndProc.            // 
-// Ref: "Forward declare message handler from imgui_impl_win32.cpp"         //
-//      (see Dear ImGui examples and backend notes).                         //
+// Forward declare the Win32 backend WndProc handler with the exact signature.
+// (This matches imgui/backends/imgui_impl_win32.h and allows calling from your WndProc.)
 // ---------------------------------------------------------------------------
 extern IMGUI_IMPL_API LRESULT
 ImGui_ImplWin32_WndProcHandler(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam);
@@ -220,7 +218,7 @@ bool ImGuiLayer::initialize(HWND hwnd, ID3D11Device* device, ID3D11DeviceContext
     io.ConfigWindowsMoveFromTitleBarOnly = true;           // small UX improvement
 
     // Persist settings under %LOCALAPPDATA%\ColonyGame\imgui.ini (Windows-friendly location).
-    SetImGuiIniToLocalAppData(); // uses SHGetKnownFolderPath(FOLDERID_LocalAppData)  // MS docs: SHGetKnownFolderPath. :contentReference[oaicite:4]{index=4}
+    SetImGuiIniToLocalAppData();
 
     // -------------------------------
     // DPI awareness (Win32 helper)
@@ -298,8 +296,8 @@ void ImGuiLayer::render()
 bool ImGuiLayer::handleWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam)
 {
     // Forward to ImGui first. If it handles the message, we can consume it.
-    // FIX for C2737: initialize const at declaration.
-    const bool consumed = (ImGui_ImplWin32_WndProcHandler(hWnd, msg, wParam, lParam) != 0); // MSVC C2737 requires init. :contentReference[oaicite:5]{index=5}
+    // FIX: initialize const at declaration (MSVC).
+    const bool consumed = (ImGui_ImplWin32_WndProcHandler(hWnd, msg, wParam, lParam) != 0);
 
     // Handle DPI changes to keep fonts sharp when moving across monitors.
     // (The backend already adjusts scaling; we rebuild the atlas and scale style sizes to match.)
@@ -310,4 +308,3 @@ bool ImGuiLayer::handleWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam
 
     return consumed;
 }
-
