@@ -1,10 +1,15 @@
-#define WIN32_LEAN_AND_MEAN
-#define NOMINMAX
+// Centralized Windows header policy (defines WIN32_LEAN_AND_MEAN, NOMINMAX, STRICT
+// and includes <windows.h> / <windowsx.h> once for the whole project).
+// See platform/win/WinCommon.h for details.
+#include "WinCommon.h"
+
 #include "WinApp.h"
 
 #include <shellscalingapi.h>  // SetProcessDpiAwareness / PROCESS_DPI_AWARENESS
 #include <dwmapi.h>           // optional, not strictly required
 #include <cassert>
+#include <vector>
+#include <string>
 
 #pragma comment(lib, "Shcore.lib")  // DPI APIs
 #pragma comment(lib, "Shell32.lib") // Drag&Drop APIs (DragAcceptFiles etc.)
@@ -268,13 +273,14 @@ void WinApp::toggleBorderlessFullscreen()
 
     static WINDOWPLACEMENT prevPlacement{ sizeof(WINDOWPLACEMENT) };
 
-    DWORD style = ::GetWindowLongW(m_hwnd, GWL_STYLE);
+    // Use *Ptr variants for 64-bit correctness.
+    DWORD style = static_cast<DWORD>(::GetWindowLongPtrW(m_hwnd, GWL_STYLE));
     if (!m_fullscreenBorderless) {
         // Save placement
         ::GetWindowPlacement(m_hwnd, &prevPlacement);
 
         // Remove decorations
-        ::SetWindowLongW(m_hwnd, GWL_STYLE, style & ~(WS_OVERLAPPEDWINDOW));
+        ::SetWindowLongPtrW(m_hwnd, GWL_STYLE, static_cast<LONG_PTR>(style & ~(WS_OVERLAPPEDWINDOW)));
 
         // Size to monitor
         HMONITOR hMon = ::MonitorFromWindow(m_hwnd, MONITOR_DEFAULTTONEAREST);
@@ -290,7 +296,7 @@ void WinApp::toggleBorderlessFullscreen()
         m_fullscreenBorderless = true;
     } else {
         // Restore decorations
-        ::SetWindowLongW(m_hwnd, GWL_STYLE, style | WS_OVERLAPPEDWINDOW);
+        ::SetWindowLongPtrW(m_hwnd, GWL_STYLE, static_cast<LONG_PTR>(style | WS_OVERLAPPEDWINDOW));
         ::SetWindowPlacement(m_hwnd, &prevPlacement);
         ::SetWindowPos(m_hwnd, nullptr, 0, 0, 0, 0,
                        SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER |
@@ -364,7 +370,8 @@ LRESULT WinApp::wndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam)
         UINT size = 0;
         ::GetRawInputData(reinterpret_cast<HRAWINPUT>(lParam), RID_INPUT, nullptr, &size, sizeof(RAWINPUTHEADER));
         std::vector<uint8_t> buffer(size);
-        if (::GetRawInputData(reinterpret_cast<HRAWINPUT>(lParam), RID_INPUT, buffer.data(), &size, sizeof(RAWINPUTHEADER)) == size) {
+        if (size != 0 &&
+            ::GetRawInputData(reinterpret_cast<HRAWINPUT>(lParam), RID_INPUT, buffer.data(), &size, sizeof(RAWINPUTHEADER)) == size) {
             RAWINPUT* ri = reinterpret_cast<RAWINPUT*>(buffer.data());
             if (ri->header.dwType == RIM_TYPEMOUSE) {
                 m_inputDelta.mouseDX += ri->data.mouse.lLastX;
@@ -416,3 +423,4 @@ LRESULT WinApp::wndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam)
 }
 
 } // namespace winplat
+
