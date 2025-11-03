@@ -38,14 +38,30 @@
 
 #include <cassert>
 #include <cmath>
-#include <d3d11.h>   // for state backup constants (safe even if already included)
+#include <d3d11.h>        // for state backup constants (safe even if already included)
+#include <ShlObj.h>       // SHGetKnownFolderPath
+#include <KnownFolders.h> // FOLDERID_LocalAppData
+#include <filesystem>
+#include <string>
+
+#pragma comment(lib, "Shell32.lib") // SHGetKnownFolderPath
 
 using namespace cg::ui;
 
+// ---------------------------------------------------------------------------
+// FIX for C3861: Dear ImGui Win32 backend asks you to forward-declare this.
+// Official examples do exactly this before using it in WndProc.            // 
+// Ref: "Forward declare message handler from imgui_impl_win32.cpp"         //
+//      (see Dear ImGui examples and backend notes).                         //
+// ---------------------------------------------------------------------------
+extern IMGUI_IMPL_API LRESULT
+ImGui_ImplWin32_WndProcHandler(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam);
+// (Alternative if you want to pass IO explicitly)
+// extern IMGUI_IMPL_API LRESULT ImGui_ImplWin32_WndProcHandlerEx(HWND,UINT,WPARAM,LPARAM,ImGuiIO&);
+// ---------------------------------------------------------------------------
+
 namespace {
 
-// When multi-viewport is enabled, ImGui suggests tweaking style so platform windows
-// look identical to the main window. (Matches the official examples.)
 static void ConfigureStyleForViewports()
 {
     ImGuiIO& io = ImGui::GetIO();
@@ -54,6 +70,46 @@ static void ConfigureStyleForViewports()
     {
         style.WindowRounding = 0.0f;
         style.Colors[ImGuiCol_WindowBg].w = 1.0f;
+    }
+}
+
+// Convert wide path to UTF-8 (for ImGui::IO::IniFilename).
+static std::string WideToUtf8(const std::wstring& ws)
+{
+    if (ws.empty()) return {};
+    int len = ::WideCharToMultiByte(CP_UTF8, 0, ws.c_str(), -1, nullptr, 0, nullptr, nullptr);
+    std::string out;
+    if (len > 1)
+    {
+        out.resize(static_cast<size_t>(len - 1));
+        ::WideCharToMultiByte(CP_UTF8, 0, ws.c_str(), -1, out.data(), len, nullptr, nullptr);
+    }
+    return out;
+}
+
+// Write imgui.ini to %LOCALAPPDATA%\ColonyGame\imgui.ini
+// Uses SHGetKnownFolderPath(FOLDERID_LocalAppData) to respect Windows storage guidance.
+static void SetImGuiIniToLocalAppData()
+{
+    ImGuiIO& io = ImGui::GetIO();
+
+    PWSTR wpath = nullptr;
+    if (SUCCEEDED(::SHGetKnownFolderPath(FOLDERID_LocalAppData, KF_FLAG_CREATE, nullptr, &wpath)))
+    {
+        std::filesystem::path base(wpath);
+        ::CoTaskMemFree(wpath);
+
+        std::filesystem::path dir  = base / L"ColonyGame";
+        std::filesystem::path file = dir / L"imgui.ini";
+
+        std::error_code ec;
+        std::filesystem::create_directories(dir, ec); // best-effort
+
+        static std::string s_iniUtf8;
+        s_iniUtf8 = WideToUtf8(file.wstring());
+        if (!s_iniUtf8.empty())
+            io.IniFilename = s_iniUtf8.c_str();
+        // else: ImGui falls back to the default "imgui.ini" next to the exe.
     }
 }
 
@@ -162,7 +218,9 @@ bool ImGuiLayer::initialize(HWND hwnd, ID3D11Device* device, ID3D11DeviceContext
     io.ConfigFlags |= ImGuiConfigFlags_DockingEnable;      // 🚀 docking support
     io.ConfigFlags |= ImGuiConfigFlags_ViewportsEnable;    // 🚀 multi-viewport OS windows
     io.ConfigWindowsMoveFromTitleBarOnly = true;           // small UX improvement
-    io.IniFilename = "imgui.ini";                          // saved next to exe (adjust if you want per-user path)
+
+    // Persist settings under %LOCALAPPDATA%\ColonyGame\imgui.ini (Windows-friendly location).
+    SetImGuiIniToLocalAppData(); // uses SHGetKnownFolderPath(FOLDERID_LocalAppData)  // MS docs: SHGetKnownFolderPath. :contentReference[oaicite:4]{index=4}
 
     // -------------------------------
     // DPI awareness (Win32 helper)
@@ -240,7 +298,8 @@ void ImGuiLayer::render()
 bool ImGuiLayer::handleWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam)
 {
     // Forward to ImGui first. If it handles the message, we can consume it.
-    const bool consumed = (ImGui_ImplWin32_WndProcHandler(hWnd, msg, wParam, lParam) != 0);
+    // FIX for C2737: initialize const at declaration.
+    const bool consumed = (ImGui_ImplWin32_WndProcHandler(hWnd, msg, wParam, lParam) != 0); // MSVC C2737 requires init. :contentReference[oaicite:5]{index=5}
 
     // Handle DPI changes to keep fonts sharp when moving across monitors.
     // (The backend already adjusts scaling; we rebuild the atlas and scale style sizes to match.)
@@ -251,3 +310,4 @@ bool ImGuiLayer::handleWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam
 
     return consumed;
 }
+
