@@ -405,7 +405,8 @@ public:
 private:
     void worker(){
         for(;;){
-            TileJob job; bool has=false;
+            // *** C4701 fix: value-initialize the local aggregate so it's always defined. ***
+            TileJob job{}; bool has=false;
             {
                 std::unique_lock<std::mutex> lk(mx);
                 cv.wait(lk,[&]{return stop || next<(int)queue.size();});
@@ -530,7 +531,7 @@ static void present_full(HWND hwnd,HDC hdc,Backbuffer& bb){
     RECT cr; GetClientRect(hwnd,&cr); int cw=cr.right-cr.left, ch=cr.bottom-cr.top; float s=1.f; RECT dst=compute_dest_rect(cw,ch,bb.w,bb.h,&s);
     HBRUSH br=CreateSolidBrush(RGB(10,10,10));
     RECT r1={0,0,cw,dst.top}, r2={0,dst.top,dst.left,dst.bottom}, r3={dst.right,dst.top,cw,dst.bottom}, r4={0,dst.bottom,cw,ch};
-    FillRect(hdc,&r1,br); FillRect(hdc,&r2,br); FillRect(hdc,&r3,br); FillRect(hdc,&r4,br); DeleteObject(br);
+    FillRect(hdc,&r1,br); FillRect(hdc,&r2,br); FillRect(hdc,&r3,br); DeleteObject(br);
     if(g_win.smoothScale && !g_win.integerScale){ SetStretchBltMode(hdc, HALFTONE); SetBrushOrgEx(hdc,0,0,nullptr); }
     else{ SetStretchBltMode(hdc, COLORONCOLOR); }
     int dx=dst.left, dy=dst.top, dw=dst.right-dst.left, dh=dst.bottom-dst.top;
@@ -540,7 +541,7 @@ static void present_dirty(HWND hwnd,HDC hdc,Backbuffer& bb,const DirtyTracker& d
     RECT cr; GetClientRect(hwnd,&cr); int cw=cr.right-cr.left, ch=cr.bottom-cr.top; float s=1.f; RECT dst=compute_dest_rect(cw,ch,bb.w,bb.h,&s);
     HBRUSH br=CreateSolidBrush(RGB(10,10,10));
     RECT r1={0,0,cw,dst.top}, r2={0,dst.top,dst.left,dst.bottom}, r3={dst.right,dst.top,cw,dst.bottom}, r4={0,dst.bottom,cw,ch};
-    FillRect(hdc,&r1,br); FillRect(hdc,&r2,br); FillRect(hdc,&r3,br); FillRect(hdc,&r4,br); DeleteObject(br);
+    FillRect(hdc,&r1,br); FillRect(hdc,&r2,br); FillRect(hdc,&r3,br); DeleteObject(br);
     if(dirty.rects.empty()){ present_full(hwnd,hdc,bb); return; }
     if(g_win.smoothScale && !g_win.integerScale){ SetStretchBltMode(hdc, HALFTONE); SetBrushOrgEx(hdc,0,0,nullptr); }
     else{ SetStretchBltMode(hdc, COLORONCOLOR); }
