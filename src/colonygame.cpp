@@ -33,6 +33,7 @@
 #include <shlwapi.h>
 #include <objbase.h>
 #include <Xinput.h> // XInput types/constants (we dynamically load the DLLs; no link lib required)
+#include <shellscalingapi.h> // AdjustWindowRectExForDpi, GetDpiForSystem (optional)
 
 #include <cstdint>
 #include <cstdio>
@@ -56,7 +57,7 @@
 #include <set>
 #include <unordered_map>
 #include <unordered_set>
-#include <cmath>    // for std::cos, std::copysign
+#include <cmath>    // for std::cos, std::copysign, std::pow
 
 #pragma comment(lib, "Comctl32.lib")
 #pragma comment(lib, "Shell32.lib")
@@ -806,6 +807,7 @@ struct Colonist {
 //======================================================================================
 struct BackBuffer {
     HBITMAP bmp = 0;
+    HBITMAP old = 0; // original selected object (for safe cleanup)
     HDC     mem = 0;
     int     w=0, h=0;
     void Create(HDC hdc, int W, int H) {
@@ -813,12 +815,15 @@ struct BackBuffer {
         w=W; h=H;
         mem = CreateCompatibleDC(hdc);
         bmp = CreateCompatibleBitmap(hdc, W, H);
-        SelectObject(mem, bmp);
+        old = (HBITMAP)SelectObject(mem, bmp); // keep old to reselect on Destroy
         HBRUSH b = CreateSolidBrush(RGB(0,0,0));
         RECT rc{0,0,W,H}; FillRect(mem, &rc, b); DeleteObject(b);
     }
     void Destroy() {
-        if (mem) { DeleteDC(mem); mem=0; }
+        if (mem) {
+            if (old) { SelectObject(mem, old); old = 0; } // reselect original object first
+            DeleteDC(mem); mem=0;
+        }
         if (bmp) { DeleteObject(bmp); bmp=0; }
         w=h=0;
     }
@@ -903,7 +908,17 @@ private:
         DWORD style = WS_OVERLAPPEDWINDOW;
 
         RECT rc{0,0,(LONG)cfg_.width,(LONG)cfg_.height};
-        AdjustWindowRect(&rc, style, FALSE);
+
+        // DPI-aware rect sizing for the initial client area using AdjustWindowRectExForDpi. :contentReference[oaicite:4]{index=4}
+        UINT initDpi = 96;
+        if (HMODULE user32 = GetModuleHandleW(L"user32.dll")) {
+            using GetDpiForSystemFn = UINT (WINAPI*)(void);
+            if (auto p = reinterpret_cast<GetDpiForSystemFn>(GetProcAddress(user32, "GetDpiForSystem"))) {
+                initDpi = p();
+            }
+        }
+        AdjustWindowRectExForDpi(&rc, style, FALSE, 0, initDpi);
+
         int W = rc.right-rc.left, H = rc.bottom-rc.top;
 
         hwnd_ = CreateWindowExW(0, kWndClass, kWndTitle, style,
@@ -950,12 +965,19 @@ private:
     LRESULT WndProc(HWND h, UINT m, WPARAM w, LPARAM l) {
         switch (m) {
         case WM_SYSKEYDOWN: {
-            // Alt+Enter toggles borderless fullscreen (classic Windows convention).
-            if (w == VK_RETURN) { ToggleBorderless(); return 0; }
+            // Alt+Enter toggles borderless fullscreen (only when ALT is truly down). :contentReference[oaicite:5]{index=5}
+            if (w == VK_RETURN && (HIWORD(l) & KF_ALTDOWN)) { ToggleBorderless(); return 0; }
             break;
         }
+        case WM_GETMINMAXINFO: {
+            // Keep a sensible minimum size so we don't thrash GDI resources on very small windows.
+            MINMAXINFO* mmi = reinterpret_cast<MINMAXINFO*>(l);
+            mmi->ptMinTrackSize.x = 640;
+            mmi->ptMinTrackSize.y = 360;
+            return 0;
+        }
         case WM_DPICHANGED: {
-            // Use the suggested rectangle (MS guidance) to reposition/resize at the new DPI.
+            // Use the suggested rectangle (MS guidance) to reposition/resize at the new DPI. :contentReference[oaicite:6]{index=6}
             const RECT* suggested = reinterpret_cast<const RECT*>(l);
             SetWindowPos(h, nullptr,
                          suggested->left, suggested->top,
@@ -964,7 +986,8 @@ private:
                          SWP_NOZORDER | SWP_NOACTIVATE);
 
             // Update cached DPI and rebuild HUD font at the new DPI.
-            UINT dpiX = LOWORD(w); UINT dpiY = HIWORD(w);
+            [[maybe_unused]] UINT dpiX = LOWORD(w); // fix C4189: mark intentionally unused
+            UINT dpiY = HIWORD(w);
             dpi_ = (dpiY != 0) ? dpiY : dpi_;
             if (font_) { DeleteObject(font_); font_ = nullptr; }
             LOGFONTW lf{}; lf.lfHeight = -MulDiv(10, (int)dpi_, 96);
@@ -979,7 +1002,13 @@ private:
             ReleaseDC(h, hdc);
             return 0;
         }
-        case WM_MBUTTONDOWN: { // NEW: raw-pan while MMB is held
+        case WM_ERASEBKGND:
+            // We fully repaint from the back buffer; tell GDI no extra erase needed (reduces flicker).
+            return 1;
+        case WM_SETCURSOR:
+            if (LOWORD(l) == HTCLIENT && rawPanActive_) { SetCursor(LoadCursor(nullptr, IDC_SIZEALL)); return TRUE; }
+            break;
+        case WM_MBUTTONDOWN: { // raw-pan while MMB is held
             rawPanActive_ = true; SetCapture(h);
             return 0;
         }
@@ -997,9 +1026,11 @@ private:
             return 0;
         }
         case WM_MOUSEWHEEL: {
-            short z = GET_WHEEL_DELTA_WPARAM(w);
-            if (z>0) zoom_ = util::clamp(zoom_ * 1.1, 0.5, 2.5);
-            else     zoom_ = util::clamp(zoom_ / 1.1, 0.5, 2.5);
+            // Respect WHEEL_DELTA=120 and scale per detent (handles high-res wheels). :contentReference[oaicite:7]{index=7}
+            const int detents = GET_WHEEL_DELTA_WPARAM(w) / WHEEL_DELTA;
+            if (detents != 0) {
+                zoom_ = util::clamp(zoom_ * std::pow(1.1, detents), 0.5, 2.5);
+            }
             return 0;
         }
         case WM_KEYDOWN: {
@@ -1033,7 +1064,7 @@ private:
             }
             return 0;
         }
-        case WM_INPUT: { // NEW: raw input panning
+        case WM_INPUT: { // raw input panning
             if (!cfg_.rawInput || !rawPanActive_) return 0;
             UINT sz = 0;
             GetRawInputData((HRAWINPUT)l, RID_INPUT, nullptr, &sz, sizeof(RAWINPUTHEADER));
@@ -1595,7 +1626,7 @@ private:
     Vec2i keyPan_{0,0};
     bool buildMode_=false; std::optional<BuildingKind> selected_;
     POINT lastMouse_{};
-    bool rawPanActive_ = false; // NEW: true while MMB held down
+    bool rawPanActive_ = false; // true while MMB held down
 
     // Window mode toggling
     DWORD origStyle_ = 0, origExStyle_ = 0;
