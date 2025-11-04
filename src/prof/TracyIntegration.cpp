@@ -1,34 +1,91 @@
 #include "TracyIntegration.h"
 
-// IMPORTANT: Starting with Tracy v0.9, you must add tracy/public to include dirs
-// and include with <tracy/Tracy.hpp>. See Tracy NEWS and docs.
-#include <tracy/Tracy.hpp>   // provides FrameMark, ZoneScoped, etc. (safe if TRACY_ENABLE is off)
-
-// Optional: if you enable GPU capture later (D3D11)
-// #include <tracy/TracyD3D11.hpp>
+#if defined(TRACY_ENABLE)
+  #include <Tracy.hpp>   // C++ client API
+  #include <cstring>
+#endif
 
 namespace prof {
 
-void FrameMark() {
-  // Marks the end of a frame in the capture.
-  // Put this at the end of your game loop.
-  FrameMark; // Semicolon intentionally present; Tracy requires it.
+void Init(const char* appName)
+{
+#if defined(TRACY_ENABLE)
+    // Tracy client doesn’t require init. Optionally tag main thread.
+    if (appName && *appName) tracy::SetThreadName(appName);
+#else
+    (void)appName;
+#endif
 }
 
-void Message(const char* text) {
-  // Posts a message into the timeline.
-  // Safe to call even if TRACY_ENABLE is undefined (becomes no-op).
-  TracyMessage(text, std::strlen(text));
+void Shutdown()
+{
+    // Tracy client shuts down automatically on process exit.
 }
 
-Scope::Scope(const char* name) {
-  // Creates a named zone for the lifetime of this object.
-  // Prefer explicit macro if you want zero overhead in release builds.
-  ZoneScopedN(name);
+void MarkFrame()
+{
+#if defined(TRACY_ENABLE)
+    FrameMark; // expands to tracy::Profiler::SendFrameMark(nullptr)
+#endif
 }
 
-Scope::~Scope() {
-  // ZoneScopedN ends automatically on destruction.
+void MarkFrameNamed(const char* name)
+{
+#if defined(TRACY_ENABLE)
+    // Frame tick with a label
+    FrameMarkNamed(name);
+#else
+    (void)name;
+#endif
+}
+
+void MarkFrameStart(const char* name)
+{
+#if defined(TRACY_ENABLE)
+    // Start a discontinuous frame range
+    FrameMarkStart(name);
+#else
+    (void)name;
+#endif
+}
+
+void MarkFrameEnd(const char* name)
+{
+#if defined(TRACY_ENABLE)
+    // End a discontinuous frame range
+    FrameMarkEnd(name);
+#else
+    (void)name;
+#endif
+}
+
+void SetThreadName(const char* name)
+{
+#if defined(TRACY_ENABLE)
+    tracy::SetThreadName(name ? name : "thread");
+#else
+    (void)name;
+#endif
+}
+
+void Message(const char* text, std::size_t len)
+{
+#if defined(TRACY_ENABLE)
+    if (!text) return;
+    tracy::Message(text, (uint32_t)len);
+#else
+    (void)text; (void)len;
+#endif
+}
+
+void MessageColor(const char* text, std::size_t len, std::uint32_t rgb)
+{
+#if defined(TRACY_ENABLE)
+    if (!text) return;
+    tracy::MessageC(text, (uint32_t)len, rgb);
+#else
+    (void)text; (void)len; (void)rgb;
+#endif
 }
 
 } // namespace prof
