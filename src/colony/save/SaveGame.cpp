@@ -9,6 +9,10 @@
 #include <string>
 #include <filesystem>
 
+// ---- fmt: safe formatting (incl. std::filesystem::path) --------------------
+#include <fmt/format.h>
+#include <fmt/std.h>  // formatter<std::filesystem::path>
+
 #if defined(COLONY_USE_JSON_SCHEMA_VALIDATION)
   #include <json-schema.hpp> // pboettch/json-schema-validator
 #endif
@@ -27,6 +31,9 @@
 
 namespace colony::save {
 using json = nlohmann::json;
+
+// One place to define the current schema used by the serializer.
+static constexpr int kCurrentSchemaVersion = 1;
 
 // ---------- helpers ----------
 
@@ -194,7 +201,7 @@ void to_json(json& j, const SaveGame& v) {
     merge_extras(j, v.extras);
 }
 void from_json(const json& j, SaveGame& v) {
-    v.schema_version = j.value("schema_version", 1);
+    v.schema_version = j.value("schema_version", kCurrentSchemaVersion);
     v.engine_version = j.value("engine_version", std::string{});
     v.created_utc    = j.value("created_utc", std::string{});
     v.last_saved_utc = j.value("last_saved_utc", std::string{});
@@ -231,7 +238,7 @@ void from_json(const json& j, SaveGame& v) {
 bool MigrateJsonInPlace(json& j, int target_schema_version, std::string& outError)
 {
     try {
-        int file_ver = j.value("schema_version", 1);
+        int file_ver = j.value("schema_version", kCurrentSchemaVersion);
         while (file_ver < target_schema_version) {
             if (file_ver == 0) {
                 // Example: rename colonist.hp -> colonist.health
@@ -247,7 +254,7 @@ bool MigrateJsonInPlace(json& j, int target_schema_version, std::string& outErro
                 j["schema_version"] = file_ver;
             } else {
                 // No known migration path
-                outError = "No migration path for schema_version=" + std::to_string(file_ver);
+                outError = fmt::format("No migration path for schema_version={}", file_ver);
                 return false;
             }
         }
@@ -287,21 +294,30 @@ LoadSaveGame(const std::filesystem::path& file,
     try {
         std::ifstream ifs(file, std::ios::binary);
         if (!ifs) {
-            return std::unexpected(SaveError{ SaveError::Code::IoOpenFail, "Cannot open file: " + file.string() });
+            return std::unexpected(SaveError{
+                SaveError::Code::IoOpenFail,
+                fmt::format("Cannot open file: {}", file)
+            });
         }
 
         json doc = json::parse(ifs); // throws on malformed JSON
 
         // Basic shape check to avoid surprising type errors later
         if (!doc.is_object()) {
-            return std::unexpected(SaveError{ SaveError::Code::JsonTypeError, "Root JSON must be an object" });
+            return std::unexpected(SaveError{
+                SaveError::Code::JsonTypeError,
+                "Root JSON must be an object"
+            });
         }
 
 #if defined(COLONY_USE_JSON_SCHEMA_VALIDATION)
         if (!schemaPath.empty()) {
             std::ifstream sch(schemaPath);
             if (!sch) {
-                return std::unexpected(SaveError{ SaveError::Code::JsonSchemaInvalid, "Cannot open schema: " + schemaPath.string() });
+                return std::unexpected(SaveError{
+                    SaveError::Code::JsonSchemaInvalid,
+                    fmt::format("Cannot open schema: {}", schemaPath)
+                });
             }
             json schema = json::parse(sch);
 
@@ -312,15 +328,21 @@ LoadSaveGame(const std::filesystem::path& file,
                 validator.set_root_schema(schema);
                 validator.validate(doc);
             } catch (const std::exception& e) {
-                return std::unexpected(SaveError{ SaveError::Code::JsonSchemaInvalid, std::string("Schema validation failed: ") + e.what() });
+                return std::unexpected(SaveError{
+                    SaveError::Code::JsonSchemaInvalid,
+                    std::string("Schema validation failed: ") + e.what()
+                });
             }
         }
 #endif
 
         // Migrate old schema -> current
         std::string migErr;
-        if (!MigrateJsonInPlace(doc, /*target*/1, migErr)) {
-            return std::unexpected(SaveError{ SaveError::Code::MigrationFailed, migErr });
+        if (!MigrateJsonInPlace(doc, /*target*/kCurrentSchemaVersion, migErr)) {
+            return std::unexpected(SaveError{
+                SaveError::Code::MigrationFailed,
+                migErr
+            });
         }
 
         SaveGame sg = doc.get<SaveGame>(); // uses from_json() for each type
@@ -336,10 +358,11 @@ LoadSaveGame(const std::filesystem::path& file,
 
 #if defined(_WIN32)
 // Minimal Windows helper: write to <file>.tmp and then atomically replace/rename.
+// NOTE: Return a *narrow* UTF-8 error message to avoid WCHAR→char narrowing at call sites.
 namespace {
     bool WriteFileAtomicallyW(const std::filesystem::path& finalPath,
                               const std::string& data,
-                              std::wstring* outError)
+                              std::string* outError)
     {
         const auto dir = finalPath.parent_path();
         if (!dir.empty()) {
@@ -360,7 +383,8 @@ namespace {
             nullptr
         );
         if (h == INVALID_HANDLE_VALUE) {
-            if (outError) *outError = L"CreateFileW(tmp) failed: " + std::to_wstring(::GetLastError());
+            if (outError) *outError = fmt::format("CreateFileW(tmp: {}) failed: {}",
+                                                  tmpPath, static_cast<unsigned long>(::GetLastError()));
             return false;
         }
 
@@ -370,7 +394,8 @@ namespace {
             DWORD toWrite = remaining > MAXDWORD ? MAXDWORD : static_cast<DWORD>(remaining);
             DWORD written = 0;
             if (!::WriteFile(h, buf, toWrite, &written, nullptr)) {
-                if (outError) *outError = L"WriteFile(tmp) failed: " + std::to_wstring(::GetLastError());
+                if (outError) *outError = fmt::format("WriteFile(tmp: {}) failed: {}",
+                                                      tmpPath, static_cast<unsigned long>(::GetLastError()));
                 ::CloseHandle(h);
                 ::DeleteFileW(tmpPath.c_str());
                 return false;
@@ -388,14 +413,18 @@ namespace {
         if (destExists) {
             if (!::ReplaceFileW(finalPath.c_str(), tmpPath.c_str(), nullptr,
                                 REPLACEFILE_WRITE_THROUGH, nullptr, nullptr)) {
-                if (outError) *outError = L"ReplaceFileW failed: " + std::to_wstring(::GetLastError());
+                if (outError) *outError = fmt::format("ReplaceFileW({}, {}) failed: {}",
+                                                      finalPath, tmpPath,
+                                                      static_cast<unsigned long>(::GetLastError()));
                 ::DeleteFileW(tmpPath.c_str());
                 return false;
             }
         } else {
             if (!::MoveFileExW(tmpPath.c_str(), finalPath.c_str(),
                                MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) {
-                if (outError) *outError = L"MoveFileExW failed: " + std::to_wstring(::GetLastError());
+                if (outError) *outError = fmt::format("MoveFileExW({}, {}) failed: {}",
+                                                      tmpPath, finalPath,
+                                                      static_cast<unsigned long>(::GetLastError()));
                 ::DeleteFileW(tmpPath.c_str());
                 return false;
             }
@@ -410,34 +439,46 @@ SaveSaveGame(const SaveGame& save, const std::filesystem::path& file)
 {
     try {
         SaveGame tmp = save;
-        // Refresh timestamps (optional)
+        // Ensure schema version and timestamps are up-to-date
+        tmp.schema_version = kCurrentSchemaVersion;
         if (tmp.created_utc.empty())
             tmp.created_utc = NowUtcIso8601();
         tmp.last_saved_utc = NowUtcIso8601();
 
         json j = tmp; // to_json()
 
-        std::filesystem::create_directories(file.parent_path());
+        // Make sure destination directory exists
+        std::error_code ec;
+        std::filesystem::create_directories(file.parent_path(), ec);
 
         // Serialize once
         const std::string serialized = j.dump(2); // pretty-print; change to 0 for compact
 
 #if defined(_WIN32)
-        std::wstring errW;
-        if (!WriteFileAtomicallyW(file, serialized, &errW)) {
-            return std::unexpected(SaveError{ SaveError::Code::IoWriteFail,
-                std::string("Atomic save failed: ") + std::string(errW.begin(), errW.end()) });
+        std::string err;
+        if (!WriteFileAtomicallyW(file, serialized, &err)) {
+            return std::unexpected(SaveError{
+                SaveError::Code::IoWriteFail,
+                err.empty() ? fmt::format("Atomic save failed: {}", file)
+                            : fmt::format("Atomic save failed: {} ({})", file, err)
+            });
         }
 #else
         // Fallback (non-Windows): traditional write (not truly atomic across crashes)
         std::ofstream ofs(file, std::ios::binary | std::ios::trunc);
         if (!ofs) {
-            return std::unexpected(SaveError{ SaveError::Code::IoWriteFail, "Cannot open for write: " + file.string() });
+            return std::unexpected(SaveError{
+                SaveError::Code::IoWriteFail,
+                fmt::format("Cannot open for write: {}", file)
+            });
         }
         ofs.write(serialized.data(), static_cast<std::streamsize>(serialized.size()));
         ofs.flush();
         if (!ofs) {
-            return std::unexpected(SaveError{ SaveError::Code::IoWriteFail, "Write failed for: " + file.string() });
+            return std::unexpected(SaveError{
+                SaveError::Code::IoWriteFail,
+                fmt::format("Write failed for: {}", file)
+            });
         }
 #endif
         return {};
