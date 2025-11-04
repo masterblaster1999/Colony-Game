@@ -6,10 +6,24 @@
 #include <unordered_set>
 #include <chrono>
 #include <iomanip>
+#include <string>
+#include <filesystem>
 
 #if defined(COLONY_USE_JSON_SCHEMA_VALIDATION)
   #include <json-schema.hpp> // pboettch/json-schema-validator
 #endif
+
+// ---- Windows-only atomic replace support -----------------------------------
+#if defined(_WIN32)
+  #ifndef WIN32_LEAN_AND_MEAN
+    #define WIN32_LEAN_AND_MEAN 1
+  #endif
+  #ifndef NOMINMAX
+    #define NOMINMAX 1
+  #endif
+  #include <Windows.h>
+#endif
+// ---------------------------------------------------------------------------
 
 namespace colony::save {
 using json = nlohmann::json;
@@ -37,7 +51,7 @@ static void merge_extras(json& dst, const json& extras)
     if (!dst.is_object() || !extras.is_object()) return;
     for (const auto& [k, v] : extras.items()) {
         // Do not overwrite known fields; only add missing ones.
-        if (!dst.contains(k)) { dst[k] = v; }  // contains() is documented API. :contentReference[oaicite:5]{index=5}
+        if (!dst.contains(k)) { dst[k] = v; }
     }
 }
 
@@ -52,7 +66,7 @@ void from_json(const json& j, Vec3f& v) {
         v.y = j.at(1).get<float>();
         v.z = j.at(2).get<float>();
     } else if (j.is_object()) {
-        v.x = j.value("x", 0.0f); // value(key, default) is the tolerant accessor. :contentReference[oaicite:6]{index=6}
+        v.x = j.value("x", 0.0f); // tolerant accessors
         v.y = j.value("y", 0.0f);
         v.z = j.value("z", 0.0f);
     } else {
@@ -264,7 +278,11 @@ static std::string NowUtcIso8601()
 
 std::expected<SaveGame, SaveError>
 LoadSaveGame(const std::filesystem::path& file,
+#if defined(COLONY_USE_JSON_SCHEMA_VALIDATION)
              const std::filesystem::path& schemaPath)
+#else
+             [[maybe_unused]] const std::filesystem::path& schemaPath)
+#endif
 {
     try {
         std::ifstream ifs(file, std::ios::binary);
@@ -272,7 +290,12 @@ LoadSaveGame(const std::filesystem::path& file,
             return std::unexpected(SaveError{ SaveError::Code::IoOpenFail, "Cannot open file: " + file.string() });
         }
 
-        json doc = json::parse(ifs); // throws on malformed JSON. Basic usage per docs. :contentReference[oaicite:7]{index=7}
+        json doc = json::parse(ifs); // throws on malformed JSON
+
+        // Basic shape check to avoid surprising type errors later
+        if (!doc.is_object()) {
+            return std::unexpected(SaveError{ SaveError::Code::JsonTypeError, "Root JSON must be an object" });
+        }
 
 #if defined(COLONY_USE_JSON_SCHEMA_VALIDATION)
         if (!schemaPath.empty()) {
@@ -284,7 +307,6 @@ LoadSaveGame(const std::filesystem::path& file,
 
             // pboettch/json-schema-validator usage pattern:
             // json_validator val; val.set_root_schema(schema); val.validate(doc);
-            // (Supports draft-07.) :contentReference[oaicite:8]{index=8}
             nlohmann::json_schema::json_validator validator;
             try {
                 validator.set_root_schema(schema);
@@ -301,7 +323,7 @@ LoadSaveGame(const std::filesystem::path& file,
             return std::unexpected(SaveError{ SaveError::Code::MigrationFailed, migErr });
         }
 
-        SaveGame sg = doc.get<SaveGame>(); // uses from_json() for each type. :contentReference[oaicite:9]{index=9}
+        SaveGame sg = doc.get<SaveGame>(); // uses from_json() for each type
         return sg;
     }
     catch (const nlohmann::json::type_error& e) {
@@ -311,6 +333,77 @@ LoadSaveGame(const std::filesystem::path& file,
         return std::unexpected(SaveError{ SaveError::Code::JsonParseError, e.what() });
     }
 }
+
+#if defined(_WIN32)
+// Minimal Windows helper: write to <file>.tmp and then atomically replace/rename.
+namespace {
+    bool WriteFileAtomicallyW(const std::filesystem::path& finalPath,
+                              const std::string& data,
+                              std::wstring* outError)
+    {
+        const auto dir = finalPath.parent_path();
+        if (!dir.empty()) {
+            std::error_code ec;
+            std::filesystem::create_directories(dir, ec);
+        }
+
+        const std::filesystem::path tmpPath = finalPath.wstring() + L".tmp";
+
+        // 1) Write temp file with write-through
+        HANDLE h = ::CreateFileW(
+            tmpPath.c_str(),
+            GENERIC_WRITE,
+            0,                  // no sharing
+            nullptr,
+            CREATE_ALWAYS,
+            FILE_ATTRIBUTE_NORMAL | FILE_FLAG_WRITE_THROUGH,
+            nullptr
+        );
+        if (h == INVALID_HANDLE_VALUE) {
+            if (outError) *outError = L"CreateFileW(tmp) failed: " + std::to_wstring(::GetLastError());
+            return false;
+        }
+
+        const char* buf = data.data();
+        size_t remaining = data.size();
+        while (remaining > 0) {
+            DWORD toWrite = remaining > MAXDWORD ? MAXDWORD : static_cast<DWORD>(remaining);
+            DWORD written = 0;
+            if (!::WriteFile(h, buf, toWrite, &written, nullptr)) {
+                if (outError) *outError = L"WriteFile(tmp) failed: " + std::to_wstring(::GetLastError());
+                ::CloseHandle(h);
+                ::DeleteFileW(tmpPath.c_str());
+                return false;
+            }
+            buf += written;
+            remaining -= written;
+        }
+        ::FlushFileBuffers(h);
+        ::CloseHandle(h);
+
+        // 2) Atomically replace if destination exists; otherwise atomically rename
+        std::error_code stat_ec;
+        const bool destExists = std::filesystem::exists(finalPath, stat_ec);
+
+        if (destExists) {
+            if (!::ReplaceFileW(finalPath.c_str(), tmpPath.c_str(), nullptr,
+                                REPLACEFILE_WRITE_THROUGH, nullptr, nullptr)) {
+                if (outError) *outError = L"ReplaceFileW failed: " + std::to_wstring(::GetLastError());
+                ::DeleteFileW(tmpPath.c_str());
+                return false;
+            }
+        } else {
+            if (!::MoveFileExW(tmpPath.c_str(), finalPath.c_str(),
+                               MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) {
+                if (outError) *outError = L"MoveFileExW failed: " + std::to_wstring(::GetLastError());
+                ::DeleteFileW(tmpPath.c_str());
+                return false;
+            }
+        }
+        return true;
+    }
+} // anonymous namespace
+#endif // _WIN32
 
 std::expected<void, SaveError>
 SaveSaveGame(const SaveGame& save, const std::filesystem::path& file)
@@ -325,11 +418,28 @@ SaveSaveGame(const SaveGame& save, const std::filesystem::path& file)
         json j = tmp; // to_json()
 
         std::filesystem::create_directories(file.parent_path());
+
+        // Serialize once
+        const std::string serialized = j.dump(2); // pretty-print; change to 0 for compact
+
+#if defined(_WIN32)
+        std::wstring errW;
+        if (!WriteFileAtomicallyW(file, serialized, &errW)) {
+            return std::unexpected(SaveError{ SaveError::Code::IoWriteFail,
+                std::string("Atomic save failed: ") + std::string(errW.begin(), errW.end()) });
+        }
+#else
+        // Fallback (non-Windows): traditional write (not truly atomic across crashes)
         std::ofstream ofs(file, std::ios::binary | std::ios::trunc);
         if (!ofs) {
             return std::unexpected(SaveError{ SaveError::Code::IoWriteFail, "Cannot open for write: " + file.string() });
         }
-        ofs << j.dump(2); // pretty-print; change to 0 for compact
+        ofs.write(serialized.data(), static_cast<std::streamsize>(serialized.size()));
+        ofs.flush();
+        if (!ofs) {
+            return std::unexpected(SaveError{ SaveError::Code::IoWriteFail, "Write failed for: " + file.string() });
+        }
+#endif
         return {};
     }
     catch (const std::exception& e) {
