@@ -1,67 +1,42 @@
 #pragma once
-//
-// Tracy integration helpers for Colony-Game (Windows build).
-//
-// Key points:
-//  * Don't pass runtime strings to ZoneScopedN(...) – it expects a string literal.
-//    For dynamic names, open a zone with ZoneScoped and attach text via ZoneName().
-//  * The Tracy macro 'FrameMark' marks the end of a frame; this header exposes a
-//    wrapper named MarkFrame() to avoid macro name collisions.
-//
-// References:
-//   - Lagrange docs: include <Tracy.hpp>, add FrameMark/ZoneScoped at call sites.
-//   - Tracy docs/community: ZoneScopedN’s name is a string literal; use ZoneName() for runtime text.
-//   - Manual notes about string lifetime and transient/dynamic naming.
-//
+
+// Minimal facade to avoid sprinkling TRACY_ENABLE all over the codebase.
+// Works even if TRACY_ENABLE is undefined (all functions become no-ops).
+
 #include <cstddef>
+#include <cstdint>
 
-// ---------- Optional convenience macros ----------
-// These expand to Tracy zones when TRACY_ENABLE is defined, otherwise to no-ops.
-// They are safe to use anywhere in the codebase without additional #ifdefs.
-#if defined(TRACY_ENABLE)
-  #include <tracy/Tracy.hpp>
-  #include <cstring>
-
-  // Unnamed scope
-  #define CG_PROF_SCOPE() \
-      ZoneScoped
-
-  // Named with a STRING LITERAL (fastest path; used for grouping)
-  #define CG_PROF_SCOPE_N(literal) \
-      ZoneScopedN(literal)
-
-  // Dynamically named (runtime C-string). Uses ZoneName() after opening the zone.
-  // NOTE: dynamic names are visible in UI but are not used for compile-time grouping.
-  #define CG_PROF_SCOPE_DYNAMIC(runtimeNameCStr)                                      \
-      do {                                                                            \
-        ZoneScoped;                                                                   \
-        if (const char* __cg_name__ = (runtimeNameCStr))                              \
-          ZoneName(__cg_name__, static_cast<uint32_t>(std::strlen(__cg_name__)));     \
-      } while (0)
-
-#else
-  // No-op fallbacks when Tracy is disabled
-  #define CG_PROF_SCOPE()                      do{}while(0)
-  #define CG_PROF_SCOPE_N(literal)             do{}while(0)
-  #define CG_PROF_SCOPE_DYNAMIC(nameCStr)      do{}while(0)
-#endif
-
-// ---------- Minimal, engine-facing API ----------
-// Tracy itself becomes a no-op when TRACY_ENABLE is not defined.
 namespace prof {
 
-// Mark the end of a frame (call once per frame).
-// Intentionally not named 'FrameMark' to avoid colliding with Tracy macro.
+// Initialize / shutdown (no-ops for Tracy client; kept for symmetry/future)
+void Init(const char* appName = nullptr);
+void Shutdown();
+
+// Mark a frame boundary (appears as vertical frame ticks in Tracy)
 void MarkFrame();
+void MarkFrameNamed(const char* name);
+void MarkFrameStart(const char* name);
+void MarkFrameEnd(const char* name);
 
-// Optional: push a transient message into the capture (visible in timeline).
-void Message(const char* text);
+// Name threads in Tracy UI (show up on the left-side thread list)
+void SetThreadName(const char* name);
 
-// Example scope helper (RAII) – safe for dynamic names.
-// Opens a zone; if a name is provided, attaches it at runtime via ZoneName().
-struct Scope {
-  explicit Scope(const char* name = nullptr);
-  ~Scope();
-};
+// Emit an arbitrary message into the timeline (optional helper)
+void Message(const char* text, std::size_t len);
+void MessageColor(const char* text, std::size_t len, std::uint32_t rgb);
 
+// RAII zone macro for scopes. Example:
+//   void Update() { PROF_SCOPE("Update"); ... }
 } // namespace prof
+
+// Use a macro to create a scoped zone with an optional runtime name.
+// (This never redeclares any Tracy internals.)
+#if defined(TRACY_ENABLE)
+  #include <Tracy.hpp>
+  #include <cstring>
+  #define PROF_SCOPE(nameLiteralOrPtr) \
+      ZoneScoped; \
+      do { const char* _nm = (nameLiteralOrPtr); if (_nm) ZoneName(_nm, (uint32_t)std::strlen(_nm)); } while(0)
+#else
+  #define PROF_SCOPE(nameLiteralOrPtr) do { (void)sizeof(nameLiteralOrPtr); } while(0)
+#endif
