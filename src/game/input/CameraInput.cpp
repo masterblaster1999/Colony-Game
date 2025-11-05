@@ -31,14 +31,27 @@
 //   // build your 2D view matrix as: screen = (world - g_cam.Center()) * g_cam.Zoom() + 0.5*viewport
 //
 // -------------------------------------------------------------------------------------------------
-#define NOMINMAX
-#include <windows.h>
+// Macro hygiene: guard against redefinition because these may already be set via project settings.
+// See: Using the Windows headers (WIN32_LEAN_AND_MEAN) and common NOMINMAX guidance.
+#ifndef WIN32_LEAN_AND_MEAN
+#  define WIN32_LEAN_AND_MEAN
+#endif
+#ifndef NOMINMAX
+#  define NOMINMAX
+#endif
+#include <Windows.h>
 #include <windowsx.h>
-#include <stdint.h>
+
+#include <cstdint>
 #include <cmath>
 #include <algorithm>
+#include <vector>
 
 namespace colony {
+
+namespace {
+constexpr float kEps = 1e-4f;
+}
 
 // ------------------------------- math helpers --------------------------------
 struct Vec2 {
@@ -52,11 +65,6 @@ struct Vec2 {
     Vec2& operator-=(const Vec2& v){ x -= v.x; y -= v.y; return *this; }
     Vec2& operator*=(float s){ x *= s; y *= s; return *this; }
 };
-
-template <class T>
-static inline T clamp(T v, T lo, T hi) {
-    return std::max(lo, std::min(v, hi));
-}
 
 // ------------------------------- configuration --------------------------------
 // Feel free to tweak these at runtime or wire them to a settings menu.
@@ -89,7 +97,9 @@ public:
 
     // Call once after window creation
     void InitializeRawInput(HWND hwnd) {
+        m_rawInputReady = false;
         if (!m_cfg.useRawInput) return;
+
         RAWINPUTDEVICE rid{};
         rid.usUsagePage = 0x01; // Generic desktop controls
         rid.usUsage     = 0x02; // Mouse
@@ -97,35 +107,56 @@ public:
         // We do NOT use RIDEV_NOLEGACY to keep WM_MOUSEMOVE available as a fallback.
         rid.dwFlags     = RIDEV_INPUTSINK;
         rid.hwndTarget  = hwnd;
-        RegisterRawInputDevices(&rid, 1, sizeof(rid));
+
+        if (RegisterRawInputDevices(&rid, 1, sizeof(rid))) {
+            m_rawInputReady = true;
+        }
     }
 
     // Return true if the message was consumed.
     bool HandleMessage(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
         switch (msg) {
-            case WM_ACTIVATEAPP:
+            case WM_ACTIVATEAPP: {
                 m_appActive = (wParam == TRUE);
-                break;
+                if (!m_appActive && m_isDragging) {
+                    m_isDragging = false;
+                    ReleaseCapture();
+                }
+            } break;
+
+            case WM_CAPTURECHANGED: {
+                // If someone else takes capture, stop dragging.
+                if (m_isDragging) {
+                    m_isDragging = false;
+                }
+            } break;
 
             case WM_SIZE:
                 // Handled in Tick via params, but we can cache if you prefer.
                 break;
 
             case WM_INPUT: {
-                if (!m_cfg.useRawInput || !m_isDragging) break;
+                if (!(m_cfg.useRawInput && m_rawInputReady && m_isDragging)) break;
+
                 UINT size = 0;
-                if (GetRawInputData((HRAWINPUT)lParam, RID_INPUT, nullptr, &size, sizeof(RAWINPUTHEADER)) != 0) break;
+                if (GetRawInputData(reinterpret_cast<HRAWINPUT>(lParam),
+                                    RID_INPUT, nullptr, &size, sizeof(RAWINPUTHEADER)) != 0) {
+                    break;
+                }
                 m_rawBuffer.resize(size);
-                if (GetRawInputData((HRAWINPUT)lParam, RID_INPUT, m_rawBuffer.data(), &size, sizeof(RAWINPUTHEADER)) != size) break;
+                if (GetRawInputData(reinterpret_cast<HRAWINPUT>(lParam),
+                                    RID_INPUT, m_rawBuffer.data(), &size, sizeof(RAWINPUTHEADER)) != size) {
+                    break;
+                }
 
                 RAWINPUT* ri = reinterpret_cast<RAWINPUT*>(m_rawBuffer.data());
                 if (ri->header.dwType == RIM_TYPEMOUSE) {
                     const RAWMOUSE& rm = ri->data.mouse;
                     if ((rm.usFlags & MOUSE_MOVE_ABSOLUTE) == 0) {
                         // Relative motion; apply immediately. Convert from device delta to world units.
-                        // We divide by zoom so pan speed feels consistent regardless of zoom level.
-                        float dx = static_cast<float>(rm.lLastX);
-                        float dy = static_cast<float>(rm.lLastY);
+                        // Divide by zoom so pan speed feels consistent regardless of zoom level.
+                        const float dx = static_cast<float>(rm.lLastX);
+                        const float dy = static_cast<float>(rm.lLastY);
                         PanByPixels(dx, dy);
                         return true; // consumed
                     }
@@ -134,7 +165,7 @@ public:
 
             case WM_MOUSEMOVE: {
                 // Fallback panning when not using raw input (or raw not active).
-                if (m_isDragging && (!m_cfg.useRawInput)) {
+                if (m_isDragging && (!m_cfg.useRawInput || !m_rawInputReady)) {
                     const POINTS pt = MAKEPOINTS(lParam);
                     Vec2 now(static_cast<float>(pt.x), static_cast<float>(pt.y));
                     Vec2 delta = now - m_lastMouseClient;
@@ -162,7 +193,7 @@ public:
 
             case WM_MOUSEWHEEL: {
                 // Cursor-anchored zoom: keep the world point under the cursor fixed on screen.
-                const int zDelta = GET_WHEEL_DELTA_WPARAM(wParam); // multiples of WHEEL_DELTA (120)
+                const int zDelta  = GET_WHEEL_DELTA_WPARAM(wParam); // multiples of WHEEL_DELTA (120)
                 const int notches = zDelta / WHEEL_DELTA;
                 if (notches != 0) {
                     POINT screen = { GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) };
@@ -212,14 +243,14 @@ public:
                 }
                 if (dir.x != 0.f || dir.y != 0.f) {
                     // Move in world units; divide by zoom so speed is consistent visually.
-                    const float speed = m_cfg.edgePanSpeedUnits / std::max(0.0001f, m_zoom);
+                    const float speed = m_cfg.edgePanSpeedUnits / std::max(kEps, m_zoom);
                     m_center += dir * (speed * dtSeconds);
                 }
             }
         }
 
         // Clamp zoom (center clamping is up to your game world bounds)
-        m_zoom = clamp(m_zoom, m_cfg.zoomMin, m_cfg.zoomMax);
+        m_zoom = std::clamp(m_zoom, m_cfg.zoomMin, m_cfg.zoomMax);
     }
 
     // --------------------------- camera & transforms ---------------------------
@@ -252,14 +283,14 @@ public:
 
     // Optional: programmatic controls
     void SetCenter(const Vec2& c) { m_center = c; }
-    void SetZoom(float z)         { m_zoom   = clamp(z, m_cfg.zoomMin, m_cfg.zoomMax); }
+    void SetZoom(float z)         { m_zoom   = std::clamp(z, m_cfg.zoomMin, m_cfg.zoomMax); }
     void SetPaused(bool p)        { m_paused = p; }
-    void SetTimeScale(float s)    { m_timeScale = clamp(s, m_cfg.timeScaleMin, m_cfg.timeScaleMax); }
+    void SetTimeScale(float s)    { m_timeScale = std::clamp(s, m_cfg.timeScaleMin, m_cfg.timeScaleMax); }
 
 private:
     // Apply pixel delta to camera center (dragging); invert Y for typical screen coords (top-left origin).
     void PanByPixels(float dxPixels, float dyPixels) {
-        const float mul = (m_cfg.dragPanSpeedUnits / std::max(0.0001f, m_zoom));
+        const float mul = (m_cfg.dragPanSpeedUnits / std::max(kEps, m_zoom));
         // Move the camera opposite to mouse drag to create "grab & move" feel.
         m_center.x -= dxPixels * mul;
         m_center.y -= dyPixels * mul;
@@ -273,7 +304,7 @@ private:
 
         // Update zoom:
         const float factor = std::pow(m_cfg.zoomStepPerNotch, static_cast<float>(notches));
-        m_zoom = clamp(m_zoom * factor, m_cfg.zoomMin, m_cfg.zoomMax);
+        m_zoom = std::clamp(m_zoom * factor, m_cfg.zoomMin, m_cfg.zoomMax);
 
         // Recompute center so the same world point stays under the cursor.
         Vec2 half(static_cast<float>(m_viewW) * 0.5f, static_cast<float>(m_viewH) * 0.5f);
@@ -329,8 +360,8 @@ private:
     int   m_viewH  = 1;
 
     // Input state
-    bool  m_appActive     = true;
-    bool  m_isDragging    = false;
+    bool  m_appActive      = true;
+    bool  m_isDragging     = false;
     Vec2  m_lastMouseClient{0.f, 0.f};
     bool  m_regenRequested = false;
 
@@ -338,19 +369,9 @@ private:
     bool  m_paused    = false;
     float m_timeScale = 1.0f;
 
-    // Raw input scratch
-    struct ByteBuffer {
-        BYTE* dataPtr = nullptr;
-        size_t sz = 0;
-        ~ByteBuffer(){ delete[] dataPtr; }
-        void resize(size_t n) {
-            if (n <= sz) return;
-            delete[] dataPtr;
-            dataPtr = new BYTE[n];
-            sz = n;
-        }
-        BYTE* data(){ return dataPtr; }
-    } m_rawBuffer;
+    // Raw input
+    bool               m_rawInputReady = false;
+    std::vector<BYTE>  m_rawBuffer;
 };
 
 } // namespace colony
