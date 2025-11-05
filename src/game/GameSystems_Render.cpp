@@ -21,19 +21,10 @@
 namespace colony {
 
 namespace {
-  // Portable "alive entity" counter for any EnTT version:
-  // EnTT guarantees registry.valid(e). The raw list [data(), data()+size())
-  // contains both valid and destroyed entities; filter via valid().
-  // Ref: EnTT wiki (registry.valid), and docs noting data()/size()
-  // also include destroyed IDs. :contentReference[oaicite:1]{index=1}
+  // Modern, version-stable alive-entity count:
+  // Use the official registry API rather than raw registry buffers.
   inline std::size_t CountAliveEntities(const entt::registry& reg) {
-    const auto* begin = reg.data();
-    const auto* end   = begin + reg.size();
-    std::size_t alive = 0;
-    for (auto it = begin; it != end; ++it) {
-      if (reg.valid(*it)) { ++alive; }
-    }
-    return alive;
+    return static_cast<std::size_t>(reg.alive());
   }
 
 #if COLONY_HAVE_IMGUI
@@ -71,7 +62,7 @@ void RenderFrame([[maybe_unused]] entt::registry& r,
       ImGui::Separator();
       ImGui::Text("FPS (EMA): %.1f", s_fps.ema);
 
-      // Portable alive-entity count (no registry.alive() dependency).
+      // Alive-entity count via modern EnTT API.
       const std::size_t entities_alive = CountAliveEntities(r);
       ImGui::Text("Entities (alive): %zu", entities_alive);
     }
