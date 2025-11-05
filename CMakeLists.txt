@@ -193,6 +193,24 @@ if(TARGET colony_core)
 endif()
 
 # ------------------------------------------------------------------------------
+# Procedural generation add-ons (procgen)
+# ------------------------------------------------------------------------------
+add_library(procgen
+  src/procgen/WorldGen.cpp
+  src/procgen/Rivers.cpp
+  src/procgen/PoissonDisk.cpp
+  src/procgen/ThermalErosion.cpp
+  src/procgen/ResourceGen.cpp
+  src/procgen/SettlementGen.cpp
+)
+target_include_directories(procgen PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
+
+# Link the add-ons into the core/game target if it exists
+if(TARGET colony_core)
+  target_link_libraries(colony_core PRIVATE procgen)
+endif()
+
+# ------------------------------------------------------------------------------
 # Stage / install / tests / summary
 # ------------------------------------------------------------------------------
 include(CGGameTarget)
