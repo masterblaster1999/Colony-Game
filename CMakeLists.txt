@@ -97,6 +97,10 @@ if(MSVC)
     /W4
     /MP
   )
+  # CI-only: treat warnings as errors (local builds remain friendly)
+  if(DEFINED ENV{GITHUB_ACTIONS} OR DEFINED ENV{CI})
+    add_compile_options(/WX)
+  endif()
 endif()
 
 # ------------------------------------------------------------------------------
