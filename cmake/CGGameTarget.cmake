@@ -124,19 +124,34 @@ endif()
 # HLSL pipeline hookup (Visual Studio or offline manifest)
 # --------------------------------------------------------------------------
 if(MSVC AND CMAKE_GENERATOR MATCHES "Visual Studio")
-  include(${CMAKE_SOURCE_DIR}/cmake/CGShaders.cmake OPTIONAL)
-  cg_configure_vs_hlsl(ColonyGame)
+  # Load VS HLSL helpers (hard fail if missing so we don't call an undefined function)
+  include(${CMAKE_SOURCE_DIR}/cmake/CGShaders.cmake)  # no OPTIONAL
+  if(COMMAND cg_configure_vs_hlsl)
+    cg_configure_vs_hlsl(ColonyGame)
+  else()
+    message(WARNING "cg_configure_vs_hlsl not found; falling back to offline shader build.")
+    include(${CMAKE_SOURCE_DIR}/cmake/ColonyShaders.cmake OPTIONAL)
+    if(COMMAND colony_register_shaders AND EXISTS "${CMAKE_SOURCE_DIR}/renderer/Shaders/shaders.json")
+      colony_register_shaders(
+        TARGET     ColonyGame
+        MANIFEST   "${CMAKE_SOURCE_DIR}/renderer/Shaders/shaders.json"
+        OUTPUT_DIR "${CMAKE_BINARY_DIR}/shaders"
+      )
+      if(COMMAND colony_install_shaders)
+        colony_install_shaders(TARGET ColonyGame DESTINATION bin/shaders)
+      endif()
+    endif()
+  endif()
 else()
   include(${CMAKE_SOURCE_DIR}/cmake/ColonyShaders.cmake OPTIONAL)
-  if(EXISTS "${CMAKE_SOURCE_DIR}/renderer/Shaders/shaders.json")
+  if(COMMAND colony_register_shaders AND EXISTS "${CMAKE_SOURCE_DIR}/renderer/Shaders/shaders.json")
     colony_register_shaders(
       TARGET     ColonyGame
       MANIFEST   "${CMAKE_SOURCE_DIR}/renderer/Shaders/shaders.json"
       OUTPUT_DIR "${CMAKE_BINARY_DIR}/shaders"
     )
-    colony_install_shaders(
-      TARGET      ColonyGame
-      DESTINATION bin/shaders
-    )
+    if(COMMAND colony_install_shaders)
+      colony_install_shaders(TARGET ColonyGame DESTINATION bin/shaders)
+    endif()
   endif()
 endif()
