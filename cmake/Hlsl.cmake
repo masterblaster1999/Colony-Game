@@ -1,4 +1,4 @@
-# cmake/Hlsl.cmake  (Improved & future‑proof)
+# cmake/Hlsl.cmake  (Improved & future‑proof + VS drop‑in integrated)
 cmake_minimum_required(VERSION 3.19)
 
 # Global defaults
@@ -65,15 +65,16 @@ function(_dot_model in out)
 endfunction()
 
 # ---------- Inference from filename ----------
+# (Patched: default ENTRY is 'main' for *all* stages)
 function(_infer_stage_and_entry rel out_stage out_entry)
   string(TOLOWER "${rel}" _rel)
   set(_stage "") ; set(_entry "")
-  if(_rel MATCHES "(^|/)(cs[^/]*|[^/]*_cs)\\.hlsl$")              set(_stage "cs") set(_entry "main")
-  elseif(_rel MATCHES "(^|/)(vs[^/]*|[^/]*_vs)\\.hlsl$")          set(_stage "vs") set(_entry "VSMain")
-  elseif(_rel MATCHES "(^|/)(ps[^/]*|[^/]*_ps)\\.hlsl$")          set(_stage "ps") set(_entry "PSMain")
-  elseif(_rel MATCHES "(^|/)(ds[^/]*|[^/]*_ds|domain[^/]*).hlsl$")set(_stage "ds") set(_entry "DSMain")
-  elseif(_rel MATCHES "(^|/)(hs[^/]*|[^/]*_hs|hull[^/]*).hlsl$")  set(_stage "hs") set(_entry "HSMain")
-  elseif(_rel MATCHES "(^|/)(gs[^/]*|[^/]*_gs|geom[^/]*).hlsl$")  set(_stage "gs") set(_entry "GSMain")
+  if(_rel MATCHES "(^|/)(cs[^/]*|[^/]*_cs)\\.hlsl$")               set(_stage "cs") set(_entry "main")
+  elseif(_rel MATCHES "(^|/)(vs[^/]*|[^/]*_vs)\\.hlsl$")           set(_stage "vs") set(_entry "main")
+  elseif(_rel MATCHES "(^|/)(ps[^/]*|[^/]*_ps)\\.hlsl$")           set(_stage "ps") set(_entry "main")
+  elseif(_rel MATCHES "(^|/)(ds[^/]*|[^/]*_ds|domain[^/]*).hlsl$") set(_stage "ds") set(_entry "main")
+  elseif(_rel MATCHES "(^|/)(hs[^/]*|[^/]*_hs|hull[^/]*).hlsl$")   set(_stage "hs") set(_entry "main")
+  elseif(_rel MATCHES "(^|/)(gs[^/]*|[^/]*_gs|geom[^/]*).hlsl$")   set(_stage "gs") set(_entry "main")
   endif()
   set(${out_stage} "${_stage}" PARENT_SCOPE)
   set(${out_entry} "${_entry}" PARENT_SCOPE)
@@ -239,7 +240,7 @@ function(cg_compile_hlsl)
   list(APPEND _fxc_inc "/I" "${CG_SHADER_DIR}")
   list(APPEND _dxc_inc "-I" "${CG_SHADER_DIR}")
 
-  # Debug/Release flags (per-argument generator expressions; see notes)
+  # Debug/Release flags
   set(_dxc_cfg
     $<$<CONFIG:Debug>:-Od>
     $<$<CONFIG:Debug>:-Zi>
@@ -662,13 +663,14 @@ function(cg_compile_hlsl_from_table)
 endfunction()
 
 # ==================================================================================================
-# Visual Studio property-based HLSL path
+# Visual Studio property-based HLSL path (DROP‑IN integrated)
 #   cg_configure_vs_hlsl(TARGET <tgt> [MODEL <6.3>] [MANIFEST <path>] [ROOT <shader_root>])
 #   - Uses VS per-file HLSL properties; SM 6.x => DXC; SM 5.x => FXC.
 #   - MANIFEST supports two schemas:
 #       A) Simple: { "shaders":[{ "file": "...", "type":"vs|ps|cs|...", "entry":"...", "model":"6.3", "defines":[...], "includes":[...] }, ...] }
 #       B) Table:  { "defaults":{...}, "shaders":[{ "src":"...", "stages":[{ "stage":"vs", "entry":"...", "profile":"vs_6_3", "defines":[...], "includes":[...] }, ...]}] }
 #   - If MANIFEST is missing/empty, glob ROOT/*.hlsl and infer stage/entry from filename.
+#   - (Patched) Writes compiled objects as $(OutDir)/%(Filename).cso (drop‑in behavior).
 # ==================================================================================================
 function(cg_configure_vs_hlsl TARGET)
   if(NOT MSVC OR NOT CMAKE_GENERATOR MATCHES "Visual Studio")
@@ -701,6 +703,7 @@ function(cg_configure_vs_hlsl TARGET)
   endif()
 
   # Helper to set VS props for one file/stage
+  # (Patched) outputs .cso to $(OutDir), entrypoint = main by default from inference.
   function(_apply_vs_props _abs _stage _entry _model _defines _includes)
     _vs_type_for_stage("${_stage}" _vstype)
     if(NOT _vstype)
@@ -722,7 +725,7 @@ function(cg_configure_vs_hlsl TARGET)
       string(APPEND _flags " /D${def}")
     endforeach()
 
-    # Apply per-file properties
+    # Apply per-file properties (VS will select DXC for SM 6.x)
     set_source_files_properties("${_abs}" PROPERTIES
       VS_SHADER_TYPE                   "${_vstype}"
       VS_SHADER_MODEL                  "${_model}"
@@ -730,7 +733,7 @@ function(cg_configure_vs_hlsl TARGET)
       VS_SHADER_ENABLE_DEBUG           "$<$<CONFIG:Debug>:true>"
       VS_SHADER_DISABLE_OPTIMIZATIONS  "$<$<CONFIG:Debug>:true>"
       VS_SHADER_FLAGS                  "$<$<CONFIG:Debug>:/Zi /Od>${_flags}"
-      VS_SHADER_OBJECT_FILE_NAME       "$(IntDir)%(Filename).%(Extension)"
+      VS_SHADER_OBJECT_FILE_NAME       "$(OutDir)/%(Filename).cso"
     )
   endfunction()
 
@@ -809,6 +812,10 @@ function(cg_configure_vs_hlsl TARGET)
             endif()
 
             target_sources(${TARGET} PRIVATE "${_abs}")
+            if(NOT _entry)
+              # if entry not provided, default to 'main'
+              set(_entry "main")
+            endif()
             _apply_vs_props("${_abs}" "${_stage}" "${_entry}" "${_model_use}" "${_defs}" "${_incs}")
           endforeach()
           set(_handled TRUE)
