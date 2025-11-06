@@ -1,106 +1,79 @@
-# cmake/shaders.cmake
-# Windows-only thin wrapper that preserves the legacy cg_compile_hlsl() API
-# and forwards to colony_add_hlsl() implemented in cmake/ColonyHLSL.cmake.
-# No shader compiler flags or command-lines are duplicated here.
+# cmake/Shaders.cmake
+# Compiles HLSL with DXC and picks the correct stage from the filename suffix.
+# Supports: *_vs.hlsl, *_ps.hlsl, *_cs.hlsl (extend as needed).
 
-include_guard(GLOBAL)
-
-if(NOT WIN32)
-  message(STATUS "shaders.cmake: non-Windows generator detected; module is a no-op.")
-  return()
-endif()
-
-# Ensure our cmake/ folder is on the CMake module path (usually set at the top level, but
-# keeping this here makes the script robust when included directly).
-list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_LIST_DIR}")
-
-# Load the portable helper that implements colony_add_hlsl()
-include(ColonyHLSL OPTIONAL RESULT_VARIABLE _colony_hlsl_loaded)
-if(NOT _colony_hlsl_loaded OR NOT COMMAND colony_add_hlsl)
-  message(WARNING
-    "shaders.cmake: ColonyHLSL.cmake not found or incomplete; cg_compile_hlsl() unavailable.")
-  return()
-endif()
-
-include(CMakeParseArguments)
-
-# Usage:
-#   cg_compile_hlsl(
-#     NAME         <label>            # cosmetic, for logs/IDE only
-#     SRC          <path/to/file.hlsl>
-#     ENTRY        <entrypoint>       # default: main
-#     PROFILE      <vs_5_0|ps_6_7>    # drives model + compiler selection
-#     [INCLUDEDIRS <dir> ...]
-#     [DEFINES     FOO=1 BAR ...]
-#     OUTVAR       <var-to-receive-output-path>
-#   )
-#
-# Effect:
-#   - Registers an add_custom_command via colony_add_hlsl() that actually compiles the shader.
-#   - Returns the expected output file path in OUTVAR so callers can create a target that
-#     DEPENDS on it (as your top-level CMakeLists does for target 'shaders').
-#
-function(cg_compile_hlsl)
+function(colony_add_hlsl OUT_VAR)
   set(options)
-  set(oneValueArgs NAME SRC ENTRY PROFILE OUTVAR)
-  set(multiValueArgs INCLUDEDIRS DEFINES)
-  cmake_parse_arguments(CG "${options}" "${oneValueArgs}" "${multiValueArgs}" ${ARGN})
+  set(oneValueArgs OUTDIR)
+  set(multiValueArgs FILES INCLUDES DEFINES)
+  cmake_parse_arguments(HLSL "${options}" "${oneValueArgs}" "${multiValueArgs}" ${ARGN})
 
-  if(NOT CG_SRC)
-    message(FATAL_ERROR "cg_compile_hlsl: SRC is required.")
-  endif()
-  if(NOT CG_OUTVAR)
-    message(FATAL_ERROR "cg_compile_hlsl: OUTVAR is required.")
+  if (NOT HLSL_OUTDIR)
+    message(FATAL_ERROR "colony_add_hlsl: OUTDIR is required")
   endif()
 
-  # Default entry
-  if(NOT CG_ENTRY)
-    set(CG_ENTRY "main")
+  # Find DXC on Windows (prefers the one from PATH / Windows SDK / vcpkg).
+  if (WIN32)
+    find_program(DXC_EXECUTABLE NAMES dxc HINTS
+      "$ENV{VCToolsInstallDir}/bin/Hostx64/x64"
+      "$ENV{WindowsSdkDir}/bin/x64"
+      "${VCPKG_INSTALLED_DIR}/${VCPKG_TARGET_TRIPLET}/tools/dxc"
+    )
+  endif()
+  if (NOT DXC_EXECUTABLE)
+    message(FATAL_ERROR "colony_add_hlsl: dxc.exe not found")
   endif()
 
-  # Derive shader model from PROFILE, e.g. vs_5_0 -> 5.0 ; ps_6_7 -> 6.7
-  set(_model "5.0")
-  if(CG_PROFILE)
-    string(REGEX MATCH "_([0-9]+)_([0-9]+)" _m "${CG_PROFILE}")
-    if(_m)
-      set(_model "${CMAKE_MATCH_1}.${CMAKE_MATCH_2}")
+  file(MAKE_DIRECTORY "${HLSL_OUTDIR}")
+
+  set(_outputs)
+  foreach(SRC IN LISTS HLSL_FILES)
+    get_filename_component(NAME "${SRC}" NAME_WE)
+    get_filename_component(ABS  "${SRC}" ABSOLUTE)
+
+    # Infer stage from suffix
+    set(PROFILE "")
+    if (NAME MATCHES "_vs$")
+      set(PROFILE "vs_6_0")
+    elseif (NAME MATCHES "_ps$")
+      set(PROFILE "ps_6_0")
+    elseif (NAME MATCHES "_cs$")
+      set(PROFILE "cs_6_0")
+    else()
+      message(FATAL_ERROR "Unknown shader stage for ${SRC} (expected *_vs/_ps/_cs.hlsl)")
     endif()
-  endif()
 
-  # Pick compiler + object extension from PROFILE
-  set(_compiler "AUTO")
-  set(_ext ".cso")
-  if(CG_PROFILE MATCHES "_6_")
-    set(_compiler "DXC")
-    set(_ext ".dxil")
-  endif()
+    # Output .cso next to other binary outputs
+    set(OUT "${HLSL_OUTDIR}/${NAME}.cso")
 
-  # Where ColonyHLSL will emit objects/headers
-  set(_outdir "${CMAKE_CURRENT_BINARY_DIR}/shaders")
+    # Compose include/define args
+    set(INC_ARGS "")
+    foreach(inc IN LISTS HLSL_INCLUDES)
+      list(APPEND INC_ARGS "-I" "${inc}")
+    endforeach()
 
-  # Compute the output object path for this single source (so caller can DEPEND on it)
-  get_filename_component(_stem "${CG_SRC}" NAME_WE)
-  set(_outpath "${_outdir}/objects/${_stem}${_ext}")
+    set(DEF_ARGS "")
+    foreach(def IN LISTS HLSL_DEFINES)
+      list(APPEND DEF_ARGS "-D" "${def}")
+    endforeach()
 
-  # Provide a dummy target to satisfy colony_add_hlsl()'s requirement that a target exists.
-  # (In the non-VS path colony_add_hlsl() emits stand-alone custom commands; this target
-  # is just a placeholder and is not built directly.)
-  if(NOT TARGET colony_shader_legacy)
-    add_custom_target(colony_shader_legacy)
-  endif()
+    # Debug info in Debug; optimized in Release
+    set(DCOMMON -E main -T ${PROFILE} ${INC_ARGS} ${DEF_ARGS})
+    if (CMAKE_BUILD_TYPE STREQUAL "Debug")
+      list(APPEND DCOMMON -Zi -Qembed_debug -Od -WX)
+    else()
+      list(APPEND DCOMMON -O3 -Qstrip_debug -Qstrip_reflect -WX)
+    endif()
 
-  # Delegate to the real implementation (no duplication here)
-  colony_add_hlsl(colony_shader_legacy
-    SOURCES  "${CG_SRC}"
-    ENTRY    "${CG_ENTRY}"
-    MODEL    "${_model}"
-    OUTDIR   "${_outdir}"
-    COMPILER "${_compiler}"
-    EMIT     object
-    DEFINES  ${CG_DEFINES}
-    INCLUDES ${CG_INCLUDEDIRS}
-  )
+    add_custom_command(
+      OUTPUT  "${OUT}"
+      COMMAND "${DXC_EXECUTABLE}" ${DCOMMON} -Fo "${OUT}" "${ABS}"
+      DEPENDS "${ABS}"
+      COMMENT "HLSL: ${NAME}.hlsl -> ${NAME}.cso (${PROFILE})"
+      VERBATIM
+    )
+    list(APPEND _outputs "${OUT}")
+  endforeach()
 
-  # Hand back the expected output path
-  set(${CG_OUTVAR} "${_outpath}" PARENT_SCOPE)
+  set(${OUT_VAR} "${_outputs}" PARENT_SCOPE)
 endfunction()
