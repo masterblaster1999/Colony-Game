@@ -38,5 +38,6 @@ namespace gfx
 {
     // Factory for the D3D11-backed renderer.
     // Implement in your D3D11 renderer source (not provided here).
-    std::unique_ptr<IRenderer2D> CreateRenderer2D_D3D11(render::D3D11Device& device);
+    [[nodiscard]] std::unique_ptr<IRenderer2D>
+    CreateRenderer2D_D3D11(render::D3D11Device& device);
 } // namespace gfx
