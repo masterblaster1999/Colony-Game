@@ -29,11 +29,14 @@ namespace gfx
         // Primitives (minimal to start)
         virtual void DrawFilledRect(float x, float y, float w, float h, Color c) = 0;
     };
+} // namespace gfx
 
-    // Forward declaration of the D3D11 device wrapper so renderer2d.h stays generic.
-    class D3D11Device;
+// Forward declare the actual D3D11 device wrapper in its real namespace.
+namespace render { struct D3D11Device; }  // see src/render/d3d11_device.h
 
+namespace gfx
+{
     // Factory for the D3D11-backed renderer.
     // Implement in your D3D11 renderer source (not provided here).
-    std::unique_ptr<IRenderer2D> CreateRenderer2D_D3D11(D3D11Device& device);
+    std::unique_ptr<IRenderer2D> CreateRenderer2D_D3D11(render::D3D11Device& device);
 } // namespace gfx
