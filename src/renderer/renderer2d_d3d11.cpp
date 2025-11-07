@@ -7,6 +7,8 @@
 #include <fstream>
 #include <cstdint>
 #include <memory>
+#include <algorithm>
+#include <cstring>
 
 using Microsoft::WRL::ComPtr;
 
@@ -21,14 +23,20 @@ static bool LoadFileBytes(const wchar_t* path, std::vector<uint8_t>& out)
 {
     std::ifstream f(path, std::ios::binary);
     if (!f) return false;
+
     f.seekg(0, std::ios::end);
-    const auto sz = static_cast<size_t>(f.tellg());
+    const std::streamoff endPos = f.tellg();
+    if (endPos <= 0) return false;
+
+    const size_t sz = static_cast<size_t>(endPos);
     f.seekg(0, std::ios::beg);
+
     out.resize(sz);
     return static_cast<bool>(f.read(reinterpret_cast<char*>(out.data()), sz));
 }
 
-class Renderer2D_D3D11::Impl {
+// NOTE: keep this a 'struct' to match the header forward-declaration and avoid C4099.
+struct Renderer2D_D3D11::Impl {
 public:
     explicit Impl(render::D3D11Device& dev) : m_dev(dev) {}
 
@@ -48,13 +56,13 @@ public:
 
         // Input layout
         D3D11_INPUT_ELEMENT_DESC il[] = {
-            { "POSITION", 0, DXGI_FORMAT_R32G32_FLOAT,    0, 0,   D3D11_INPUT_PER_VERTEX_DATA, 0 },
-            { "COLOR",    0, DXGI_FORMAT_R32G32B32A32_FLOAT, 0, 8, D3D11_INPUT_PER_VERTEX_DATA, 0 },
+            { "POSITION", 0, DXGI_FORMAT_R32G32_FLOAT,         0, 0, D3D11_INPUT_PER_VERTEX_DATA, 0 },
+            { "COLOR",    0, DXGI_FORMAT_R32G32B32A32_FLOAT,   0, 8, D3D11_INPUT_PER_VERTEX_DATA, 0 },
         };
         if (FAILED(d->CreateInputLayout(il, 2, vs.data(), vs.size(), m_il.GetAddressOf()))) return false;
 
         // Dynamic vertex buffer (grow on demand)
-        if (!createVB(1024)) return false;
+        if (!createVB(1024u)) return false;
 
         // Blend state (alpha blending)
         D3D11_BLEND_DESC bd{};
@@ -70,14 +78,14 @@ public:
 
         // Rasterizer: no cull, solid
         D3D11_RASTERIZER_DESC rs{};
-        rs.FillMode = D3D11_FILL_SOLID;
-        rs.CullMode = D3D11_CULL_NONE;
+        rs.FillMode      = D3D11_FILL_SOLID;
+        rs.CullMode      = D3D11_CULL_NONE;
         rs.ScissorEnable = FALSE;
         if (FAILED(d->CreateRasterizerState(&rs, m_rast.GetAddressOf()))) return false;
 
         // Sampler: linear clamp (for future textured quads)
         D3D11_SAMPLER_DESC sd{};
-        sd.Filter = D3D11_FILTER_MIN_MAG_MIP_LINEAR;
+        sd.Filter   = D3D11_FILTER_MIN_MAG_MIP_LINEAR;
         sd.AddressU = sd.AddressV = sd.AddressW = D3D11_TEXTURE_ADDRESS_CLAMP;
         if (FAILED(d->CreateSamplerState(&sd, m_samp.GetAddressOf()))) return false;
 
@@ -121,13 +129,14 @@ public:
         // Grow VB if needed
         const UINT bytesNeeded = static_cast<UINT>(m_cpu.size() * sizeof(Vertex));
         if (bytesNeeded > m_vbSize) {
-            createVB(std::max(bytesNeeded, m_vbSize * 2));
+            const UINT newSize = std::max<UINT>(bytesNeeded, m_vbSize ? (m_vbSize * 2u) : bytesNeeded);
+            if (!createVB(newSize)) return;
         }
 
         // Update VB
         D3D11_MAPPED_SUBRESOURCE map{};
         if (SUCCEEDED(dc->Map(m_vb.Get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &map))) {
-            memcpy(map.pData, m_cpu.data(), bytesNeeded);
+            std::memcpy(map.pData, m_cpu.data(), bytesNeeded);
             dc->Unmap(m_vb.Get(), 0);
         } else {
             return;
@@ -155,39 +164,47 @@ private:
     bool createVB(UINT sizeBytes)
     {
         auto* d = m_dev.device();
+        if (!d) return false;
+
         D3D11_BUFFER_DESC bd{};
-        bd.ByteWidth = sizeBytes;
-        bd.Usage = D3D11_USAGE_DYNAMIC;
-        bd.BindFlags = D3D11_BIND_VERTEX_BUFFER;
+        bd.ByteWidth      = sizeBytes;
+        bd.Usage          = D3D11_USAGE_DYNAMIC;
+        bd.BindFlags      = D3D11_BIND_VERTEX_BUFFER;
         bd.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
+
         ComPtr<ID3D11Buffer> vb;
         if (FAILED(d->CreateBuffer(&bd, nullptr, vb.GetAddressOf()))) return false;
-        m_vb = std::move(vb);
+
+        m_vb     = std::move(vb);
         m_vbSize = sizeBytes;
         return true;
     }
 
 private:
-    render::D3D11Device& m_dev;
+    render::D3D11Device&            m_dev;
 
-    ComPtr<ID3D11VertexShader> m_vs;
-    ComPtr<ID3D11PixelShader>  m_ps;
-    ComPtr<ID3D11InputLayout>  m_il;
-    ComPtr<ID3D11Buffer>       m_vb;
-    ComPtr<ID3D11BlendState>   m_blend;
-    ComPtr<ID3D11RasterizerState> m_rast;
-    ComPtr<ID3D11SamplerState> m_samp;
+    ComPtr<ID3D11VertexShader>      m_vs;
+    ComPtr<ID3D11PixelShader>       m_ps;
+    ComPtr<ID3D11InputLayout>       m_il;
+    ComPtr<ID3D11Buffer>            m_vb;
+    ComPtr<ID3D11BlendState>        m_blend;
+    ComPtr<ID3D11RasterizerState>   m_rast;
+    ComPtr<ID3D11SamplerState>      m_samp;
 
-    UINT m_vbSize = 0;
-    std::vector<Vertex> m_cpu;
+    UINT                            m_vbSize = 0;
+    std::vector<Vertex>             m_cpu;
 };
 
 // ===== Public wrappers =====
 
-Renderer2D_D3D11::Renderer2D_D3D11(render::D3D11Device& dev) : m_dev(dev) {
+Renderer2D_D3D11::Renderer2D_D3D11(render::D3D11Device& dev)
+    : m_dev(dev)
+{
     m_impl = std::make_unique<Impl>(dev);
     (void)m_impl->init(); // in production, bubble this up
 }
+
+Renderer2D_D3D11::~Renderer2D_D3D11() = default;
 
 void Renderer2D_D3D11::Resize(uint32_t w, uint32_t h) { m_impl->resize(w, h); }
 void Renderer2D_D3D11::Begin()                       { m_impl->begin();       }
