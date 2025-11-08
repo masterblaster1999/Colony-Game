@@ -2,6 +2,7 @@
 #include "renderer2d_d3d11.h"
 #include "render/d3d11_device.h"
 #include <d3d11.h>
+#include <dxgi.h>
 #include <wrl/client.h>
 #include <vector>
 #include <fstream>
@@ -19,7 +20,7 @@ struct Vertex {
     float r, g, b, a;
 };
 
-static bool LoadFileBytes(const wchar_t* path, std::vector<uint8_t>& out)
+static bool LoadFileBytes(const wchar_t* path, std::vector<std::uint8_t>& out)
 {
     std::ifstream f(path, std::ios::binary);
     if (!f) return false;
@@ -47,7 +48,7 @@ public:
 
         // Load VS/PS bytecode compiled by CMake/VS into res/shaders
         // (Match your CMake outdir; VS path uses "$(OutDir)res\\shaders")
-        std::vector<uint8_t> vs, ps;
+        std::vector<std::uint8_t> vs, ps;
         if (!LoadFileBytes(L"res/shaders/Batch2D_vs.cso", vs)) return false;
         if (!LoadFileBytes(L"res/shaders/Batch2D_ps.cso", ps)) return false;
 
@@ -198,9 +199,9 @@ private:
 // ===== Public wrappers =====
 
 Renderer2D_D3D11::Renderer2D_D3D11(render::D3D11Device& dev)
-    : m_dev(dev)
+    : m_impl(std::make_unique<Impl>(dev))
+    , m_dev(dev)
 {
-    m_impl = std::make_unique<Impl>(dev);
     (void)m_impl->init(); // in production, bubble this up
 }
 
