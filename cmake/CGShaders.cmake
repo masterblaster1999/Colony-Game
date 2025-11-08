@@ -57,9 +57,12 @@ function(_cg_infer_profile SHADER_PATH OUT_PROFILE)
     return()
   endif()
 
-  string(REGEX MATCH "\\.(vs|ps|cs|gs|hs|ds)\\." _m "${SHADER_PATH}")
+  # Be generous: accept dot, underscore, or dash as separators.
+  # e.g. mesh.ps.hlsl, mesh_ps.hlsl, mesh-ps.hlsl
+  get_filename_component(_base "${SHADER_PATH}" NAME)
+  string(REGEX MATCH "([\\._-])(vs|ps|cs|gs|hs|ds)([\\._-])" _m "${_base}")
   if(_m)
-    string(REGEX REPLACE ".*\\.(vs|ps|cs|gs|hs|ds)\\..*" "\\1" _stage "${SHADER_PATH}")
+    string(REGEX REPLACE ".*([\\._-])(vs|ps|cs|gs|hs|ds)([\\._-]).*" "\\2" _stage "${_base}")
   else()
     # Fallback if not encoded in filename:
     set(_stage "ps")
