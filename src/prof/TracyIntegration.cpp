@@ -1,9 +1,5 @@
 #include "TracyIntegration.h"
-
-#if defined(TRACY_ENABLE)
-  #include <Tracy.hpp>   // C++ client API
-  #include <cstring>
-#endif
+#include "TracyInclude.h"  // use the shim to safely include Tracy or stubs
 
 namespace prof {
 
