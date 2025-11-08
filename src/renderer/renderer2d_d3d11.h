@@ -4,14 +4,14 @@
 #include <cstdint>
 #include "renderer2d.h"
 
-// Forward declare your D3D11 device wrapper to keep this header platform‑clean.
-struct D3D11Device;
+// Forward declare your D3D11 device wrapper in its real namespace to keep this header platform‑clean.
+namespace render { struct D3D11Device; }
 
 namespace gfx {
 
 class Renderer2D_D3D11 final : public IRenderer2D {
 public:
-    explicit Renderer2D_D3D11(D3D11Device& dev);
+    explicit Renderer2D_D3D11(render::D3D11Device& dev);
     ~Renderer2D_D3D11() override; // Defined in the .cpp after Impl is complete (PIMPL)
 
     // Non-copyable / non-movable (renderer holds GPU state and a device ref)
@@ -27,13 +27,13 @@ public:
     void End() override;
 
 private:
-    struct Impl;                      // pImpl (hidden implementation)
-    std::unique_ptr<Impl> m_impl;     // opaque implementation handle
-    D3D11Device&          m_dev;      // non-owning reference to the D3D11 device wrapper
+    struct Impl;                       // pImpl (hidden implementation)
+    std::unique_ptr<Impl> m_impl;      // opaque implementation handle
+    render::D3D11Device&  m_dev;       // non-owning reference to the D3D11 device wrapper
 };
 
 // Factory function to construct the D3D11 2D renderer
 [[nodiscard]] std::unique_ptr<IRenderer2D>
-CreateRenderer2D_D3D11(D3D11Device& device);
+CreateRenderer2D_D3D11(render::D3D11Device& device);
 
 } // namespace gfx
