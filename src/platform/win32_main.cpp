@@ -157,7 +157,7 @@ static const uint8_t kFont6x8[96][8] = {
     GLYPH6x8(0x7c,0x82,0x04,0x18,0x60,0x80,0xfe,0), // '2'
     GLYPH6x8(0x7c,0x82,0x04,0x38,0x04,0x82,0x7c,0), // '3'
     GLYPH6x8(0x08,0x18,0x28,0x48,0x88,0xfe,0x08,0), // '4'
-    GLYPH6x8(0xfe,0x80,0xfc,0x02,0x02,0x82,0x7c,0), // '5'
+    GLYPH6x8(0xfe,0x80,0x80,0xfc,0x02,0x02,0x82,0x7c,0), // '5'
     GLYPH6x8(0x3c,0x40,0x80,0xfc,0x82,0x82,0x7c,0), // '6'
     GLYPH6x8(0xfe,0x82,0x04,0x08,0x10,0x10,0x10,0), // '7'
     GLYPH6x8(0x7c,0x82,0x82,0x7c,0x82,0x82,0x7c,0), // '8'
@@ -206,9 +206,15 @@ static void draw_char6x8(Backbuffer& bb, int x, int y, char ch, uint32_t color){
     for(int row=0; row<8; ++row){
         uint8_t bits=g[row];
         if(bits==0) continue;
-        if(y+row<0||y+row>=bb.h) continue;
-        uint32_t* dst=(uint32_t*)rowptr(bb, y+row) + x;
-        for(int col=0; col<6; ++col){ if((bits>>col)&1){ int xx=x+col; if(xx>=0&&xx<bb.w) dst[col]=color; } }
+        int ry = y + row;
+        if(ry<0 || ry>=bb.h) continue;
+        uint32_t* dstRow = (uint32_t*)rowptr(bb, ry);
+        for(int col=0; col<6; ++col){
+            if((bits>>col)&1){
+                int xx = x + col;
+                if(xx>=0 && xx<bb.w) dstRow[xx] = color; // safe: no negative-index pointer
+            }
+        }
     }
 }
 static void draw_text6x8(Backbuffer& bb,int x,int y,const char* s,uint32_t c){ for(;*s;++s,x+=6) draw_char6x8(bb,x,y,*s,c); }
@@ -315,17 +321,18 @@ static inline uint8_t aa_from_distance(float d){
     float a=0.5f - d; if(a<=0) return 0; if(a>=1) return 255; return (uint8_t)(a*255.f+0.5f);
 }
 static void draw_sdf_circle(Backbuffer& bb,float cx,float cy,float r,uint32_t rgb,float borderPx=1.0f){
-    int minX=clampi((int)floorf(cx-r-borderPx),0,bb.w), maxX=clampi((int)ceilf(cx+r+borderPx),0,bb.w);
+    // Removed unused minX to avoid C4189 under /WX
+    int maxX=clampi((int)ceilf(cx+r+borderPx),0,bb.w);
     int minY=clampi((int)floorf(cy-r-borderPx),0,bb.h), maxY=clampi((int)ceilf(cy+r+borderPx),0,bb.h);
     for(int y=minY; y<maxY; ++y){
-        uint32_t* row=(uint32_t*)rowptr(bb,y);
+        uint32_t* rowp=(uint32_t*)rowptr(bb,y);
         float fy=(float)y+0.5f;
-        for(int x=0;x<bb.w && x<maxX; ++x){
+        for(int x=0; x<bb.w && x<maxX; ++x){
             float fx=(float)x+0.5f;
             float d=sqrtf((fx-cx)*(fx-cx)+(fy-cy)*(fy-cy))-r;
             uint8_t a=aa_from_distance(d/borderPx); if(!a) continue;
             uint32_t src=(uint32_t(a)<<24)|((rgb>>16)&0xFF)<<16|((rgb>>8)&0xFF)<<8|(rgb&0xFF);
-            row[x]=alpha_over(row[x],src);
+            rowp[x]=alpha_over(rowp[x],src);
         }
     }
 }
@@ -405,7 +412,7 @@ public:
 private:
     void worker(){
         for(;;){
-            // *** C4701 fix: value-initialize the local aggregate so it's always defined. ***
+            // value-initialize to avoid use-before-init warnings on older toolsets
             TileJob job{}; bool has=false;
             {
                 std::unique_lock<std::mutex> lk(mx);
@@ -531,7 +538,8 @@ static void present_full(HWND hwnd,HDC hdc,Backbuffer& bb){
     RECT cr; GetClientRect(hwnd,&cr); int cw=cr.right-cr.left, ch=cr.bottom-cr.top; float s=1.f; RECT dst=compute_dest_rect(cw,ch,bb.w,bb.h,&s);
     HBRUSH br=CreateSolidBrush(RGB(10,10,10));
     RECT r1={0,0,cw,dst.top}, r2={0,dst.top,dst.left,dst.bottom}, r3={dst.right,dst.top,cw,dst.bottom}, r4={0,dst.bottom,cw,ch};
-    FillRect(hdc,&r1,br); FillRect(hdc,&r2,br); FillRect(hdc,&r3,br); DeleteObject(br);
+    FillRect(hdc,&r1,br); FillRect(hdc,&r2,br); FillRect(hdc,&r3,br); FillRect(hdc,&r4,br);  // ensure all bands are painted
+    DeleteObject(br);
     if(g_win.smoothScale && !g_win.integerScale){ SetStretchBltMode(hdc, HALFTONE); SetBrushOrgEx(hdc,0,0,nullptr); }
     else{ SetStretchBltMode(hdc, COLORONCOLOR); }
     int dx=dst.left, dy=dst.top, dw=dst.right-dst.left, dh=dst.bottom-dst.top;
@@ -539,10 +547,11 @@ static void present_full(HWND hwnd,HDC hdc,Backbuffer& bb){
 }
 static void present_dirty(HWND hwnd,HDC hdc,Backbuffer& bb,const DirtyTracker& dirty){
     RECT cr; GetClientRect(hwnd,&cr); int cw=cr.right-cr.left, ch=cr.bottom-cr.top; float s=1.f; RECT dst=compute_dest_rect(cw,ch,bb.w,bb.h,&s);
+    if(dirty.rects.empty()){ present_full(hwnd,hdc,bb); return; } // early out before painting background
     HBRUSH br=CreateSolidBrush(RGB(10,10,10));
     RECT r1={0,0,cw,dst.top}, r2={0,dst.top,dst.left,dst.bottom}, r3={dst.right,dst.top,cw,dst.bottom}, r4={0,dst.bottom,cw,ch};
-    FillRect(hdc,&r1,br); FillRect(hdc,&r2,br); FillRect(hdc,&r3,br); DeleteObject(br);
-    if(dirty.rects.empty()){ present_full(hwnd,hdc,bb); return; }
+    FillRect(hdc,&r1,br); FillRect(hdc,&r2,br); FillRect(hdc,&r3,br); FillRect(hdc,&r4,br);
+    DeleteObject(br);
     if(g_win.smoothScale && !g_win.integerScale){ SetStretchBltMode(hdc, HALFTONE); SetBrushOrgEx(hdc,0,0,nullptr); }
     else{ SetStretchBltMode(hdc, COLORONCOLOR); }
     for(const auto& d: dirty.rects){
@@ -848,7 +857,6 @@ int APIENTRY wWinMain(HINSTANCE hInst,HINSTANCE,LPWSTR,int){
         if(timeBeginPeriod(desired)==TIMERR_NOERROR) g_timerPeriod = desired;
     }
 
-    BOOL dwmEnabled=FALSE; DwmIsCompositionEnabled(&dwmEnabled);
     LARGE_INTEGER freqLi; QueryPerformanceFrequency(&freqLi); const double invFreq=1.0/(double)freqLi.QuadPart;
     uint64_t tPrev=now_qpc(); double simTime=0.0; double acc=0.0;
 
@@ -1027,3 +1035,4 @@ int APIENTRY wWinMain(HINSTANCE hInst,HINSTANCE,LPWSTR,int){
     if(g_timerPeriod) timeEndPeriod(g_timerPeriod);
     return 0;
 }
+
