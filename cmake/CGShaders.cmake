@@ -2,84 +2,93 @@
 include_guard(GLOBAL)
 include(CMakeParseArguments)
 
-# Ensure simple (modern) expansion rules are used; CMake 3.27+ already defaults to NEW.
+# Use modern, predictable variable/escape evaluation for $ENV{...}
+# (Recommended in CMake docs; helps with env names that include special chars.)
 if(POLICY CMP0053)
   cmake_policy(SET CMP0053 NEW)
 endif()
 
-# Optional manual override for CI/debug:
-# cmake -DCOLONY_FXC_PATH="C:/Program Files (x86)/Windows Kits/10/bin/10.0.22621.0/x64/fxc.exe"
-set(COLONY_FXC_PATH "${COLONY_FXC_PATH}" CACHE FILEPATH "Path to fxc.exe (optional override)")
+# -----------------------------------------------------------------------------
+# Internal: find fxc.exe from the Windows SDK (WindowsSdkDir) with fallbacks.
+# Avoids $ENV{ProgramFiles(x86)} entirely to prevent parsing issues.
+# -----------------------------------------------------------------------------
+function(_cg_find_fxc OUT_EXE)
+  if(NOT WIN32)
+    message(FATAL_ERROR "cg_compile_hlsl is Windows-only; renderer is D3D11.")
+  endif()
 
-# --- Locate fxc.exe (SM 5.x compiler for D3D11) -----------------------------------------
-function(_cg_find_fxc out_var)
-  # 0) Explicit override
+  # Allow an explicit override in CI or developer machines:
+  # cmake -DCOLONY_FXC_PATH="C:/Program Files (x86)/Windows Kits/10/bin/10.0.22621.0/x64/fxc.exe"
+  set(COLONY_FXC_PATH "${COLONY_FXC_PATH}" CACHE FILEPATH "Optional: full path to fxc.exe")
   if(COLONY_FXC_PATH AND EXISTS "${COLONY_FXC_PATH}")
-    set(${out_var} "${COLONY_FXC_PATH}" PARENT_SCOPE)
+    file(TO_CMAKE_PATH "${COLONY_FXC_PATH}" _fxc_path_norm)
+    set(${OUT_EXE} "${_fxc_path_norm}" PARENT_SCOPE)
     return()
   endif()
 
-  set(_candidates "")
-
-  # 1) SDK dir chosen by VS toolset
-  if(DEFINED ENV{WindowsSdkDir})
+  # Hints from Windows SDK root. This is the supported way to find SDK layout.
+  set(_HINTS "")
+  if(DEFINED ENV{WindowsSdkDir} AND NOT "$ENV{WindowsSdkDir}" STREQUAL "")
+    list(APPEND _HINTS
+      "$ENV{WindowsSdkDir}/bin"
+      "$ENV{WindowsSdkDir}/bin/x64"
+      "$ENV{WindowsSdkDir}/bin/arm64"
+    )
     if(CMAKE_VS_WINDOWS_TARGET_PLATFORM_VERSION)
-      list(APPEND _candidates
-        "$ENV{WindowsSdkDir}/bin/${CMAKE_VS_WINDOWS_TARGET_PLATFORM_VERSION}/x64/fxc.exe")
-    endif()
-    list(APPEND _candidates "$ENV{WindowsSdkDir}/bin/x64/fxc.exe")
-  endif()
-
-  # 2) ProgramFiles(x86) — escape parentheses per CMake docs
-  #    https://cmake.org/cmake/help/latest/variable/ENV.html
-  set(ProgramFiles_x86 "$ENV{ProgramFiles\(x86\)}")
-  if(ProgramFiles_x86)
-    if(CMAKE_VS_WINDOWS_TARGET_PLATFORM_VERSION)
-      list(APPEND _candidates
-        "${ProgramFiles_x86}/Windows Kits/10/bin/${CMAKE_VS_WINDOWS_TARGET_PLATFORM_VERSION}/x64/fxc.exe"
-        "${ProgramFiles_x86}/Windows Kits/11/bin/${CMAKE_VS_WINDOWS_TARGET_PLATFORM_VERSION}/x64/fxc.exe")
-    endif()
-    list(APPEND _candidates
-      "${ProgramFiles_x86}/Windows Kits/10/bin/x64/fxc.exe"
-      "${ProgramFiles_x86}/Windows Kits/11/bin/x64/fxc.exe")
-
-    # Probe all installed SDK versions; prefer highest
-    if(EXISTS "${ProgramFiles_x86}/Windows Kits/10/bin")
-      file(GLOB _ver10 LIST_DIRECTORIES true "${ProgramFiles_x86}/Windows Kits/10/bin/*")
-      list(SORT _ver10 COMPARE NATURAL ORDER DESCENDING)
-      foreach(_v IN LISTS _ver10)
-        list(APPEND _candidates "${_v}/x64/fxc.exe")
-      endforeach()
-    endif()
-    if(EXISTS "${ProgramFiles_x86}/Windows Kits/11/bin")
-      file(GLOB _ver11 LIST_DIRECTORIES true "${ProgramFiles_x86}/Windows Kits/11/bin/*")
-      list(SORT _ver11 COMPARE NATURAL ORDER DESCENDING)
-      foreach(_v IN LISTS _ver11)
-        list(APPEND _candidates "${_v}/x64/fxc.exe")
-      endforeach()
+      list(APPEND _HINTS
+        "$ENV{WindowsSdkDir}/bin/${CMAKE_VS_WINDOWS_TARGET_PLATFORM_VERSION}"
+        "$ENV{WindowsSdkDir}/bin/${CMAKE_VS_WINDOWS_TARGET_PLATFORM_VERSION}/x64"
+        "$ENV{WindowsSdkDir}/bin/${CMAKE_VS_WINDOWS_TARGET_PLATFORM_VERSION}/arm64"
+      )
+    else()
+      # Non‑VS generators (e.g., Ninja): probe all versioned bin folders and prefer newest
+      file(GLOB _sdk_bin_vers LIST_DIRECTORIES TRUE "$ENV{WindowsSdkDir}/bin/*")
+      if(_sdk_bin_vers)
+        list(SORT _sdk_bin_vers ORDER DESCENDING)
+        foreach(_v IN LISTS _sdk_bin_vers)
+          list(APPEND _HINTS "${_v}" "${_v}/x64" "${_v}/arm64")
+        endforeach()
+      endif()
     endif()
   endif()
 
-  # 3) PATH as last resort
-  find_program(_fxc_prog NAMES fxc)
-  if(_fxc_prog)
-    set(${out_var} "${_fxc_prog}" PARENT_SCOPE)
-    return()
+  # Well-known absolute fallbacks (quoted, using forward slashes)
+  list(APPEND _HINTS
+    "C:/Program Files (x86)/Windows Kits/11/bin"
+    "C:/Program Files (x86)/Windows Kits/11/bin/x64"
+    "C:/Program Files (x86)/Windows Kits/10/bin"
+    "C:/Program Files (x86)/Windows Kits/10/bin/x64"
+  )
+  list(REMOVE_DUPLICATES _HINTS)
+
+  # Try only our hints first (to avoid random PATH surprises)
+  find_program(_FXC_EXE NAMES fxc fxc.exe
+    HINTS ${_HINTS}
+    PATHS ${_HINTS}
+    PATH_SUFFIXES x64 x86
+    NO_DEFAULT_PATH
+  )
+
+  # Last resort: PATH
+  if(NOT _FXC_EXE)
+    find_program(_FXC_EXE NAMES fxc fxc.exe)
   endif()
 
-  foreach(_p IN LISTS _candidates)
-    if(EXISTS "${_p}")
-      set(${out_var} "${_p}" PARENT_SCOPE)
-      return()
-    endif()
-  endforeach()
+  if(NOT _FXC_EXE)
+    message(FATAL_ERROR
+      "fxc.exe not found. Install the Windows 10/11 SDK (HLSL FXC tool) "
+      "or pass -DCOLONY_FXC_PATH=... to cmake.")
+  endif()
 
-  set(${out_var} "" PARENT_SCOPE)
+  file(TO_CMAKE_PATH "${_FXC_EXE}" _FXC_EXE_NORM)
+  set(${OUT_EXE} "${_FXC_EXE_NORM}" PARENT_SCOPE)
 endfunction()
 
-# --- Heuristic: infer SM5 profile from filename suffix ----------------------
-function(_cg_guess_profile_from_name src out_profile)
-  get_filename_component(_name_we "${src}" NAME_WE)
+# -----------------------------------------------------------------------------
+# Internal: infer a reasonable SM5 profile from filename suffix (_vs/_ps/_cs/..)
+# -----------------------------------------------------------------------------
+function(_cg_guess_profile_from_name SRC OUT_PROFILE)
+  get_filename_component(_name_we "${SRC}" NAME_WE)
   set(_p "ps_5_0")
   if(_name_we MATCHES "_vs$")   set(_p "vs_5_0") endif()
   if(_name_we MATCHES "_ps$")   set(_p "ps_5_0") endif()
@@ -87,40 +96,44 @@ function(_cg_guess_profile_from_name src out_profile)
   if(_name_we MATCHES "_gs$")   set(_p "gs_5_0") endif()
   if(_name_we MATCHES "_hs$")   set(_p "hs_5_0") endif()
   if(_name_we MATCHES "_ds$")   set(_p "ds_5_0") endif()
-  set(${out_profile} "${_p}" PARENT_SCOPE)
+  set(${OUT_PROFILE} "${_p}" PARENT_SCOPE)
 endfunction()
 
-# --- Public API: compile HLSL with FXC into .cso blobs ----------------------
+# -----------------------------------------------------------------------------
+# Public API: compile HLSL with FXC into .cso blobs (SM 5.x for D3D11)
 # cg_compile_hlsl(
 #   <TARGET_NAME>
-#   SHADERS <list of .hlsl>
+#   SHADERS <list of .hlsl files>
 #   [INCLUDE_DIRS <dirs...>]
 #   [DEFINES <defs...>]
+#   [OUTPUT_DIR <dir>]          # defaults to ${CMAKE_BINARY_DIR}/shaders
 # )
-function(cg_compile_hlsl target_name)
+# -----------------------------------------------------------------------------
+function(cg_compile_hlsl TARGET_NAME)
   if(NOT WIN32)
-    message(FATAL_ERROR "cg_compile_hlsl is Windows-only")
+    message(FATAL_ERROR "cg_compile_hlsl is Windows-only (D3D11).")
   endif()
 
   set(_opts)
-  set(_one SHADERS)
+  set(_one SHADERS OUTPUT_DIR)
   set(_many INCLUDE_DIRS DEFINES)
   cmake_parse_arguments(CG "${_opts}" "${_one}" "${_many}" ${ARGN})
 
   if(NOT CG_SHADERS)
     message(WARNING "cg_compile_hlsl: no SHADERS specified")
-    add_custom_target(${target_name})
+    add_custom_target(${TARGET_NAME})
     return()
   endif()
 
   _cg_find_fxc(FXC_EXE)
   if(NOT FXC_EXE)
-    message(FATAL_ERROR
-      "cg_compile_hlsl: fxc.exe not found. Install the Windows 10/11 SDK (HLSL compiler for SM 5.x).")
+    message(FATAL_ERROR "cg_compile_hlsl: fxc.exe not found")
   endif()
 
-  set(_outdir "${CMAKE_BINARY_DIR}/shaders")
-  file(MAKE_DIRECTORY "${_outdir}")
+  if(NOT CG_OUTPUT_DIR)
+    set(CG_OUTPUT_DIR "${CMAKE_BINARY_DIR}/shaders")
+  endif()
+  file(MAKE_DIRECTORY "${CG_OUTPUT_DIR}")
 
   set(_outputs)
   foreach(_src IN LISTS CG_SHADERS)
@@ -129,12 +142,15 @@ function(cg_compile_hlsl target_name)
 
     _cg_guess_profile_from_name("${_abs}" _profile)
     set(_entry "main")
-    set(_out   "${_outdir}/${_base}.cso")
+    set(_out   "${CG_OUTPUT_DIR}/${_base}.cso")
 
-    # Config-aware flags using generator expressions (works in multi-config IDEs)
-    set(_fxc_flags /nologo /T ${_profile} /E ${_entry} /Fo "${_out}"
-                   "$<$<CONFIG:Debug>:/Od>" "$<$<CONFIG:Debug>:/Zi>"
-                   "$<$<NOT:$<CONFIG:Debug>>:/O3>")
+    # Config-aware flags that work in multi-config generators (VS)
+    set(_fxc_flags
+      /nologo /T ${_profile} /E ${_entry}
+      /Fo "${_out}"
+      "$<$<CONFIG:Debug>:/Od>" "$<$<CONFIG:Debug>:/Zi>"
+      "$<$<NOT:$<CONFIG:Debug>>:/O3>"
+    )
 
     foreach(_inc IN LISTS CG_INCLUDE_DIRS)
       list(APPEND _fxc_flags /I "${_inc}")
@@ -145,7 +161,7 @@ function(cg_compile_hlsl target_name)
 
     add_custom_command(
       OUTPUT "${_out}"
-      COMMAND ${CMAKE_COMMAND} -E make_directory "${_outdir}"
+      COMMAND ${CMAKE_COMMAND} -E make_directory "${CG_OUTPUT_DIR}"
       COMMAND "${FXC_EXE}" ${_fxc_flags} "${_abs}"
       MAIN_DEPENDENCY "${_abs}"
       COMMENT "FXC ${_profile}:${_entry} ${_base}.hlsl -> ${_base}.cso"
@@ -154,13 +170,26 @@ function(cg_compile_hlsl target_name)
     list(APPEND _outputs "${_out}")
   endforeach()
 
-  add_custom_target(${target_name} DEPENDS ${_outputs})
+  add_custom_target(${TARGET_NAME} DEPENDS ${_outputs})
 endfunction()
 
-# --- Public API: wire shader build target to the game target ----------------
-function(cg_link_shaders_to_target shader_target game_target)
-  if(TARGET ${shader_target} AND TARGET ${game_target})
-    add_dependencies(${game_target} ${shader_target})
-    install(DIRECTORY "${CMAKE_BINARY_DIR}/shaders/" DESTINATION "bin/shaders")
+# -----------------------------------------------------------------------------
+# Public API: wire shader build target to the game target (+ copy/install)
+# -----------------------------------------------------------------------------
+function(cg_link_shaders_to_target SHADER_TARGET GAME_TARGET)
+  if(TARGET ${SHADER_TARGET} AND TARGET ${GAME_TARGET})
+    add_dependencies(${GAME_TARGET} ${SHADER_TARGET})
+
+    # Copy compiled shaders next to the runtime on build
+    add_custom_command(TARGET ${GAME_TARGET} POST_BUILD
+      COMMAND ${CMAKE_COMMAND} -E copy_directory
+              "${CMAKE_BINARY_DIR}/shaders"
+              "$<TARGET_FILE_DIR:${GAME_TARGET}>/shaders"
+      COMMENT "Copying shaders to runtime directory"
+      VERBATIM)
+
+    # Install for packaging
+    install(DIRECTORY "${CMAKE_BINARY_DIR}/shaders/"
+            DESTINATION "bin/shaders")
   endif()
 endfunction()
