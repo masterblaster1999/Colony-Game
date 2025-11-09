@@ -1,4 +1,20 @@
-cmake_minimum_required(VERSION 3.27)
+cmake_minimum_required(VERSION 3.27...3.31 FATAL_ERROR)
+
+# Use modern policy behavior for predictable parsing & variable expansion
+# (cmake_minimum_required sets policy defaults, these ensure key ones are NEW
+# on older bootstrap tools too.)
+if(POLICY CMP0053)
+  cmake_policy(SET CMP0053 NEW)  # Simpler variable/escape rules ($ENV{}, backslashes)
+endif()
+if(POLICY CMP0054)
+  cmake_policy(SET CMP0054 NEW)  # Only unquoted if() args act as vars/keywords
+endif()
+if(POLICY CMP0077)
+  cmake_policy(SET CMP0077 NEW)  # option() honors normal variables
+endif()
+if(POLICY CMP0092)
+  cmake_policy(SET CMP0092 NEW)  # Do not add /W3 implicitly for MSVC
+endif()
 
 # ------------------------------------------------------------------------------
 # Make project-local modules discoverable
