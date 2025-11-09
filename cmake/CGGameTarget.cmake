@@ -121,28 +121,33 @@ if(MSVC AND COLONY_ASAN)
 endif()
 
 # --------------------------------------------------------------------------
-# HLSL pipeline hookup (Visual Studio or offline manifest)
+# HLSL pipeline hookup (prefer cg_compile_hlsl; else fall back to manifest)
 # --------------------------------------------------------------------------
-if(MSVC AND CMAKE_GENERATOR MATCHES "Visual Studio")
-  # Load VS HLSL helpers (hard fail if missing so we don't call an undefined function)
-  include(${CMAKE_SOURCE_DIR}/cmake/CGShaders.cmake)  # no OPTIONAL
-  if(COMMAND cg_configure_vs_hlsl)
-    cg_configure_vs_hlsl(ColonyGame)
-  else()
-    message(WARNING "cg_configure_vs_hlsl not found; falling back to offline shader build.")
-    include(${CMAKE_SOURCE_DIR}/cmake/ColonyShaders.cmake OPTIONAL)
-    if(COMMAND colony_register_shaders AND EXISTS "${CMAKE_SOURCE_DIR}/renderer/Shaders/shaders.json")
-      colony_register_shaders(
-        TARGET     ColonyGame
-        MANIFEST   "${CMAKE_SOURCE_DIR}/renderer/Shaders/shaders.json"
-        OUTPUT_DIR "${CMAKE_BINARY_DIR}/shaders"
-      )
-      if(COMMAND colony_install_shaders)
-        colony_install_shaders(TARGET ColonyGame DESTINATION bin/shaders)
-      endif()
+# Try tool-agnostic shader compilation first (works in VS and Ninja if provided)
+include(${CMAKE_SOURCE_DIR}/cmake/CGShaders.cmake OPTIONAL)
+
+if(COMMAND cg_compile_hlsl)
+  # Compile all HLSL in renderer/Shaders
+  file(GLOB _all_hlsl CONFIGURE_DEPENDS
+       "${CMAKE_SOURCE_DIR}/renderer/Shaders/*.hlsl")
+
+  if(_all_hlsl)
+    if(EXISTS "${CMAKE_SOURCE_DIR}/renderer/Shaders/include")
+      cg_compile_hlsl(ColonyShaders
+        SHADERS      ${_all_hlsl}
+        INCLUDE_DIRS "${CMAKE_SOURCE_DIR}/renderer/Shaders/include")
+    else()
+      cg_compile_hlsl(ColonyShaders
+        SHADERS      ${_all_hlsl})
+    endif()
+
+    if(COMMAND cg_link_shaders_to_target)
+      cg_link_shaders_to_target(ColonyShaders ColonyGame)
     endif()
   endif()
+
 else()
+  # Fallback to manifest-driven offline shader build
   include(${CMAKE_SOURCE_DIR}/cmake/ColonyShaders.cmake OPTIONAL)
   if(COMMAND colony_register_shaders AND EXISTS "${CMAKE_SOURCE_DIR}/renderer/Shaders/shaders.json")
     colony_register_shaders(
