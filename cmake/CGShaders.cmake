@@ -7,9 +7,15 @@ if(NOT WIN32)
   message(STATUS "CGShaders.cmake: non-Windows host; shader build helpers are inert.")
   set(CG_SHADERS_USE_DXC OFF CACHE BOOL "" FORCE)
   # Provide no-op functions so CMakeLists can still call them without errors.
-  function(cg_compile_hlsl) endfunction()
-  function(cg_link_shaders_to_target) endfunction()
-  function(cg_set_hlsl_properties) endfunction()
+  function(cg_compile_hlsl)
+  endfunction()
+
+  function(cg_link_shaders_to_target)
+  endfunction()
+
+  function(cg_set_hlsl_properties)
+  endfunction()
+
   return()
 endif()
 
@@ -25,20 +31,39 @@ set(CG_SHADERS_ADDITIONAL_FLAGS "" CACHE STRING
 
 set(CG_SHADER_DEFAULT_SM "6_7" CACHE STRING "Default Shader Model (DXC)")
 set(CG_SHADER_OUTPUT_EXT "cso" CACHE STRING "Compiled shader extension (cso/dxil)")
+set(CG_SHADERS_RUNTIME_SUBDIR "renderer/Shaders" CACHE STRING
+    "Where compiled shaders are copied next to the runtime target")
 
 # --- find dxc.exe -------------------------------------------------------------
 function(_cg_find_dxc OUT_EXE)
+  set(_hints "")
+  # vcpkg (two common styles)
   if(DEFINED VCPKG_INSTALLED_DIR AND DEFINED VCPKG_TARGET_TRIPLET)
     list(APPEND _hints
       "${VCPKG_INSTALLED_DIR}/${VCPKG_TARGET_TRIPLET}/tools/directx-dxc"
       "${VCPKG_INSTALLED_DIR}/${VCPKG_TARGET_TRIPLET}/bin")
   endif()
-  list(APPEND _hints "$ENV{DXC_DIR}")
+  if(DEFINED VCPKG_ROOT AND DEFINED VCPKG_DEFAULT_TRIPLET)
+    list(APPEND _hints
+      "${VCPKG_ROOT}/installed/${VCPKG_DEFAULT_TRIPLET}/tools/directx-dxc"
+      "${VCPKG_ROOT}/installed/${VCPKG_DEFAULT_TRIPLET}/bin")
+  endif()
+
+  # Explicit env hint
+  if(DEFINED ENV{DXC_DIR} AND NOT "$ENV{DXC_DIR}" STREQUAL "")
+    list(APPEND _hints "$ENV{DXC_DIR}")
+  endif()
+
+  # Windows SDK bins (versioned and unversioned)
   if(DEFINED CMAKE_VS_WINDOWS_TARGET_PLATFORM_VERSION)
     list(APPEND _hints
       "$ENV{ProgramFiles(x86)}/Windows Kits/10/bin/${CMAKE_VS_WINDOWS_TARGET_PLATFORM_VERSION}/x64"
       "$ENV{ProgramFiles(x86)}/Windows Kits/11/bin/${CMAKE_VS_WINDOWS_TARGET_PLATFORM_VERSION}/x64")
   endif()
+  list(APPEND _hints
+    "$ENV{ProgramFiles(x86)}/Windows Kits/10/bin/x64"
+    "$ENV{ProgramFiles(x86)}/Windows Kits/11/bin/x64")
+
   find_program(DXC_EXE NAMES dxc dxc.exe HINTS ${_hints})
   if(NOT DXC_EXE)
     message(FATAL_ERROR
@@ -118,14 +143,17 @@ function(_cg_accumulate_args PREFIX OUT_LIST)
   set(${OUT_LIST} "${_res}" PARENT_SCOPE)
 endfunction()
 
-# Build a dependency list by scanning includes directories for typical include extensions.
+# Build a dependency list by scanning include directories for typical shader include extensions.
 function(_cg_collect_header_deps OUT_LIST)
   set(_deps "")
   foreach(inc IN LISTS ARGN)
     if(inc AND EXISTS "${inc}")
       file(GLOB_RECURSE _hdrs CONFIGURE_DEPENDS
         "${inc}/*.hlsli" "${inc}/*.fxh" "${inc}/*.hlslinc" "${inc}/*.h")
-      list(APPEND _deps ${_hdrs})
+      if(_hdrs)
+        list(REMOVE_DUPLICATES _hdrs)
+        list(APPEND _deps ${_hdrs})
+      endif()
     endif()
   endforeach()
   set(${OUT_LIST} "${_deps}" PARENT_SCOPE)
@@ -134,7 +162,7 @@ endfunction()
 # Convenience: per-file overrides in CMakeLists:
 #   cg_set_hlsl_properties(<file>
 #     [ENTRY main] [PROFILE ps_6_7]
-#     [DEFINES FOO=1 BAR=2] [INCLUDE_DIRS dir1 dir2] [FLAGS -O3])
+#     [DEFINES FOO=1 BAR=2] [INCLUDE_DIRS dir1 dir2] [FLAGS "-O3 -Zpr"])
 function(cg_set_hlsl_properties FILE)
   set(oneValueArgs ENTRY PROFILE)
   set(multiValueArgs DEFINES INCLUDE_DIRS FLAGS)
@@ -176,7 +204,11 @@ function(cg_compile_hlsl TARGET_NAME)
     message(FATAL_ERROR "cg_compile_hlsl(${TARGET_NAME}): SHADERS list is required.")
   endif()
 
-  if(CG_SHADERS_USE_DXC)  _cg_find_dxc(DXC_EXE)  else()  _cg_find_fxc(FXC_EXE)  endif()
+  if(CG_SHADERS_USE_DXC)
+    _cg_find_dxc(DXC_EXE)
+  else()
+    _cg_find_fxc(FXC_EXE)
+  endif()
 
   if(NOT CG_OUTPUT_DIR)
     set(CG_OUTPUT_DIR "${CMAKE_BINARY_DIR}/shaders")
@@ -191,20 +223,33 @@ function(cg_compile_hlsl TARGET_NAME)
   message(STATUS "CGShaders: compiling ${_hlsl_count} HLSL file(s) -> ${CG_OUTPUT_DIR}")
 
   foreach(_src IN LISTS CG_SHADERS)
+    # Skip headers/includes if they were accidentally listed
+    if(_src MATCHES "\\.(hlsli|fxh|hlslinc)$")
+      continue()
+    endif()
+
     get_filename_component(_src_abs "${_src}" ABSOLUTE)
     get_filename_component(_base "${_src}" NAME_WE)
 
     # Per-file overrides (optional)
     get_source_file_property(_entry "${_src}" HLSL_ENTRY)
-    if(_entry STREQUAL "NOTFOUND" OR NOT _entry)  set(_entry "main")  endif()
+    if(_entry STREQUAL "NOTFOUND" OR NOT _entry)
+      set(_entry "main")
+    endif()
     _cg_infer_profile("${_src}" _profile)
 
     get_source_file_property(_src_defines "${_src}" HLSL_DEFINES)
-    if(_src_defines STREQUAL "NOTFOUND")  set(_src_defines "")  endif()
+    if(_src_defines STREQUAL "NOTFOUND")
+      set(_src_defines "")
+    endif()
     get_source_file_property(_src_includes "${_src}" HLSL_INCLUDE_DIRS)
-    if(_src_includes STREQUAL "NOTFOUND") set(_src_includes "") endif()
+    if(_src_includes STREQUAL "NOTFOUND")
+      set(_src_includes "")
+    endif()
     get_source_file_property(_src_flags "${_src}" HLSL_FLAGS)
-    if(_src_flags STREQUAL "NOTFOUND") set(_src_flags "") endif()
+    if(_src_flags STREQUAL "NOTFOUND")
+      set(_src_flags "")
+    endif()
 
     # Build per-source args with correct flags for DXC/FXC
     set(_per_src_args "")
@@ -231,27 +276,31 @@ function(cg_compile_hlsl TARGET_NAME)
         OUTPUT "${_out}"
         COMMAND ${CMAKE_COMMAND} -E make_directory "${CG_OUTPUT_DIR}"
         COMMAND "${DXC_EXE}" -nologo -T "${_profile}" -E "${_entry}"
-                $<$<CONFIG:Debug>:-Zi -Qembed_debug -Od>
-                $<$<CONFIG:RelWithDebInfo>:-Zi -Qembed_debug -O3>
-                $<$<CONFIG:Release>:-O3 -Qstrip_debug -Qstrip_reflect>
+                $<$<CONFIG:Debug>:-Zi;-Qembed_debug;-Od>
+                $<$<CONFIG:RelWithDebInfo>:-Zi;-Qembed_debug;-O3>
+                $<$<CONFIG:Release>:-O3;-Qstrip_debug;-Qstrip_reflect>
                 ${_extra_args} ${_per_src_args} -Fo "${_out}" "${_src_abs}"
         MAIN_DEPENDENCY "${_src_abs}"
         DEPENDS "${_src_abs}" ${_approx_deps}
-        COMMENT "DXC ${_profile} ${_base}.hlsl → ${_out}"
-        VERBATIM)
+        COMMENT "DXC ${_profile} ${_base}.hlsl -> ${_out}"
+        VERBATIM
+        COMMAND_EXPAND_LISTS
+      )
     else()
       add_custom_command(
         OUTPUT "${_out}"
         COMMAND ${CMAKE_COMMAND} -E make_directory "${CG_OUTPUT_DIR}"
         COMMAND "${FXC_EXE}" /nologo /T "${_profile}" /E "${_entry}"
-                $<$<CONFIG:Debug>:/Zi /Od>
+                $<$<CONFIG:Debug>:/Zi;/Od>
                 $<$<CONFIG:RelWithDebInfo>:/Zi>
                 $<$<CONFIG:Release>:/O3>
                 ${_extra_args} ${_per_src_args} /Fo "${_out}" "${_src_abs}"
         MAIN_DEPENDENCY "${_src_abs}"
         DEPENDS "${_src_abs}" ${_approx_deps}
-        COMMENT "FXC ${_profile} ${_base}.hlsl → ${_out}"
-        VERBATIM)
+        COMMENT "FXC ${_profile} ${_base}.hlsl -> ${_out}"
+        VERBATIM
+        COMMAND_EXPAND_LISTS
+      )
     endif()
 
     list(APPEND _outputs "${_out}")
@@ -263,7 +312,8 @@ function(cg_compile_hlsl TARGET_NAME)
         COMMAND ${CMAKE_COMMAND} -DINPUT="${_out}" -DOUTPUT="${_hdr}"
                 -P "${CMAKE_CURRENT_LIST_DIR}/_BinaryToHeader.cmake"
         DEPENDS "${_out}" "${CMAKE_CURRENT_LIST_DIR}/_BinaryToHeader.cmake"
-        COMMENT "Embed ${_out} → ${_hdr}")
+        COMMENT "Embed ${_out} -> ${_hdr}"
+      )
       list(APPEND _outputs "${_hdr}")
     endif()
   endforeach()
@@ -273,16 +323,28 @@ function(cg_compile_hlsl TARGET_NAME)
   set_property(TARGET ${TARGET_NAME} PROPERTY CG_SHADER_OUTPUTS "${_outputs}")
 endfunction()
 
-# Copy the compiled blobs next to the exe under /renderer/Shaders (matches your repo).
+# Copy the compiled blobs next to the exe under /renderer/Shaders (matches your repo by default).
 function(cg_link_shaders_to_target SHADER_TARGET RUNTIME_TARGET)
   get_target_property(_outdir ${SHADER_TARGET} CG_SHADER_OUTPUT_DIR)
   if(NOT _outdir)
     message(FATAL_ERROR "cg_link_shaders_to_target: ${SHADER_TARGET} has no CG_SHADER_OUTPUT_DIR")
   endif()
-  set(_dest "$<TARGET_FILE_DIR:${RUNTIME_TARGET}>/renderer/Shaders")
+  if(NOT DEFINED CG_SHADERS_RUNTIME_SUBDIR OR CG_SHADERS_RUNTIME_SUBDIR STREQUAL "")
+    set(_subdir "renderer/Shaders")
+  else()
+    set(_subdir "${CG_SHADERS_RUNTIME_SUBDIR}")
+  endif()
+  set(_dest "$<TARGET_FILE_DIR:${RUNTIME_TARGET}>/${_subdir}")
+
   add_custom_command(TARGET ${RUNTIME_TARGET} POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E make_directory "${_dest}"
     COMMAND ${CMAKE_COMMAND} -E copy_directory "${_outdir}" "${_dest}"
-    COMMENT "Copying shaders to ${_dest}")
+    COMMENT "Copying shaders to ${_dest}"
+    VERBATIM
+  )
+
+  # Optional install step (puts them under bin/<subdir>)
+  install(DIRECTORY "${_outdir}/" DESTINATION "bin/${_subdir}")
+
   add_dependencies(${RUNTIME_TARGET} ${SHADER_TARGET})
 endfunction()
