@@ -1,11 +1,18 @@
 # cmake/CGStageInstall.cmake
 include_guard(GLOBAL)
+
+# This staging logic is Windows-only (project is Windows-first)
+if(NOT WIN32)
+  return()
+endif()
+
 if(NOT TARGET ColonyGame)
   return()
 endif()
 
 # -------------- stage_win (portable staging folder) --------------
-set(STAGE_DIR "${CMAKE_BINARY_DIR}/stage")
+# Multi-config aware: keep Debug/Release outputs separate
+set(STAGE_DIR "${CMAKE_BINARY_DIR}/stage/$<CONFIG>")
 
 set(_STAGE_COPY_RES_CMD "")
 if(EXISTS "${CMAKE_SOURCE_DIR}/res")
@@ -38,7 +45,15 @@ if(EXISTS "${CMAKE_SOURCE_DIR}/renderer/Shaders")
               "${CMAKE_SOURCE_DIR}/renderer/Shaders" "${STAGE_DIR}/renderer/Shaders")
 endif()
 
-# vcpkg runtime DLLs (best-effort)
+# Optionally copy runtime-dependent DLLs (CMake 3.21+). This greatly reduces missing-DLL issues.
+set(_STAGE_COPY_RUNTIME_DLLS_CMD "")
+if(CMAKE_VERSION VERSION_GREATER_EQUAL "3.21")
+  set(_STAGE_COPY_RUNTIME_DLLS_CMD
+      COMMAND ${CMAKE_COMMAND} -E copy_if_different
+              $<TARGET_RUNTIME_DLLS:ColonyGame> "${STAGE_DIR}/bin/")
+endif()
+
+# vcpkg runtime DLLs (best-effort fallback if TARGET_RUNTIME_DLLS isn't available or misses something)
 set(_STAGE_COPY_VCPKG_RELEASE_CMD "")
 set(_STAGE_COPY_VCPKG_DEBUG_CMD "")
 if(DEFINED ENV{VCPKG_INSTALLATION_ROOT})
@@ -73,15 +88,22 @@ add_custom_target(stage_win
   ${_STAGE_COPY_RES_CMD}
   ${_STAGE_COPY_SHADERS_CMD}
   ${_STAGE_COPY_RENDERER_SHADERS_CMD}
+  # Copy the actual built EXE (fix for previous "$" placeholder)
   COMMAND ${CMAKE_COMMAND} -E copy "$<TARGET_FILE:ColonyGame>" "${STAGE_DIR}/bin/"
+  # Copy dependent runtime DLLs when supported (CMake 3.21+)
+  ${_STAGE_COPY_RUNTIME_DLLS_CMD}
+  # Fallback: copy vcpkg runtime bins (release+debug)
   ${_STAGE_COPY_VCPKG_RELEASE_CMD}
   ${_STAGE_COPY_VCPKG_DEBUG_CMD}
   VERBATIM
+  COMMAND_EXPAND_LISTS
 )
 add_dependencies(stage_win ColonyGame)
 
 # -------------- Install + CPack ZIP --------------
 include(InstallRequiredSystemLibraries)  # bundles VC++ runtime when appropriate
+
+# Keep exe at the root of the ZIP (as before)
 install(TARGETS ColonyGame RUNTIME DESTINATION .)
 
 if(EXISTS "${CMAKE_SOURCE_DIR}/res")
@@ -103,13 +125,22 @@ if(EXISTS "${CMAKE_SOURCE_DIR}/renderer/Shaders")
 endif()
 
 set(CPACK_GENERATOR "ZIP")
-if(COMMAND git)
-  execute_process(COMMAND git rev-parse --short=12 HEAD
-                  WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
-                  OUTPUT_VARIABLE _CG_GIT_HASH OUTPUT_STRIP_TRAILING_WHITESPACE)
+
+# Robust Git hash detection for package name
+set(_CG_GIT_HASH "")
+find_package(Git QUIET)
+if(GIT_FOUND)
+  execute_process(
+    COMMAND "${GIT_EXECUTABLE}" rev-parse --short=12 HEAD
+    WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+    OUTPUT_VARIABLE _CG_GIT_HASH
+    OUTPUT_STRIP_TRAILING_WHITESPACE
+    ERROR_QUIET
+  )
 endif()
 if(NOT _CG_GIT_HASH)  # fallback
   set(_CG_GIT_HASH "unknown")
 endif()
+
 set(CPACK_PACKAGE_FILE_NAME "ColonyGame-${_CG_GIT_HASH}")
 include(CPack)
