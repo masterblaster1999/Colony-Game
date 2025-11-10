@@ -127,6 +127,28 @@ include(CGThirdParty)
 include(CGShaders)
 
 # ------------------------------------------------------------------------------
+# (PATCH) Wire shader compilation (Windows-only)
+# ------------------------------------------------------------------------------
+if(WIN32)
+  # Collect all HLSL sources from the repo's shader folders
+  file(GLOB_RECURSE COLONY_HLSL CONFIGURE_DEPENDS
+    "${CMAKE_SOURCE_DIR}/renderer/Shaders/*.hlsl"
+    "${CMAKE_SOURCE_DIR}/shaders/*.hlsl"
+  )
+
+  if(COLONY_HLSL)
+    # Compile shaders into a dedicated target; we'll link/copy them to the exe later
+    cg_compile_hlsl(ColonyShaders
+      SHADERS      ${COLONY_HLSL}
+      INCLUDE_DIRS "${CMAKE_SOURCE_DIR}/renderer/Shaders" "${CMAKE_SOURCE_DIR}/shaders"
+      DEFINES      "COLONY_DEBUG=$<CONFIG:Debug>"
+    )
+    # Stash the shader target name globally so we can attach it to the final exe once it exists
+    set_property(GLOBAL PROPERTY COLONY_SHADERS_TARGET ColonyShaders)
+  endif()
+endif()
+
+# ------------------------------------------------------------------------------
 # vcpkg dependencies
 # ------------------------------------------------------------------------------
 find_package(SDL2 CONFIG REQUIRED)
@@ -227,9 +249,35 @@ if(TARGET colony_core)
 endif()
 
 # ------------------------------------------------------------------------------
-# Stage / install / tests / summary
+# Generate the final game target, install rules, tests, summary
 # ------------------------------------------------------------------------------
 include(CGGameTarget)
+
+# ------------------------------------------------------------------------------
+# (PATCH) After the executable exists, link/copy compiled shaders next to it
+# ------------------------------------------------------------------------------
+if(WIN32)
+  # Retrieve the shader target we created earlier (if any)
+  get_property(_CG_SHADER_TGT GLOBAL PROPERTY COLONY_SHADERS_TARGET)
+  if(_CG_SHADER_TGT)
+    # Try to find an executable target to attach to (first one found)
+    get_property(_ALL_TGTS GLOBAL PROPERTY TARGETS)
+    set(_CG_EXE_TGT "")
+    foreach(_t IN LISTS _ALL_TGTS)
+      get_target_property(_t_type ${_t} TYPE)
+      if(_t_type STREQUAL "EXECUTABLE")
+        set(_CG_EXE_TGT ${_t})
+        break()
+      endif()
+    endforeach()
+    if(_CG_EXE_TGT)
+      cg_link_shaders_to_target(${_CG_SHADER_TGT} ${_CG_EXE_TGT})
+    else()
+      message(WARNING "CGShaders: No executable target found to link shaders to; compiled shaders will not be copied.")
+    endif()
+  endif()
+endif()
+
 include(CGStageInstall)
 include(CGTests)
 include(CGSummary)
