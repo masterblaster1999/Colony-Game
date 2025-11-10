@@ -5,7 +5,7 @@ if(NOT BUILD_TESTING)
   return()
 endif()
 
-if(EXISTS "${CMAKE_SOURCE_DIR}/tests/CMakeLists.txt}")
+if(EXISTS "${CMAKE_SOURCE_DIR}/tests/CMakeLists.txt")
   add_subdirectory(tests)
 elseif(EXISTS "${CMAKE_SOURCE_DIR}/tests")
   file(GLOB TEST_SRCS CONFIGURE_DEPENDS "${CMAKE_SOURCE_DIR}/tests/*.cpp" "${CMAKE_SOURCE_DIR}/tests/*.cxx")
