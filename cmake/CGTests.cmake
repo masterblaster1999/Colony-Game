@@ -1,20 +1,26 @@
 # cmake/CGTests.cmake
 include_guard(GLOBAL)
 include(CTest)
+
 if(NOT BUILD_TESTING)
   return()
 endif()
 
+# FIX: removed extra '}' at end of the line
 if(EXISTS "${CMAKE_SOURCE_DIR}/tests/CMakeLists.txt")
   add_subdirectory(tests)
+
 elseif(EXISTS "${CMAKE_SOURCE_DIR}/tests")
-  file(GLOB TEST_SRCS CONFIGURE_DEPENDS "${CMAKE_SOURCE_DIR}/tests/*.cpp" "${CMAKE_SOURCE_DIR}/tests/*.cxx")
+  file(GLOB TEST_SRCS CONFIGURE_DEPENDS
+       "${CMAKE_SOURCE_DIR}/tests/*.cpp" "${CMAKE_SOURCE_DIR}/tests/*.cxx")
+
   set(_TEST_MAIN "")
   foreach(_cand IN LISTS TEST_SRCS)
     if(_cand MATCHES "test_main\\.(cpp|cxx)$")
       set(_TEST_MAIN "${_cand}")
     endif()
   endforeach()
+
   if(_TEST_MAIN)
     list(REMOVE_ITEM TEST_SRCS "${_TEST_MAIN}")
     add_executable(colony_tests ${_TEST_MAIN} ${TEST_SRCS})
@@ -27,16 +33,20 @@ elseif(EXISTS "${CMAKE_SOURCE_DIR}/tests")
       target_link_libraries(colony_tests PRIVATE ${_lib})
     endif()
   endforeach()
-  target_include_directories(colony_tests PRIVATE "${CMAKE_SOURCE_DIR}/src" "${CMAKE_SOURCE_DIR}/include")
+
+  target_include_directories(colony_tests PRIVATE
+    "${CMAKE_SOURCE_DIR}/src" "${CMAKE_SOURCE_DIR}/include")
 
   if(COLONY_USE_PCH)
-    if(EXISTS "${CMAKE_SOURCE_DIR}/src/common/pch_core.hpp")
-      target_precompile_headers(colony_tests PRIVATE src/common/pch_core.hpp)
-    elseif(EXISTS "${CMAKE_SOURCE_DIR}/src/pch_core.hpp")
-      target_precompile_headers(colony_tests PRIVATE src/pch_core.hpp)
-    elseif(EXISTS "${CMAKE_SOURCE_DIR}/src/common/pch.hpp")
-      target_precompile_headers(colony_tests PRIVATE src/common/pch.hpp)
-    endif()
+    foreach(_pch IN ITEMS
+      src/common/pch_core.hpp
+      src/pch_core.hpp
+      src/common/pch.hpp)
+      if(EXISTS "${CMAKE_SOURCE_DIR}/${_pch}")
+        target_precompile_headers(colony_tests PRIVATE "${_pch}")
+        break()
+      endif()
+    endforeach()
   endif()
 
   add_test(NAME colony_tests COMMAND colony_tests)
