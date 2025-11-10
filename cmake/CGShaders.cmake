@@ -1,110 +1,40 @@
-# Windows-only HLSL build glue with DXC (SM6) or FXC (SM5.x) fallback.
-# Place in cmake/ and `include(cmake/CGShaders.cmake)` from top-level CMakeLists.txt.
+# cmake/CGShaders.cmake
+# Windows-only HLSL build glue (FXC/SM5.x). Minimal, robust, and CI-friendly.
+# Requires CMake >= 3.8 for COMMAND_EXPAND_LISTS. See:
+# https://cmake.org/cmake/help/latest/command/add_custom_command.html
+
 include_guard(GLOBAL)
+include(CMakeParseArguments)
 
 # If someone includes this on non-Windows, do nothing gracefully (no build steps).
 if(NOT WIN32)
   message(STATUS "CGShaders.cmake: non-Windows host; shader build helpers are inert.")
-  set(CG_SHADERS_USE_DXC OFF CACHE BOOL "" FORCE)
   # Provide no-op functions so CMakeLists can still call them without errors.
-  function(cg_compile_hlsl)
-  endfunction()
-
-  function(cg_link_shaders_to_target)
-  endfunction()
-
-  function(cg_set_hlsl_properties)
-  endfunction()
-
+  function(cg_compile_hlsl)  endfunction()
+  function(cg_link_shaders_to_target)  endfunction()
+  function(cg_set_hlsl_properties)  endfunction()
   return()
 endif()
 
-# ---- options -----------------------------------------------------------------
-option(CG_SHADERS_USE_DXC
-       "Use DXC to compile HLSL (SM6). If OFF, use FXC (SM5.x)." OFF)
-option(CG_SHADERS_WARNINGS_AS_ERRORS
-       "Treat shader compiler warnings as errors" OFF)
+# ---- options (FXC-only) ------------------------------------------------------
+option(CG_SHADERS_WARNINGS_AS_ERRORS "Treat shader compiler warnings as errors" OFF)
 
-# Extra, global flags you may want to push into the HLSL compiler (list)
-# Example: set(CG_SHADERS_ADDITIONAL_FLAGS "-Od;-Zpr" CACHE STRING "" FORCE)
+# Extra, global flags you may want to push into FXC (semicolon-separated list)
+# Example: -DCG_SHADERS_ADDITIONAL_FLAGS="/Zpr;/Ges"
 set(CG_SHADERS_ADDITIONAL_FLAGS "" CACHE STRING
-    "Additional flags passed to dxc/fxc (semicolon-separated)")
-
-# Which HLSL language version to enforce with DXC (if empty, let DXC decide).
-set(CG_HLSL_LANGUAGE_VERSION "2021" CACHE STRING "DXC -HV language version (e.g. 2016, 2018, 2021)")
-
-# Default shader model for DXC; FXC always uses 5_0/5_1 depending on PROFILE.
-set(CG_SHADER_DEFAULT_SM "6_7" CACHE STRING "Default Shader Model (DXC)")
+    "Additional flags passed to fxc.exe (semicolon-separated)")
 
 # File extension of compiled blobs.
-# "cso" keeps D3D11-era conventions; set to "auto" to pick dxil for DXC and cso for FXC.
-set(CG_SHADER_OUTPUT_EXT "cso" CACHE STRING "Compiled shader extension (cso/dxil/auto)")
+set(CG_SHADER_OUTPUT_EXT "cso" CACHE STRING "Compiled shader extension (usually 'cso')")
 
 # Where compiled shaders are copied beside the runtime target.
 set(CG_SHADERS_RUNTIME_SUBDIR "renderer/Shaders" CACHE STRING
     "Where compiled shaders are copied next to the runtime target")
 
-# Optional manual overrides for compiler locations
-set(CG_DXC_PATH "" CACHE FILEPATH "Full path to dxc.exe (optional override)")
+# Optional manual override for compiler location
 set(CG_FXC_PATH "" CACHE FILEPATH "Full path to fxc.exe (optional override)")
 
-# ---- find dxc.exe -------------------------------------------------------------
-function(_cg_find_dxc OUT_EXE)
-  if(CG_DXC_PATH AND EXISTS "${CG_DXC_PATH}")
-    set(${OUT_EXE} "${CG_DXC_PATH}" PARENT_SCOPE)
-    return()
-  endif()
-
-  set(_hints "")
-
-  # vcpkg (common layouts)
-  if(DEFINED VCPKG_INSTALLED_DIR AND DEFINED VCPKG_TARGET_TRIPLET)
-    list(APPEND _hints
-      "${VCPKG_INSTALLED_DIR}/${VCPKG_TARGET_TRIPLET}/tools/directx-dxc"
-      "${VCPKG_INSTALLED_DIR}/${VCPKG_TARGET_TRIPLET}/bin")
-  endif()
-  if(DEFINED VCPKG_ROOT AND DEFINED VCPKG_DEFAULT_TRIPLET)
-    list(APPEND _hints
-      "${VCPKG_ROOT}/installed/${VCPKG_DEFAULT_TRIPLET}/tools/directx-dxc"
-      "${VCPKG_ROOT}/installed/${VCPKG_DEFAULT_TRIPLET}/bin")
-  endif()
-
-  # Vulkan SDK ships dxc with SPIR-V support
-  if(DEFINED ENV{VULKAN_SDK} AND NOT "$ENV{VULKAN_SDK}" STREQUAL "")
-    list(APPEND _hints "$ENV{VULKAN_SDK}/Bin" "$ENV{VULKAN_SDK}/Bin32")
-  endif()
-
-  # Visual Studio 2022 installs a DXC under CommonExtensions\Microsoft\HLSL
-  foreach(_ed IN ITEMS Community Professional Enterprise BuildTools)
-    list(APPEND _hints
-      "C:/Program Files/Microsoft Visual Studio/2022/${_ed}/Common7/IDE/CommonExtensions/Microsoft/HLSL"
-      "C:/Program Files (x86)/Microsoft Visual Studio/2022/${_ed}/Common7/IDE/CommonExtensions/Microsoft/HLSL")
-  endforeach()
-
-  # Windows SDK bins (try versioned then unversioned)
-  if(DEFINED CMAKE_VS_WINDOWS_TARGET_PLATFORM_VERSION AND NOT CMAKE_VS_WINDOWS_TARGET_PLATFORM_VERSION STREQUAL "")
-    list(APPEND _hints
-      "$ENV{ProgramFiles(x86)}/Windows Kits/10/bin/${CMAKE_VS_WINDOWS_TARGET_PLATFORM_VERSION}/x64"
-      "$ENV{ProgramFiles(x86)}/Windows Kits/11/bin/${CMAKE_VS_WINDOWS_TARGET_PLATFORM_VERSION}/x64")
-  endif()
-  list(APPEND _hints
-    "$ENV{ProgramFiles(x86)}/Windows Kits/10/bin/x64"
-    "$ENV{ProgramFiles(x86)}/Windows Kits/11/bin/x64")
-
-  find_program(DXC_EXE NAMES dxc dxc.exe HINTS ${_hints})
-  if(NOT DXC_EXE)
-    # Let PATH be a last resort
-    find_program(DXC_EXE NAMES dxc dxc.exe)
-  endif()
-  if(NOT DXC_EXE)
-    message(FATAL_ERROR
-      "dxc.exe not found. Install vcpkg port 'directx-dxc' (host), use the Vulkan SDK, or set CG_DXC_PATH.")
-  endif()
-  message(STATUS "CGShaders: using DXC at: ${DXC_EXE}")
-  set(${OUT_EXE} "${DXC_EXE}" PARENT_SCOPE)
-endfunction()
-
-# ---- find fxc.exe -------------------------------------------------------------
+# ---- find fxc.exe ------------------------------------------------------------
 function(_cg_find_fxc OUT_EXE)
   if(CG_FXC_PATH AND EXISTS "${CG_FXC_PATH}")
     set(${OUT_EXE} "${CG_FXC_PATH}" PARENT_SCOPE)
@@ -134,8 +64,9 @@ function(_cg_find_fxc OUT_EXE)
   set(${OUT_EXE} "${FXC_EXE}" PARENT_SCOPE)
 endfunction()
 
-# ---- utilities ----------------------------------------------------------------
-# Infer profile: use per-file override if set; otherwise infer by suffix and SM.
+# ---- utilities ---------------------------------------------------------------
+
+# Infer profile: use per-file override if set; otherwise infer by suffix and SM5.0.
 function(_cg_infer_profile SHADER_PATH OUT_PROFILE)
   get_source_file_property(_p "${SHADER_PATH}" HLSL_PROFILE)
   if(NOT _p STREQUAL "NOTFOUND" AND _p)
@@ -149,45 +80,22 @@ function(_cg_infer_profile SHADER_PATH OUT_PROFILE)
   else()
     set(_stage "ps")
   endif()
-  if(CG_SHADERS_USE_DXC)
-    set(_sm "${CG_SHADER_DEFAULT_SM}")
-  else()
-    set(_sm "5_0")
-  endif()
-  set(${OUT_PROFILE} "${_stage}_${_sm}" PARENT_SCOPE)
+  set(${OUT_PROFILE} "${_stage}_5_0" PARENT_SCOPE)
 endfunction()
 
-# Build aggregated include/define args.
-# Uses -I/-D for DXC, /I-/D for FXC. We keep flag and value as separate args for robust quoting.
+# Build aggregated include/define args. Keep flag and value as separate argv entries.
 function(_cg_accumulate_args PREFIX OUT_LIST)
   set(_res "")
-  if(CG_SHADERS_USE_DXC)
-    set(_IFLAG "-I")
-    set(_DFLAG "-D")
-  else()
-    set(_IFLAG "/I")
-    set(_DFLAG "/D")
-  endif()
-
   foreach(inc IN LISTS ${PREFIX}_INCLUDE_DIRS)
-    if(inc) list(APPEND _res "${_IFLAG}" "${inc}") endif()
+    if(inc) list(APPEND _res "/I" "${inc}") endif()
   endforeach()
   foreach(def IN LISTS ${PREFIX}_DEFINES)
-    if(def) list(APPEND _res "${_DFLAG}" "${def}") endif()
+    if(def) list(APPEND _res "/D" "${def}") endif()
   endforeach()
 
   # Warnings as errors?
   if(CG_SHADERS_WARNINGS_AS_ERRORS)
-    if(CG_SHADERS_USE_DXC)
-      list(APPEND _res "-WX")
-    else()
-      list(APPEND _res "/WX")
-    endif()
-  endif()
-
-  # Enforce HLSL language version for DXC if requested.
-  if(CG_SHADERS_USE_DXC AND CG_HLSL_LANGUAGE_VERSION)
-    list(APPEND _res "-HV" "${CG_HLSL_LANGUAGE_VERSION}")
+    list(APPEND _res "/WX")
   endif()
 
   # Global extra flags (semicolon-separated)
@@ -217,8 +125,8 @@ endfunction()
 
 # Convenience: per-file overrides in CMakeLists:
 #   cg_set_hlsl_properties(<file>
-#     [ENTRY main] [PROFILE ps_6_7]
-#     [DEFINES FOO=1 BAR=2] [INCLUDE_DIRS dir1 dir2] [FLAGS "-O3 -Zpr"])
+#     [ENTRY main] [PROFILE ps_5_0]
+#     [DEFINES FOO=1 BAR=2] [INCLUDE_DIRS dir1 dir2] [FLAGS "/Zpr /Ges"])
 function(cg_set_hlsl_properties FILE)
   set(oneValueArgs ENTRY PROFILE)
   set(multiValueArgs DEFINES INCLUDE_DIRS FLAGS)
@@ -241,12 +149,12 @@ function(cg_set_hlsl_properties FILE)
   endif()
 endfunction()
 
-# ---- public API ---------------------------------------------------------------
+# ---- public API --------------------------------------------------------------
 # cg_compile_hlsl(TargetName
 #   SHADERS    a.b.hlsl ...
 #   [INCLUDE_DIRS ...]
 #   [DEFINES ...]
-#   [OUTPUT_DIR <dir>]   # default: ${CMAKE_BINARY_DIR}/shaders
+#   [OUTPUT_DIR <dir>]   # default: ${CMAKE_BINARY_DIR}/shaders[/$<CONFIG>]
 #   [EMBED]              # also generate .h from blobs via _BinaryToHeader.cmake
 # )
 function(cg_compile_hlsl TARGET_NAME)
@@ -259,18 +167,18 @@ function(cg_compile_hlsl TARGET_NAME)
     message(FATAL_ERROR "cg_compile_hlsl(${TARGET_NAME}): SHADERS list is required.")
   endif()
 
-  if(CG_SHADERS_USE_DXC)
-    _cg_find_dxc(DXC_EXE)
-  else()
-    _cg_find_fxc(FXC_EXE)
-  endif()
+  _cg_find_fxc(FXC_EXE)
 
   if(NOT CG_OUTPUT_DIR)
-    set(CG_OUTPUT_DIR "${CMAKE_BINARY_DIR}/shaders")
+    if(CMAKE_CONFIGURATION_TYPES)
+      set(CG_OUTPUT_DIR "${CMAKE_BINARY_DIR}/shaders/$<CONFIG>")
+    else()
+      set(CG_OUTPUT_DIR "${CMAKE_BINARY_DIR}/shaders")
+    endif()
   endif()
   file(MAKE_DIRECTORY "${CG_OUTPUT_DIR}")
 
-  # Track includes in provided dirs and the current source dir for broad correctness.
+  # Track includes in provided dirs (and optionally the current dir) for broad correctness.
   _cg_collect_header_deps(_approx_deps ${CG_INCLUDE_DIRS} "${CMAKE_CURRENT_SOURCE_DIR}")
   _cg_accumulate_args(CG _extra_args)
 
@@ -310,76 +218,40 @@ function(cg_compile_hlsl TARGET_NAME)
 
     # Build per-source args
     set(_per_src_args "")
-    if(CG_SHADERS_USE_DXC)
-      set(_IFLAG "-I")  set(_DFLAG "-D")
-    else()
-      set(_IFLAG "/I")  set(_DFLAG "/D")
-    endif()
     foreach(inc IN LISTS _src_includes)
-      if(inc) list(APPEND _per_src_args "${_IFLAG}" "${inc}") endif()
+      if(inc) list(APPEND _per_src_args "/I" "${inc}") endif()
     endforeach()
     foreach(def IN LISTS _src_defines)
-      if(def) list(APPEND _per_src_args "${_DFLAG}" "${def}") endif()
+      if(def) list(APPEND _per_src_args "/D" "${def}") endif()
     endforeach()
     if(_src_flags)
       separate_arguments(_src_flags_list NATIVE_COMMAND "${_src_flags}")
       list(APPEND _per_src_args ${_src_flags_list})
     endif()
 
-    # Decide extension (supports "auto")
+    # Decide extension
     set(_out_ext "${CG_SHADER_OUTPUT_EXT}")
-    if(NOT _out_ext OR _out_ext STREQUAL "auto")
-      if(CG_SHADERS_USE_DXC)
-        set(_out_ext "dxil")
-      else()
-        set(_out_ext "cso")
-      endif()
+    if(NOT _out_ext)
+      set(_out_ext "cso")
     endif()
 
     set(_out "${CG_OUTPUT_DIR}/${_base}.${_out_ext}")
 
-    # PDB output only for debug configs (avoid pairing with strip flags in Release)
-    if(CG_SHADERS_USE_DXC)
-      set(_pdb_flag "$<$<OR:$<CONFIG:Debug>,$<CONFIG:RelWithDebInfo>>:-Fd;${CG_OUTPUT_DIR}/${_base}.pdb>")
-    else()
-      set(_pdb_flag "$<$<OR:$<CONFIG:Debug>,$<CONFIG:RelWithDebInfo>>:/Fd;${CG_OUTPUT_DIR}/${_base}.pdb>")
-    endif()
-
-    if(CG_SHADERS_USE_DXC)
-      add_custom_command(
-        OUTPUT "${_out}"
-        COMMAND ${CMAKE_COMMAND} -E make_directory "${CG_OUTPUT_DIR}"
-        COMMAND "${DXC_EXE}" -nologo -T "${_profile}" -E "${_entry}"
-                $<$<CONFIG:Debug>:-Zi;-Qembed_debug;-Od>
-                $<$<CONFIG:RelWithDebInfo>:-Zi;-Qembed_debug;-O3>
-                $<$<CONFIG:Release>:-O3;-Qstrip_debug;-Qstrip_reflect>
-                ${_pdb_flag}
-                ${_extra_args} ${_per_src_args}
-                -Fo "${_out}" "${_src_abs}"
-        MAIN_DEPENDENCY "${_src_abs}"
-        DEPENDS "${_src_abs}" ${_approx_deps}
-        COMMENT "DXC ${_profile} ${_base}.hlsl -> ${_out}"
-        VERBATIM
-        COMMAND_EXPAND_LISTS
-      )
-    else()
-      add_custom_command(
-        OUTPUT "${_out}"
-        COMMAND ${CMAKE_COMMAND} -E make_directory "${CG_OUTPUT_DIR}"
-        COMMAND "${FXC_EXE}" /nologo /T "${_profile}" /E "${_entry}"
-                $<$<CONFIG:Debug>:/Zi;/Od>
-                $<$<CONFIG:RelWithDebInfo>:/Zi>
-                $<$<CONFIG:Release>:/O3;/Qstrip_debug;/Qstrip_reflect>
-                ${_pdb_flag}
-                ${_extra_args} ${_per_src_args}
-                /Fo "${_out}" "${_src_abs}"
-        MAIN_DEPENDENCY "${_src_abs}"
-        DEPENDS "${_src_abs}" ${_approx_deps}
-        COMMENT "FXC ${_profile} ${_base}.hlsl -> ${_out}"
-        VERBATIM
-        COMMAND_EXPAND_LISTS
-      )
-    endif()
+    add_custom_command(
+      OUTPUT "${_out}"
+      COMMAND ${CMAKE_COMMAND} -E make_directory "${CG_OUTPUT_DIR}"
+      COMMAND "${FXC_EXE}" /nologo /T "${_profile}" /E "${_entry}"
+              $<$<CONFIG:Debug>:/Zi;/Od>
+              $<$<CONFIG:RelWithDebInfo>:/Zi;/O2>
+              $<$<CONFIG:Release>:/O3>
+              ${_extra_args} ${_per_src_args}
+              /Fo "${_out}" "${_src_abs}"
+      MAIN_DEPENDENCY "${_src_abs}"
+      DEPENDS "${_src_abs}" ${_approx_deps}
+      COMMENT "FXC ${_profile} ${_base}.hlsl -> ${_out}"
+      VERBATIM
+      COMMAND_EXPAND_LISTS
+    )
 
     list(APPEND _outputs "${_out}")
 
