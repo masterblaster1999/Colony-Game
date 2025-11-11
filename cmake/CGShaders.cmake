@@ -1,9 +1,9 @@
 # cmake/CGShaders.cmake
 # Windows-only HLSL build glue (FXC/SM5.x). Minimal, robust, and CI-friendly.
-# Requires CMake >= 3.8 for COMMAND_EXPAND_LISTS.
-# Docs: add_custom_command + generator expressions:
-#   - https://cmake.org/cmake/help/latest/command/add_custom_command.html
-#   - https://cmake.org/cmake/help/latest/manual/cmake-generator-expressions.7.html
+# Requires CMake >= 3.20 for generator expressions in OUTPUT.
+# Docs: add_custom_command/add_custom_target and generator expressions.
+# - https://cmake.org/cmake/help/latest/command/add_custom_command.html
+# - https://cmake.org/cmake/help/latest/release/3.20.html
 
 include_guard(GLOBAL)
 include(CMakeParseArguments)
@@ -26,17 +26,9 @@ endif()
 # Options
 # --------------------------------------------------------------------------
 option(CG_SHADERS_WARNINGS_AS_ERRORS "Treat shader compiler warnings as errors" OFF)
-
-# Extra flags you want to push into FXC (semicolon-separated), e.g. "/Zpr;/Ges"
 set(CG_SHADERS_ADDITIONAL_FLAGS "" CACHE STRING "Additional flags passed to fxc.exe (semicolon-separated)")
-
-# File extension for compiled shader blobs
 set(CG_SHADER_OUTPUT_EXT "cso" CACHE STRING "Compiled shader extension (usually 'cso')")
-
-# Where compiled shaders are copied beside the runtime target
 set(CG_SHADERS_RUNTIME_SUBDIR "renderer/Shaders" CACHE STRING "Subfolder next to the EXE for compiled shaders")
-
-# Optional manual override for compiler location
 set(CG_FXC_PATH "" CACHE FILEPATH "Full path to fxc.exe (optional override)")
 
 # --------------------------------------------------------------------------
@@ -92,7 +84,6 @@ function(_cg_find_fxc OUT_EXE)
   if(NOT FXC_EXE)
     find_program(FXC_EXE NAMES fxc fxc.exe)
   endif()
-
   if(NOT FXC_EXE)
     message(FATAL_ERROR
       "fxc.exe not found.\n"
@@ -107,7 +98,6 @@ endfunction()
 # --------------------------------------------------------------------------
 # Utilities
 # --------------------------------------------------------------------------
-# Infer profile: use per-file override if set; otherwise infer by suffix and SM 5.0.
 function(_cg_infer_profile SHADER_PATH OUT_PROFILE)
   get_source_file_property(_p "${SHADER_PATH}" HLSL_PROFILE)
   if(NOT _p STREQUAL "NOTFOUND" AND _p)
@@ -122,11 +112,9 @@ function(_cg_infer_profile SHADER_PATH OUT_PROFILE)
   else()
     set(_stage "ps")
   endif()
-
   set(${OUT_PROFILE} "${_stage}_5_0" PARENT_SCOPE)
 endfunction()
 
-# Build aggregated include/define args; each flag/value is a separate argv item.
 function(_cg_accumulate_args PREFIX OUT_LIST)
   set(_res "")
   foreach(inc IN LISTS ${PREFIX}_INCLUDE_DIRS)
@@ -149,7 +137,6 @@ function(_cg_accumulate_args PREFIX OUT_LIST)
   set(${OUT_LIST} "${_res}" PARENT_SCOPE)
 endfunction()
 
-# Build a conservative dependency list by scanning include directories
 function(_cg_collect_header_deps OUT_LIST)
   set(_deps "")
   foreach(inc IN LISTS ARGN)
@@ -165,7 +152,6 @@ function(_cg_collect_header_deps OUT_LIST)
   set(${OUT_LIST} "${_deps}" PARENT_SCOPE)
 endfunction()
 
-# Per-file overrides (entry/profile/defines/includes/flags)
 function(cg_set_hlsl_properties FILE)
   set(oneValueArgs ENTRY PROFILE)
   set(multiValueArgs DEFINES INCLUDE_DIRS FLAGS)
@@ -194,8 +180,8 @@ endfunction()
 #   SHADERS a.hlsl b.hlsl ...
 #   [INCLUDE_DIRS ...]
 #   [DEFINES ...]
-#   [OUTPUT_DIR <dir>]        # default: ${CMAKE_BINARY_DIR}/shaders[/ $<CONFIG> at build time]
-#   [EMBED]                   # also generate .h from blobs via _BinaryToHeader.cmake
+#   [OUTPUT_DIR <dir>]        # default: ${CMAKE_BINARY_DIR}/shaders (per-config at build time)
+#   [EMBED]                   # also generate .h via cmake/_BinaryToHeader.cmake
 # )
 function(cg_compile_hlsl TARGET_NAME)
   set(options EMBED)
@@ -213,7 +199,6 @@ function(cg_compile_hlsl TARGET_NAME)
   if(NOT CG_OUTPUT_DIR)
     set(CG_OUTPUT_DIR "${CMAKE_BINARY_DIR}/shaders")
   endif()
-  # Safe at configure time:
   file(MAKE_DIRECTORY "${CG_OUTPUT_DIR}")
 
   _cg_collect_header_deps(_approx_deps ${CG_INCLUDE_DIRS} "${CMAKE_CURRENT_SOURCE_DIR}")
@@ -224,7 +209,6 @@ function(cg_compile_hlsl TARGET_NAME)
 
   set(_outputs "")
   foreach(_src IN LISTS CG_SHADERS)
-    # Skip headers/includes if they were accidentally listed
     if(_src MATCHES "\\.(hlsli|fxh|hlslinc)$")
       continue()
     endif()
@@ -237,7 +221,6 @@ function(cg_compile_hlsl TARGET_NAME)
     if(_entry STREQUAL "NOTFOUND" OR NOT _entry)
       set(_entry "main")
     endif()
-
     _cg_infer_profile("${_src}" _profile)
 
     get_source_file_property(_src_defines  "${_src}" HLSL_DEFINES)
@@ -253,7 +236,7 @@ function(cg_compile_hlsl TARGET_NAME)
       set(_src_flags "")
     endif()
 
-    # Build per-source args
+    # Per-source args
     set(_per_src_args "")
     foreach(inc IN LISTS _src_includes)
       if(inc)
@@ -270,22 +253,16 @@ function(cg_compile_hlsl TARGET_NAME)
       list(APPEND _per_src_args ${_src_flags_list})
     endif()
 
-    # Decide extension & per-config output file.
-    set(_out_ext "${CG_SHADER_OUTPUT_EXT}")
-    if(NOT _out_ext)
-      set(_out_ext "cso")
-    endif()
-
-    # Use a genex subdirectory ONLY in build-time contexts.
+    # Per-config output file (genex allowed in OUTPUT since 3.20)
     if(CMAKE_CONFIGURATION_TYPES)
       set(_out_dir "${CG_OUTPUT_DIR}/$<CONFIG>")
     else()
       set(_out_dir "${CG_OUTPUT_DIR}")
     endif()
-    set(_out "${_out_dir}/${_base}.${_out_ext}")
+    set(_out "${_out_dir}/${_base}.${CG_SHADER_OUTPUT_EXT}")
 
     add_custom_command(
-      OUTPUT  "${_out}"          # Since 3.20, OUTPUT may use a restricted set of genex (e.g., $<CONFIG>)
+      OUTPUT  "${_out}"
       COMMAND ${CMAKE_COMMAND} -E make_directory "${_out_dir}"
       COMMAND "${FXC_EXE}"
         /nologo
@@ -321,16 +298,42 @@ function(cg_compile_hlsl TARGET_NAME)
     endif()
   endforeach()
 
-  add_custom_target(${TARGET_NAME} DEPENDS ${_outputs})
-  # Store a genex-free base dir so install/copy steps remain valid at configure time.
-  set_property(TARGET ${TARGET_NAME} PROPERTY CG_SHADER_OUTPUT_DIR "${CG_OUTPUT_DIR}")
-  set_property(TARGET ${TARGET_NAME} PROPERTY CG_SHADER_OUTPUTS    "${_outputs}")
+  # --- Collision-proof target creation: aggregator + unique sub-target per call
+  # Aggregator (only once)
+  if(NOT TARGET ${TARGET_NAME})
+    add_custom_target(${TARGET_NAME})
+    # Store a genex-free base dir so install/copy steps remain valid at configure time.
+    set_property(TARGET ${TARGET_NAME} PROPERTY CG_SHADER_OUTPUT_DIR "${CG_OUTPUT_DIR}")
+  endif()
+
+  # Unique sub-target (hash by source dir + list of shaders)
+  string(SHA1 _cg_hash "${CMAKE_CURRENT_SOURCE_DIR};${CG_SHADERS};${CG_OUTPUT_DIR}")
+  string(SUBSTRING "${_cg_hash}" 0 8 _cg_short)
+  set(_real_tgt "${TARGET_NAME}__${_cg_short}")
+
+  if(NOT TARGET ${_real_tgt})
+    add_custom_target(${_real_tgt} DEPENDS ${_outputs})
+  endif()
+  add_dependencies(${TARGET_NAME} ${_real_tgt})
+
+  # Accumulate outputs on the aggregator for downstream queries
+  get_target_property(_old_outs ${TARGET_NAME} CG_SHADER_OUTPUTS)
+  if(_old_outs STREQUAL "CG_SHADER_OUTPUTS-NOTFOUND")
+    set(_old_outs "")
+  endif()
+  list(APPEND _old_outs ${_outputs})
+  set_property(TARGET ${TARGET_NAME} PROPERTY CG_SHADER_OUTPUTS "${_old_outs}")
 endfunction()
 
 # Copy the compiled blobs next to the exe under /renderer/Shaders by default.
+# Uses a standalone custom target instead of POST_BUILD, so it works from any directory.
 function(cg_link_shaders_to_target SHADER_TARGET RUNTIME_TARGET)
   if(NOT TARGET ${SHADER_TARGET})
     message(WARNING "cg_link_shaders_to_target: shader target '${SHADER_TARGET}' does not exist; skip linking shaders.")
+    return()
+  endif()
+  if(NOT TARGET ${RUNTIME_TARGET})
+    message(WARNING "cg_link_shaders_to_target: runtime target '${RUNTIME_TARGET}' does not exist; skip linking shaders.")
     return()
   endif()
 
@@ -347,16 +350,18 @@ function(cg_link_shaders_to_target SHADER_TARGET RUNTIME_TARGET)
 
   set(_dest "$<TARGET_FILE_DIR:${RUNTIME_TARGET}>/${_subdir}")
 
-  add_custom_command(TARGET ${RUNTIME_TARGET} POST_BUILD
-    COMMAND ${CMAKE_COMMAND} -E make_directory "${_dest}"
-    # Copy the WHOLE (genex-free) shaders base dir (may contain per-config subdirs)
-    COMMAND ${CMAKE_COMMAND} -E copy_directory "${_outdir}" "${_dest}"
-    COMMENT "Copying shaders to ${_dest}"
-    VERBATIM
-  )
+  # Create a copy target that runs as part of 'all' and depends on both the exe and shaders.
+  set(_copy_tgt "copy_shaders__${RUNTIME_TARGET}")
+  if(NOT TARGET ${_copy_tgt})
+    add_custom_target(${_copy_tgt} ALL
+      COMMAND ${CMAKE_COMMAND} -E make_directory "${_dest}"
+      COMMAND ${CMAKE_COMMAND} -E copy_directory "${_outdir}" "${_dest}"
+      COMMENT "Copying shaders from ${_outdir} to ${_dest}"
+      VERBATIM
+    )
+  endif()
+  add_dependencies(${_copy_tgt} ${RUNTIME_TARGET} ${SHADER_TARGET})
 
   # Optional install step (puts them under bin/) — no generator expressions here.
   install(DIRECTORY "${_outdir}/" DESTINATION "bin/${_subdir}")
-
-  add_dependencies(${RUNTIME_TARGET} ${SHADER_TARGET})
 endfunction()
