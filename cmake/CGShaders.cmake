@@ -98,20 +98,62 @@ endfunction()
 # --------------------------------------------------------------------------
 # Utilities
 # --------------------------------------------------------------------------
+# (PATCH 2) Robust, case-insensitive stage inference covering:
+#   *.vs.hlsl, *.ps.hlsl, *.cs.hlsl, *.compute.hlsl,
+#   tokens/prefixes/suffixes: vs_, _vs, ...VS, etc.
 function(_cg_infer_profile SHADER_PATH OUT_PROFILE)
+  # Allow per-file override via source property first
   get_source_file_property(_p "${SHADER_PATH}" HLSL_PROFILE)
   if(NOT _p STREQUAL "NOTFOUND" AND _p)
     set(${OUT_PROFILE} "${_p}" PARENT_SCOPE)
     return()
   endif()
 
-  get_filename_component(_base "${SHADER_PATH}" NAME)
-  string(REGEX MATCH "([\\._-])(vs|ps|cs|gs|hs|ds)([\\._-])" _m "${_base}")
-  if(_m)
-    string(REGEX REPLACE ".*([\\._-])(vs|ps|cs|gs|hs|ds)([\\._-]).*" "\\2" _stage "${_base}")
-  else()
+  get_filename_component(_name "${SHADER_PATH}" NAME)       # full file name
+  get_filename_component(_stem "${SHADER_PATH}" NAME_WE)     # without extension
+  string(TOLOWER "${_name}" _n)
+  string(TOLOWER "${_stem}" _s)
+
+  set(_stage "")
+
+  # Strongest match: explicit double extensions (e.g., ToneMap.ps.hlsl)
+  if(_n MATCHES "\\.vs\\.hlsl$")
+    set(_stage "vs")
+  elseif(_n MATCHES "\\.ps\\.hlsl$")
+    set(_stage "ps")
+  elseif(_n MATCHES "\\.(cs|compute)\\.hlsl$")
+    set(_stage "cs")
+  elseif(_n MATCHES "\\.gs\\.hlsl$")
+    set(_stage "gs")
+  elseif(_n MATCHES "\\.hs\\.hlsl$")
+    set(_stage "hs")
+  elseif(_n MATCHES "\\.ds\\.hlsl$")
+    set(_stage "ds")
+  endif()
+
+  # Next: common prefixes/suffixes and tokenized names
+  if(_stage STREQUAL "")
+    if(_s MATCHES "^(vs)[_-]" OR _s MATCHES "([._-])vs([._-])" OR _s MATCHES "vs$")
+      set(_stage "vs")
+    elseif(_s MATCHES "^(ps)[_-]" OR _s MATCHES "([._-])ps([._-])" OR _s MATCHES "(fragment|frag)" OR _s MATCHES "ps$")
+      set(_stage "ps")
+    elseif(_s MATCHES "^(cs)[_-]" OR _s MATCHES "([._-])cs([._-])" OR _s MATCHES "(compute)" OR _s MATCHES "cs$")
+      set(_stage "cs")
+    elseif(_s MATCHES "^(gs)[_-]" OR _s MATCHES "([._-])gs([._-])" OR _s MATCHES "(geometry)" OR _s MATCHES "gs$")
+      set(_stage "gs")
+    elseif(_s MATCHES "^(hs)[_-]" OR _s MATCHES "([._-])hs([._-])" OR _s MATCHES "(hull)" OR _s MATCHES "hs$")
+      set(_stage "hs")
+    elseif(_s MATCHES "^(ds)[_-]" OR _s MATCHES "([._-])ds([._-])" OR _s MATCHES "(domain)" OR _s MATCHES "ds$")
+      set(_stage "ds")
+    endif()
+  endif()
+
+  if(_stage STREQUAL "")
+    # Conservative default when nothing matches
     set(_stage "ps")
   endif()
+
+  # Shader Model 5.x profiles for D3D11 (FXC/DXBC)
   set(${OUT_PROFILE} "${_stage}_5_0" PARENT_SCOPE)
 endfunction()
 
