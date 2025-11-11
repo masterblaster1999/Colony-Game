@@ -1,39 +1,84 @@
 # cmake/CGShaders.cmake
-# Windows-only HLSL build glue (FXC/SM5.x). Minimal, robust, and CI-friendly.
+# Windows-only HLSL build glue (DXC-first with FXC fallback). Minimal, robust, and CI-friendly.
 # Requires CMake >= 3.20 for generator expressions in OUTPUT.
 # Docs: add_custom_command/add_custom_target and generator expressions.
 # - https://cmake.org/cmake/help/latest/command/add_custom_command.html
 # - https://cmake.org/cmake/help/latest/release/3.20.html
+#
+# Compiler notes:
+#  * FXC (SM2..5.1): /Zi for debug, /Fd for PDB, /O{d|1..3} for optimization.    [MS Docs]
+#  * DXC (SM6+):      -Zi for debug, -Fd for PDB, -O{0|1|2|3}, -Qembed_debug/-Qstrip_debug. [DXC]
+#  * PIX: For DXBC paths, /Zi + /Zss and /Fd <dir>\ can help automatic PDB resolution. You can also name a file explicitly. [PIX]
+#
+# (See project CMakeLists for how this module is used.)
 
 include_guard(GLOBAL)
 include(CMakeParseArguments)
 
-# --------------------------------------------------------------------------
+# ------------------------------------------------------------------------------
 # No-ops on non-Windows so include() remains harmless on other hosts.
-# --------------------------------------------------------------------------
+# ------------------------------------------------------------------------------
 if(NOT WIN32)
   message(STATUS "CGShaders.cmake: non-Windows host; shader build helpers are inert.")
-  function(cg_compile_hlsl)
-  endfunction()
-  function(cg_link_shaders_to_target)
-  endfunction()
-  function(cg_set_hlsl_properties)
-  endfunction()
+  function(cg_compile_hlsl) endfunction()
+  function(cg_link_shaders_to_target) endfunction()
+  function(cg_set_hlsl_properties) endfunction()
   return()
 endif()
 
-# --------------------------------------------------------------------------
+# ------------------------------------------------------------------------------
 # Options
-# --------------------------------------------------------------------------
+# ------------------------------------------------------------------------------
 option(CG_SHADERS_WARNINGS_AS_ERRORS "Treat shader compiler warnings as errors" OFF)
-set(CG_SHADERS_ADDITIONAL_FLAGS "" CACHE STRING "Additional flags passed to fxc.exe (semicolon-separated)")
+# Additional flags are passed through to whichever compiler is used (FXC or DXC).
+set(CG_SHADERS_ADDITIONAL_FLAGS "" CACHE STRING "Additional flags passed to the shader compiler (semicolon-separated)")
 set(CG_SHADER_OUTPUT_EXT "cso" CACHE STRING "Compiled shader extension (usually 'cso')")
 set(CG_SHADERS_RUNTIME_SUBDIR "renderer/Shaders" CACHE STRING "Subfolder next to the EXE for compiled shaders")
-set(CG_FXC_PATH "" CACHE FILEPATH "Full path to fxc.exe (optional override)")
 
-# --------------------------------------------------------------------------
+# Manual overrides for tool locations:
+set(CG_FXC_PATH "" CACHE FILEPATH "Full path to fxc.exe (optional override)")
+set(CG_DXC_PATH "" CACHE FILEPATH "Full path to dxc.exe (optional override)")
+
+# Choose compiler strategy:
+set(COLONY_HLSL_COMPILER "AUTO" CACHE STRING "HLSL compiler: AUTO (prefer DXC), DXC (force), FXC (force)")
+set_property(CACHE COLONY_HLSL_COMPILER PROPERTY STRINGS "AUTO" "DXC" "FXC")
+
+# ------------------------------------------------------------------------------
+# Locate DXC (DirectXShaderCompiler) — prefer vcpkg tool locations if present
+# ------------------------------------------------------------------------------
+function(_cg_find_dxc OUT_EXE)
+  if(CG_DXC_PATH AND EXISTS "${CG_DXC_PATH}")
+    set(${OUT_EXE} "${CG_DXC_PATH}" PARENT_SCOPE)
+    return()
+  endif()
+
+  set(_hints "")
+
+  # vcpkg common layout(s)
+  foreach(_root IN ITEMS "$ENV{VCPKG_ROOT}" "$ENV{VCPKG_INSTALLATION_ROOT}")
+    if(NOT "${_root}" STREQUAL "")
+      list(APPEND _hints
+        "${_root}/installed/x64-windows/tools/directx-dxc"
+        "${_root}/installed/x86-windows/tools/directx-dxc"
+        "${_root}/installed/arm64-windows/tools/directx-dxc")
+    endif()
+  endforeach()
+
+  # Generic PATH search last
+  find_program(DXC_EXE NAMES dxc dxc.exe HINTS ${_hints})
+  if(NOT DXC_EXE)
+    # Still optional; we'll fall back to FXC.
+    set(${OUT_EXE} "" PARENT_SCOPE)
+    return()
+  endif()
+
+  message(STATUS "CGShaders: DXC = ${DXC_EXE}")
+  set(${OUT_EXE} "${DXC_EXE}" PARENT_SCOPE)
+endfunction()
+
+# ------------------------------------------------------------------------------
 # Locate FXC (Windows SDK) — robust on VS & Ninja generators
-# --------------------------------------------------------------------------
+# ------------------------------------------------------------------------------
 function(_cg_find_fxc OUT_EXE)
   if(CG_FXC_PATH AND EXISTS "${CG_FXC_PATH}")
     set(${OUT_EXE} "${CG_FXC_PATH}" PARENT_SCOPE)
@@ -91,14 +136,14 @@ function(_cg_find_fxc OUT_EXE)
       "Install the Windows 10/11 SDK or set CG_FXC_PATH to fxc.exe.")
   endif()
 
-  message(STATUS "CGShaders: using FXC at: ${FXC_EXE}")
+  message(STATUS "CGShaders: FXC = ${FXC_EXE}")
   set(${OUT_EXE} "${FXC_EXE}" PARENT_SCOPE)
 endfunction()
 
-# --------------------------------------------------------------------------
+# ------------------------------------------------------------------------------
 # Utilities
-# --------------------------------------------------------------------------
-# (PATCH 2) Robust, case-insensitive stage inference covering:
+# ------------------------------------------------------------------------------
+# Robust, case-insensitive stage inference covering:
 #   *.vs.hlsl, *.ps.hlsl, *.cs.hlsl, *.compute.hlsl,
 #   tokens/prefixes/suffixes: vs_, _vs, ...VS, etc.
 function(_cg_infer_profile SHADER_PATH OUT_PROFILE)
@@ -153,10 +198,11 @@ function(_cg_infer_profile SHADER_PATH OUT_PROFILE)
     set(_stage "ps")
   endif()
 
-  # Shader Model 5.x profiles for D3D11 (FXC/DXBC)
+  # Shader Model 5.x profiles for D3D11 (FXC/DXBC) by default
   set(${OUT_PROFILE} "${_stage}_5_0" PARENT_SCOPE)
 endfunction()
 
+# Accumulate FXC-style args (/I, /D, /WX)
 function(_cg_accumulate_args PREFIX OUT_LIST)
   set(_res "")
   foreach(inc IN LISTS ${PREFIX}_INCLUDE_DIRS)
@@ -171,6 +217,29 @@ function(_cg_accumulate_args PREFIX OUT_LIST)
   endforeach()
   if(CG_SHADERS_WARNINGS_AS_ERRORS)
     list(APPEND _res "/WX")
+  endif()
+  if(CG_SHADERS_ADDITIONAL_FLAGS)
+    separate_arguments(_extra_flags NATIVE_COMMAND "${CG_SHADERS_ADDITIONAL_FLAGS}")
+    list(APPEND _res ${_extra_flags})
+  endif()
+  set(${OUT_LIST} "${_res}" PARENT_SCOPE)
+endfunction()
+
+# Accumulate DXC-style args (-I, -D, -WX)
+function(_cg_accumulate_args_dxc PREFIX OUT_LIST)
+  set(_res "")
+  foreach(inc IN LISTS ${PREFIX}_INCLUDE_DIRS)
+    if(inc)
+      list(APPEND _res "-I" "${inc}")
+    endif()
+  endforeach()
+  foreach(def IN LISTS ${PREFIX}_DEFINES)
+    if(def)
+      list(APPEND _res "-D" "${def}")
+    endif()
+  endforeach()
+  if(CG_SHADERS_WARNINGS_AS_ERRORS)
+    list(APPEND _res "-WX")
   endif()
   if(CG_SHADERS_ADDITIONAL_FLAGS)
     separate_arguments(_extra_flags NATIVE_COMMAND "${CG_SHADERS_ADDITIONAL_FLAGS}")
@@ -215,9 +284,9 @@ function(cg_set_hlsl_properties FILE)
   endif()
 endfunction()
 
-# --------------------------------------------------------------------------
+# ------------------------------------------------------------------------------
 # Public API
-# --------------------------------------------------------------------------
+# ------------------------------------------------------------------------------
 # cg_compile_hlsl(TargetName
 #   SHADERS a.hlsl b.hlsl ...
 #   [INCLUDE_DIRS ...]
@@ -235,7 +304,28 @@ function(cg_compile_hlsl TARGET_NAME)
     message(FATAL_ERROR "cg_compile_hlsl(${TARGET_NAME}): SHADERS list is required.")
   endif()
 
-  _cg_find_fxc(FXC_EXE)
+  # Pick compilers based on user setting; prefer DXC when available.
+  set(_use_dxc FALSE)
+  if(COLONY_HLSL_COMPILER STREQUAL "DXC")
+    set(_use_dxc TRUE)
+  elseif(COLONY_HLSL_COMPILER STREQUAL "AUTO")
+    _cg_find_dxc(DXC_EXE)
+    if(DXC_EXE)
+      set(_use_dxc TRUE)
+    endif()
+  endif()
+  if(_use_dxc)
+    if(NOT DEFINED DXC_EXE OR DXC_EXE STREQUAL "")
+      _cg_find_dxc(DXC_EXE)
+    endif()
+    if(NOT DXC_EXE)
+      message(STATUS "CGShaders: DXC not found; falling back to FXC.")
+      set(_use_dxc FALSE)
+    endif()
+  endif()
+  if(NOT _use_dxc)
+    _cg_find_fxc(FXC_EXE)
+  endif()
 
   # Configure-time base output directory WITHOUT generator expressions.
   if(NOT CG_OUTPUT_DIR)
@@ -244,10 +334,11 @@ function(cg_compile_hlsl TARGET_NAME)
   file(MAKE_DIRECTORY "${CG_OUTPUT_DIR}")
 
   _cg_collect_header_deps(_approx_deps ${CG_INCLUDE_DIRS} "${CMAKE_CURRENT_SOURCE_DIR}")
-  _cg_accumulate_args(CG _extra_args)
+  _cg_accumulate_args(CG _extra_args_fxc)
+  _cg_accumulate_args_dxc(CG _extra_args_dxc)
 
   list(LENGTH CG_SHADERS _hlsl_count)
-  message(STATUS "CGShaders: compiling ${_hlsl_count} HLSL file(s) -> ${CG_OUTPUT_DIR}/$<CONFIG>")
+  message(STATUS "CGShaders: compiling ${_hlsl_count} HLSL file(s) -> ${CG_OUTPUT_DIR}/$<CONFIG> (compiler: $<IF:$<_use_dxc>,DXC,FXC>)")
 
   set(_outputs "")
   foreach(_src IN LISTS CG_SHADERS)
@@ -278,21 +369,29 @@ function(cg_compile_hlsl TARGET_NAME)
       set(_src_flags "")
     endif()
 
-    # Per-source args
-    set(_per_src_args "")
+    # Per-source args (both FXC and DXC style)
+    set(_per_src_args_fxc "")
     foreach(inc IN LISTS _src_includes)
-      if(inc)
-        list(APPEND _per_src_args "/I" "${inc}")
-      endif()
+      if(inc) list(APPEND _per_src_args_fxc "/I" "${inc}") endif()
     endforeach()
     foreach(def IN LISTS _src_defines)
-      if(def)
-        list(APPEND _per_src_args "/D" "${def}")
-      endif()
+      if(def) list(APPEND _per_src_args_fxc "/D" "${def}") endif()
     endforeach()
     if(_src_flags)
       separate_arguments(_src_flags_list NATIVE_COMMAND "${_src_flags}")
-      list(APPEND _per_src_args ${_src_flags_list})
+      list(APPEND _per_src_args_fxc ${_src_flags_list})
+    endif()
+
+    set(_per_src_args_dxc "")
+    foreach(inc IN LISTS _src_includes)
+      if(inc) list(APPEND _per_src_args_dxc "-I" "${inc}") endif()
+    endforeach()
+    foreach(def IN LISTS _src_defines)
+      if(def) list(APPEND _per_src_args_dxc "-D" "${def}") endif()
+    endforeach()
+    if(_src_flags)
+      separate_arguments(_src_flags_list2 NATIVE_COMMAND "${_src_flags}")
+      list(APPEND _per_src_args_dxc ${_src_flags_list2})
     endif()
 
     # Per-config output file (genex allowed in OUTPUT since 3.20)
@@ -303,25 +402,80 @@ function(cg_compile_hlsl TARGET_NAME)
     endif()
     set(_out "${_out_dir}/${_base}.${CG_SHADER_OUTPUT_EXT}")
 
-    add_custom_command(
-      OUTPUT  "${_out}"
-      COMMAND ${CMAKE_COMMAND} -E make_directory "${_out_dir}"
-      COMMAND "${FXC_EXE}"
-        /nologo
-        /T "${_profile}"
-        /E "${_entry}"
-        $<$<CONFIG:Debug>:/Zi;/Od>
-        $<$<CONFIG:RelWithDebInfo>:/Zi;/O2>
-        $<$<CONFIG:Release>:/O3>
-        ${_extra_args}
-        ${_per_src_args}
-        /Fo "${_out}" "${_src_abs}"
-      MAIN_DEPENDENCY "${_src_abs}"
-      DEPENDS "${_src_abs}" ${_approx_deps}
-      COMMENT "FXC ${_profile} ${_base}.hlsl -> ${_out}"
-      VERBATIM
-      COMMAND_EXPAND_LISTS
-    )
+    if(_use_dxc)
+      # -------------------------
+      # DXC command (SM 6.x recommended; SM 5.x is accepted by dxc too)
+      # Debug & RelWithDebInfo: -Zi + -Qembed_debug (+ optional PDB via -Fd)
+      # Release/MinSizeRel:     -O3 + -Qstrip_debug
+      # -------------------------
+      set(_cmd
+        "${DXC_EXE}"
+          -nologo
+          -T "${_profile}"
+          -E "${_entry}"
+          -Fo "${_out}"
+          $<$<CONFIG:Debug>:-O0;-Zi;-Qembed_debug>
+          $<$<CONFIG:RelWithDebInfo>:-O3;-Zi;-Qembed_debug>
+          $<$<OR:$<CONFIG:Release>,$<CONFIG:MinSizeRel>>:-O3;-Qstrip_debug>
+          ${_extra_args_dxc}
+          ${_per_src_args_dxc}
+          "${_src_abs}"
+      )
+      # Emit a PDB only for configs that want debug info
+      list(APPEND _cmd
+        $<$<OR:$<CONFIG:Debug>,$<CONFIG:RelWithDebInfo>>:-Fd>
+        $<$<OR:$<CONFIG:Debug>,$<CONFIG:RelWithDebInfo>>:${_out}.pdb>
+      )
+
+      add_custom_command(
+        OUTPUT  "${_out}"
+        COMMAND ${CMAKE_COMMAND} -E make_directory "${_out_dir}"
+        COMMAND ${_cmd}
+        MAIN_DEPENDENCY "${_src_abs}"
+        DEPENDS "${_src_abs}" ${_approx_deps}
+        COMMENT "DXC ${_profile} ${_base}.hlsl -> ${_out}"
+        VERBATIM
+        COMMAND_EXPAND_LISTS
+      )
+    else()
+      # -------------------------
+      # FXC command (SM 5.x, DXBC)
+      # Debug:            /Zi /Od (+ PDB)
+      # RelWithDebInfo:   /Zi /O3 (+ PDB)
+      # Release/MinSize:  /O3
+      # -------------------------
+      set(_cmd
+        "${FXC_EXE}"
+          /nologo
+          /T "${_profile}"
+          /E "${_entry}"
+          /Fo "${_out}"
+          $<$<CONFIG:Debug>:/Zi;/Od>
+          $<$<CONFIG:RelWithDebInfo>:/Zi;/O3>
+          $<$<OR:$<CONFIG:Release>,$<CONFIG:MinSizeRel>>:/O3>
+          ${_extra_args_fxc}
+          ${_per_src_args_fxc}
+          "${_src_abs}"
+      )
+      # Prefer hashed PDB naming into a directory per PIX guidance, or just emit to a file path.
+      list(APPEND _cmd
+        $<$<OR:$<CONFIG:Debug>,$<CONFIG:RelWithDebInfo>>:/Zss>
+        $<$<OR:$<CONFIG:Debug>,$<CONFIG:RelWithDebInfo>>:/Fd>
+        $<$<OR:$<CONFIG:Debug>,$<CONFIG:RelWithDebInfo>>:${_out_dir}/>
+      )
+
+      add_custom_command(
+        OUTPUT  "${_out}"
+        COMMAND ${CMAKE_COMMAND} -E make_directory "${_out_dir}"
+        COMMAND ${_cmd}
+        MAIN_DEPENDENCY "${_src_abs}"
+        DEPENDS "${_src_abs}" ${_approx_deps}
+        COMMENT "FXC ${_profile} ${_base}.hlsl -> ${_out}"
+        VERBATIM
+        COMMAND_EXPAND_LISTS
+      )
+    endif()
+
     list(APPEND _outputs "${_out}")
 
     if(CG_EMBED)
