@@ -1,23 +1,59 @@
 cmake_minimum_required(VERSION 3.24)
 project(ColonyGameTests LANGUAGES CXX)
 
-# Prefer doctest from vcpkg; fall back to header-only FetchContent (no sub-build)
+# We'll use FetchContent for header-only fallbacks when packages aren't available.
+include(FetchContent)
+
+# --------------------------------------------------------------------------------------
+# doctest: prefer a config package (vcpkg/Conan); fall back to header-only FetchContent
+# --------------------------------------------------------------------------------------
 find_package(doctest CONFIG QUIET)
 
+# --------------------------------------------------------------------------------------
+# PCG RNG: create a header-only INTERFACE target named 'pcg' (self-sufficient)
+# Try config package, then system include discovery, then FetchContent (imneme/pcg-cpp).
+# --------------------------------------------------------------------------------------
+if(NOT TARGET pcg)
+  find_package(pcg CONFIG QUIET)
+endif()
+
+if(NOT TARGET pcg)
+  # Try to find an installed header (works when vcpkg or system includes are present)
+  find_path(PCG_INCLUDE_DIR NAMES pcg_random.hpp)
+  if(PCG_INCLUDE_DIR)
+    add_library(pcg INTERFACE)
+    target_include_directories(pcg INTERFACE "${PCG_INCLUDE_DIR}")
+  else()
+    # FetchContent fallback: upstream header-only reference implementation
+    set(FETCHCONTENT_UPDATES_DISCONNECTED ON)
+    FetchContent_Declare(pcg_cpp
+      GIT_REPOSITORY https://github.com/imneme/pcg-cpp.git
+      GIT_TAG        master
+      GIT_SHALLOW    TRUE
+    )
+    FetchContent_MakeAvailable(pcg_cpp)
+
+    add_library(pcg INTERFACE)
+    target_include_directories(pcg INTERFACE "${pcg_cpp_SOURCE_DIR}/include")
+  endif()
+endif()
+
+# --------------------------------------------------------------------------------------
+# Gather tests
+# --------------------------------------------------------------------------------------
 set(TEST_SOURCES)
 
-# Optionally include a smoke test if present (may define its own doctest main)
+# Optional smoke test
 if(EXISTS "${CMAKE_SOURCE_DIR}/tests/smoke/smoke.cpp")
   list(APPEND TEST_SOURCES "${CMAKE_SOURCE_DIR}/tests/smoke/smoke.cpp")
 endif()
 
-# Collect the rest of the tests (including worldgen/test_math_and_noise.cpp)
+# Collect the rest (e.g., tests/worldgen/test_math_and_noise.cpp, etc.)
 file(GLOB_RECURSE _MORE_TESTS CONFIGURE_DEPENDS "${CMAKE_SOURCE_DIR}/tests/*.cpp")
-# Avoid duplicating the smoke file in the list
 list(REMOVE_ITEM _MORE_TESTS "${CMAKE_SOURCE_DIR}/tests/smoke/smoke.cpp")
 list(APPEND TEST_SOURCES ${_MORE_TESTS})
 
-# If both our worldgen doctest (with its own main) and smoke.cpp exist, prefer worldgen and drop smoke to avoid multiple mains.
+# If both our worldgen doctest (with its own main) and smoke.cpp exist, avoid duplicate mains.
 if(EXISTS "${CMAKE_SOURCE_DIR}/tests/worldgen/test_math_and_noise.cpp" AND
    EXISTS "${CMAKE_SOURCE_DIR}/tests/smoke/smoke.cpp")
   list(REMOVE_ITEM TEST_SOURCES "${CMAKE_SOURCE_DIR}/tests/smoke/smoke.cpp")
@@ -35,75 +71,63 @@ if(TEST_SOURCES STREQUAL "")
   message(WARNING "No tests found; generated a stub: ${_stub}")
 endif()
 
+# --------------------------------------------------------------------------------------
+# Build the unified test executable
+# --------------------------------------------------------------------------------------
 add_executable(colony_smoke ${TEST_SOURCES})
-target_compile_features(colony_smoke PRIVATE cxx_std_20)
+target_compile_features(colony_smoke PRIVATE cxx_std_23)
 
-# Make doctest compile as UTF-8 too + tighten warnings on MSVC
+# Windows/MSVC friendliness; reasonable defaults elsewhere
 if(MSVC)
   target_compile_options(colony_smoke PRIVATE /utf-8 /W4 /permissive-)
+else()
+  target_compile_options(colony_smoke PRIVATE -Wall -Wextra -Wpedantic)
 endif()
 
-# Include production headers so tests can include repo headers directly
+# Include production headers (so tests can include repo headers directly)
 target_include_directories(colony_smoke PRIVATE
-  ${CMAKE_SOURCE_DIR}/include       # for "game/components/*.h" (Agent.h, Velocity.h)
+  ${CMAKE_SOURCE_DIR}/include
   ${CMAKE_SOURCE_DIR}/src
   ${CMAKE_SOURCE_DIR}/src/worldgen
 )
 
-# If your repo defines compile flags/defines in an interface target, pick it up (optional, guarded)
+# If your repo defines common compile flags/defines in an interface target, pick it up (optional)
 if(TARGET colony_build_options)
   target_link_libraries(colony_smoke PRIVATE colony_build_options)
 endif()
 
-# --- Link the worldgen library so StageContext & stages resolve (fixes LNK2019) ---
-# The pcg target is produced by the worldgen/pcg project and builds pcg.lib on Windows.
-if(TARGET pcg)
-  target_link_libraries(colony_smoke PRIVATE pcg)
-else()
-  message(FATAL_ERROR "Required target 'pcg' not found. Ensure the 'pcg' library target is defined before adding tests.")
+# Link optional engine libs if present (harmless if they don't exist)
+if(TARGET procgen)
+  target_link_libraries(colony_smoke PRIVATE procgen)
+endif()
+if(TARGET colony_core)
+  target_link_libraries(colony_smoke PRIVATE colony_core)
 endif()
 
-# Link doctest if available; otherwise fetch the header-only variant
+# Link the (header-only) PCG target we created/discovered above
+target_link_libraries(colony_smoke PRIVATE pcg)
+
+# doctest: use the package if present; otherwise header-only fallback via FetchContent
 if(doctest_FOUND)
   target_link_libraries(colony_smoke PRIVATE doctest::doctest)
-
-  # Ensure both include styles work:
-  #   - <doctest/doctest.h>  (standard)
-  #   - "doctest.h"          (legacy form)
-  #
-  # We locate the root include dir that contains 'doctest/doctest.h' and add both that
-  # directory and its 'doctest' subdir so either include path resolves.
-  find_path(DOCTEST_ROOT_DIR doctest/doctest.h
-            HINTS ${CMAKE_PREFIX_PATH}
-            PATH_SUFFIXES include
-            NO_DEFAULT_PATH)
-  # Also allow CMake default paths (covers local toolchains)
-  if(NOT DOCTEST_ROOT_DIR)
-    find_path(DOCTEST_ROOT_DIR doctest/doctest.h PATH_SUFFIXES include)
-  endif()
-
-  if(DOCTEST_ROOT_DIR)
-    target_include_directories(colony_smoke PRIVATE
-      "${DOCTEST_ROOT_DIR}"
-      "${DOCTEST_ROOT_DIR}/doctest"
-    )
-  endif()
 else()
-  include(FetchContent)
   set(FETCHCONTENT_UPDATES_DISCONNECTED ON)
   FetchContent_Declare(doctest
     GIT_REPOSITORY https://github.com/doctest/doctest.git
-    GIT_TAG v2.4.11
-    GIT_SHALLOW TRUE
+    GIT_TAG        v2.4.11
+    GIT_SHALLOW    TRUE
   )
   FetchContent_Populate(doctest)
-  # Support both include styles for header-only fallback as well
+  # Support both include styles: <doctest/doctest.h> and "doctest.h"
   target_include_directories(colony_smoke PRIVATE
     "${doctest_SOURCE_DIR}"
     "${doctest_SOURCE_DIR}/doctest"
   )
 endif()
 
+# --------------------------------------------------------------------------------------
+# CTest integration
+# --------------------------------------------------------------------------------------
 enable_testing()
 add_test(NAME colony_smoke COMMAND colony_smoke)
 set_tests_properties(colony_smoke PROPERTIES WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}")
