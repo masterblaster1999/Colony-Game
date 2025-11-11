@@ -40,7 +40,7 @@ set(CG_SHADERS_RUNTIME_SUBDIR "renderer/Shaders" CACHE STRING "Subfolder next to
 set(CG_FXC_PATH "" CACHE FILEPATH "Full path to fxc.exe (optional override)")
 
 # --------------------------------------------------------------------------
-# Locate FXC (Windows SDK)
+# Locate FXC (Windows SDK) — robust on VS & Ninja generators
 # --------------------------------------------------------------------------
 function(_cg_find_fxc OUT_EXE)
   if(CG_FXC_PATH AND EXISTS "${CG_FXC_PATH}")
@@ -49,25 +49,56 @@ function(_cg_find_fxc OUT_EXE)
   endif()
 
   set(_fxc_hints "")
-  if(DEFINED CMAKE_VS_WINDOWS_TARGET_PLATFORM_VERSION AND
-     NOT CMAKE_VS_WINDOWS_TARGET_PLATFORM_VERSION STREQUAL "")
-    list(APPEND _fxc_hints
-      "$ENV{WindowsSdkDir}/bin/${CMAKE_VS_WINDOWS_TARGET_PLATFORM_VERSION}/x64"
-      "$ENV{ProgramFiles(x86)}/Windows Kits/10/bin/${CMAKE_VS_WINDOWS_TARGET_PLATFORM_VERSION}/x64"
-      "$ENV{ProgramFiles(x86)}/Windows Kits/11/bin/${CMAKE_VS_WINDOWS_TARGET_PLATFORM_VERSION}/x64")
-  endif()
-  list(APPEND _fxc_hints
-    "$ENV{WindowsSdkDir}/bin/x64"
-    "$ENV{ProgramFiles(x86)}/Windows Kits/10/bin/x64"
-    "$ENV{ProgramFiles(x86)}/Windows Kits/11/bin/x64")
 
+  # Prefer WindowsSdkDir if VS toolchain initialized it
+  if(DEFINED ENV{WindowsSdkDir} AND NOT "$ENV{WindowsSdkDir}" STREQUAL "")
+    if(DEFINED CMAKE_VS_WINDOWS_TARGET_PLATFORM_VERSION AND
+       NOT CMAKE_VS_WINDOWS_TARGET_PLATFORM_VERSION STREQUAL "")
+      list(APPEND _fxc_hints
+        "$ENV{WindowsSdkDir}/bin/${CMAKE_VS_WINDOWS_TARGET_PLATFORM_VERSION}/x64")
+    endif()
+    list(APPEND _fxc_hints "$ENV{WindowsSdkDir}/bin/x64")
+  endif()
+
+  # Program Files (x86) — parentheses MUST be escaped inside $ENV{...}
+  # CMake docs: escape special chars in env-var names; e.g., ProgramFiles\(x86\)
+  if(DEFINED ENV{ProgramFiles\(x86\)} AND NOT "$ENV{ProgramFiles\(x86\)}" STREQUAL "")
+    set(_PF86 "$ENV{ProgramFiles\(x86\)}")
+    if(DEFINED CMAKE_VS_WINDOWS_TARGET_PLATFORM_VERSION AND
+       NOT CMAKE_VS_WINDOWS_TARGET_PLATFORM_VERSION STREQUAL "")
+      list(APPEND _fxc_hints
+        "${_PF86}/Windows Kits/10/bin/${CMAKE_VS_WINDOWS_TARGET_PLATFORM_VERSION}/x64"
+        "${_PF86}/Windows Kits/11/bin/${CMAKE_VS_WINDOWS_TARGET_PLATFORM_VERSION}/x64")
+    endif()
+    list(APPEND _fxc_hints
+      "${_PF86}/Windows Kits/10/bin/x64"
+      "${_PF86}/Windows Kits/11/bin/x64")
+  endif()
+
+  # Program Files (no parens) — extra fallback
+  if(DEFINED ENV{ProgramFiles} AND NOT "$ENV{ProgramFiles}" STREQUAL "")
+    set(_PF "$ENV{ProgramFiles}")
+    list(APPEND _fxc_hints
+      "${_PF}/Windows Kits/10/bin/x64"
+      "${_PF}/Windows Kits/11/bin/x64")
+  endif()
+
+  # Historical env sometimes present on CI agents
+  if(DEFINED ENV{WindowsSdkVerBinPath} AND NOT "$ENV{WindowsSdkVerBinPath}" STREQUAL "")
+    list(APPEND _fxc_hints "$ENV{WindowsSdkVerBinPath}/x64")
+  endif()
+
+  # Ask CMake to locate fxc.exe with our hints, then fall back to PATH
   find_program(FXC_EXE NAMES fxc fxc.exe HINTS ${_fxc_hints})
   if(NOT FXC_EXE)
     find_program(FXC_EXE NAMES fxc fxc.exe)
   endif()
 
   if(NOT FXC_EXE)
-    message(FATAL_ERROR "fxc.exe not found. Install the Windows 10/11 SDK or set CG_FXC_PATH.")
+    message(FATAL_ERROR
+      "fxc.exe not found.\n"
+      "Hints searched:\n  ${_fxc_hints}\n"
+      "Install the Windows 10/11 SDK or set CG_FXC_PATH to fxc.exe.")
   endif()
 
   message(STATUS "CGShaders: using FXC at: ${FXC_EXE}")
