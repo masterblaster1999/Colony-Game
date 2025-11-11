@@ -1,8 +1,8 @@
 cmake_minimum_required(VERSION 3.27...3.31 FATAL_ERROR)
 
 # Use modern policy behavior for predictable parsing & variable expansion
-# (cmake_minimum_required sets policy defaults, these ensure key ones are NEW
-# on older bootstrap tools too.)
+# (cmake_minimum_required sets policy defaults; these ensure key ones are NEW
+# even if older bootstrap tools are used.)
 if(POLICY CMP0053)
   cmake_policy(SET CMP0053 NEW)  # Simpler variable/escape rules ($ENV{}, backslashes)
 endif()
@@ -24,8 +24,8 @@ list(APPEND CMAKE_MODULE_PATH "${CMAKE_SOURCE_DIR}/cmake")
 # ------------------------------------------------------------------------------
 # Policies & vcpkg toolchain must be configured before project()/language enable
 # ------------------------------------------------------------------------------
-include(CGPolicies)
-include(CGToolchain)
+include(CGPolicies)   # your cmake/CGPolicies.cmake
+include(CGToolchain)  # your cmake/CGToolchain.cmake (e.g., vcpkg toolchain)
 
 project(ColonyGame LANGUAGES CXX)
 
@@ -117,14 +117,18 @@ if(MSVC)
   if(DEFINED ENV{GITHUB_ACTIONS} OR DEFINED ENV{CI})
     add_compile_options(/WX)
   endif()
+
+  # Use the supported abstraction instead of editing flags
+  # (CMake >= 3.15; default is MultiThreadedDLL in Release, MultiThreadedDebugDLL in Debug)
+  set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>DLL")
 endif()
 
 # ------------------------------------------------------------------------------
 # Project modules
 # ------------------------------------------------------------------------------
-include(CGOptions)
-include(CGThirdParty)
-include(CGShaders)
+include(CGOptions)     # your cmake/CGOptions.cmake
+include(CGThirdParty)  # your cmake/CGThirdParty.cmake
+include(CGShaders)     # your cmake/CGShaders.cmake (defines cg_compile_hlsl, cg_link_shaders_to_target)
 
 # ------------------------------------------------------------------------------
 # (PATCH) Wire shader compilation (Windows-only)
@@ -149,7 +153,7 @@ if(WIN32)
 endif()
 
 # ------------------------------------------------------------------------------
-# vcpkg dependencies
+# vcpkg dependencies (imported targets)
 # ------------------------------------------------------------------------------
 find_package(SDL2 CONFIG REQUIRED)
 find_package(imgui CONFIG REQUIRED)
@@ -222,7 +226,7 @@ if(TARGET colony_core)
     get_target_property(_core_srcs colony_core SOURCES)
     if(_core_srcs)
       foreach(_src IN LISTS _core_srcs)
-        if(_src MATCHES "CrashDumpWin\\.cpp$")
+        if(_src MATCHES "CrashDumpWin\\.cpp$")  # exact filename match
           set_source_files_properties(${_src} PROPERTIES COMPILE_OPTIONS "/EHa")
         endif()
       endforeach()
@@ -251,25 +255,41 @@ endif()
 # ------------------------------------------------------------------------------
 # Generate the final game target, install rules, tests, summary
 # ------------------------------------------------------------------------------
-include(CGGameTarget)
+include(CGGameTarget)   # your cmake/CGGameTarget.cmake
 
 # ------------------------------------------------------------------------------
 # (PATCH) After the executable exists, link/copy compiled shaders next to it
 # ------------------------------------------------------------------------------
+# Helper: recursively discover the first EXECUTABLE target starting at a dir
+function(_cg_first_exe_in_dir out_var start_dir)
+  # Targets defined directly in this directory
+  get_property(_tgts DIRECTORY "${start_dir}" PROPERTY BUILDSYSTEM_TARGETS)
+  foreach(_t IN LISTS _tgts)
+    get_target_property(_type "${_t}" TYPE)
+    if(_type STREQUAL "EXECUTABLE")
+      set(${out_var} "${_t}" PARENT_SCOPE)
+      return()
+    endif()
+  endforeach()
+
+  # Recurse into processed subdirectories
+  get_property(_subs DIRECTORY "${start_dir}" PROPERTY SUBDIRECTORIES)
+  foreach(_sd IN LISTS _subs)
+    _cg_first_exe_in_dir(_found "${_sd}")
+    if(_found)
+      set(${out_var} "${_found}" PARENT_SCOPE)
+      return()
+    endif()
+  endforeach()
+  set(${out_var} "" PARENT_SCOPE)
+endfunction()
+
 if(WIN32)
   # Retrieve the shader target we created earlier (if any)
   get_property(_CG_SHADER_TGT GLOBAL PROPERTY COLONY_SHADERS_TARGET)
   if(_CG_SHADER_TGT)
-    # Try to find an executable target to attach to (first one found)
-    get_property(_ALL_TGTS GLOBAL PROPERTY TARGETS)
-    set(_CG_EXE_TGT "")
-    foreach(_t IN LISTS _ALL_TGTS)
-      get_target_property(_t_type ${_t} TYPE)
-      if(_t_type STREQUAL "EXECUTABLE")
-        set(_CG_EXE_TGT ${_t})
-        break()
-      endif()
-    endforeach()
+    # Find an executable target to attach shaders to (walk from top-level ".")
+    _cg_first_exe_in_dir(_CG_EXE_TGT "${CMAKE_SOURCE_DIR}")
     if(_CG_EXE_TGT)
       cg_link_shaders_to_target(${_CG_SHADER_TGT} ${_CG_EXE_TGT})
     else()
@@ -278,6 +298,6 @@ if(WIN32)
   endif()
 endif()
 
-include(CGStageInstall)
-include(CGTests)
-include(CGSummary)
+include(CGStageInstall) # your cmake/CGStageInstall.cmake
+include(CGTests)        # your cmake/CGTests.cmake
+include(CGSummary)      # your cmake/CGSummary.cmake
