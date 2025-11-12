@@ -285,6 +285,28 @@ function(_cg_first_exe_in_dir out_var start_dir)
   set(${out_var} "" PARENT_SCOPE)
 endfunction()
 
+# ------------------------------------------------------------------------------
+# (PATCH A) Job System — add directly to the main executable target
+# ------------------------------------------------------------------------------
+# This attaches the tiny Job System to your first executable target and exposes
+# the public headers under ${CMAKE_SOURCE_DIR}/include. If you haven't created
+# the files yet, you'll see a friendly warning.
+_cg_first_exe_in_dir(_CG_EXE_TGT_JOBS "${CMAKE_SOURCE_DIR}")
+if(_CG_EXE_TGT_JOBS)
+  if(EXISTS "${CMAKE_SOURCE_DIR}/src/core/JobSystem.cpp")
+    target_sources(${_CG_EXE_TGT_JOBS} PRIVATE
+      src/core/JobSystem.cpp
+    )
+    target_include_directories(${_CG_EXE_TGT_JOBS} PRIVATE
+      ${CMAKE_CURRENT_SOURCE_DIR}/include
+    )
+  else()
+    message(WARNING "JobSystem: src/core/JobSystem.cpp not found. Create it (and include/core/JobSystem.h) to enable the tiny job system.")
+  endif()
+else()
+  message(WARNING "JobSystem: No executable target found; cannot attach JobSystem.cpp.")
+endif()
+
 if(WIN32)
   # Retrieve the shader target we created earlier (if any)
   get_property(_CG_SHADER_TGT GLOBAL PROPERTY COLONY_SHADERS_TARGET)
