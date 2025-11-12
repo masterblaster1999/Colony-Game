@@ -46,6 +46,11 @@ endif()
 # NOTE (Patch A): imgui/tracy discovery is centralized at the top-level; don't re-find here.
 find_package(taskflow CONFIG QUIET)
 
+# >>> PATCH: DirectXTex (DDS loader/tools) via vcpkg <<<
+# Provides imported target: Microsoft::DirectXTex
+# See: https://github.com/microsoft/DirectXTex/wiki/DirectXTex (CMake usage) and vcpkg port docs.
+find_package(directxtex CONFIG REQUIRED)
+
 # -------------------------------------------------------------------------------------------------
 # Source discovery (exclude vendored imgui if present)
 # -------------------------------------------------------------------------------------------------
@@ -151,6 +156,8 @@ target_link_libraries(colony_core
   PUBLIC
     ${COLONY_THIRDPARTY_LIBS}
     colony_build_options
+    # >>> PATCH: Link DirectXTex so streaming TileIO.cpp can use ScratchImage/CreateTexture
+    Microsoft::DirectXTex
 )
 
 # -------------------------------------------------------------------------------------------------
@@ -358,6 +365,17 @@ add_custom_command(TARGET ColonyGame POST_BUILD
   VERBATIM
 )
 
+# >>> PATCH: POST-BUILD Content/ (streaming data) next to EXE <<<
+set(CONTENT_DIR "${CMAKE_SOURCE_DIR}/Content")
+if(EXISTS "${CONTENT_DIR}")
+  add_custom_command(TARGET ColonyGame POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:ColonyGame>/Content"
+    COMMAND ${CMAKE_COMMAND} -E copy_directory "${CONTENT_DIR}" "$<TARGET_FILE_DIR:ColonyGame>/Content"
+    COMMENT "Copy Content/ next to the EXE for streaming"
+    VERBATIM
+  )
+endif()
+
 # -------------------------------------------------------------------------------------------------
 # SHADERS
 # -------------------------------------------------------------------------------------------------
@@ -510,3 +528,16 @@ if(EXISTS "${CMAKE_SOURCE_DIR}/renderer/Shaders/include/common.hlsli")
     VERBATIM
   )
 endif()
+
+# -------------------------------------------------------------------------------------------------
+# >>> PATCH: INSTALL rules (runtime) <<<
+# -------------------------------------------------------------------------------------------------
+# Install the EXE to the top of the package and stage runtime content folders.
+install(TARGETS ColonyGame RUNTIME DESTINATION ".")
+
+# Always safe if these dirs exist; if not present, CMake just installs nothing from them.
+install(DIRECTORY "${CMAKE_SOURCE_DIR}/assets/"  DESTINATION "assets")
+install(DIRECTORY "${CMAKE_SOURCE_DIR}/res/"     DESTINATION "res")
+
+# Streaming data lives under Content/ (e.g., Content/Streaming/Terrain or similar).
+install(DIRECTORY "${CMAKE_SOURCE_DIR}/Content/" DESTINATION "Content")
