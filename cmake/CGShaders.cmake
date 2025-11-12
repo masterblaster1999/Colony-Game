@@ -10,9 +10,16 @@ include(CMakeParseArguments)
 
 if(NOT WIN32)
   message(STATUS "CGShaders.cmake: non-Windows host; shader build helpers are inert.")
-  function(cg_compile_hlsl) endfunction()
-  function(cg_link_shaders_to_target) endfunction()
-  function(cg_set_hlsl_properties) endfunction()
+
+  function(cg_compile_hlsl)
+  endfunction()
+
+  function(cg_link_shaders_to_target)
+  endfunction()
+
+  function(cg_set_hlsl_properties)
+  endfunction()
+
   return()
 endif()
 
