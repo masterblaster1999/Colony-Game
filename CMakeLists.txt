@@ -145,7 +145,8 @@ if(WIN32)
     cg_compile_hlsl(ColonyShaders
       SHADERS      ${COLONY_HLSL}
       INCLUDE_DIRS "${CMAKE_SOURCE_DIR}/renderer/Shaders" "${CMAKE_SOURCE_DIR}/shaders"
-      DEFINES      "COLONY_DEBUG=$<CONFIG:Debug>"
+      # 1 in Debug, 0 otherwise — expand at build time so multi-config IDEs work
+      DEFINES      "COLONY_DEBUG=$<IF:$<CONFIG:Debug>,1,0>"
     )
     # Stash the shader target name globally so we can attach it to the final exe once it exists
     set_property(GLOBAL PROPERTY COLONY_SHADERS_TARGET ColonyShaders)
