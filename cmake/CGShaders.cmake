@@ -302,7 +302,6 @@ function(cg_compile_hlsl TARGET_NAME)
 
   file(MAKE_DIRECTORY "${_base_out}")
   set(_outputs "")
-  _cg_collect_header_deps(_header_deps ${CG_INCLUDE_DIRS})
 
   # Build per .hlsl file
   foreach(_src IN LISTS CG_SHADERS)
@@ -310,24 +309,48 @@ function(cg_compile_hlsl TARGET_NAME)
       message(FATAL_ERROR "Shader not found: ${_src}")
     endif()
 
-    get_source_file_property(_entry   "${_src}" HLSL_ENTRY)
+    get_source_file_property(_entry "${_src}" HLSL_ENTRY)
     if(NOT _entry OR _entry STREQUAL "NOTFOUND")
       set(_entry "main")
     endif()
+
     _cg_infer_profile("${_src}" _profile)
 
     get_filename_component(_stem "${_src}" NAME_WE)
     set(_out "${_base_out}/${_stem}.${CG_SHADER_OUTPUT_EXT}")
 
+    # Per-file properties (may be NOTFOUND if never set)
     get_source_file_property(_perflags "${_src}" HLSL_FLAGS)
     get_source_file_property(_perdefs  "${_src}" HLSL_DEFINES)
     get_source_file_property(_perincs  "${_src}" HLSL_INCLUDE_DIRS)
 
-    set(_defs "${CG_DEFINES};${_perdefs}")
-    set(_incs "${CG_INCLUDE_DIRS};${_perincs}")
+    # Sanitize NOTFOUND -> empty
+    if(NOT _perflags OR _perflags STREQUAL "NOTFOUND")
+      set(_perflags "")
+    endif()
+    if(NOT _perdefs OR _perdefs STREQUAL "NOTFOUND")
+      set(_perdefs "")
+    endif()
+    if(NOT _perincs OR _perincs STREQUAL "NOTFOUND")
+      set(_perincs "")
+    endif()
+
+    # Merge global + per-file defines and include dirs
+    set(FILE_DEFINES ${CG_DEFINES})
+    if(_perdefs)
+      list(APPEND FILE_DEFINES ${_perdefs})
+    endif()
+
+    set(FILE_INCLUDE_DIRS ${CG_INCLUDE_DIRS})
+    if(_perincs)
+      list(APPEND FILE_INCLUDE_DIRS ${_perincs})
+    endif()
+
+    # Collect header dependencies from all include dirs for this file
+    _cg_collect_header_deps(_header_deps ${FILE_INCLUDE_DIRS})
 
     if(_use_dxc)
-      _cg_accumulate_args_dxc(CG _args)
+      _cg_accumulate_args_dxc(FILE _args)
       add_custom_command(
         OUTPUT "${_out}"
         COMMAND "${DXC_EXE}" -nologo -T "${_profile}" -E "${_entry}"
@@ -338,7 +361,7 @@ function(cg_compile_hlsl TARGET_NAME)
         VERBATIM
       )
     else()
-      _cg_accumulate_args(CG _args)
+      _cg_accumulate_args(FILE _args)
       add_custom_command(
         OUTPUT "${_out}"
         COMMAND "${FXC_EXE}" /nologo /T "${_profile}" /E "${_entry}"
