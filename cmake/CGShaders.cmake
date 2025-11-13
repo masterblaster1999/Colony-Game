@@ -259,6 +259,17 @@ function(cg_compile_hlsl TARGET_NAME)
     message(FATAL_ERROR "cg_compile_hlsl(${TARGET_NAME}): SHADERS list is required.")
   endif()
 
+  # Make this function idempotent for a given TARGET_NAME. If someone calls
+  # cg_compile_hlsl() twice with the same target (e.g. from both the top-level
+  # CMakeLists.txt and CGGameTarget.cmake), we just reuse the existing target
+  # instead of trying to define it again.
+  if(TARGET ${TARGET_NAME})
+    message(STATUS
+      "cg_compile_hlsl(${TARGET_NAME}): target already exists, "
+      "skipping duplicate definition from ${CMAKE_CURRENT_LIST_DIR}")
+    return()
+  endif()
+
   # Choose compiler: DXC if available (or forced), else FXC.
   set(_use_dxc FALSE)
   if(COLONY_HLSL_COMPILER STREQUAL "DXC")
@@ -342,6 +353,7 @@ function(cg_compile_hlsl TARGET_NAME)
     list(APPEND _outputs "${_out}")
   endforeach()
 
+  # Aggregate target that builds all requested shaders.
   add_custom_target(${TARGET_NAME} DEPENDS ${_outputs})
 
   if(CG_EMBED)
@@ -359,15 +371,27 @@ function(cg_link_shaders_to_target SHADERS_TARGET EXECUTABLE_TARGET)
     message(FATAL_ERROR "cg_link_shaders_to_target: executable target ${EXECUTABLE_TARGET} not found")
   endif()
 
-  # Discover outputs via the custom target’s dependencies:
-  add_custom_command(TARGET ${EXECUTABLE_TARGET} POST_BUILD
-    COMMAND ${CMAKE_COMMAND} -E make_directory
-            "$<TARGET_FILE_DIR:${EXECUTABLE_TARGET}>/${CG_SHADERS_RUNTIME_SUBDIR}"
-    COMMAND ${CMAKE_COMMAND} -E copy_directory
-            "${CMAKE_BINARY_DIR}/shaders"
-            "$<TARGET_FILE_DIR:${EXECUTABLE_TARGET}>/${CG_SHADERS_RUNTIME_SUBDIR}"
-    COMMENT "Copying compiled shaders next to ${EXECUTABLE_TARGET}"
-    VERBATIM
-  )
-  add_dependencies(${EXECUTABLE_TARGET} ${SHADERS_TARGET})
+  # Per-executable helper target that copies compiled shaders next to
+  # the binary. This avoids add_custom_command(TARGET ...) so it can
+  # safely be called from any CMake directory.
+  set(_copy_tgt "${EXECUTABLE_TARGET}_CopyShaders")
+
+  if(NOT TARGET ${_copy_tgt})
+    add_custom_target(${_copy_tgt}
+      COMMAND ${CMAKE_COMMAND} -E make_directory
+              "$<TARGET_FILE_DIR:${EXECUTABLE_TARGET}>/${CG_SHADERS_RUNTIME_SUBDIR}"
+      COMMAND ${CMAKE_COMMAND} -E copy_directory
+              "${CMAKE_BINARY_DIR}/shaders"
+              "$<TARGET_FILE_DIR:${EXECUTABLE_TARGET}>/${CG_SHADERS_RUNTIME_SUBDIR}"
+      COMMENT "Copying compiled shaders next to ${EXECUTABLE_TARGET}"
+      VERBATIM
+    )
+  endif()
+
+  # Build order:
+  #   1. SHADERS_TARGET compiles the .hlsl into ${CMAKE_BINARY_DIR}/shaders
+  #   2. _copy_tgt copies them next to the exe
+  #   3. Building EXECUTABLE_TARGET pulls both in as dependencies
+  add_dependencies(${_copy_tgt}         ${SHADERS_TARGET})
+  add_dependencies(${EXECUTABLE_TARGET} ${_copy_tgt})
 endfunction()
