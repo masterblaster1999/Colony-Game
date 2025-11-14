@@ -121,35 +121,23 @@ if(MSVC AND COLONY_ASAN)
 endif()
 
 # --------------------------------------------------------------------------
-# HLSL pipeline hookup (prefer cg_compile_hlsl; else fall back to manifest)
+# HLSL pipeline hookup
+#
+# Avoid defining the ColonyShaders target here; assume it was created
+# once (e.g. in the top-level CMakeLists) and just hook it up to
+# ColonyGame. If that target isn't available, fall back to the older
+# manifest-driven shader pipeline.
 # --------------------------------------------------------------------------
-# Try tool-agnostic shader compilation first (works in VS and Ninja if provided)
 include(${CMAKE_SOURCE_DIR}/cmake/CGShaders.cmake OPTIONAL)
 
-if(COMMAND cg_compile_hlsl)
-  # Compile all HLSL in renderer/Shaders
-  file(GLOB _all_hlsl CONFIGURE_DEPENDS
-       "${CMAKE_SOURCE_DIR}/renderer/Shaders/*.hlsl")
+# Preferred path: use an existing shader target + helper if available
+if(COMMAND cg_link_shaders_to_target AND TARGET ColonyShaders)
+  cg_link_shaders_to_target(ColonyShaders ColonyGame)
 
-  if(_all_hlsl)
-    if(EXISTS "${CMAKE_SOURCE_DIR}/renderer/Shaders/include")
-      cg_compile_hlsl(ColonyShaders
-        SHADERS      ${_all_hlsl}
-        INCLUDE_DIRS "${CMAKE_SOURCE_DIR}/renderer/Shaders/include")
-    else()
-      cg_compile_hlsl(ColonyShaders
-        SHADERS      ${_all_hlsl})
-    endif()
-
-    if(COMMAND cg_link_shaders_to_target)
-      cg_link_shaders_to_target(ColonyShaders ColonyGame)
-    endif()
-  endif()
-
-else()
-  # Fallback to manifest-driven offline shader build
+# Fallback: legacy manifest-driven offline shader build
+elseif(EXISTS "${CMAKE_SOURCE_DIR}/renderer/Shaders/shaders.json")
   include(${CMAKE_SOURCE_DIR}/cmake/ColonyShaders.cmake OPTIONAL)
-  if(COMMAND colony_register_shaders AND EXISTS "${CMAKE_SOURCE_DIR}/renderer/Shaders/shaders.json")
+  if(COMMAND colony_register_shaders)
     colony_register_shaders(
       TARGET     ColonyGame
       MANIFEST   "${CMAKE_SOURCE_DIR}/renderer/Shaders/shaders.json"
