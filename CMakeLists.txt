@@ -141,6 +141,50 @@ if(WIN32)
   )
 
   if(COLONY_HLSL)
+    # Set per-file shader metadata for HLSL files whose entry point
+    # is not named 'main' (e.g. VSMain / PSMain / CSMain).
+    if(COMMAND cg_set_hlsl_properties)
+      # Atmosphere & sky rendering (fullscreen PS entry)
+      cg_set_hlsl_properties(
+        "${CMAKE_SOURCE_DIR}/renderer/Shaders/AtmosphereSky.hlsl"
+        ENTRY   "PSMain"
+        PROFILE "ps_5_0"
+      )
+
+      # Volumetric clouds (fullscreen PS entry)
+      cg_set_hlsl_properties(
+        "${CMAKE_SOURCE_DIR}/renderer/Shaders/VolumetricClouds.hlsl"
+        ENTRY   "PSMain"
+        PROFILE "ps_5_0"
+      )
+
+      # Voxel isosurface compute shaders
+      cg_set_hlsl_properties(
+        "${CMAKE_SOURCE_DIR}/renderer/Shaders/VoxelIso_MT.compute.hlsl"
+        ENTRY   "CSMain"
+        PROFILE "cs_5_0"
+      )
+
+      cg_set_hlsl_properties(
+        "${CMAKE_SOURCE_DIR}/renderer/Shaders/VoxelIso_MT_Materials.compute.hlsl"
+        ENTRY   "CSMain"
+        PROFILE "cs_5_0"
+      )
+
+      # Legacy thermal erosion compute shaders under /shaders
+      cg_set_hlsl_properties(
+        "${CMAKE_SOURCE_DIR}/shaders/ThermalOutflowCS.hlsl"
+        ENTRY   "CSMain"
+        PROFILE "cs_5_0"
+      )
+
+      cg_set_hlsl_properties(
+        "${CMAKE_SOURCE_DIR}/shaders/ThermalApplyCS.hlsl"
+        ENTRY   "CSMain"
+        PROFILE "cs_5_0"
+      )
+    endif()
+
     # Compile shaders into a dedicated target; we'll link/copy them to the exe later
     cg_compile_hlsl(ColonyShaders
       SHADERS      ${COLONY_HLSL}
