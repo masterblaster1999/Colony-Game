@@ -1,5 +1,6 @@
 #include "procgen/WorldGen.h"
 #include "procgen/Noise.h"
+#include "procgen/RegionArchetypes.h"
 #include <cmath>
 #include <algorithm>
 
@@ -67,6 +68,10 @@ GeneratedWorld WorldGenerator::generate(const WorldGenParams& p) {
             else w.biomes[y*p.width + x] = (uint8_t)classify_biome(e, m, t);
         }
     }
+
+    // Regional world archetypes: assign regions & tweak climate
+    assign_regions(w, p);
+
     return w;
 }
 
