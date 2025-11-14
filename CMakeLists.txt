@@ -171,6 +171,19 @@ if(WIN32)
         PROFILE "cs_5_0"
       )
 
+      # NEW: GPU thermal erosion compute shaders under renderer/Shaders
+      cg_set_hlsl_properties(
+        "${CMAKE_SOURCE_DIR}/renderer/Shaders/erosion_thermal_flow_cs.hlsl"
+        ENTRY   "CSMain"
+        PROFILE "cs_5_0"
+      )
+
+      cg_set_hlsl_properties(
+        "${CMAKE_SOURCE_DIR}/renderer/Shaders/erosion_thermal_apply_cs.hlsl"
+        ENTRY   "CSMain"
+        PROFILE "cs_5_0"
+      )
+
       # Legacy thermal erosion compute shaders under /shaders
       cg_set_hlsl_properties(
         "${CMAKE_SOURCE_DIR}/shaders/ThermalOutflowCS.hlsl"
