@@ -248,6 +248,31 @@ function(cg_set_hlsl_properties FILE)
   endif()
 endfunction()
 
+# --- Project-specific defaults for Colony-Game shaders -------------------------
+# These shaders use VSMain/PSMain instead of main() as their entrypoint.
+# Setting their properties here lets cg_compile_hlsl pick the correct entry
+# point without touching the shader source.
+set(_cg_sky_hlsl "${CMAKE_SOURCE_DIR}/renderer/Shaders/AtmosphereSky.hlsl")
+if(EXISTS "${_cg_sky_hlsl}")
+  cg_set_hlsl_properties("${_cg_sky_hlsl}"
+    ENTRY   PSMain
+    PROFILE ps_5_0)
+endif()
+
+set(_cg_fullscreen_vs "${CMAKE_SOURCE_DIR}/shaders/raster/FullScreen.vs.hlsl")
+if(EXISTS "${_cg_fullscreen_vs}")
+  cg_set_hlsl_properties("${_cg_fullscreen_vs}"
+    ENTRY   VSMain
+    PROFILE vs_5_0)
+endif()
+
+set(_cg_water_hlsl "${CMAKE_SOURCE_DIR}/renderer/Shaders/WaterGerstner.hlsl")
+if(EXISTS "${_cg_water_hlsl}")
+  cg_set_hlsl_properties("${_cg_water_hlsl}"
+    ENTRY   PSMain
+    PROFILE ps_5_0)
+endif()
+
 # --- Public API ----------------------------------------------------------------
 function(cg_compile_hlsl TARGET_NAME)
   set(options EMBED)
