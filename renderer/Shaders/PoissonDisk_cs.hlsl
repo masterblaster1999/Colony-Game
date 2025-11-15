@@ -52,6 +52,7 @@ uint xorshift32(inout uint s)
     s ^= s << 13; s ^= s >> 17; s ^= s << 5;
     return s;
 }
+
 float rand01(inout uint s)
 {
     // Convert 24 LSBs to [0,1)
@@ -141,14 +142,14 @@ void main(uint3 DTid : SV_DispatchThreadID)
         // Keep the candidate with the highest priority; break ties by index.
         bool keep = true;
 
-        [unroll]
-        for (int oy = -kNeighborRange; oy <= kNeighborRange; ++oy)
+        // Let DXC treat this as a regular loop; forcing unroll can fail on
+        // some toolchains when it can't perfectly deduce the bounds.
+        for (int oy = -kNeighborRange; oy <= kNeighborRange && keep; ++oy)
         {
             int ny = int(DTid.y) + oy;
             if (ny < 0 || ny >= int(gridH)) continue;
 
-            [unroll]
-            for (int ox = -kNeighborRange; ox <= kNeighborRange; ++ox)
+            for (int ox = -kNeighborRange; ox <= kNeighborRange && keep; ++ox)
             {
                 int nx = int(DTid.x) + ox;
                 if (nx < 0 || nx >= int(gridW)) continue;
@@ -161,13 +162,11 @@ void main(uint3 DTid : SV_DispatchThreadID)
 
                 if (dist2(me.pos, other.pos) < r2)
                 {
-                    // If neighbor has >= priority, current loses. Break ties by index to avoid oscillation.
-                    if ( (other.prio > me.prio) || (other.prio == me.prio && nidx > idx) )
+                    // If neighbor has >= priority, current loses. Break ties by
+                    // index to avoid oscillation.
+                    if ((other.prio > me.prio) || (other.prio == me.prio && nidx > idx))
                     {
                         keep = false;
-                        // Early-out is okay (deterministic given read-only In buffer)
-                        oy = kNeighborRange + 1;
-                        break;
                     }
                 }
             }
