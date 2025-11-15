@@ -1,13 +1,11 @@
-// ============================================================================ 
+// ============================================================================
 // Colony Game - common shader helpers  (Windows / D3D11/12)
-// Extend/replace existing shaders/common/common.hlsli
+// Drop-in replacement for shaders/common/common.hlsli
 // ============================================================================
 
 #ifndef CG_COMMON_HLSLI
 #define CG_COMMON_HLSLI
-
-// DXC sometimes warns about pow(0,0) and similar; we clamp/guard below anyway.
-#pragma warning( disable : 3571 )
+#pragma warning( disable : 3571 ) // pow(0,0) etc., benign with clamps below
 
 // ---------- Tunables ---------------------------------------------------------
 
@@ -26,20 +24,11 @@
     #define CG_OUTPUT_SRGB 1
 #endif
 
-// Dither configuration:
-// - CG_DITHER_ENABLED: integer flag for preprocessor (0/1) – SAFE for #if.
-// - CG_DITHER_STRENGTH: actual float amount used in shader code.
-//
-// You can override these from the compile command line or another include
-// *without* ever using floats in preprocessor conditions.
-#ifndef CG_DITHER_ENABLED
-    #define CG_DITHER_ENABLED 1
-#endif
-
+// Amount of ordered-dither (in 0..1 LDR units). Set to 0.0 to disable.
+// NOTE: We *do not* use CG_DITHER_STRENGTH in #if expressions – DXC's
+// preprocessor doesn't allow float expressions in #if.
 #ifndef CG_DITHER_STRENGTH
-    // Amount of ordered-dither (in 0..1 LDR units).
-    // Typical value ~ 1/255; set CG_DITHER_ENABLED 0 to disable.
-    #define CG_DITHER_STRENGTH (1.0f / 255.0f)
+    #define CG_DITHER_STRENGTH (1.0/255.0)
 #endif
 
 // ---------- Constants / small utils -----------------------------------------
@@ -47,7 +36,7 @@
 static const float CG_PI  = 3.14159265359f;
 static const float CG_EPS = 1e-6f;
 
-// Branchless clamp helpers (just wrap HLSL saturate to keep naming consistent)
+// Branchless clamp
 float3 cg_saturate3(float3 v) { return saturate(v); }
 float  cg_saturate (float  v) { return saturate(v); }
 
@@ -63,9 +52,9 @@ float cg_remap(float x, float a, float b, float c, float d)
 float cg_luminance(float3 linearRGB)
 {
 #if   CG_LUMA_BT == 2020
-    const float3 w = float3(0.2627f, 0.6780f, 0.0593f); // ITU-R BT.2020
+    const float3 w = float3(0.2627, 0.6780, 0.0593); // ITU-R BT.2020
 #else // 709 (IEC 61966-2-1)
-    const float3 w = float3(0.2126f, 0.7152f, 0.0722f); // ITU-R BT.709 / sRGB
+    const float3 w = float3(0.2126, 0.7152, 0.0722); // ITU-R BT.709 / sRGB
 #endif
     return dot(linearRGB, w);
 }
@@ -74,13 +63,13 @@ float cg_luminance(float3 linearRGB)
 // Scalar versions avoid vector conditionals; use per-channel wrappers.
 float cg_linear_to_srgb1(float x)
 {
-    x = max(0.0f, x);
-    return (x <= 0.0031308f) ? (x * 12.92f) : (1.055f * pow(x, 1.0f / 2.4f) - 0.055f);
+    x = max(0.0, x);
+    return (x <= 0.0031308) ? (x * 12.92) : (1.055 * pow(x, 1.0 / 2.4) - 0.055);
 }
 float cg_srgb_to_linear1(float x)
 {
-    x = max(0.0f, x);
-    return (x <= 0.04045f) ? (x / 12.92f) : pow((x + 0.055f) / 1.055f, 2.4f);
+    x = max(0.0, x);
+    return (x <= 0.04045) ? (x / 12.92) : pow((x + 0.055) / 1.055, 2.4);
 }
 float3 cg_linear_to_srgb(float3 rgb)
 {
@@ -112,39 +101,37 @@ float3 cg_apply_exposure(float3 hdr, float exposureEV)
 // (0) Reinhard (global, simple)
 float3 cg_tonemap_reinhard(float3 x)
 {
-    x = max(0.0f, x);
-    return x / (1.0f + x);
+    x = max(0.0, x);
+    return x / (1.0 + x);
 }
 
 // (1) Hable / Uncharted 2 (filmic; soft toe/shoulder)
-// Parameters tuned to match Hable's paper, normalized by white point.
 float3 cg_tonemap_hable(float3 x)
 {
-    x = max(0.0f, x);
-    const float A = 0.15f;  const float B = 0.50f;
-    const float C = 0.10f;  const float D = 0.20f;
-    const float E = 0.02f;  const float F = 0.30f;
-    const float W = 11.2f;  // linear white chosen by Hable for normalization
+    x = max(0.0, x);
+    const float A = 0.15;  const float B = 0.50;
+    const float C = 0.10;  const float D = 0.20;
+    const float E = 0.02;  const float F = 0.30;
+    const float W = 11.2;  // linear white chosen by Hable for normalization
 
     float3 num   = (x * (A * x + C * B)) + D * E;
     float3 den   = (x * (A * x +     B)) + D * F;
     float3 curve = num / max(den, CG_EPS) - (E / F);
 
-    float white  = ((W * (A * W + C * B)) + D * E)
-                 / max((W * (A * W + B) + D * F), CG_EPS)
-                 - (E / F);
+    float white = ((W * (A * W + C * B)) + D * E) /
+                  max((W * (A * W + B) + D * F), CG_EPS) - (E / F);
     return curve / white;
 }
 
 // (2) ACES fitted (Narkowicz) – lightweight approx to ACES RRT+ODT
 float3 cg_tonemap_aces(float3 x)
 {
-    x = max(0.0f, x);
-    const float a = 2.51f;
-    const float b = 0.03f;
-    const float c = 2.43f;
-    const float d = 0.59f;
-    const float e = 0.14f;
+    x = max(0.0, x);
+    const float a = 2.51;
+    const float b = 0.03;
+    const float c = 2.43;
+    const float d = 0.59;
+    const float e = 0.14;
     return saturate((x * (a * x + b)) / (x * (c * x + d) + e));
 }
 
@@ -172,13 +159,13 @@ float cg_fog_linear(float d, float startDist, float endDist)
 float cg_fog_exp(float d, float density)
 {
     // transmittance T = exp(-density * d); fogFactor = 1 - T
-    return 1.0f - exp(-density * d);
+    return 1.0 - exp(-density * d);
 }
 
 float cg_fog_exp2(float d, float density)
 {
     float x = density * d;
-    return 1.0f - exp(-x * x);
+    return 1.0 - exp(-x * x);
 }
 
 // Analytic height fog (exponential density vs altitude).
@@ -195,12 +182,12 @@ float cg_fog_height(float3 cameraPos, float3 worldPos, float density0, float fal
     // integral_0^L exp(-falloff * (cameraPos.y + t * V.y)) dt
     float ay = falloff * V.y;
     float t0 = exp(-falloff * cameraPos.y);
-    float integral = (abs(ay) < 1e-4f)
+    float integral = (abs(ay) < 1e-4)
         ? (t0 * L)
-        : (t0 * (1.0f - exp(-ay * L)) / max(ay, CG_EPS));
+        : (t0 * (1.0 - exp(-ay * L)) / max(ay, CG_EPS));
 
     float transmittance = exp(-density0 * integral);
-    return 1.0f - transmittance;
+    return 1.0 - transmittance;
 }
 
 // Apply fog color in linear space.
@@ -229,7 +216,7 @@ float2 cg_atlas_pack_uv(float2 tileUV, float4 rect)
 // Inset UVs by 'padPx' to keep bilinear/trilinear taps inside the tile.
 float2 cg_atlas_inset_uv(float2 uvAtlas, CGAtlasInfo info)
 {
-    float2 inset = (info.padPx / max(info.atlasSizePx, float2(1.0f, 1.0f)));
+    float2 inset = (info.padPx / max(info.atlasSizePx, float2(1.0, 1.0)));
     float2 minUV = info.rect.xy + inset;
     float2 maxUV = info.rect.xy + info.rect.zw - inset;
     return clamp(uvAtlas, minUV, maxUV);
@@ -239,9 +226,9 @@ float2 cg_atlas_inset_uv(float2 uvAtlas, CGAtlasInfo info)
 // Conservative cap: stop when a 2x2 footprint would cross the tile edge.
 float cg_atlas_max_mip(CGAtlasInfo info)
 {
-    float2 innerPx = max(info.tileSizePx - 2.0f * info.padPx, 1.0f);
-    float  maxMip  = floor(log2(max(min(innerPx.x, innerPx.y), 1.0f)));
-    return max(maxMip, 0.0f);
+    float2 innerPx = max(info.tileSizePx - 2.0 * info.padPx, 1.0);
+    float  maxMip  = floor(log2(max(min(innerPx.x, innerPx.y), 1.0)));
+    return max(maxMip, 0.0);
 }
 
 // Sample with optional LOD clamp (define CG_ATLAS_CLAMP_LOD to enable).
@@ -256,11 +243,10 @@ float4 cg_atlas_sample(Texture2D texAtlas, SamplerState samp, float2 tileUV, CGA
     // Derive the hardware LOD then clamp it
     uint w, h, mips;
     texAtlas.GetDimensions(0, w, h, mips);
-
-    float2 dx = ddx(uvA) * float2(w, h);
-    float2 dy = ddy(uvA) * float2(w, h);
+    float2 dx  = ddx(uvA) * float2(w, h);
+    float2 dy  = ddy(uvA) * float2(w, h);
     float  rho = max(dot(dx, dx), dot(dy, dy));
-    float  lod = 0.5f * log2(max(rho, CG_EPS));
+    float  lod = 0.5 * log2(max(rho, CG_EPS));
     lod = min(lod, cg_atlas_max_mip(info));
     return texAtlas.SampleLevel(samp, uvA, lod);
 #endif
@@ -279,16 +265,17 @@ float cg_bayer4x4(int2 p)
         15,  7, 13,  5
     };
     int idx = ((p.y & 3) << 2) | (p.x & 3);
-    return (B[idx] + 0.5f) / 16.0f;
+    return (B[idx] + 0.5) / 16.0;
 }
 
+// NOTE: we use a *runtime* branch instead of #if with floats to keep DXC happy.
 float3 cg_apply_dither(float3 ldr, int2 pix)
 {
-#if CG_DITHER_ENABLED
-    return ldr + (cg_bayer4x4(pix) - 0.5f) * CG_DITHER_STRENGTH;
-#else
-    return ldr;
-#endif
+    // If strength is ~0, compiler will constant-fold this away.
+    if (CG_DITHER_STRENGTH <= 0.0)
+        return ldr;
+
+    return ldr + (cg_bayer4x4(pix) - 0.5) * (CG_DITHER_STRENGTH);
 }
 
 // ---------- Final encode helper ---------------------------------------------
@@ -298,12 +285,21 @@ float4 cg_encode_final(float3 linearRGB, int2 pixelPos /* SV_Position.xy */)
 #if CG_OUTPUT_SRGB
     // Target is an sRGB backbuffer; let hardware apply the OETF
     float3 ldr = saturate(linearRGB);
-    return float4(cg_apply_dither(ldr, pixelPos), 1.0f);
+    return float4(cg_apply_dither(ldr, pixelPos), 1.0);
 #else
     // Target is linear UNORM; encode to sRGB yourself
     float3 ldr = cg_linear_to_srgb(saturate(linearRGB));
-    return float4(cg_apply_dither(ldr, pixelPos), 1.0f);
+    return float4(cg_apply_dither(ldr, pixelPos), 1.0);
 #endif
 }
+
+// ---------- Legacy fullscreen quad IO (quad_vs/quad_ps, etc.) ---------------
+// Older Colony shaders expect a PSIn type from common.hlsli.
+// This matches a simple screen-space quad: position + UV.
+struct PSIn
+{
+    float4 position : SV_POSITION;
+    float2 tex      : TEXCOORD0;
+};
 
 #endif // CG_COMMON_HLSLI
