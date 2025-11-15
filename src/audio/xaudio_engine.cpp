@@ -7,7 +7,12 @@
 //   XAudio2CutoffFrequencyToRadians, etc.) are declared by defining XAUDIO2_HELPER_FUNCTIONS
 //   before including <xaudio2.h>. This is required on modern Windows SDKs.
 
+// Guard _USE_MATH_DEFINES so we don't trigger C4005 if it's also defined
+// on the MSVC command line (/D_USE_MATH_DEFINES).
+#ifndef _USE_MATH_DEFINES
 #define _USE_MATH_DEFINES
+#endif
+
 #ifndef XAUDIO2_HELPER_FUNCTIONS
 #define XAUDIO2_HELPER_FUNCTIONS 1
 #endif
