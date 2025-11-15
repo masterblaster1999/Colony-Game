@@ -1,89 +1,89 @@
-// Platform/Win/WinWindow.cpp
+// platform/win/WinWindow.cpp
+// Win32 window creation & message handling for Colony-Game (Windows-only)
 
 #ifndef WIN32_LEAN_AND_MEAN
-#   define WIN32_LEAN_AND_MEAN
+#    define WIN32_LEAN_AND_MEAN
 #endif
 
 #include <windows.h>
-#include "AppWindow.h"   // <- adjust to your actual header
-#include "WinWindow.h"   // <- if you have a matching header
 
-// Helper: get the AppWindow* from an HWND using GWLP_USERDATA
+// We only ever store a pointer to AppWindow and hand it back; no header needed.
+class AppWindow;
+
+// Helper to read the AppWindow* we stored in GWLP_USERDATA.
+// This is kept even if we don't use it yet, so you can easily hook engine logic
+// into the Win32 message pump later.
 static AppWindow* GetAppWindowFromHwnd(HWND hwnd)
 {
-    return reinterpret_cast<AppWindow*>(::GetWindowLongPtr(hwnd, GWLP_USERDATA));
+    return reinterpret_cast<AppWindow*>(::GetWindowLongPtrW(hwnd, GWLP_USERDATA));
 }
 
-// Central Windows message handler.
-// All your `case WM_...:` blocks live INSIDE this function.
-static LRESULT CALLBACK ColonyWndProc(HWND hwnd,
-                                      UINT   msg,
-                                      WPARAM wParam,
-                                      LPARAM lParam)
+// Main Win32 window procedure.
+// NOTE: Not 'static' anymore – this avoids C4211 when there's an extern
+// declaration elsewhere (e.g., in a header). :contentReference[oaicite:2]{index=2}
+LRESULT CALLBACK ColonyWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
 {
     AppWindow* appWindow = GetAppWindowFromHwnd(hwnd);
+    (void)appWindow; // currently unused; reserved for future hooks
+    (void)wParam;    // avoid C4100 (unreferenced parameter) with /WX
 
     switch (msg)
     {
     case WM_CREATE:
     {
-        // When the window is created, we can grab the AppWindow* passed via lpCreateParams
+        // Store the AppWindow* (if any) that was passed via lpCreateParams.
         auto* cs        = reinterpret_cast<CREATESTRUCTW*>(lParam);
-        auto* passedPtr = reinterpret_cast<AppWindow*>(cs->lpCreateParams);
+        auto* passedPtr = cs
+            ? reinterpret_cast<AppWindow*>(cs->lpCreateParams)
+            : nullptr;
+
         if (passedPtr)
         {
-            ::SetWindowLongPtr(hwnd,
-                               GWLP_USERDATA,
-                               reinterpret_cast<LONG_PTR>(passedPtr));
-            appWindow = passedPtr;
+            ::SetWindowLongPtrW(
+                hwnd,
+                GWLP_USERDATA,
+                reinterpret_cast<LONG_PTR>(passedPtr)
+            );
         }
+        return 0;
+    }
+
+    case WM_DPICHANGED:
+    {
+        // lParam points to a suggested RECT in the new DPI.
+        // This is straight from MS docs: resize the window to the recommended rect. :contentReference[oaicite:3]{index=3}
+        const RECT* const prcNewWindow = reinterpret_cast<const RECT*>(lParam);
+        if (prcNewWindow)
+        {
+            ::SetWindowPos(
+                hwnd,
+                nullptr,
+                prcNewWindow->left,
+                prcNewWindow->top,
+                prcNewWindow->right  - prcNewWindow->left,
+                prcNewWindow->bottom - prcNewWindow->top,
+                SWP_NOZORDER | SWP_NOACTIVATE
+            );
+        }
+
+        // Hook point: if you later want to scale render targets, fonts, etc.,
+        // this is the right place to notify the engine (using 'appWindow').
         return 0;
     }
 
     case WM_SIZE:
-        if (appWindow)
-        {
-            const int width  = LOWORD(lParam);
-            const int height = HIWORD(lParam);
-            appWindow->OnResize(width, height);   // <- implement this in AppWindow
-        }
+        // Hook point: notify engine about resize here if / when you add an API,
+        // e.g. AppWindow::OnResize or a global callback.
+        //
+        // For now we just swallow the message so nothing crashes or warns.
         return 0;
 
     case WM_ACTIVATE:
-        if (appWindow)
-        {
-            const bool active = (LOWORD(wParam) != WA_INACTIVE);
-            appWindow->OnActivate(active);        // <- optional; implement if useful
-        }
+        // Hook point: focus / pause / resume logic can go here later.
         return 0;
-
-    case WM_DPICHANGED:
-    {
-        // lParam points to a suggested RECT in the new DPI
-        const RECT* const prcNewWindow =
-            reinterpret_cast<const RECT*>(lParam);
-
-        ::SetWindowPos(hwnd, nullptr,
-                       prcNewWindow->left,
-                       prcNewWindow->top,
-                       prcNewWindow->right  - prcNewWindow->left,
-                       prcNewWindow->bottom - prcNewWindow->top,
-                       SWP_NOZORDER | SWP_NOACTIVATE);
-
-        // If your renderer scales with DPI, this is a good place to
-        // notify it / recreate swapchain buffers, e.g.:
-        //
-        // if (appWindow)
-        //     appWindow->OnDpiChanged(LOWORD(wParam), HIWORD(wParam));
-        //
-        // (Make OnDpiChanged a method on AppWindow if you want.)
-
-        return 0;
-    }
 
     case WM_CLOSE:
-        if (appWindow)
-            appWindow->OnCloseRequested();        // <- let game decide if quitting is OK
+        // Standard close behaviour: destroy the window, then WM_DESTROY posts quit.
         ::DestroyWindow(hwnd);
         return 0;
 
@@ -92,18 +92,20 @@ static LRESULT CALLBACK ColonyWndProc(HWND hwnd,
         return 0;
 
     default:
-        return ::DefWindowProc(hwnd, msg, wParam, lParam);
+        return ::DefWindowProcW(hwnd, msg, wParam, lParam);
     }
 }
 
-// Creates the native window and attaches it to an AppWindow instance.
-// Call this from your WinMain / WinLauncher code.
+// Optional helper used by the launcher / app bootstrap code.
+// This keeps the previous signature (HINSTANCE, nCmdShow, AppWindow&, HWND&)
+// but does NOT require any AppWindow methods – we only pass the pointer
+// through to WM_CREATE and store it for future use.
 bool CreateMainWindow(HINSTANCE   hInstance,
                       int         nCmdShow,
                       AppWindow&  appWindow,
                       HWND&       outHwnd)
 {
-    const wchar_t* kClassName = L"ColonyGameWindowClass";
+    const wchar_t* const kClassName = L"ColonyGameMainWindow";
 
     WNDCLASSEXW wc{};
     wc.cbSize        = sizeof(wc);
@@ -112,9 +114,9 @@ bool CreateMainWindow(HINSTANCE   hInstance,
     wc.cbClsExtra    = 0;
     wc.cbWndExtra    = 0;
     wc.hInstance     = hInstance;
-    wc.hIcon         = ::LoadIcon(nullptr, IDI_APPLICATION);
-    wc.hCursor       = ::LoadCursor(nullptr, IDC_ARROW);
-    wc.hbrBackground = nullptr; // game will redraw everything
+    wc.hIcon         = ::LoadIconW(nullptr, IDI_APPLICATION);
+    wc.hCursor       = ::LoadCursorW(nullptr, IDC_ARROW);
+    wc.hbrBackground = nullptr;   // you’ll usually clear in your renderer instead
     wc.lpszMenuName  = nullptr;
     wc.lpszClassName = kClassName;
     wc.hIconSm       = wc.hIcon;
@@ -122,8 +124,9 @@ bool CreateMainWindow(HINSTANCE   hInstance,
     if (!::RegisterClassExW(&wc))
         return false;
 
-    // Pick a default size; the renderer can read back size and adjust.
-    RECT rc{0, 0, 1280, 720};
+    // Start with a reasonable default client size; the engine can manage
+    // logical resolution vs physical later.
+    RECT rc{ 0, 0, 1280, 720 };
     ::AdjustWindowRect(&rc, WS_OVERLAPPEDWINDOW, FALSE);
 
     HWND hwnd = ::CreateWindowExW(
@@ -134,10 +137,10 @@ bool CreateMainWindow(HINSTANCE   hInstance,
         CW_USEDEFAULT, CW_USEDEFAULT,
         rc.right  - rc.left,
         rc.bottom - rc.top,
-        nullptr,
-        nullptr,
+        nullptr,               // parent
+        nullptr,               // menu
         hInstance,
-        &appWindow            // lpCreateParams -> retrieved in WM_CREATE
+        &appWindow             // lpCreateParams -> WM_CREATE -> GWLP_USERDATA
     );
 
     if (!hwnd)
@@ -147,9 +150,6 @@ bool CreateMainWindow(HINSTANCE   hInstance,
 
     ::ShowWindow(hwnd, nCmdShow);
     ::UpdateWindow(hwnd);
-
-    // Let AppWindow know which HWND it controls.
-    appWindow.AttachToNativeWindow(hwnd); // implement this in AppWindow
 
     return true;
 }
