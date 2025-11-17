@@ -36,9 +36,19 @@ void DeviceResources::Initialize(const CreateDesc& desc)
 
 void DeviceResources::CreateDeviceAndFactory(bool enableDebug)
 {
-    UINT flags = 0;
+    // Always request BGRA support for modern Windows rendering interop.
+    UINT flags = D3D11_CREATE_DEVICE_BGRA_SUPPORT;
+
 #if defined(_DEBUG)
-    if (enableDebug) flags |= D3D11_CREATE_DEVICE_DEBUG;  // Debug layer in Debug builds
+    // In debug builds we *can* use the D3D debug layer if requested.
+    if (enableDebug)
+    {
+        flags |= D3D11_CREATE_DEVICE_DEBUG;
+    }
+#else
+    // In non-debug builds we ignore the flag but explicitly mark it used to
+    // avoid C4100 ("unreferenced parameter") when /WX is on.
+    (void)enableDebug;
 #endif
 
     // Create device on default adapter (you can enumerate if you wish).
@@ -50,11 +60,12 @@ void DeviceResources::CreateDeviceAndFactory(bool enableDebug)
         D3D_FEATURE_LEVEL_10_0
     };
 
-    ComPtr<ID3D11Device> dev;
+    ComPtr<ID3D11Device>        dev;
     ComPtr<ID3D11DeviceContext> ctx;
-    D3D_FEATURE_LEVEL flOut{};
+    D3D_FEATURE_LEVEL           flOut{};
 
-    ThrowIfFailed(D3D11CreateDevice(
+    // First attempt with whatever flags we computed (possibly including debug).
+    HRESULT hr = D3D11CreateDevice(
         nullptr,                    // default adapter (or enumerate via IDXGIFactory if desired)
         D3D_DRIVER_TYPE_HARDWARE,
         nullptr,
@@ -63,10 +74,33 @@ void DeviceResources::CreateDeviceAndFactory(bool enableDebug)
         D3D11_SDK_VERSION,
         dev.GetAddressOf(),
         &flOut,
-        ctx.GetAddressOf()),
-        "D3D11CreateDevice failed");
+        ctx.GetAddressOf()
+    );
 
-    m_device = std::move(dev);
+#if defined(_DEBUG)
+    // If the debug layer isn't installed, creation can fail. In that case,
+    // retry without the debug flag so Debug builds still run on player PCs.
+    if (FAILED(hr) && (flags & D3D11_CREATE_DEVICE_DEBUG))
+    {
+        flags &= ~D3D11_CREATE_DEVICE_DEBUG;
+
+        hr = D3D11CreateDevice(
+            nullptr,
+            D3D_DRIVER_TYPE_HARDWARE,
+            nullptr,
+            flags,
+            featureLevels, _countof(featureLevels),
+            D3D11_SDK_VERSION,
+            dev.GetAddressOf(),
+            &flOut,
+            ctx.GetAddressOf()
+        );
+    }
+#endif
+
+    ThrowIfFailed(hr, "D3D11CreateDevice failed");
+
+    m_device  = std::move(dev);
     m_context = std::move(ctx);
 
     // Create a DXGI factory (highest available; CreateDXGIFactory2 not strictly required here).
@@ -160,8 +194,8 @@ void DeviceResources::CreateSizeDependentResources()
 
     // Create SRGB RTV if requested (DXGI special case lets us create _SRGB RTV for UNORM backbuffer)
     D3D11_RENDER_TARGET_VIEW_DESC rtvDesc{};
-    rtvDesc.ViewDimension = D3D11_RTV_DIMENSION_TEXTURE2D;
-    rtvDesc.Texture2D.MipSlice = 0;
+    rtvDesc.ViewDimension       = D3D11_RTV_DIMENSION_TEXTURE2D;
+    rtvDesc.Texture2D.MipSlice  = 0;
     rtvDesc.Format = (m_requestSRGB ? DXGI_FORMAT_R8G8B8A8_UNORM_SRGB : m_backBufferFormat);
 
     HRESULT hr = m_device->CreateRenderTargetView(backbuf.Get(), &rtvDesc, m_rtv.GetAddressOf());
@@ -175,13 +209,13 @@ void DeviceResources::CreateSizeDependentResources()
 
     // Create/resize depth‑stencil
     D3D11_TEXTURE2D_DESC dsDesc{};
-    dsDesc.Width = m_width;
-    dsDesc.Height = m_height;
-    dsDesc.MipLevels = 1;
-    dsDesc.ArraySize = 1;
-    dsDesc.Format = m_depthFormat;
-    dsDesc.SampleDesc = { 1, 0 };
-    dsDesc.BindFlags = D3D11_BIND_DEPTH_STENCIL;
+    dsDesc.Width              = m_width;
+    dsDesc.Height             = m_height;
+    dsDesc.MipLevels          = 1;
+    dsDesc.ArraySize          = 1;
+    dsDesc.Format             = m_depthFormat;
+    dsDesc.SampleDesc         = { 1, 0 };
+    dsDesc.BindFlags          = D3D11_BIND_DEPTH_STENCIL;
 
     ComPtr<ID3D11Texture2D> depth;
     ThrowIfFailed(m_device->CreateTexture2D(&dsDesc, nullptr, depth.GetAddressOf()),
@@ -193,8 +227,8 @@ void DeviceResources::CreateSizeDependentResources()
     // Set viewport
     D3D11_VIEWPORT vp{};
     vp.TopLeftX = 0.0f; vp.TopLeftY = 0.0f;
-    vp.Width  = static_cast<float>(m_width);
-    vp.Height = static_cast<float>(m_height);
+    vp.Width    = static_cast<float>(m_width);
+    vp.Height   = static_cast<float>(m_height);
     vp.MinDepth = 0.0f; vp.MaxDepth = 1.0f;
     m_context->RSSetViewports(1, &vp);
 
@@ -224,7 +258,7 @@ void DeviceResources::ResizeIfNeeded()
 void DeviceResources::Present(bool vsync)
 {
     // Flip‑model present: vsync off uses tearing flag if supported
-    UINT sync = vsync ? 1u : 0u;
+    UINT sync  = vsync ? 1u : 0u;
     UINT flags = 0;
     if (!vsync && m_allowTearing)
         flags |= DXGI_PRESENT_ALLOW_TEARING; // Valid only with SyncInterval = 0
