@@ -229,6 +229,33 @@ static AppPaths ComputePaths() {
     return p;
 }
 
+// NEW: Debug helper that *uses* util::Quoted and util::OpenInExplorer.
+// It only does anything if specific environment variables are set.
+static void DebugOpenFoldersIfRequested(const AppPaths& paths)
+{
+    // If COLONY_DEBUG_OPEN_SAVES is set, open the saves folder and log it.
+    {
+        std::wstring env = util::GetEnv(L"COLONY_DEBUG_OPEN_SAVES");
+        if (!env.empty()) {
+            util::OpenInExplorer(paths.savesDir);
+            std::wstring msg = L"[Debug] Opened save folder: " +
+                               util::Quoted(paths.savesDir);
+            g_log.Line(msg);
+        }
+    }
+
+    // If COLONY_DEBUG_OPEN_LOGS is set, open the logs folder and log it.
+    {
+        std::wstring env = util::GetEnv(L"COLONY_DEBUG_OPEN_LOGS");
+        if (!env.empty()) {
+            util::OpenInExplorer(paths.logsDir);
+            std::wstring msg = L"[Debug] Opened log folder: " +
+                               util::Quoted(paths.logsDir);
+            g_log.Line(msg);
+        }
+    }
+}
+
 struct Config {
     UINT width  = 1280;
     UINT height = 720;
@@ -1718,6 +1745,9 @@ int APIENTRY wWinMain(HINSTANCE hInst, HINSTANCE, LPWSTR, int) {
     InstallWindowsARR();
 
     AppPaths paths = ComputePaths();
+
+    // NEW: Debug: open saves/logs in Explorer if env vars are set.
+    DebugOpenFoldersIfRequested(paths);
 
     // Log file
     std::wstring logFile = util::JoinPath(paths.logsDir, L"ColonyGame-" + util::NowStampCompact() + L".log");
