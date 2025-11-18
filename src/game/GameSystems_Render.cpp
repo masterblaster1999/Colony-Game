@@ -1,7 +1,7 @@
 #include "GameSystems.hpp"
 #include <spdlog/spdlog.h>
 #include <cstddef>          // std::size_t
-#include <entt/entt.hpp>    // entt::registry::{valid,data,size}
+#include <entt/entt.hpp>    // entt::registry::{alive,each}
 
 // ----- Tracy zones (optional) -------------------------------------------------
 #ifdef TRACY_ENABLE
@@ -23,47 +23,44 @@ namespace colony {
 
 namespace {
 
-// Robust, version‑stable alive‑entity count for EnTT.
+// Robust, version-stable alive-entity count for EnTT.
 //
 // Strategy:
-//  1) If the installed EnTT exposes registry.alive(), use it (SFINAE).
-//  2) Otherwise, walk [registry.data(), registry.data()+registry.size())
-//     and filter with registry.valid(id). This is O(N) and perfectly fine
-//     for HUD/debug; it avoids relying on removed/renamed APIs.
-//
-// Docs:
-//  - `valid(entity)` is the supported way to test a handle. :contentReference[oaicite:1]{index=1}
-//  - `data()` exposes the backing array (valid + destroyed); pair it with
-//    `valid()` before use. `size()` returns the length of that array. :contentReference[oaicite:2]{index=2}
+//  1) If the installed registry type exposes alive(), use it (O(1)).
+//  2) Otherwise, fall back to an each() walk and count entities (O(N)).
 template <class R>
-static auto TryAliveCount(const R& reg, int)
-  -> decltype(static_cast<std::size_t>(reg.alive()))   // prefers this if available
+static std::size_t TryAliveCount(const R& reg, long /*unused*/)
 {
-  return static_cast<std::size_t>(reg.alive());
-}
-
-template <class R>
-static std::size_t TryAliveCount(const R& reg, long)    // fallback
-{
-  std::size_t alive = 0;
-  const auto* const ids = reg.data();
-  const std::size_t n   = static_cast<std::size_t>(reg.size());
-  for(std::size_t i = 0; i < n; ++i) {
-    if (reg.valid(ids[i])) { ++alive; }
+  if constexpr (requires(const R& r) { r.alive(); })
+  {
+    // EnTT basic_registry::alive(): number of entities still in use.
+    return static_cast<std::size_t>(reg.alive());
   }
-  return alive;
+  else if constexpr (requires(const R& r) { r.each([](auto){}); })
+  {
+    std::size_t alive = 0;
+    reg.each([&alive](auto /*entity*/) {
+      ++alive;
+    });
+    return alive;
+  }
+  else
+  {
+    // Unknown registry-like type with no alive()/each(); best-effort.
+    return 0u;
+  }
 }
 
 inline std::size_t CountAliveEntities(const entt::registry& reg) {
   // Prefer reg.alive() if it exists on this EnTT version; otherwise use the
-  // data()+size()+valid() fallback above.
-  return TryAliveCount(reg, 0);
+  // each()-based fallback above.
+  return TryAliveCount(reg, 0L);
 }
 
 #if COLONY_HAVE_IMGUI
 // Simple exponential moving average for FPS to reduce jitter in the HUD.
 struct FpsEma {
-  float ema   = 0.0f;
+  float ema    = 0.0f;
   bool  primed = false;
   void push(float dt_seconds) {
     if (dt_seconds > 0.0f) {
@@ -94,7 +91,7 @@ void RenderFrame([[maybe_unused]] entt::registry& r,
       ImGui::Separator();
       ImGui::Text("FPS (EMA): %.1f", s_fps.ema);
 
-      // Version-stable alive count (no registry.alive() dependency).
+      // Version-stable alive count (no registry.data()/size() dependency).
       const std::size_t entities_alive = CountAliveEntities(r);
       ImGui::Text("Entities (alive): %zu", entities_alive);
     }
