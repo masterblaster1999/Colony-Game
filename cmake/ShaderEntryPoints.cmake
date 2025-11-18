@@ -12,9 +12,11 @@
 # These paths are absolute, rooted at CMAKE_SOURCE_DIR so this file can be
 # included from anywhere.
 
+# ---------------------------------------------------------------------------
 # Full-screen pass VS: shaders/raster/FullScreen.vs.hlsl
 # Make sure this file contains a function:
 #   VSOutput VSMain(VSInput input) { ... }
+# ---------------------------------------------------------------------------
 set_source_files_properties(
     "${CMAKE_SOURCE_DIR}/shaders/raster/FullScreen.vs.hlsl"
     PROPERTIES
@@ -23,9 +25,11 @@ set_source_files_properties(
         VS_SHADER_ENTRYPOINT "VSMain"
 )
 
+# ---------------------------------------------------------------------------
 # Common full-screen triangle VS: renderer/Shaders/Common/FullScreenTriangleVS.hlsl
-# Again, ensure this file has a function:
+# Ensure this file has a function:
 #   VSOutput VSMain(uint vertexId : SV_VertexID) { ... }
+# ---------------------------------------------------------------------------
 set_source_files_properties(
     "${CMAKE_SOURCE_DIR}/renderer/Shaders/Common/FullScreenTriangleVS.hlsl"
     PROPERTIES
@@ -34,10 +38,12 @@ set_source_files_properties(
         VS_SHADER_ENTRYPOINT "VSMain"
 )
 
+# ---------------------------------------------------------------------------
 # Weather precipitation vertex shader:
 # renderer/Shaders/Weather/PrecipitationVS.hlsl
 # Ensure it has:
 #   VSOutput VSMain(VSInput input) { ... }
+# ---------------------------------------------------------------------------
 set_source_files_properties(
     "${CMAKE_SOURCE_DIR}/renderer/Shaders/Weather/PrecipitationVS.hlsl"
     PROPERTIES
@@ -46,6 +52,46 @@ set_source_files_properties(
         VS_SHADER_ENTRYPOINT "VSMain"
 )
 
+# ---------------------------------------------------------------------------
+# Quad fullscreen vertex shader:
+# shaders/quad_vs.hlsl
+# Ensure it has:
+#   VSOutput VSMain(uint vertexId : SV_VertexID) { ... }
+# ---------------------------------------------------------------------------
+set_source_files_properties(
+    "${CMAKE_SOURCE_DIR}/shaders/quad_vs.hlsl"
+    PROPERTIES
+        VS_SHADER_TYPE       "Vertex"
+        VS_SHADER_MODEL      "6.0"
+        VS_SHADER_ENTRYPOINT "VSMain"
+)
+
+# ---------------------------------------------------------------------------
+# Thermal erosion compute shaders:
+# renderer/Shaders/erosion_thermal_apply_cs.hlsl
+# renderer/Shaders/erosion_thermal_flow_cs.hlsl
+#
+# Ensure each file has:
+#   [numthreads(x, y, z)]
+#   void CSMain(uint3 dispatchThreadId : SV_DispatchThreadID) { ... }
+# ---------------------------------------------------------------------------
+set_source_files_properties(
+    "${CMAKE_SOURCE_DIR}/renderer/Shaders/erosion_thermal_apply_cs.hlsl"
+    PROPERTIES
+        VS_SHADER_TYPE       "Compute"
+        VS_SHADER_MODEL      "6.0"
+        VS_SHADER_ENTRYPOINT "CSMain"
+)
+
+set_source_files_properties(
+    "${CMAKE_SOURCE_DIR}/renderer/Shaders/erosion_thermal_flow_cs.hlsl"
+    PROPERTIES
+        VS_SHADER_TYPE       "Compute"
+        VS_SHADER_MODEL      "6.0"
+        VS_SHADER_ENTRYPOINT "CSMain"
+)
+
+# ---------------------------------------------------------------------------
 # Add more shaders here if you want explicit control instead of relying on
 # default 'main' entrypoints.
 #
@@ -58,3 +104,4 @@ set_source_files_properties(
 #         VS_SHADER_MODEL      "6.0"
 #         VS_SHADER_ENTRYPOINT "PSMain"
 # )
+# ---------------------------------------------------------------------------
