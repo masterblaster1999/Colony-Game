@@ -1,11 +1,16 @@
-// src/game/core/Game.hpp
 #pragma once
-// #include "../../<your_path>/Game.hpp"
-namespace colony::game::core {
-  struct Game {
-    // enough API for smoke tests (e.g., init/shutdown tick stubs)
-    void init() noexcept {}
-    void tick(float /*dt*/) noexcept {}
-    void shutdown() noexcept {}
-  };
-}
+
+#include <memory>
+#include <taskflow/taskflow.hpp>   // make tf::Executor / tf::Taskflow complete
+
+class Game {
+public:
+    Game();
+    ~Game();   // can be defaulted inline if you want
+
+    // ...
+
+private:
+    std::unique_ptr<tf::Executor> m_executor;
+    std::unique_ptr<tf::Taskflow> m_taskflow;
+};
