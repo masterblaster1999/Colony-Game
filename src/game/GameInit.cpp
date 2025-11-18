@@ -4,10 +4,10 @@
 #include <cassert>
 #include <chrono>
 #include <filesystem>
+#include <mutex>
 
 #include <spdlog/spdlog.h>
 #include <spdlog/sinks/basic_file_sink.h>
-
 // Async logging is optional; we include the header only when needed.
 #include <spdlog/async.h>
 
@@ -15,11 +15,23 @@
   #include <tracy/Tracy.hpp>
 #endif
 
+// Taskflow: header-only task system
+#include <taskflow/taskflow.hpp>
+
 namespace fs = std::filesystem;
 
 namespace colony {
 
 namespace {
+
+// Common default logger configuration.
+void configure_default_logger(const std::shared_ptr<spdlog::logger>& logger) {
+  spdlog::set_default_logger(logger);
+  spdlog::set_level(spdlog::level::info);
+  spdlog::flush_on(spdlog::level::warn);
+  spdlog::set_pattern("[%Y-%m-%d %H:%M:%S.%e] [%^%l%$] %v");
+}
+
 std::shared_ptr<spdlog::logger> create_logger(bool async_logging) {
   try {
     fs::create_directories("logs");
@@ -29,44 +41,48 @@ std::shared_ptr<spdlog::logger> create_logger(bool async_logging) {
 
   const auto log_path = fs::path("logs") / "colony.log";
 
+  std::shared_ptr<spdlog::logger> logger;
+
   if (async_logging) {
     // Create a small thread-pool and async logger that drops oldest on overflow.
-    spdlog::init_thread_pool(8192, 1);
+    // Guard against multiple initializations in case this is ever called more than once.
+    static std::once_flag s_thread_pool_once;
+    std::call_once(s_thread_pool_once, [] {
+      spdlog::init_thread_pool(8192, 1);
+    });
+
     auto sink = std::make_shared<spdlog::sinks::basic_file_sink_mt>(log_path.string(), true);
 
-    auto logger = std::make_shared<spdlog::async_logger>(
+    logger = std::make_shared<spdlog::async_logger>(
       "colony",
-      sink,
+      std::move(sink),
       spdlog::thread_pool(),
       spdlog::async_overflow_policy::overrun_oldest);
-
-    spdlog::set_default_logger(logger);
-    spdlog::set_level(spdlog::level::info);
-    spdlog::flush_on(spdlog::level::warn);
-    spdlog::set_pattern("[%Y-%m-%d %H:%M:%S.%e] [%^%l%$] %v");
-    return logger;
   } else {
     auto sink = std::make_shared<spdlog::sinks::basic_file_sink_mt>(log_path.string(), true);
-    auto logger = std::make_shared<spdlog::logger>("colony", sink);
-    spdlog::set_default_logger(logger);
-    spdlog::set_level(spdlog::level::info);
-    spdlog::flush_on(spdlog::level::warn);
-    spdlog::set_pattern("[%Y-%m-%d %H:%M:%S.%e] [%^%l%$] %v");
-    return logger;
+    logger = std::make_shared<spdlog::logger>("colony", std::move(sink));
   }
+
+  configure_default_logger(logger);
+  return logger;
 }
+
 } // namespace
 
 Game::Game()  = default;
 Game::~Game() = default;
 
 void Game::Initialize(const GameConfig& cfg) {
+#ifdef TRACY_ENABLE
+  ZoneScopedN("Game::Initialize");
+#endif
+
   m_config  = cfg;
   m_logger  = create_logger(cfg.async_logging);
   m_running = true;
 
-  // Task system
-  m_executor = std::make_unique<tf::Executor>(); // default to HW concurrency
+  // Task system: default to hardware concurrency.
+  m_executor = std::make_unique<tf::Executor>();
   m_taskflow = std::make_unique<tf::Taskflow>();
 
   // Registry bootstrap: reserve a little archetype memory up front if desired.
@@ -77,6 +93,10 @@ void Game::Initialize(const GameConfig& cfg) {
 }
 
 void Game::Shutdown() {
+#ifdef TRACY_ENABLE
+  ZoneScopedN("Game::Shutdown");
+#endif
+
   if (!m_running.exchange(false)) {
     return; // already shut down
   }
@@ -87,7 +107,7 @@ void Game::Shutdown() {
     m_inputQueue.clear();
   }
 
-  // Destroy systems that might hold onto registry resources (none here).
+  // Destroy systems that might hold onto registry resources.
   m_taskflow.reset();
   m_executor.reset();
 
@@ -104,12 +124,11 @@ void Game::PushInput(const InputEvent& e) {
 }
 
 void Game::processInputQueue(std::vector<InputEvent>& sink) {
-  sink.clear();
   std::lock_guard<std::mutex> lock(m_inputMutex);
-  if (!m_inputQueue.empty()) {
-    sink.insert(sink.end(), m_inputQueue.begin(), m_inputQueue.end());
-    m_inputQueue.clear();
-  }
+
+  // Move accumulated input events out in O(1) by swapping.
+  sink.clear();
+  sink.swap(m_inputQueue);
 }
 
 } // namespace colony
