@@ -378,6 +378,26 @@ if(WIN32)
   endif()
 endif()
 
+# ------------------------------------------------------------------------------
+# Map viewer tool (Windows-only)
+# ------------------------------------------------------------------------------
+if(WIN32)
+  add_executable(ColonyMapViewer
+    tools/map_viewer/MapViewerWin.cpp
+  )
+
+  if(MSVC)
+    target_compile_definitions(ColonyMapViewer PRIVATE UNICODE _UNICODE)
+  endif()
+
+  # Link against Win32 GUI libs
+  target_link_libraries(ColonyMapViewer PRIVATE
+    user32
+    gdi32
+    comdlg32
+  )
+endif()
+
 include(CGStageInstall) # your cmake/CGStageInstall.cmake
 include(CGTests)        # your cmake/CGTests.cmake
 include(CGSummary)      # your cmake/CGSummary.cmake
