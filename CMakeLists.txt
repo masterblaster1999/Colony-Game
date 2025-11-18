@@ -29,6 +29,10 @@ include(CGToolchain)  # your cmake/CGToolchain.cmake (e.g., vcpkg toolchain)
 
 project(ColonyGame LANGUAGES CXX)
 
+# Configure HLSL shader entrypoints for Visual Studio generator
+# (see cmake/ShaderEntryPoints.cmake)
+include("${CMAKE_SOURCE_DIR}/cmake/ShaderEntryPoints.cmake")
+
 # Helpful for IDE tooling (JSON compile commands) and folder organization
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 set_property(GLOBAL PROPERTY USE_FOLDERS ON)
