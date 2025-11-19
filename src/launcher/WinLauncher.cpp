@@ -1,17 +1,23 @@
-#include "platform/win/Paths.h"
-#include "platform/win/SingleInstance.h"
-// CrashHandler.h if you keep the .h name; or adjust include to your .hpp
-#include "src/win/CrashHandler.h" // matches your commit location
+// src/launcher/WinLauncher.cpp
 
-int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
-    winenv::init_process_environment(L"Colony-Game");
-    InstallCrashHandler(L"Colony-Game"); // writes *.dmp into crashdumps/
+#include <windows.h>
+#include "CrashDumpWin.h"
+// plus whatever header declares your game app / main loop
 
-    SingleInstanceGuard guard(L"Global\\ColonyGame_Singleton");
-    if (guard.already_running()) {
-        MessageBoxW(nullptr, L"Colony-Game is already running.", L"Colony-Game", MB_OK|MB_ICONINFORMATION);
-        return 0;
-    }
+int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int nCmdShow)
+{
+    // This is the line your compiler is currently complaining about.
+    // Turn it into a proper variable:
+    CrashDumpGuard guard{L"Colony-Game"};
 
-    // ...create window, init D3D11Device, run loop...
+    // Optional, but nice: DPI awareness, etc.
+    ::SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
+
+    // TODO: hook into your actual game/app entrypoint.
+    // e.g.
+    // ColonyGame::App app{hInstance};
+    // if (!app.Initialize(nCmdShow)) return -1;
+    // return app.Run();
+
+    return 0;
 }
