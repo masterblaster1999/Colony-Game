@@ -1,30 +1,35 @@
-// src/gfx/Diagnostics.h
+// Diagnostics.h (D3D12 debug + GPU-based validation)
 #pragma once
 
-#if defined(_MSC_VER)
-#pragma warning(push, 0)
-#endif
-#include <wrl.h>
 #include <d3d12.h>
-#include <dxgidebug.h>
-#include <d3d12sdklayers.h>
-#if defined(_MSC_VER)
-#pragma warning(pop)
-#endif
+#include <wrl/client.h>
 
-inline void EnableD3D12DebugLayer(bool enableGpuValidation)
+namespace gfx
 {
-#if defined(_DEBUG)
-    Microsoft::WRL::ComPtr<ID3D12Debug> debug;
-    if (SUCCEEDED(D3D12GetDebugInterface(IID_PPV_ARGS(&debug))))
+    inline void EnableD3D12DebugLayer(bool enableGpuValidation)
     {
-        debug->EnableDebugLayer(); // Must be BEFORE device creation
-        Microsoft::WRL::ComPtr<ID3D12Debug1> debug1;
-        if (enableGpuValidation && SUCCEEDED(debug.As(&debug1)))
+    #if defined(_DEBUG)
+        using Microsoft::WRL::ComPtr;
+
+        // Enable standard D3D12 debug layer.
+        ComPtr<ID3D12Debug> debug;
+        if (SUCCEEDED(D3D12GetDebugInterface(IID_PPV_ARGS(&debug))))
         {
-            // Optional, dev-only: slows down a lot but catches more issues
-            debug1->SetEnableGPUBasedValidation(TRUE);
+            debug->EnableDebugLayer();
+
+            // Optional: GPU‑based validation – more expensive but great when debugging.
+            if (enableGpuValidation)
+            {
+                ComPtr<ID3D12Debug1> debug1;
+                if (SUCCEEDED(debug.As(&debug1)))
+                {
+                    debug1->SetEnableGPUBasedValidation(TRUE);
+                }
+            }
         }
+    #else
+        // In release builds we don't actually use the parameter.
+        (void)enableGpuValidation; // prevent C4100
+    #endif
     }
-#endif
 }
