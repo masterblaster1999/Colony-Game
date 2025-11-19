@@ -4,9 +4,6 @@
 #include <cmath>     // std::abs
 #include <limits>    // std::numeric_limits
 
-namespace colony::jobs
-{
-
 // -----------------------------------------------------------------------------
 // Singleton boilerplate
 // -----------------------------------------------------------------------------
@@ -153,5 +150,3 @@ void JobSystem::update(float dt)
         }
     }
 }
-
-} // namespace colony::jobs
