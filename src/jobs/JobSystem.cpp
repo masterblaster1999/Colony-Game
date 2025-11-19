@@ -38,7 +38,7 @@ Job* JobSystem::findJob(JobId id)
 
 JobId JobSystem::createJob(JobType type, const Int2& targetTile, int priority)
 {
-    Job job;
+    Job job{}; // value-initialize to avoid any uninitialized fields
     job.id            = nextJobId_++;
     job.type          = type;
     job.targetTile    = targetTile;
@@ -81,7 +81,7 @@ void JobSystem::notifyJobFailed(JobId jobId, AgentId agent)
 
 void JobSystem::registerAgent(AgentId agent)
 {
-    auto it = std::find(agents_.begin(), agents_.end(), agent);
+    const auto it = std::find(agents_.begin(), agents_.end(), agent);
     if (it == agents_.end())
     {
         agents_.push_back(agent);
@@ -90,7 +90,7 @@ void JobSystem::registerAgent(AgentId agent)
 
 void JobSystem::unregisterAgent(AgentId agent)
 {
-    auto it = std::remove(agents_.begin(), agents_.end(), agent);
+    const auto it = std::remove(agents_.begin(), agents_.end(), agent);
     if (it != agents_.end())
     {
         agents_.erase(it, agents_.end());
@@ -125,15 +125,15 @@ void JobSystem::update(float dt)
         const Int2 agentTile = agentAdapter_->getAgentTile(agent);
 
         Job*  bestJob   = nullptr;
-        float bestScore = -std::numeric_limits<float>::infinity();
+        float bestScore = std::numeric_limits<float>::lowest();
 
         for (Job& job : queue_)
         {
             if (job.state != JobState::Open)
                 continue;
 
-            const int dx        = job.targetTile.x - agentTile.x;
-            const int dy        = job.targetTile.y - agentTile.y;
+            const int   dx      = job.targetTile.x - agentTile.x;
+            const int   dy      = job.targetTile.y - agentTile.y;
             const float dist    = static_cast<float>(std::abs(dx) + std::abs(dy));
             const float score   = static_cast<float>(job.priority) - dist;
 
