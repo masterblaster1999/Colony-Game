@@ -8,11 +8,52 @@
 #include <type_traits>
 #include <utility>
 #include <thread>
+#include <vector>
+#include <cstdint>
+
+// -----------------------------------------------------------------------------
+// Gameplay job / agent types (Step 1 patch)
+// -----------------------------------------------------------------------------
+
+// Forward declaration: implemented in your gameplay code.
+class IAgentAdapter;
+
+// Simple identifier types for agents and jobs.
+using AgentId = std::uint32_t;
+using JobId   = std::uint32_t;
+
+// Basic job state for colony-style jobs.
+enum class JobState
+{
+  Open,        // waiting to be picked by an agent
+  InProgress,  // currently assigned to an agent
+  Completed,   // finished successfully
+  Failed       // failed (optional, for retries / UI)
+};
+
+// Minimal job representation; extend as needed in your .cpp / game logic.
+struct Job
+{
+  JobId    id        = 0;
+  JobState state     = JobState::Open;
+  // Add fields as needed, e.g. target tile, category, priority, etc.
+  // Example (uncomment/adapt to your types):
+  // TileCoord targetTile{};
+  // float     basePriority = 0.0f;
+};
+
+// -----------------------------------------------------------------------------
+// JobSystem
+// -----------------------------------------------------------------------------
 
 class JobSystem {
 public:
   // Singleton access (defined in JobSystem.cpp)
   static JobSystem& Instance();
+
+  // ---------------------------------------------------------------------------
+  // Taskflow executor API (existing code, unchanged)
+  // ---------------------------------------------------------------------------
 
   // Access to the underlying executor
   tf::Executor& executor() noexcept { return _executor; }
@@ -87,11 +128,43 @@ public:
   // Discover hardware threads (useful for sizing).
   static unsigned Concurrency() noexcept { return std::thread::hardware_concurrency(); }
 
+  // ---------------------------------------------------------------------------
+  // Gameplay job-system API (Step 1 patch)
+  // ---------------------------------------------------------------------------
+
+  // Provide the adapter used to talk to your in-game agents/colonists.
+  // Call this once at startup before using the job API.
+  void InitializeAgentAdapter(IAgentAdapter& adapter) noexcept {
+    _agentAdapter = &adapter;
+  }
+
+  // Create a new gameplay job based on a template and return its id.
+  // Implementation in JobSystem.cpp can fill in id, position, etc.
+  JobId createJob(const Job& jobTemplate);
+
+  // Notify the system that a job has completed or failed.
+  void notifyJobCompleted(JobId jobId);
+  void notifyJobFailed(JobId jobId);
+
+  // Register/unregister agents that are allowed to receive jobs.
+  void registerAgent(AgentId agentId);
+  void unregisterAgent(AgentId agentId);
+
+  // Per-frame update to assign jobs to agents, update states, etc.
+  void update(float dt);
+
 private:
   JobSystem();                      // defined in JobSystem.cpp
   ~JobSystem();
   JobSystem(const JobSystem&) = delete;
   JobSystem& operator=(const JobSystem&) = delete;
 
+  // Existing Taskflow executor
   tf::Executor _executor;
+
+  // Gameplay job-system state (Step 1 patch)
+  IAgentAdapter*      _agentAdapter = nullptr;
+  std::vector<Job>    queue_;       // job queue
+  std::vector<AgentId> agents_;     // registered agents
+  JobId               nextJobId_ = 1;
 };
