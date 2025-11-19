@@ -1,163 +1,151 @@
 # cmake/ColonyShaders.cmake
-include(CMakeParseArguments)
+#
+# Defines a custom target "ColonyShaders" that compiles all runtime HLSL shaders
+# using dxc.exe and installs the resulting .cso files.
+#
+# Assumptions:
+#   - This file is included from your top-level CMakeLists.txt or a sub-dir.
+#   - You are building on Windows with DXC available (via Windows SDK or vcpkg).
+#   - Every shader file listed here has an HLSL entry point called "main".
+#   - Include-only HLSL (terrain_splat_common.hlsl, water_tiny.hlsl) are not
+#     compiled on their own; they’re just #included by other shaders.
 
-function(_colony_find_hlsl_compilers out_dxc out_fxc)
-  # Prefer DXC (via vcpkg or PATH), then FXC (Windows SDK)
-  # vcpkg manifest mode often defines these variables:
-  if(DEFINED VCPKG_INSTALLED_DIR AND DEFINED VCPKG_TARGET_TRIPLET)
-    find_program(_DXC_EXE NAMES dxc HINTS
-      "${VCPKG_INSTALLED_DIR}/${VCPKG_TARGET_TRIPLET}/tools/directx-dxc"
-      "${VCPKG_INSTALLED_DIR}/${VCPKG_TARGET_TRIPLET}/bin")
-  else()
-    find_program(_DXC_EXE NAMES dxc)
-  endif()
+# Root of the source tree (Colony-Game)
+set(COLONY_SHADER_ROOT "${CMAKE_SOURCE_DIR}")
 
-  find_program(_FXC_EXE NAMES fxc
-    HINTS "$ENV{WindowsSdkDir}/bin" "C:/Program Files (x86)/Windows Kits/10/bin" "C:/Program Files/Windows Kits/10/bin"
-    PATH_SUFFIXES x64 x86)
+# Directory where compiled shaders (.cso) will be placed in the build tree.
+set(COLONY_SHADER_OUTPUT_DIR "${CMAKE_BINARY_DIR}/shaders")
+file(MAKE_DIRECTORY "${COLONY_SHADER_OUTPUT_DIR}")
 
-  set(${out_dxc} "${_DXC_EXE}" PARENT_SCOPE)
-  set(${out_fxc} "${_FXC_EXE}" PARENT_SCOPE)
-endfunction()
+# HLSL files that are "include-only" / library code. These are *not* compiled
+# to .cso on their own, but are tracked as DEPENDS so rebuilds happen when they change.
+set(COLONY_SHADER_INCLUDE_ONLY
+    "${COLONY_SHADER_ROOT}/shaders/terrain_splat_common.hlsl"
+    "${COLONY_SHADER_ROOT}/shaders/water_tiny.hlsl"
+)
 
-# colony_register_shaders(
-#   TARGET       <runtime target that should depend on compiled shaders>
-#   MANIFEST     <path to renderer/Shaders/shaders.json>
-#   [OUTPUT_DIR  <dir for compiled blobs>]
-#   [DXC_ARGS    <extra args for dxc>]
-# )
-function(colony_register_shaders)
-  set(_opts)
-  set(_one TARGET MANIFEST OUTPUT_DIR)
-  set(_many DXC_ARGS)
-  cmake_parse_arguments(CRS "${_opts}" "${_one}" "${_many}" ${ARGN})
+# Actual entry-point HLSL shaders (only these are compiled to .cso)
+# Paths are relative to the repository root layout you showed in the build log.
+set(COLONY_SHADER_SOURCES
+    "${COLONY_SHADER_ROOT}/renderer/Shaders/AtmosphereSky.hlsl"
+    "${COLONY_SHADER_ROOT}/renderer/Shaders/WaterGerstner.hlsl"
+    "${COLONY_SHADER_ROOT}/renderer/Shaders/VolumetricClouds.hlsl"
+    "${COLONY_SHADER_ROOT}/renderer/Shaders/Compute/HydraulicErosion.compute.hlsl"
+    "${COLONY_SHADER_ROOT}/renderer/Shaders/PoissonDisk_cs.hlsl"
+    "${COLONY_SHADER_ROOT}/renderer/Shaders/Weather/PrecipitationCS.hlsl"
+    "${COLONY_SHADER_ROOT}/renderer/Shaders/Weather/PrecipitationPS.hlsl"
+    "${COLONY_SHADER_ROOT}/renderer/Shaders/Weather/PrecipitationVS.hlsl"
+    "${COLONY_SHADER_ROOT}/renderer/Shaders/Atmosphere/SkyPS.hlsl"
 
-  if(NOT WIN32)
-    message(FATAL_ERROR "colony_register_shaders: Windows-only")
-  endif()
-  if(NOT CRS_TARGET OR NOT CRS_MANIFEST OR NOT EXISTS "${CRS_MANIFEST}")
-    message(FATAL_ERROR "colony_register_shaders: TARGET and existing MANIFEST are required")
-  endif()
-  if(NOT CRS_OUTPUT_DIR)
-    set(CRS_OUTPUT_DIR "${CMAKE_BINARY_DIR}/shaders")
-  endif()
+    "${COLONY_SHADER_ROOT}/renderer/Shaders/erosion_thermal_apply_cs.hlsl"
+    "${COLONY_SHADER_ROOT}/renderer/Shaders/erosion_thermal_flow_cs.hlsl"
+    "${COLONY_SHADER_ROOT}/renderer/Shaders/VoxelIso_MT.compute.hlsl"
+    "${COLONY_SHADER_ROOT}/renderer/Shaders/VoxelIso_MT_Materials.compute.hlsl"
+    "${COLONY_SHADER_ROOT}/renderer/Shaders/Batch2D_vs.hlsl"
+    "${COLONY_SHADER_ROOT}/renderer/Shaders/Batch2D_ps.hlsl"
+    "${COLONY_SHADER_ROOT}/renderer/Shaders/CS_GenerateHeight.hlsl"
+    "${COLONY_SHADER_ROOT}/renderer/Shaders/CS_HeightToNormal.hlsl"
+    "${COLONY_SHADER_ROOT}/renderer/Shaders/CaveTriPlanarSplat.hlsl"
+    "${COLONY_SHADER_ROOT}/renderer/Shaders/DeferredDecalProjector.hlsl"
+    "${COLONY_SHADER_ROOT}/renderer/Shaders/mesh_vs.hlsl"
+    "${COLONY_SHADER_ROOT}/renderer/Shaders/mesh_ps.hlsl"
+    "${COLONY_SHADER_ROOT}/renderer/Shaders/Common/FullScreenTriangleVS.hlsl"
+    "${COLONY_SHADER_ROOT}/renderer/Shaders/Clouds/CloudNoiseCS.hlsl"
+    "${COLONY_SHADER_ROOT}/renderer/Shaders/Clouds/CloudRaymarchPS.hlsl"
 
-  file(READ "${CRS_MANIFEST}" _json_text)
+    "${COLONY_SHADER_ROOT}/shaders/raster/FullScreen.vs.hlsl"
+    "${COLONY_SHADER_ROOT}/shaders/raster/ToneMap.ps.hlsl"
 
-  # Parse the top-level array length; bail out early if malformed/empty.
-  string(JSON _count ERROR_VARIABLE _json_err LENGTH "${_json_text}")
-  if(_json_err)
-    message(FATAL_ERROR "Invalid JSON in ${CRS_MANIFEST}: ${_json_err}")
-  endif()
-  if(_count EQUAL 0)
-    message(WARNING "No shader entries found in ${CRS_MANIFEST}")
-    return()
-  endif()
+    "${COLONY_SHADER_ROOT}/shaders/Terrain.hlsl"
+    "${COLONY_SHADER_ROOT}/shaders/TerrainSplatExample.hlsl"
+    "${COLONY_SHADER_ROOT}/shaders/ThermalApplyCS.hlsl"
+    "${COLONY_SHADER_ROOT}/shaders/ThermalOutflowCS.hlsl"
+    "${COLONY_SHADER_ROOT}/shaders/Starfield.hlsl"
+    "${COLONY_SHADER_ROOT}/shaders/quad_vs.hlsl"
+    "${COLONY_SHADER_ROOT}/shaders/quad_ps.hlsl"
 
-  _colony_find_hlsl_compilers(_DXC _FXC)
-  if(NOT _DXC AND NOT _FXC)
-    message(FATAL_ERROR "No HLSL compiler found (tried dxc.exe and fxc.exe). Install 'directx-dxc' and/or the Windows 10/11 SDK.")
-  endif()
+    # NOTE: intentionally *not* listing:
+    #   shaders/terrain_splat_common.hlsl
+    #   shaders/water_tiny.hlsl
+    # Those are include-only and live in COLONY_SHADER_INCLUDE_ONLY instead.
+)
 
-  file(MAKE_DIRECTORY "${CRS_OUTPUT_DIR}")
-  set(_outputs)
+# Try to find DXC (DirectX Shader Compiler) in typical Windows locations.
+# If you use vcpkg's directx-dxc port or have dxc in PATH, this should succeed.
+# (You can always set DXC_EXECUTABLE in your toolchain cache if needed.)
+find_program(DXC_EXECUTABLE
+    NAMES dxc dxc.exe
+    HINTS
+        "$ENV{VCPKG_ROOT}/installed/x64-windows/tools/directx-dxc"
+        "$ENV{DXSDK_DIR}/Utilities/bin/x64"
+        "C:/Program Files (x86)/Windows Kits/10/bin/x64"
+        "C:/Program Files (x86)/Windows Kits/10/bin/10.0.19041.0/x64"
+)
 
-  # Helper to accumulate -I /I and defines per entry
-  function(_make_inc_and_def_args _i _incArgsOut _defArgsOut)
-    # includes (array)
-    set(_incs "")
-    string(JSON _incsType TYPE "${_json_text}" ${_i} includes)
-    if(_incsType STREQUAL "ARRAY")
-      string(JSON _incsLen LENGTH "${_json_text}" ${_i} includes)
-      math(EXPR _incLast "${_incsLen}-1")
-      foreach(_j RANGE 0 ${_incLast})
-        string(JSON _oneInc GET "${_json_text}" ${_i} includes ${_j})
-        # Search relative to renderer/Shaders/<include>
-        list(APPEND _incs "${CMAKE_SOURCE_DIR}/renderer/Shaders/${_oneInc}")
-      endforeach()
-    endif()
+if(NOT DXC_EXECUTABLE)
+    message(FATAL_ERROR "dxc.exe not found. Install the Windows 10 SDK or DirectXShaderCompiler and/or add it to PATH.")
+endif()
 
-    set(_incArgs "")
-    foreach(_in ${_incs})
-      if(_DXC)
-        list(APPEND _incArgs -I "${_in}")
-      else()
-        list(APPEND _incArgs /I "${_in}")
-      endif()
-    endforeach()
+# Internal list of compiled shader outputs (.cso) – populated by the helper function.
+set(COLONY_COMPILED_SHADERS "")
 
-    # defines (array)
-    set(_defArgs "")
-    string(JSON _defsType TYPE "${_json_text}" ${_i} defines)
-    if(_defsType STREQUAL "ARRAY")
-      string(JSON _defsLen LENGTH "${_json_text}" ${_i} defines)
-      math(EXPR _defLast "${_defsLen}-1")
-      foreach(_k RANGE 0 ${_defLast})
-        string(JSON _oneDef GET "${_json_text}" ${_i} defines ${_k})
-        if(_DXC)
-          list(APPEND _defArgs -D "${_oneDef}")
-        else()
-          list(APPEND _defArgs /D "${_oneDef}")
-        endif()
-      endforeach()
-    endif()
+# Helper to add a DXC compile step for a given HLSL source.
+# It guesses the shader profile from the filename:
+#   * *vs.hlsl  -> vs_6_0
+#   * *ps.hlsl  -> ps_6_0
+#   * *_cs.hlsl or *CS.hlsl or *compute.hlsl -> cs_6_0
+#   * anything else -> ps_6_0 (pixel) by default
+function(colony_add_hlsl_shader SRC)
+    get_filename_component(NAME_WE "${SRC}" NAME_WE)
+    set(OUT "${COLONY_SHADER_OUTPUT_DIR}/${NAME_WE}.cso")
 
-    set(${_incArgsOut} "${_incArgs}" PARENT_SCOPE)
-    set(${_defArgsOut} "${_defArgs}" PARENT_SCOPE)
-  endfunction()
+    string(TOLOWER "${SRC}" SRC_LOWER)
 
-  math(EXPR _last "${_count}-1")
-  foreach(_i RANGE 0 ${_last})
-    string(JSON _file   GET "${_json_text}" ${_i} file)
-    string(JSON _entry  GET "${_json_text}" ${_i} entry)
-    string(JSON _profile GET "${_json_text}" ${_i} profile)
-    if(NOT _entry OR _entry STREQUAL "")
-      set(_entry "main")
-    endif()
-    if(NOT _profile OR _profile STREQUAL "")
-      set(_profile "ps_5_0")
-    endif()
+    # Default profile: pixel shader
+    set(PROFILE "ps_6_0")
 
-    # Resolve paths; source shaders live under renderer/Shaders
-    get_filename_component(_srcAbs "${_file}"
-      ABSOLUTE BASE_DIR "${CMAKE_SOURCE_DIR}/renderer/Shaders")
-    get_filename_component(_base "${_srcAbs}" NAME_WE)
-    set(_out "${CRS_OUTPUT_DIR}/${_base}.cso")
-
-    # Per-entry include/define args
-    _make_inc_and_def_args(${_i} _incArgs _defArgs)
-
-    if(_DXC)
-      # DXC flags
-      set(_cmd "${_DXC}" -nologo -T "${_profile}" -E "${_entry}"
-               -Fo "${_out}" "${_srcAbs}" ${_incArgs} ${_defArgs} ${CRS_DXC_ARGS})
-    else()
-      # FXC flags
-      set(_cmd "${_FXC}" /nologo /T "${_profile}" /E "${_entry}"
-               /Fo "${_out}" "${_srcAbs}" ${_incArgs} ${_defArgs})
+    if(SRC_LOWER MATCHES "vs\\.hlsl$")
+        set(PROFILE "vs_6_0")
+    elseif(SRC_LOWER MATCHES "ps\\.hlsl$")
+        set(PROFILE "ps_6_0")
+    elseif(SRC_LOWER MATCHES "_cs\\.hlsl$"
+           OR SRC_LOWER MATCHES "cs\\.hlsl$"
+           OR SRC_LOWER MATCHES "compute\\.hlsl$")
+        set(PROFILE "cs_6_0")
     endif()
 
     add_custom_command(
-      OUTPUT "${_out}"
-      COMMAND ${CMAKE_COMMAND} -E make_directory "${CRS_OUTPUT_DIR}"
-      COMMAND ${_cmd}
-      MAIN_DEPENDENCY "${_srcAbs}"
-      COMMENT "HLSL: ${_file} (${_profile}:${_entry}) → ${_base}.cso"
-      VERBATIM)
+        OUTPUT "${OUT}"
+        COMMAND "${DXC_EXECUTABLE}" -nologo
+                -E main                 # entry point name – adjust if needed
+                -T "${PROFILE}"         # shader model 6.x profile
+                -Fo "${OUT}"
+                "${SRC}"
+        DEPENDS "${SRC}" ${COLONY_SHADER_INCLUDE_ONLY}
+        COMMENT "HLSL (DXC): ${SRC} -> ${OUT}"
+        VERBATIM
+    )
 
-    list(APPEND _outputs "${_out}")
-  endforeach()
-
-  add_custom_target(${CRS_TARGET}_shaders DEPENDS ${_outputs})
-  add_dependencies(${CRS_TARGET} ${CRS_TARGET}_shaders)
+    list(APPEND COLONY_COMPILED_SHADERS "${OUT}")
+    set(COLONY_COMPILED_SHADERS "${COLONY_COMPILED_SHADERS}" PARENT_SCOPE)
 endfunction()
 
-function(colony_install_shaders)
-  set(_opts)
-  set(_one TARGET DESTINATION)
-  cmake_parse_arguments(CIS "${_opts}" "${_one}" "" ${ARGN})
-  if(NOT CIS_TARGET OR NOT CIS_DESTINATION)
-    message(FATAL_ERROR "colony_install_shaders: TARGET and DESTINATION are required")
-  endif()
-  install(DIRECTORY "${CMAKE_BINARY_DIR}/shaders/" DESTINATION "${CIS_DESTINATION}")
-endfunction()
+# Register a compile command for every shader in COLONY_SHADER_SOURCES
+foreach(SRC IN LISTS COLONY_SHADER_SOURCES)
+    colony_add_hlsl_shader("${SRC}")
+endforeach()
+
+# The actual custom target that Visual Studio / MSBuild will see as ColonyShaders.vcxproj.
+# Marked ALL so it's built by default as part of the normal build.
+add_custom_target(ColonyShaders ALL
+    DEPENDS ${COLONY_COMPILED_SHADERS}
+)
+
+# Where to install the compiled shaders when you run `cmake --install`.
+# This will give you <install-prefix>/shaders/*.cso.
+set(COLONY_SHADER_INSTALL_DIR "shaders")
+
+install(
+    FILES ${COLONY_COMPILED_SHADERS}
+    DESTINATION "${COLONY_SHADER_INSTALL_DIR}"
+)
