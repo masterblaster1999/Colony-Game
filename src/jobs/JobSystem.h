@@ -12,7 +12,7 @@
 #include <cstdint>
 
 // -----------------------------------------------------------------------------
-// Gameplay job / agent types (Step 1 patch)
+// Gameplay job / agent types
 // -----------------------------------------------------------------------------
 
 // Forward declaration: implemented in your gameplay code.
@@ -31,15 +31,19 @@ enum class JobState
   Failed       // failed (optional, for retries / UI)
 };
 
-// Minimal job representation; extend as needed in your .cpp / game logic.
+// Authoritative gameplay job representation.
+// NOTE: JobType and Int2 are defined in your gameplay code and included
+//       transitively where this header is used.
 struct Job
 {
-  JobId    id        = 0;
-  JobState state     = JobState::Open;
-  // Add fields as needed, e.g. target tile, category, priority, etc.
-  // Example (uncomment/adapt to your types):
-  // TileCoord targetTile{};
-  // float     basePriority = 0.0f;
+  JobId    id            = 0;
+  JobState state         = JobState::Open;
+
+  JobType  type{};           // logical job type (e.g. Haul, Build, Mine)
+  Int2     targetTile{};     // world tile associated with the job
+  int      priority      = 0;
+
+  AgentId  assignedAgent = 0;  // 0 = no agent assigned
 };
 
 // -----------------------------------------------------------------------------
@@ -129,7 +133,7 @@ public:
   static unsigned Concurrency() noexcept { return std::thread::hardware_concurrency(); }
 
   // ---------------------------------------------------------------------------
-  // Gameplay job-system API (Step 1 patch)
+  // Gameplay job-system API (authoritative Job struct + consistent API)
   // ---------------------------------------------------------------------------
 
   // Provide the adapter used to talk to your in-game agents/colonists.
@@ -138,13 +142,12 @@ public:
     _agentAdapter = &adapter;
   }
 
-  // Create a new gameplay job based on a template and return its id.
-  // Implementation in JobSystem.cpp can fill in id, position, etc.
-  JobId createJob(const Job& jobTemplate);
+  // Create a new gameplay job with explicit parameters and return its id.
+  JobId createJob(JobType type, const Int2& targetTile, int priority);
 
-  // Notify the system that a job has completed or failed.
-  void notifyJobCompleted(JobId jobId);
-  void notifyJobFailed(JobId jobId);
+  // Notify the system that a job has completed or failed for a given agent.
+  void notifyJobCompleted(JobId jobId, AgentId agentId);
+  void notifyJobFailed(JobId jobId, AgentId agentId);
 
   // Register/unregister agents that are allowed to receive jobs.
   void registerAgent(AgentId agentId);
@@ -162,9 +165,9 @@ private:
   // Existing Taskflow executor
   tf::Executor _executor;
 
-  // Gameplay job-system state (Step 1 patch)
-  IAgentAdapter*      _agentAdapter = nullptr;
-  std::vector<Job>    queue_;       // job queue
-  std::vector<AgentId> agents_;     // registered agents
-  JobId               nextJobId_ = 1;
+  // Gameplay job-system state
+  IAgentAdapter*       _agentAdapter = nullptr;
+  std::vector<Job>     queue_;       // job queue
+  std::vector<AgentId> agents_;      // registered agents
+  JobId                nextJobId_ = 1;
 };
