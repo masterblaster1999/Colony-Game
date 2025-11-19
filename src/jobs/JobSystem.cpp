@@ -1,102 +1,157 @@
 #include "jobs/JobSystem.h"
 
-#include <algorithm> // std::find
+#include <algorithm> // std::find, std::find_if, std::remove
 #include <cmath>     // std::abs
+#include <limits>    // std::numeric_limits
 
 namespace colony::jobs
 {
-    JobSystem::JobSystem(IAgentAdapter& agentAdapter)
-        : agentAdapter_(agentAdapter)
+
+// -----------------------------------------------------------------------------
+// Singleton boilerplate
+// -----------------------------------------------------------------------------
+
+JobSystem& JobSystem::Instance()
+{
+    static JobSystem instance;
+    return instance;
+}
+
+JobSystem::JobSystem() = default;
+JobSystem::~JobSystem() = default;
+
+// -----------------------------------------------------------------------------
+// Internal helper
+// -----------------------------------------------------------------------------
+
+Job* JobSystem::findJob(JobId id)
+{
+    auto it = std::find_if(queue_.begin(), queue_.end(),
+        [id](const Job& job) { return job.id == id; });
+
+    return (it != queue_.end()) ? &(*it) : nullptr;
+}
+
+// -----------------------------------------------------------------------------
+// Public gameplay job API
+// -----------------------------------------------------------------------------
+
+JobId JobSystem::createJob(JobType type, const Int2& targetTile, int priority)
+{
+    Job job;
+    job.id            = nextJobId_++;
+    job.type          = type;
+    job.targetTile    = targetTile;
+    job.priority      = priority;
+    job.state         = JobState::Open;
+    job.assignedAgent = 0;  // 0 = no agent assigned
+
+    queue_.push_back(job);
+    return job.id;
+}
+
+void JobSystem::notifyJobCompleted(JobId jobId, AgentId agent)
+{
+    Job* job = findJob(jobId);
+    if (!job)
+        return;
+
+    // Optional safety: ignore if some other agent calls this.
+    if (job->assignedAgent != 0 && job->assignedAgent != agent)
+        return;
+
+    job->state         = JobState::Completed;
+    job->assignedAgent = 0;
+}
+
+void JobSystem::notifyJobFailed(JobId jobId, AgentId agent)
+{
+    Job* job = findJob(jobId);
+    if (!job)
+        return;
+
+    // Optional safety: ignore if some other agent calls this.
+    if (job->assignedAgent != 0 && job->assignedAgent != agent)
+        return;
+
+    // Re-open the job for someone else to try.
+    job->state         = JobState::Open;
+    job->assignedAgent = 0;
+}
+
+void JobSystem::registerAgent(AgentId agent)
+{
+    auto it = std::find(agents_.begin(), agents_.end(), agent);
+    if (it == agents_.end())
     {
+        agents_.push_back(agent);
+    }
+}
+
+void JobSystem::unregisterAgent(AgentId agent)
+{
+    auto it = std::remove(agents_.begin(), agents_.end(), agent);
+    if (it != agents_.end())
+    {
+        agents_.erase(it, agents_.end());
     }
 
-    JobId JobSystem::createJob(JobType type, const Int2& targetTile, int priority)
+    // Optionally clear jobs assigned to this agent.
+    for (Job& job : queue_)
     {
-        return queue_.addJob(type, targetTile, priority);
-    }
-
-    void JobSystem::notifyJobCompleted(JobId jobId, AgentId agent)
-    {
-        Job* job = queue_.getJob(jobId);
-        if (!job)
-            return;
-
-        if (job->assignedAgent != agent)
-            return; // Optional safety check
-
-        job->state = JobState::Completed;
-        job->assignedAgent = 0;
-    }
-
-    void JobSystem::notifyJobFailed(JobId jobId, AgentId agent)
-    {
-        Job* job = queue_.getJob(jobId);
-        if (!job)
-            return;
-
-        if (job->assignedAgent != agent)
-            return; // Optional safety check
-
-        // Re-open the job for someone else to try.
-        job->state = JobState::Open;
-        job->assignedAgent = 0;
-    }
-
-    void JobSystem::registerAgent(AgentId agent)
-    {
-        auto it = std::find(agents_.begin(), agents_.end(), agent);
-        if (it == agents_.end())
+        if (job.assignedAgent == agent && job.state == JobState::InProgress)
         {
-            agents_.push_back(agent);
+            job.assignedAgent = 0;
+            job.state         = JobState::Open;
         }
     }
+}
 
-    void JobSystem::unregisterAgent(AgentId agent)
+void JobSystem::update(float dt)
+{
+    // dt is currently unused but kept for future use (e.g. timeouts).
+    (void)dt;
+
+    // If the adapter hasn't been set up yet, do nothing.
+    if (!agentAdapter_)
+        return;
+
+    // For each registered agent, if they are idle, try to assign the best job.
+    for (AgentId agent : agents_)
     {
-        auto it = std::find(agents_.begin(), agents_.end(), agent);
-        if (it != agents_.end())
-        {
-            agents_.erase(it);
-        }
-    }
+        if (!agentAdapter_->isAgentIdle(agent))
+            continue;
 
-    void JobSystem::update(float dt)
-    {
-        // dt is currently unused but kept for future use (e.g. timeouts).
-        (void)dt;
+        const Int2 agentTile = agentAdapter_->getAgentTile(agent);
 
-        // For each agent, if they are idle, try to assign the best job.
-        for (AgentId agent : agents_)
+        Job*  bestJob   = nullptr;
+        float bestScore = -std::numeric_limits<float>::infinity();
+
+        for (Job& job : queue_)
         {
-            if (!agentAdapter_.isAgentIdle(agent))
+            if (job.state != JobState::Open)
                 continue;
 
-            const Int2 agentTile = agentAdapter_.getAgentTile(agent);
+            const int dx        = job.targetTile.x - agentTile.x;
+            const int dy        = job.targetTile.y - agentTile.y;
+            const float dist    = static_cast<float>(std::abs(dx) + std::abs(dy));
+            const float score   = static_cast<float>(job.priority) - dist;
 
-            // Use priority minus Manhattan distance as a simple score.
-            Job* bestJob = queue_.acquireBestJob(
-                [&](const Job& job) -> float
-                {
-                    if (job.state != JobState::Open)
-                        return -1.0e9f; // effectively "impossible"
-
-                    const int dx = job.targetTile.x - agentTile.x;
-                    const int dy = job.targetTile.y - agentTile.y;
-                    const float distance = static_cast<float>(std::abs(dx) + std::abs(dy));
-
-                    // Higher priority and closer distance give higher score.
-                    // You can tweak this formula however you like.
-                    return static_cast<float>(job.priority) - distance;
-                });
-
-            if (bestJob != nullptr)
+            if (!bestJob || score > bestScore)
             {
-                bestJob->state = JobState::InProgress;
-                bestJob->assignedAgent = agent;
-
-                agentAdapter_.assignJobToAgent(agent, *bestJob);
+                bestScore = score;
+                bestJob   = &job;
             }
         }
+
+        if (bestJob != nullptr)
+        {
+            bestJob->state         = JobState::InProgress;
+            bestJob->assignedAgent = agent;
+
+            agentAdapter_->assignJobToAgent(agent, *bestJob);
+        }
     }
+}
 
 } // namespace colony::jobs
