@@ -16,7 +16,14 @@
 // Build: C++17+ (C++20 fine). Link: Shell32, Ole32, User32, Advapi32.
 // Target type: WIN32 (GUI) by default (see CMake snippet below).
 
-#define WIN32_LEAN_AND_MEAN
+#ifndef WIN32_LEAN_AND_MEAN
+#  define WIN32_LEAN_AND_MEAN
+#endif
+
+#ifndef NOMINMAX
+#  define NOMINMAX
+#endif
+
 #include <windows.h>
 #include <shlobj.h>       // SHGetKnownFolderPath
 #include <shellapi.h>     // CommandLineToArgvW, ShellExecute
