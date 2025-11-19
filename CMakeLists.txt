@@ -109,18 +109,15 @@ if(MSVC)
     _CRT_SECURE_NO_WARNINGS
   )
   add_compile_options(
-    /permissive-
+    /W4           # high warning level
+    /WX           # treat warnings as errors (non-optional)
+    /permissive-  # strict C++ conformance
     /Zc:__cplusplus
     /Zc:preprocessor
     /EHsc
     /utf-8
-    /W4
     /MP
   )
-  # CI-only: treat warnings as errors (local builds remain friendly)
-  if(DEFINED ENV{GITHUB_ACTIONS} OR DEFINED ENV{CI})
-    add_compile_options(/WX)
-  endif()
 
   # Use the supported abstraction instead of editing flags
   # (CMake >= 3.15; default is MultiThreadedDLL in Release, MultiThreadedDebugDLL in Debug)
