@@ -10,6 +10,12 @@
 #include <wincodec.h> // WIC for screenshots
 #pragma comment(lib, "windowscodecs.lib")
 
+// Local helper macro: mark parameters/variables as intentionally unused.
+// Safe even if you later define UNUSED in a shared header, thanks to #ifndef.
+#ifndef UNUSED
+#define UNUSED(x) (void)(x)
+#endif
+
 using Microsoft::WRL::ComPtr;
 namespace gfx {
 
@@ -360,6 +366,8 @@ bool D3D11Device::createFactory_(bool enableDebugDXGI) {
     UINT fxFlags = 0;
 #if defined(_DEBUG)
     if (enableDebugDXGI) fxFlags |= DXGI_CREATE_FACTORY_DEBUG;
+#else
+    UNUSED(enableDebugDXGI);
 #endif
     HRESULT hr = CreateDXGIFactory2(fxFlags, IID_PPV_ARGS(&factory2_));
     if (FAILED(hr)) {
@@ -399,6 +407,8 @@ bool D3D11Device::createDevice_(bool enableDebug, IDXGIAdapter1* adapter, bool f
     UINT devFlags = 0;
 #if defined(_DEBUG)
     if (enableDebug) devFlags |= D3D11_CREATE_DEVICE_DEBUG;
+#else
+    UNUSED(enableDebug);
 #endif
     static const D3D_FEATURE_LEVEL fls[] = {
         D3D_FEATURE_LEVEL_11_1, D3D_FEATURE_LEVEL_11_0, D3D_FEATURE_LEVEL_10_1, D3D_FEATURE_LEVEL_10_0
