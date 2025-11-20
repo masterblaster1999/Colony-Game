@@ -177,22 +177,37 @@ void CSMain(uint3 gtid : SV_DispatchThreadID)
         }
 
         // Triangulate by small lookup table
-        const int* tri = kMTri[mask];
-        for (int i = 0; i < 6; i += 3){
-            if (tri[i] < 0) break;
+        for (int i = 0; i < 6; i += 3) {
+            int i0 = kMTri[mask][i + 0];
+            if (i0 < 0)
+                break;
 
-            float3 a = vpos[tri[i+0]];
-            float3 b = vpos[tri[i+1]];
-            float3 c = vpos[tri[i+2]];
+            int i1 = kMTri[mask][i + 1];
+            int i2 = kMTri[mask][i + 2];
+
+            float3 a = vpos[i0];
+            float3 b = vpos[i1];
+            float3 c = vpos[i2];
 
             // Normal from density gradient (smooth) — robust for MT
             float3 nA = normalize(densityGrad(a));
             float3 nB = normalize(densityGrad(b));
             float3 nC = normalize(densityGrad(c));
 
-            OutVerts.Append( (Vert) { a, nA } );
-            OutVerts.Append( (Vert) { b, nB } );
-            OutVerts.Append( (Vert) { c, nC } );
+            Vert va;
+            va.pos = a;
+            va.nrm = nA;
+            OutVerts.Append(va);
+
+            Vert vb;
+            vb.pos = b;
+            vb.nrm = nB;
+            OutVerts.Append(vb);
+
+            Vert vc;
+            vc.pos = c;
+            vc.nrm = nC;
+            OutVerts.Append(vc);
         }
     }
 }
