@@ -10,6 +10,10 @@
 namespace colony {
 
 static bool PumpWindowsMessages(HWND hwnd, int& outExitCode) {
+    // hwnd is currently unused (we pass nullptr to PeekMessageW),
+    // so mark it explicitly to silence C4100.
+    (void)hwnd;
+
     MSG msg{};
     while (PeekMessageW(&msg, nullptr, 0, 0, PM_REMOVE)) {
         if (msg.message == WM_QUIT) {
