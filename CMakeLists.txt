@@ -132,18 +132,47 @@ include(CGThirdParty)  # your cmake/CGThirdParty.cmake
 include(CGShaders)     # your cmake/CGShaders.cmake (defines cg_compile_hlsl, cg_link_shaders_to_target)
 
 # ------------------------------------------------------------------------------
-# (PATCH) Wire shader compilation (Windows-only)
+# (PATCH) Wire shader compilation (Windows-only) — explicit list, no GLOB
 # ------------------------------------------------------------------------------
 if(WIN32)
-  # Collect all HLSL sources from the repo's shader folders
-  file(GLOB_RECURSE COLONY_HLSL CONFIGURE_DEPENDS
-    "${CMAKE_SOURCE_DIR}/renderer/Shaders/*.hlsl"
-    "${CMAKE_SOURCE_DIR}/shaders/*.hlsl"
+
+  # Explicit list of HLSL files that actually contain entry points.
+  # Add to this list as you create new shaders. Do NOT add helper-only
+  # .hlsl/.hlsli files that are only intended to be #include'd.
+  set(COLONY_HLSL
+    # Fullscreen / raster shaders
+    "${CMAKE_SOURCE_DIR}/shaders/raster/FullScreen.vs.hlsl"
+    "${CMAKE_SOURCE_DIR}/shaders/raster/ToneMap.ps.hlsl"
+
+    # World / terrain shaders
+    "${CMAKE_SOURCE_DIR}/shaders/Terrain.hlsl"
+    "${CMAKE_SOURCE_DIR}/shaders/TerrainSplatExample.hlsl"
+
+    # Thermal erosion compute shaders (legacy)
+    "${CMAKE_SOURCE_DIR}/shaders/ThermalOutflowCS.hlsl"
+    "${CMAKE_SOURCE_DIR}/shaders/ThermalApplyCS.hlsl"
+
+    # Renderer shaders (engine-side)
+    "${CMAKE_SOURCE_DIR}/renderer/Shaders/AtmosphereSky.hlsl"
+    "${CMAKE_SOURCE_DIR}/renderer/Shaders/VolumetricClouds.hlsl"
+    "${CMAKE_SOURCE_DIR}/renderer/Shaders/Batch2D_ps.hlsl"
+    "${CMAKE_SOURCE_DIR}/renderer/Shaders/Common/FullScreenTriangleVS.hlsl"
+    "${CMAKE_SOURCE_DIR}/renderer/Shaders/WaterGerstner.hlsl"
+    "${CMAKE_SOURCE_DIR}/renderer/Shaders/TerrainGen.compute.hlsl"
+
+    # Voxel/isosurface compute shaders
+    "${CMAKE_SOURCE_DIR}/renderer/Shaders/VoxelIso_MT.compute.hlsl"
+    "${CMAKE_SOURCE_DIR}/renderer/Shaders/VoxelIso_MT_Materials.compute.hlsl"
+
+    # New GPU thermal erosion compute shaders
+    "${CMAKE_SOURCE_DIR}/renderer/Shaders/erosion_thermal_flow_cs.hlsl"
+    "${CMAKE_SOURCE_DIR}/renderer/Shaders/erosion_thermal_apply_cs.hlsl"
   )
 
   if(COLONY_HLSL)
-    # Set per-file shader metadata for HLSL files whose entry point
-    # is not named 'main' (e.g. VSMain / PSMain / CSMain).
+
+    # Per-file shader metadata for shaders whose entry point is NOT 'main'.
+    # These were already in your project; we keep them unchanged.
     if(COMMAND cg_set_hlsl_properties)
       # Atmosphere & sky rendering (fullscreen PS entry)
       cg_set_hlsl_properties(
@@ -172,7 +201,7 @@ if(WIN32)
         PROFILE "cs_5_0"
       )
 
-      # NEW: GPU thermal erosion compute shaders under renderer/Shaders
+      # GPU thermal erosion compute shaders under renderer/Shaders
       cg_set_hlsl_properties(
         "${CMAKE_SOURCE_DIR}/renderer/Shaders/erosion_thermal_flow_cs.hlsl"
         ENTRY   "CSMain"
