@@ -120,6 +120,15 @@
 // * Keep the register usage (b0/b1, t0, u0, s0..) in sync with your C++ binding
 //   code when you build the ID3D12RootSignature.
 //
-// ----------------------------------------------------------------------------- 
+// -----------------------------------------------------------------------------
+
+// -------------------- Backwards compatibility aliases ------------------------
+//
+// Some existing shaders use RS_GLOBAL as a generic graphics root signature.
+// Map it to the default graphics layout so those shaders continue to compile
+// without modification.
+#ifndef RS_GLOBAL
+#define RS_GLOBAL RS_GRAPHICS_STATIC_SAMPLERS
+#endif
 
 #endif // ROOTSIG_HLSLI_INCLUDED
