@@ -1,5 +1,12 @@
 cmake_minimum_required(VERSION 3.27...3.31 FATAL_ERROR)
 
+# --------------------------------------------------------------------------
+# Windows-only: hard-fail on non-Windows platforms
+# --------------------------------------------------------------------------
+if(NOT WIN32)
+  message(FATAL_ERROR "Colony-Game currently only supports Windows.")
+endif()
+
 # Use modern policy behavior for predictable parsing & variable expansion
 # (cmake_minimum_required sets policy defaults; these ensure key ones are NEW
 # even if older bootstrap tools are used.)
@@ -172,66 +179,70 @@ if(WIN32)
   if(COLONY_HLSL)
 
     # Per-file shader metadata for shaders whose entry point is NOT 'main'.
-    # These were already in your project; we keep them unchanged.
+    # These were already in your project; we keep them unchanged, but bump
+    # profiles to Shader Model 6.0 to avoid DXC upgrade warnings.
     if(COMMAND cg_set_hlsl_properties)
       # Atmosphere & sky rendering (fullscreen PS entry)
       cg_set_hlsl_properties(
         "${CMAKE_SOURCE_DIR}/renderer/Shaders/AtmosphereSky.hlsl"
         ENTRY   "PSMain"
-        PROFILE "ps_5_0"
+        PROFILE "ps_6_0"
       )
 
       # Volumetric clouds (fullscreen PS entry)
       cg_set_hlsl_properties(
         "${CMAKE_SOURCE_DIR}/renderer/Shaders/VolumetricClouds.hlsl"
         ENTRY   "PSMain"
-        PROFILE "ps_5_0"
+        PROFILE "ps_6_0"
       )
 
       # Voxel isosurface compute shaders
       cg_set_hlsl_properties(
         "${CMAKE_SOURCE_DIR}/renderer/Shaders/VoxelIso_MT.compute.hlsl"
         ENTRY   "CSMain"
-        PROFILE "cs_5_0"
+        PROFILE "cs_6_0"
       )
 
       cg_set_hlsl_properties(
         "${CMAKE_SOURCE_DIR}/renderer/Shaders/VoxelIso_MT_Materials.compute.hlsl"
         ENTRY   "CSMain"
-        PROFILE "cs_5_0"
+        PROFILE "cs_6_0"
       )
 
       # GPU thermal erosion compute shaders under renderer/Shaders
       cg_set_hlsl_properties(
         "${CMAKE_SOURCE_DIR}/renderer/Shaders/erosion_thermal_flow_cs.hlsl"
         ENTRY   "CSMain"
-        PROFILE "cs_5_0"
+        PROFILE "cs_6_0"
       )
 
       cg_set_hlsl_properties(
         "${CMAKE_SOURCE_DIR}/renderer/Shaders/erosion_thermal_apply_cs.hlsl"
         ENTRY   "CSMain"
-        PROFILE "cs_5_0"
+        PROFILE "cs_6_0"
       )
 
       # Legacy thermal erosion compute shaders under /shaders
       cg_set_hlsl_properties(
         "${CMAKE_SOURCE_DIR}/shaders/ThermalOutflowCS.hlsl"
         ENTRY   "CSMain"
-        PROFILE "cs_5_0"
+        PROFILE "cs_6_0"
       )
 
       cg_set_hlsl_properties(
         "${CMAKE_SOURCE_DIR}/shaders/ThermalApplyCS.hlsl"
         ENTRY   "CSMain"
-        PROFILE "cs_5_0"
+        PROFILE "cs_6_0"
       )
     endif()
 
     # Compile shaders into a dedicated target; we'll link/copy them to the exe later
     cg_compile_hlsl(ColonyShaders
       SHADERS      ${COLONY_HLSL}
-      INCLUDE_DIRS "${CMAKE_SOURCE_DIR}/renderer/Shaders" "${CMAKE_SOURCE_DIR}/shaders"
+      INCLUDE_DIRS
+        "${CMAKE_SOURCE_DIR}/renderer/Shaders"
+        "${CMAKE_SOURCE_DIR}/shaders"
+        "${CMAKE_SOURCE_DIR}/shaders/include"
       # 1 in Debug, 0 otherwise — expand at build time so multi-config IDEs work
       DEFINES      "COLONY_DEBUG=$<IF:$<CONFIG:Debug>,1,0>"
     )
