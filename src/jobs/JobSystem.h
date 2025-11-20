@@ -74,7 +74,7 @@ public:
   static JobSystem& Instance();
 
   // ---------------------------------------------------------------------------
-  // Taskflow executor API (existing code, unchanged)
+  // Taskflow executor API
   // ---------------------------------------------------------------------------
 
   // Access to the underlying executor
@@ -157,7 +157,7 @@ public:
   // Provide the adapter used to talk to your in-game agents/colonists.
   // Call this once at startup before using the job API.
   void InitializeAgentAdapter(IAgentAdapter& adapter) noexcept {
-    _agentAdapter = &adapter;
+    agentAdapter_ = &adapter;
   }
 
   // Create a new gameplay job with explicit parameters and return its id.
@@ -180,11 +180,14 @@ private:
   JobSystem(const JobSystem&) = delete;
   JobSystem& operator=(const JobSystem&) = delete;
 
+  // Internal helper matching JobSystem.cpp
+  Job* findJob(JobId id);
+
   // Existing Taskflow executor
   tf::Executor _executor;
 
   // Gameplay job-system state
-  IAgentAdapter*       _agentAdapter = nullptr;
+  IAgentAdapter*       agentAdapter_ = nullptr;
   std::vector<Job>     queue_;       // job queue
   std::vector<AgentId> agents_;      // registered agents
   JobId                nextJobId_ = 1;
