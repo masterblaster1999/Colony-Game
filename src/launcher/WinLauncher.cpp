@@ -6,6 +6,10 @@
 
 int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int nCmdShow)
 {
+    // Mark currently-unused parameters to silence C4100 (unreferenced parameter)
+    (void)hInstance;
+    (void)nCmdShow;
+
     // This is the line your compiler is currently complaining about.
     // Turn it into a proper variable:
     CrashDumpGuard guard{L"Colony-Game"};
