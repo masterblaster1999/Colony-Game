@@ -5,11 +5,6 @@ project(ColonyGameTests LANGUAGES CXX)
 include(FetchContent)
 
 # --------------------------------------------------------------------------------------
-# doctest: prefer a config package (vcpkg/Conan); fall back to header-only FetchContent
-# --------------------------------------------------------------------------------------
-find_package(doctest CONFIG QUIET)
-
-# --------------------------------------------------------------------------------------
 # PCG RNG: create a header-only INTERFACE target named 'pcg' (self-sufficient)
 # Try config package, then system include discovery, then FetchContent (imneme/pcg-cpp).
 # --------------------------------------------------------------------------------------
@@ -85,10 +80,12 @@ else()
 endif()
 
 # Include production headers (so tests can include repo headers directly)
+# + external/ so doctest is visible as <doctest/doctest.h>
 target_include_directories(colony_smoke PRIVATE
   ${CMAKE_SOURCE_DIR}/include
   ${CMAKE_SOURCE_DIR}/src
   ${CMAKE_SOURCE_DIR}/src/worldgen
+  ${CMAKE_SOURCE_DIR}/external      # provides <doctest/doctest.h>
 )
 
 # If your repo defines common compile flags/defines in an interface target, pick it up (optional)
@@ -106,24 +103,6 @@ endif()
 
 # Link the (header-only) PCG target we created/discovered above
 target_link_libraries(colony_smoke PRIVATE pcg)
-
-# doctest: use the package if present; otherwise header-only fallback via FetchContent
-if(doctest_FOUND)
-  target_link_libraries(colony_smoke PRIVATE doctest::doctest)
-else()
-  set(FETCHCONTENT_UPDATES_DISCONNECTED ON)
-  FetchContent_Declare(doctest
-    GIT_REPOSITORY https://github.com/doctest/doctest.git
-    GIT_TAG        v2.4.11
-    GIT_SHALLOW    TRUE
-  )
-  FetchContent_Populate(doctest)
-  # Support both include styles: <doctest/doctest.h> and "doctest.h"
-  target_include_directories(colony_smoke PRIVATE
-    "${doctest_SOURCE_DIR}"
-    "${doctest_SOURCE_DIR}/doctest"
-  )
-endif()
 
 # --------------------------------------------------------------------------------------
 # CTest integration
