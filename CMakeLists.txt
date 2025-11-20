@@ -234,6 +234,27 @@ if(WIN32)
         ENTRY   "CSMain"
         PROFILE "cs_6_0"
       )
+
+      # Terrain pixel shader – uses PSMain in Terrain.hlsl
+      cg_set_hlsl_properties(
+        "${CMAKE_SOURCE_DIR}/shaders/Terrain.hlsl"
+        ENTRY   "PSMain"
+        PROFILE "ps_6_0"
+      )
+
+      # Tone mapping pixel shader – uses PSMain in ToneMap.ps.hlsl
+      cg_set_hlsl_properties(
+        "${CMAKE_SOURCE_DIR}/shaders/raster/ToneMap.ps.hlsl"
+        ENTRY   "PSMain"
+        PROFILE "ps_6_0"
+      )
+
+      # 2D batch pixel shader – uses PSMain in Batch2D_ps.hlsl
+      cg_set_hlsl_properties(
+        "${CMAKE_SOURCE_DIR}/renderer/Shaders/Batch2D_ps.hlsl"
+        ENTRY   "PSMain"
+        PROFILE "ps_6_0"
+      )
     endif()
 
     # Compile shaders into a dedicated target; we'll link/copy them to the exe later
