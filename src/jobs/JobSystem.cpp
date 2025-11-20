@@ -23,8 +23,16 @@ JobSystem::~JobSystem() = default;
 
 Job* JobSystem::findJob(JobId id)
 {
-    auto it = std::find_if(queue_.begin(), queue_.end(),
-        [id](const Job& job) { return job.id == id; });
+    // Linear search through the job queue by ID.
+    // Returns nullptr if the job doesn't exist.
+    auto it = std::find_if(
+        queue_.begin(),
+        queue_.end(),
+        [id](const Job& job)
+        {
+            return job.id == id;
+        }
+    );
 
     return (it != queue_.end()) ? &(*it) : nullptr;
 }
@@ -129,10 +137,11 @@ void JobSystem::update(float dt)
             if (job.state != JobState::Open)
                 continue;
 
-            const int   dx      = job.targetTile.x - agentTile.x;
-            const int   dy      = job.targetTile.y - agentTile.y;
-            const float dist    = static_cast<float>(std::abs(dx) + std::abs(dy));
-            const float score   = static_cast<float>(job.priority) - dist;
+            const int   dx   = job.targetTile.x - agentTile.x;
+            const int   dy   = job.targetTile.y - agentTile.y;
+            const float dist = static_cast<float>(std::abs(dx) + std::abs(dy));
+            const float score =
+                static_cast<float>(job.priority) - dist; // simple priority - distance heuristic
 
             if (!bestJob || score > bestScore)
             {
