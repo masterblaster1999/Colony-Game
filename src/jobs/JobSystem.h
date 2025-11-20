@@ -15,9 +15,6 @@
 // Gameplay job / agent types
 // -----------------------------------------------------------------------------
 
-// Forward declaration: implemented in your gameplay code.
-class IAgentAdapter;
-
 // Simple identifier types for agents and jobs.
 using AgentId = std::uint32_t;
 using JobId   = std::uint32_t;
@@ -62,6 +59,27 @@ struct Job
   int      priority      = 0;
 
   AgentId  assignedAgent = 0;  // 0 = no agent assigned
+};
+
+// -----------------------------------------------------------------------------
+// IAgentAdapter – bridge to your actual agent/colonist system
+// -----------------------------------------------------------------------------
+
+// This interface lets JobSystem talk to your in-game agents without depending
+// on their concrete implementation. Implement this somewhere in your gameplay
+// code (e.g., AgentSystem, ECS bridge, etc.).
+class IAgentAdapter {
+public:
+  virtual ~IAgentAdapter() = default;
+
+  // Return true if the agent is idle and can accept a new job.
+  virtual bool isAgentIdle(AgentId agentId) const = 0;
+
+  // Return the agent's current tile/grid position.
+  virtual Int2 getAgentTile(AgentId agentId) const = 0;
+
+  // Called when JobSystem assigns a job to an agent.
+  virtual void assignJobToAgent(AgentId agentId, const Job& job) = 0;
 };
 
 // -----------------------------------------------------------------------------
