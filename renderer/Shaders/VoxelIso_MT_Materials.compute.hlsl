@@ -200,9 +200,9 @@ void CSMain(uint3 gtid : SV_DispatchThreadID)
     // Cube corner world positions
     float3 base = OriginWS + float3(gtid) * CellSize;
     float3 P[8] = {
-        base + float3(0,0,0),             base + float3(CellSize,0,0),
-        base + float3(0,CellSize,0),      base + float3(CellSize,CellSize,0),
-        base + float3(0,0,CellSize),      base + float3(CellSize,0,CellSize),
+        base + float3(0,0,0),               base + float3(CellSize,0,0),
+        base + float3(0,CellSize,0),        base + float3(CellSize,CellSize,0),
+        base + float3(0,0,CellSize),        base + float3(CellSize,0,CellSize),
         base + float3(0,CellSize,CellSize), base + float3(CellSize,CellSize,CellSize)
     };
 
@@ -213,8 +213,8 @@ void CSMain(uint3 gtid : SV_DispatchThreadID)
     // March the 6 tetrahedra
     [unroll] for (int t=0;t<6;t++)
     {
-        uint4 tv   = kTets[t];
-        float td[4]= { d[tv.x], d[tv.y], d[tv.z], d[tv.w] };
+        uint4 tv    = kTets[t];
+        float td[4] = { d[tv.x], d[tv.y], d[tv.z], d[tv.w] };
         float3 tp[4]= { P[tv.x], P[tv.y], P[tv.z], P[tv.w] };
 
         uint mask = (td[0] < IsoValue ? 1u:0u) | (td[1] < IsoValue ? 2u:0u)
@@ -228,7 +228,16 @@ void CSMain(uint3 gtid : SV_DispatchThreadID)
             vpos[e] = interp(IsoValue, tp[ab.x], tp[ab.y], td[ab.x], td[ab.y]);
         }
 
-        const int* tri = kMTri[mask];
+        // Load triangle pattern row for this case into a local array.
+        // This replaces the illegal "const int* tri = kMTri[mask];" pointer usage.
+        int tri[7];
+        [unroll]
+        for (int idx = 0; idx < 7; ++idx)
+        {
+            tri[idx] = kMTri[mask][idx];
+        }
+
+        [unroll]
         for (int i=0;i<6;i+=3)
         {
             if (tri[i] < 0) break;
@@ -247,9 +256,25 @@ void CSMain(uint3 gtid : SV_DispatchThreadID)
             float3 nAvg   = normalize(nA+nB+nC);
             uint   matId  = classifyMaterial(center, nAvg);
 
-            OutVerts.Append( (VertMat) { a, nA, matId } );
-            OutVerts.Append( (VertMat) { b, nB, matId } );
-            OutVerts.Append( (VertMat) { c, nC, matId } );
+            // HLSL does not support C99-style compound literals, so we build VertMat
+            // instances explicitly and append them.
+            VertMat vA;
+            vA.pos   = a;
+            vA.nrm   = nA;
+            vA.matId = matId;
+            OutVerts.Append(vA);
+
+            VertMat vB;
+            vB.pos   = b;
+            vB.nrm   = nB;
+            vB.matId = matId;
+            OutVerts.Append(vB);
+
+            VertMat vC;
+            vC.pos   = c;
+            vC.nrm   = nC;
+            vC.matId = matId;
+            OutVerts.Append(vC);
         }
     }
 }
