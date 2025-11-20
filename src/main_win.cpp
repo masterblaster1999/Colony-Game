@@ -136,7 +136,8 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int)
   PreBootstrapHardeningAndDpi();
 
   // Crash dumps in %LOCALAPPDATA%\ColonyGame\crashdumps
-  InstallCrashHandler(L"ColonyGame"); // call the signature that actually exists
+  CrashDumpGuard crashGuard{L"ColonyGame"};
+  (void)crashGuard; // prevent unused-variable warning under /WX
 
   WinApp app;
   WinCreateDesc desc;
