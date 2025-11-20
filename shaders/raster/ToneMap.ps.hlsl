@@ -1,8 +1,5 @@
 #include "RootSig.hlsli"
 
-// Use the global/default graphics root signature.
-// RS_GLOBAL is aliased to RS_GRAPHICS_STATIC_SAMPLERS in RootSig.hlsli.
-[RootSignature(RS_GLOBAL)]
 Texture2D     gSrc   : register(t0);
 SamplerState  gSamp0 : register(s0);  // matches StaticSampler(s0) in the RS
 
@@ -18,6 +15,8 @@ float3 Reinhard(float3 x)
     return x / (1.0 + x);
 }
 
+// Attach the root signature to the entry point, not to globals.
+[RootSignature(RS_GLOBAL)]  // RS_GLOBAL -> RS_GRAPHICS_STATIC_SAMPLERS in RootSig.hlsli
 float4 PSMain(float2 uv : TEXCOORD0) : SV_Target
 {
     float3 hdr = gSrc.Sample(gSamp0, uv).rgb * exposure;
