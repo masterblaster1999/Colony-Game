@@ -22,6 +22,14 @@ class IAgentAdapter;
 using AgentId = std::uint32_t;
 using JobId   = std::uint32_t;
 
+// Optional: if you already have an Int2/grid coordinate type elsewhere,
+// include that header instead of this local definition.
+struct Int2
+{
+  int x { 0 };
+  int y { 0 };
+};
+
 // Basic job state for colony-style jobs.
 enum class JobState
 {
@@ -31,16 +39,26 @@ enum class JobState
   Failed       // failed (optional, for retries / UI)
 };
 
+// Basic job type for colony-style jobs.
+// If you already have a JobType elsewhere, remove this enum and include it.
+enum class JobType : std::uint8_t
+{
+  Invalid = 0,
+  Haul,
+  Build,
+  Mine,
+  Move,
+  // Add more as needed...
+};
+
 // Authoritative gameplay job representation.
-// NOTE: JobType and Int2 are defined in your gameplay code and included
-//       transitively where this header is used.
 struct Job
 {
   JobId    id            = 0;
   JobState state         = JobState::Open;
 
-  JobType  type{};           // logical job type (e.g. Haul, Build, Mine)
-  Int2     targetTile{};     // world tile associated with the job
+  JobType  type          = JobType::Invalid; // logical job type (e.g. Haul, Build, Mine)
+  Int2     targetTile    = {};               // world tile associated with the job
   int      priority      = 0;
 
   AgentId  assignedAgent = 0;  // 0 = no agent assigned
