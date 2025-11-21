@@ -71,8 +71,11 @@ static std::optional<Coord> Jump(const IGridMap& m, const Coord& curr, const Coo
 }
 
 // Neighbor pruning per JPS. Returns at most a few directions relative to parent.
-static void PrunedDirections(const IGridMap& m, const Coord& c, const std::optional<Coord>& parent,
-                             std::vector<std::pair<int,int>>& out, const JPSOptions& opt) {
+static void PrunedDirections([[maybe_unused]] const IGridMap& m,
+                             const Coord& c,
+                             const std::optional<Coord>& parent,
+                             std::vector<std::pair<int,int>>& out,
+                             [[maybe_unused]] const JPSOptions& opt) {
     out.clear();
     const int dirs8[8][2] = { {-1,0},{1,0},{0,-1},{0,1},{-1,-1},{1,-1},{-1,1},{1,1} };
 
