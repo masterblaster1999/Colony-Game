@@ -4,7 +4,9 @@
 #ifndef NOMINMAX
 #  define NOMINMAX
 #endif
+
 #include <windows.h>
+#include <DbgHelp.h>
 #include <vector>
 #include <string>
 
@@ -13,10 +15,13 @@
 #endif
 
 #include "platform/win/WinApp.h"
-#include "platform/win/CrashHandler.h"
 #include "platform/win/FilesystemWin.h"
 
 using namespace winplat;
+
+#ifdef _MSC_VER
+#  pragma comment(lib, "Dbghelp.lib")
+#endif
 
 // -----------------------------------------------------------------------------
 // Hybrid-GPU preference (helps laptops pick the discrete GPU)
@@ -107,23 +112,116 @@ namespace {
   }
 }
 
+// ---- Crash dump guard (Windows / MSVC, internal to this TU) ------------------
+namespace {
+
+class CrashDumpGuard
+{
+public:
+  explicit CrashDumpGuard(const wchar_t* appName)
+    : m_appName(appName)
+    , m_prevFilter(nullptr)
+  {
+    s_instance = this;
+    m_prevFilter = ::SetUnhandledExceptionFilter(&CrashDumpGuard::UnhandledExceptionFilter);
+  }
+
+  ~CrashDumpGuard()
+  {
+    ::SetUnhandledExceptionFilter(m_prevFilter);
+    s_instance = nullptr;
+  }
+
+private:
+  static LONG WINAPI UnhandledExceptionFilter(EXCEPTION_POINTERS* exceptionInfo)
+  {
+    if (!s_instance) {
+      return EXCEPTION_EXECUTE_HANDLER;
+    }
+
+    // Simple crash-dump folder next to the exe: "crashdumps"
+    ::CreateDirectoryW(L"crashdumps", nullptr);
+
+    SYSTEMTIME st{};
+    ::GetLocalTime(&st);
+
+    wchar_t fileName[MAX_PATH]{};
+    swprintf_s(
+      fileName,
+      L"crashdumps\\%s_%04u-%02u-%02u_%02u-%02u-%02u.dmp",
+      s_instance->m_appName,
+      st.wYear, st.wMonth, st.wDay,
+      st.wHour, st.wMinute, st.wSecond
+    );
+
+    HANDLE hFile = ::CreateFileW(
+      fileName,
+      GENERIC_WRITE,
+      FILE_SHARE_READ,
+      nullptr,
+      CREATE_ALWAYS,
+      FILE_ATTRIBUTE_NORMAL,
+      nullptr
+    );
+
+    if (hFile != INVALID_HANDLE_VALUE) {
+      MINIDUMP_EXCEPTION_INFORMATION mdei{};
+      mdei.ThreadId = ::GetCurrentThreadId();
+      mdei.ExceptionPointers = exceptionInfo;
+      mdei.ClientPointers = FALSE;
+
+      ::MiniDumpWriteDump(
+        ::GetCurrentProcess(),
+        ::GetCurrentProcessId(),
+        hFile,
+        MiniDumpWithIndirectlyReferencedMemory,
+        &mdei,
+        nullptr,
+        nullptr
+      );
+
+      ::CloseHandle(hFile);
+    }
+
+    return EXCEPTION_EXECUTE_HANDLER;
+  }
+
+  const wchar_t*                 m_appName;
+  LPTOP_LEVEL_EXCEPTION_FILTER   m_prevFilter;
+
+  static CrashDumpGuard*         s_instance;
+};
+
+CrashDumpGuard* CrashDumpGuard::s_instance = nullptr;
+
+} // anonymous namespace
+
+// -----------------------------------------------------------------------------
 // Replace these with your engine hooks
+// -----------------------------------------------------------------------------
 static bool GameInit(WinApp& /*app*/) {
   // e.g., set cwd to exe so relative assets work after install
   SetCurrentDirToExe();
   return true;
 }
+
 static void GameUpdate(WinApp& /*app*/, float /*dt*/) {
   // your simulation/render kickoffs here
 }
+
 static void GameRender(WinApp& /*app*/) {
   // your renderer present path here
 }
+
 static void GameResize(WinApp& /*app*/, int /*w*/, int /*h*/, float /*dpi*/) {
   // resize swapchain, update ui scale, etc.
 }
+
 static void GameShutdown(WinApp& /*app*/) {}
 
+// -----------------------------------------------------------------------------
+// Entry point
+// -----------------------------------------------------------------------------
 int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int)
 {
 #if defined(TRACY_ENABLE)
@@ -135,7 +233,7 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int)
   // OS bootstrap before we touch any windowing or device resources.
   PreBootstrapHardeningAndDpi();
 
-  // Crash dumps in %LOCALAPPDATA%\ColonyGame\crashdumps
+  // Crash dumps in .\crashdumps (one file per crash, timestamped)
   CrashDumpGuard crashGuard{L"ColonyGame"};
   (void)crashGuard; // prevent unused-variable warning under /WX
 
