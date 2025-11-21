@@ -32,6 +32,7 @@
 //   CRASH_WRITE_EVENTLOG=0/1         (default 0)
 //   CRASH_ENABLE_VECTORED_FIRST=0/1  (default 0; writes first-chance dumps for severe exceptions)
 //
+//
 // You can also set at runtime (environment variables):
 //   CRASH_FILE_PATTERN   default: "{app}_{date}-{time}_{pid}_{tid}" (no extension)
 //   CRASH_BUILD_ID       optional build id (e.g., git hash) in report and filename placeholder {build}
@@ -40,13 +41,19 @@
 // File name placeholders for CRASH_FILE_PATTERN:
 //   {app} {ver} {build} {pid} {tid} {date} {time}
 //
+//
 // NOTE: The header’s InstallCrashHandler(const wchar_t* dumpsDir) is unchanged.
 //       All additional behavior is internal to this .cpp.
 //
 
 #ifdef _WIN32
 
-#define _CRT_SECURE_NO_WARNINGS
+// Avoid C4005 macro redefinition if the project already defines this on the
+// compiler command-line (common in MSVC projects). :contentReference[oaicite:0]{index=0}
+#ifndef _CRT_SECURE_NO_WARNINGS
+#  define _CRT_SECURE_NO_WARNINGS
+#endif
+
 #ifndef WIN32_LEAN_AND_MEAN
 #  define WIN32_LEAN_AND_MEAN
 #endif
@@ -62,6 +69,7 @@
 #include <crtdbg.h>
 #include <new>
 #include <csignal>
+#include <exception>
 
 #include <string>
 #include <vector>
@@ -74,6 +82,8 @@
 #include <algorithm>
 #include <cstdio>
 #include <cstdint>
+#include <cstring>
+#include <cctype>
 
 // --- Link Libraries ---
 #pragma comment(lib, "Dbghelp.lib")
@@ -712,7 +722,7 @@ void HandleCrash(EXCEPTION_POINTERS* info, const wchar_t* reason, bool firstChan
     if (!EnterHandlerOnce()) return;
 
     if (IsDebuggerAttached()) {
-        // Let the debugger catch it; do not swallow
+        // Let the debugger catch it; do not swallow :contentReference[oaicite:1]{index=1}
         LeaveHandler();
         return;
     }
@@ -808,6 +818,10 @@ void __cdecl SignalHandler(int sig) {
 // -----------------------------------------------------------------------------
 namespace win {
 
+// Forward declaration so InstallCrashHandler can refer to it before the
+// definition appears later in this namespace (fixes C2065). :contentReference[oaicite:2]{index=2}
+LONG WINAPI UnhandledCrashFilter(EXCEPTION_POINTERS* info);
+
 void InstallCrashHandler(const wchar_t* dumpsDir /*= L"crashdumps"*/) {
     std::lock_guard<std::mutex> lock(g.mtx);
 
@@ -845,7 +859,7 @@ void InstallCrashHandler(const wchar_t* dumpsDir /*= L"crashdumps"*/) {
 }
 
 LONG WINAPI UnhandledCrashFilter(EXCEPTION_POINTERS* info) {
-    // If debugging, pass through so the debugger stops at the fault.
+    // If debugging, pass through so the debugger stops at the fault. :contentReference[oaicite:3]{index=3}
     if (IsDebuggerAttached()) {
         if (g.prev_uef) return g.prev_uef(info);
         return EXCEPTION_CONTINUE_SEARCH;
