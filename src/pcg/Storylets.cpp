@@ -3,11 +3,34 @@
 
 namespace pcg {
 
+// Convert a Value to a numeric double, treating:
+//  - int    → its value
+//  - double → itself
+//  - bool   → 1.0 or 0.0
+//  - string → 0.0
+// Used where bools are intended to influence numeric comparisons / addition.
+static double toNumericAll(const Value& v)
+{
+    if (const auto* vi = std::get_if<int>(&v))    return static_cast<double>(*vi);
+    if (const auto* vd = std::get_if<double>(&v)) return *vd;
+    if (const auto* vb = std::get_if<bool>(&v))   return *vb ? 1.0 : 0.0;
+    return 0.0;
+}
+
+// Convert a Value to a numeric double, but ignore bools (treat as 0.0).
+// This matches the original behavior for += on double slots (bools did not affect them).
+static double toNumericNoBool(const Value& v)
+{
+    if (const auto* vi = std::get_if<int>(&v))    return static_cast<double>(*vi);
+    if (const auto* vd = std::get_if<double>(&v)) return *vd;
+    return 0.0;
+}
+
 static int cmp(const Value& a, const Value& b) {
-    // Compare numbers or strings; bools treated as ints (1/0).
+    // Compare numbers or strings; bools treated as ints (1/0) for numeric cases.
     // Non-string vs non-string: numeric compare.
-    // String vs string: lexicographic.
-    // Mixed string/non-string: treated as equal.
+    // String vs string        : lexicographic.
+    // Mixed string/non-string : treated as equal (0).
 
     const std::string* sa = std::get_if<std::string>(&a);
     const std::string* sb = std::get_if<std::string>(&b);
@@ -15,16 +38,8 @@ static int cmp(const Value& a, const Value& b) {
     const bool bIsStr = (sb != nullptr);
 
     if (!aIsStr && !bIsStr) {
-        double da = 0.0;
-        double db = 0.0;
-
-        if (auto p = std::get_if<int>(&a))        da = static_cast<double>(*p);
-        else if (auto p = std::get_if<double>(&a)) da = *p;
-        else if (auto p = std::get_if<bool>(&a))   da = *p ? 1.0 : 0.0;
-
-        if (auto p = std::get_if<int>(&b))        db = static_cast<double>(*p);
-        else if (auto p = std::get_if<double>(&b)) db = *p;
-        else if (auto p = std::get_if<bool>(&b))   db = *p ? 1.0 : 0.0;
+        double da = toNumericAll(a);
+        double db = toNumericAll(b);
 
         if (da < db) return -1;
         if (da > db) return 1;
@@ -66,27 +81,14 @@ void apply(const Storylet& s, BlackBoard& bb) {
         if (ef.op == "+=") {
             // Add numeric value of ef.value to an int/double slot.
             // Semantics preserved:
-            //  - For int slot: int/double/bool (1/0) added; string treated as 0.
+            //  - For int slot   : int/double/bool (1/0) added; string treated as 0.
             //  - For double slot: int/double added; bool/string treated as 0.
 
             if (auto* slotInt = std::get_if<int>(&slot)) {
-                double delta = 0.0;
-                if (auto* p = std::get_if<int>(&ef.value)) {
-                    delta = static_cast<double>(*p);
-                } else if (auto* p = std::get_if<double>(&ef.value)) {
-                    delta = *p;
-                } else if (auto* p = std::get_if<bool>(&ef.value)) {
-                    delta = *p ? 1.0 : 0.0;
-                }
+                double delta = toNumericAll(ef.value);
                 *slotInt += static_cast<int>(delta);
             } else if (auto* slotDouble = std::get_if<double>(&slot)) {
-                double delta = 0.0;
-                if (auto* p = std::get_if<int>(&ef.value)) {
-                    delta = static_cast<double>(*p);
-                } else if (auto* p = std::get_if<double>(&ef.value)) {
-                    delta = *p;
-                }
-                // bool/string: delta stays 0.0, matching previous behavior.
+                double delta = toNumericNoBool(ef.value);
                 *slotDouble += delta;
             }
         } else if (ef.op == "set") {
@@ -113,9 +115,9 @@ static Op parseOp(const std::string& s) {
 static Value toVal(const YAML::Node& n) {
     if (n.IsScalar()) {
         // Try int, then double, then string.
-        try { return n.as<int>();           } catch (...) {}
-        try { return n.as<double>();        } catch (...) {}
-        try { return n.as<std::string>();   } catch (...) {}
+        try { return n.as<int>();         } catch (...) {}
+        try { return n.as<double>();      } catch (...) {}
+        try { return n.as<std::string>(); } catch (...) {}
     } else if (n.IsSequence() || n.IsMap()) {
         return n.as<std::string>(); // fallback
     }
@@ -136,11 +138,11 @@ std::vector<Storylet> load_storylets_from_dir(const std::string& dirPath) {
 
         if (auto when = root["when"]; when && when.IsSequence()) {
             for (auto w : when) {
-                Predicate p;
-                p.key   = w[0].as<std::string>();
-                p.op    = parseOp(w[1].as<std::string>());
-                p.value = toVal(w[2]);
-                s.when.push_back(std::move(p));
+                Predicate pred;
+                pred.key   = w[0].as<std::string>();
+                pred.op    = parseOp(w[1].as<std::string>());
+                pred.value = toVal(w[2]);
+                s.when.push_back(std::move(pred));
             }
         }
 
