@@ -23,7 +23,8 @@ Texture2D   TransmittanceLUT : register(t0);
 Texture3D   ScatteringLUT    : register(t1);
 SamplerState LinearClamp     : register(s0);
 
-static const float PI = 3.14159265359;
+static const float PI         = 3.14159265359;
+static const int   SKY_STEPS  = 16; // raymarch steps for atmosphere integration
 
 // -----------------------------------------------------------------------------
 // VS/PS I/O
@@ -36,7 +37,6 @@ struct VSOut
 
 // Fullscreen triangle via SV_VertexID (no VB/IB needed).
 // Generates positions covering the screen and UVs normalized to [0..1].
-// Ref: common triangle trick. :contentReference[oaicite:1]{index=1}
 VSOut VSMain(uint id : SV_VertexID)
 {
     // uv2 in { (0,0), (2,0), (0,2) }
@@ -70,23 +70,23 @@ static const float3 kBetaMieExt   = kBetaMieSca * 1.1; // extinction > scatter
 // -----------------------------------------------------------------------------
 float RayleighPhase(float mu)
 {
-    return 3.0/(16.0*PI) * (1.0 + mu*mu);
+    return 3.0 / (16.0 * PI) * (1.0 + mu * mu);
 }
 
 float HenyeyGreenstein(float mu, float g)
 {
-    float g2 = g*g;
+    float g2 = g * g;
     // Guard denominator slightly to avoid pow(0, -1.5) at extreme mu≈±1,g≈1
-    float denom = max(1e-3, 1.0 + g2 - 2.0*g*mu);
-    return (1.0/(4.0*PI)) * ((1.0 - g2) / pow(denom, 1.5));
+    float denom = max(1e-3, 1.0 + g2 - 2.0 * g * mu);
+    return (1.0 / (4.0 * PI)) * ((1.0 - g2) / pow(denom, 1.5));
 }
 
 // Ray-sphere intersection with sphere centered at origin
 float2 RaySphere(float3 ro, float3 rd, float radius)
 {
     float b = dot(ro, rd);
-    float c = dot(ro, ro) - radius*radius;
-    float h = b*b - c;
+    float c = dot(ro, ro) - radius * radius;
+    float h = b * b - c;
     if (h < 0.0) return float2(1e20, 1e20);
     h = sqrt(h);
     return float2(-b - h, -b + h);
@@ -94,7 +94,6 @@ float2 RaySphere(float3 ro, float3 rd, float radius)
 
 // Build a view ray from normalized screen UV ([0..1], origin at top-left).
 // We map to NDC, flip Y for D3D, unproject with InvViewProj, and subtract CameraWS.
-// Docs: SV_POSITION / pixel-space vs NDC; screen-to-ray via inverse VP. :contentReference[oaicite:2]{index=2}
 float3 GetViewRay(float2 uv01)
 {
     float2 ndc = float2(uv01.x * 2.0 - 1.0, (1.0 - uv01.y) * 2.0 - 1.0);
@@ -132,28 +131,28 @@ float3 IntegrateAtmosphere(float3 ro, float3 rd, float3 lightDir)
     float t1 = tAtm.y;
     if (t0 > t1) return float3(0.0, 0.0, 0.0);
 
-    // March
-    const int   STEPS = 16;
-    float       dt    = (t1 - t0) / STEPS;
+    float dt = (t1 - t0) / SKY_STEPS;
 
     float3 betaR = kBetaRayleigh;
-    float3 betaM = lerp(kBetaMieSca*0.5, kBetaMieSca*3.0, saturate(Humidity01));
-    float3 betaE = betaR + kBetaMieExt * (0.8 + 0.4*Humidity01);
+    float3 betaM = lerp(kBetaMieSca * 0.5, kBetaMieSca * 3.0, saturate(Humidity01));
+    // kBetaMieExt is available if you want to use a separate extinction term later.
 
     float3 L   = float3(0.0, 0.0, 0.0);
     float  t   = t0;
     float3 tau = float3(0.0, 0.0, 0.0); // optical depth camera->sample
 
     [loop]
-    for (int i = 0; i < STEPS; ++i)
+    for (int i = 0; i < SKY_STEPS; ++i)
     {
-        float3 p = ro + rd * (t + 0.5*dt);
+        float3 p = ro + rd * (t + 0.5 * dt);
         float  height = length(p);
 
         float rhoR, rhoM;
         DensityAtHeight(height, rhoR, rhoM);
 
-        float3 dTau = (betaR*rhoR + betaM*rhoM) * dt;
+        float3 sigma = betaR * rhoR + betaM * rhoM;
+
+        float3 dTau = sigma * dt;
         tau += dTau;
 
         // Attenuation camera->sample
@@ -162,10 +161,10 @@ float3 IntegrateAtmosphere(float3 ro, float3 rd, float3 lightDir)
         // Light optical depth (single sample toward sun) — cheap approx
         float2 tls  = RaySphere(p, lightDir, kAtmosphereTop);
         float  ls   = max(0.0, tls.y);
-        float3 tauL = (betaR*rhoR + betaM*rhoM) * (ls * 0.5);
+        float3 tauL = sigma * (ls * 0.5);
         float3 Tlight = exp(-tauL);
 
-        float mu   = dot(rd, lightDir);
+        float mu     = dot(rd, lightDir);
         float phaseR = RayleighPhase(mu);
         float phaseM = HenyeyGreenstein(mu, 0.8);
 
@@ -183,7 +182,7 @@ float3 ToneMapACES(float3 x)
     // ACESApprox (Narkowicz)
     const float a = 2.51; const float b = 0.03;
     const float c = 2.43; const float d = 0.59; const float e = 0.14;
-    return saturate((x*(a*x + b)) / (x*(c*x + d) + e));
+    return saturate((x * (a * x + b)) / (x * (c * x + d) + e));
 }
 
 // -----------------------------------------------------------------------------
