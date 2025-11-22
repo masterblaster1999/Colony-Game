@@ -1,11 +1,12 @@
 # cmake/Shaders.cmake
 # Compiles HLSL with DXC and picks the correct stage + entry from the filename suffix.
-# Supports: *_vs.hlsl, *_ps.hlsl, *_cs.hlsl (extend as needed).
+# Supports: *_vs.hlsl, *_ps.hlsl, *_cs.hlsl, and *.compute.hlsl.
 #
 # Naming convention:
-#   *_vs.hlsl -> vs_6_0, entry VSMain
-#   *_ps.hlsl -> ps_6_0, entry PSMain
-#   *_cs.hlsl -> cs_6_0, entry CSMain
+#   *_vs.hlsl      -> vs_6_0, entry VSMain
+#   *_ps.hlsl      -> ps_6_0, entry PSMain
+#   *_cs.hlsl      -> cs_6_0, entry CSMain
+#   *.compute.hlsl -> cs_6_0, entry CSMain
 
 function(colony_add_hlsl OUT_VAR)
   set(options)
@@ -33,12 +34,14 @@ function(colony_add_hlsl OUT_VAR)
 
   set(_outputs)
   foreach(SRC IN LISTS HLSL_FILES)
-    get_filename_component(NAME "${SRC}" NAME_WE)
+    get_filename_component(NAME "${SRC}" NAME_WE)  # e.g. TerrainGen.compute
+    get_filename_component(FULL "${SRC}" NAME)     # e.g. TerrainGen.compute.hlsl
     get_filename_component(ABS  "${SRC}" ABSOLUTE)
 
-    # Infer stage + default entry from suffix
+    # Infer stage + default entry from suffix / extension
     set(PROFILE "")
     set(ENTRY   "")
+
     if (NAME MATCHES "_vs$")
       set(PROFILE "vs_6_0")
       set(ENTRY   "VSMain")
@@ -48,9 +51,13 @@ function(colony_add_hlsl OUT_VAR)
     elseif (NAME MATCHES "_cs$")
       set(PROFILE "cs_6_0")
       set(ENTRY   "CSMain")
+    elseif (FULL MATCHES "\\.compute\\.hlsl$")
+      # Files like TerrainGen.compute.hlsl are treated as compute shaders.
+      set(PROFILE "cs_6_0")
+      set(ENTRY   "CSMain")
     else()
       message(FATAL_ERROR
-        "Unknown shader stage for ${SRC} (expected *_vs/_ps/_cs.hlsl). "
+        "Unknown shader stage for ${SRC} (expected *_vs/_ps/_cs.hlsl or *.compute.hlsl). "
         "Either rename the file to follow the convention or extend Shaders.cmake.")
     endif()
 
@@ -82,7 +89,7 @@ function(colony_add_hlsl OUT_VAR)
       OUTPUT  "${OUT}"
       COMMAND "${DXC_EXECUTABLE}" ${DCOMMON} -Fo "${OUT}" "${ABS}"
       DEPENDS "${ABS}"
-      COMMENT "HLSL: ${NAME}.hlsl -> ${NAME}.cso (${PROFILE}, entry=${ENTRY})"
+      COMMENT "HLSL: ${FULL} -> ${NAME}.cso (${PROFILE}, entry=${ENTRY})"
       VERBATIM
     )
     list(APPEND _outputs "${OUT}")
