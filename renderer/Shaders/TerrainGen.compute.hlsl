@@ -95,10 +95,11 @@ float3 calcNormal(float2 xz) {
     return n;
 }
 
-[numthreads(THREADS_X, THREADS_Y, 1)]
-void CSMain(uint3 dtid : SV_DispatchThreadID)
+// Shared implementation so multiple entry-point names can be used
+void TerrainGenImpl(uint3 dtid)
 {
-    if (dtid.x >= MapSize.x || dtid.y >= MapSize.y) return;
+    if (dtid.x >= MapSize.x || dtid.y >= MapSize.y)
+        return;
 
     float2 xz = WorldOriginXZ + float2(dtid.xy) * WorldTexel;
 
@@ -108,4 +109,28 @@ void CSMain(uint3 dtid : SV_DispatchThreadID)
     float3 n = calcNormal(xz);
     // Store normal in 0..1 for convenience (xyz) + 1 alpha
     OutNormal[dtid.xy] = float4(n * 0.5 + 0.5, 1.0);
+}
+
+// --- Entry points ---
+// Pick whichever name you want in your build system (/E ...)
+
+// Original name you used in your file
+[numthreads(THREADS_X, THREADS_Y, 1)]
+void CSMain(uint3 dtid : SV_DispatchThreadID)
+{
+    TerrainGenImpl(dtid);
+}
+
+// Very common default entry point in build scripts
+[numthreads(THREADS_X, THREADS_Y, 1)]
+void main(uint3 dtid : SV_DispatchThreadID)
+{
+    TerrainGenImpl(dtid);
+}
+
+// Explicit terrain-specific name if you prefer
+[numthreads(THREADS_X, THREADS_Y, 1)]
+void TerrainGenCS(uint3 dtid : SV_DispatchThreadID)
+{
+    TerrainGenImpl(dtid);
 }
