@@ -333,41 +333,6 @@ if(WIN32)
   target_link_libraries(ColonyGame PRIVATE dbghelp)
 endif()
 
-# -------------------------------------------------------------------------------------------------
-# Executable: ColonyMapViewer (developer map viewer)
-# -------------------------------------------------------------------------------------------------
-add_executable(ColonyMapViewer
-  "${CMAKE_SOURCE_DIR}/src/tools/ColonyMapViewerMain.cpp"
-)
-
-if(WIN32)
-  target_compile_definitions(ColonyMapViewer PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX)
-endif()
-
-# Use same language standard as the main game
-if(CMAKE_VERSION VERSION_LESS 3.21)
-  target_compile_features(ColonyMapViewer PRIVATE cxx_std_20)
-else()
-  target_compile_features(ColonyMapViewer PRIVATE cxx_std_23)
-endif()
-
-target_include_directories(ColonyMapViewer PRIVATE
-  "${CMAKE_SOURCE_DIR}/src"
-  "${CMAKE_SOURCE_DIR}/include"
-  "${CMAKE_SOURCE_DIR}"
-  "${CMAKE_BINARY_DIR}/generated"
-)
-
-if(MSVC)
-  target_compile_options(ColonyMapViewer PRIVATE /permissive- /Zc:preprocessor /Zc:__cplusplus /utf-8 /W4 /MP)
-endif()
-
-target_link_libraries(ColonyMapViewer
-  PRIVATE
-    colony_core
-    colony_build_options
-)
-
 # Make the game the startup project in Visual Studio
 set_property(DIRECTORY "${CMAKE_SOURCE_DIR}" PROPERTY VS_STARTUP_PROJECT ColonyGame)
 
@@ -377,19 +342,11 @@ if(CMAKE_CONFIGURATION_TYPES)
     string(TOUPPER "${cfg}" CFGU)
     set_target_properties(ColonyGame PROPERTIES
       RUNTIME_OUTPUT_DIRECTORY_${CFGU} "${CMAKE_BINARY_DIR}/bin/${cfg}")
-    if(TARGET ColonyMapViewer)
-      set_target_properties(ColonyMapViewer PROPERTIES
-        RUNTIME_OUTPUT_DIRECTORY_${CFGU} "${CMAKE_BINARY_DIR}/bin/${cfg}")
-    endif()
   endforeach()
 else()
   # Single-config generators (Ninja, Makefiles)
   set_target_properties(ColonyGame PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
-  if(TARGET ColonyMapViewer)
-    set_target_properties(ColonyMapViewer PROPERTIES
-      RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
-  endif()
 endif()
 
 # Reusable runtime dir (works for single- and multi-config generators)
@@ -549,9 +506,7 @@ endif()
 # ---------- Precompiled header for the EXE (same unified header as core) ----------
 if(COLONY_USE_PCH AND _PCH_HEADER)
   target_precompile_headers(ColonyGame PRIVATE "${_PCH_HEADER}")
-  if(TARGET ColonyMapViewer)
-    target_precompile_headers(ColonyMapViewer PRIVATE "${_PCH_HEADER}")
-  endif()
+  # NOTE: if ColonyMapViewer is defined in another CMakeLists, it can have its own PCH there.
 endif()
 
 # Unity builds
@@ -565,25 +520,6 @@ target_compile_definitions(ColonyGame PRIVATE
   $<$<BOOL:${ENABLE_IMGUI}>:CG_ENABLE_IMGUI=1>
   $<$<BOOL:${ENABLE_TRACY}>:TRACY_ENABLE=1>
 )
-
-if(TARGET ColonyMapViewer)
-  target_compile_definitions(ColonyMapViewer PRIVATE
-    $<$<STREQUAL:${FRONTEND},sdl>:COLONY_USE_SDL=1>
-    $<$<BOOL:${ENABLE_IMGUI}>:CG_ENABLE_IMGUI=1>
-    $<$<BOOL:${ENABLE_TRACY}>:TRACY_ENABLE=1>
-  )
-endif()
-
-# Make sure a frequently-included HLSL header is copied alongside compiled shaders for runtime
-if(EXISTS "${CMAKE_SOURCE_DIR}/renderer/Shaders/include/common.hlsli")
-  add_custom_command(TARGET ColonyGame POST_BUILD
-    COMMAND ${CMAKE_COMMAND} -E make_directory "${_RUNTIME_DIR}/res/shaders/include"
-    COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "${CMAKE_SOURCE_DIR}/renderer/Shaders/include/common.hlsli"
-            "${_RUNTIME_DIR}/res/shaders/include/common.hlsli"
-    VERBATIM
-  )
-endif()
 
 # -------------------------------------------------------------------------------------------------
 # >>> PATCH: INSTALL rules (runtime) <<<
