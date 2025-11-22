@@ -11,40 +11,102 @@
 
 namespace {
   LPTOP_LEVEL_EXCEPTION_FILTER g_prev = nullptr;
+  LONG g_inTopLevel = 0;
 
   std::wstring NowStamp() {
-    SYSTEMTIME st; GetLocalTime(&st);
+    SYSTEMTIME st;
+    GetLocalTime(&st);
     return std::format(L"{:04}-{:02}-{:02}_{:02}-{:02}-{:02}",
       st.wYear, st.wMonth, st.wDay, st.wHour, st.wMinute, st.wSecond);
   }
 
+  // Central place to define what kind of dump we want.
+  // This uses a "rich" combination of MINIDUMP_TYPE flags, explicitly cast
+  // to MINIDUMP_TYPE to satisfy the MiniDumpWriteDump signature.
+  MINIDUMP_TYPE GetColonyDumpType() {
+    return static_cast<MINIDUMP_TYPE>(
+      MiniDumpWithFullMemory |
+      MiniDumpWithHandleData |
+      MiniDumpWithUnloadedModules |
+      MiniDumpWithProcessThreadData |
+      MiniDumpWithFullMemoryInfo |
+      MiniDumpWithThreadInfo |
+      MiniDumpWithModuleHeaders
+    );
+  }
+
+  struct ScopedHandle {
+    HANDLE h{};
+
+    explicit ScopedHandle(HANDLE handle) : h(handle) {}
+
+    ~ScopedHandle() {
+      if (h && h != INVALID_HANDLE_VALUE) {
+        CloseHandle(h);
+      }
+    }
+
+    explicit operator bool() const {
+      return h && h != INVALID_HANDLE_VALUE;
+    }
+  };
+
   std::filesystem::path WriteDump(EXCEPTION_POINTERS* ep, const std::filesystem::path& dir) {
     std::filesystem::path out = dir / std::format(L"colony_{}.dmp", NowStamp());
-    HANDLE hFile = CreateFileW(out.c_str(), GENERIC_WRITE, FILE_SHARE_READ, nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
-    if (hFile == INVALID_HANDLE_VALUE) return {};
+
+    ScopedHandle file(CreateFileW(
+      out.c_str(),
+      GENERIC_WRITE,
+      FILE_SHARE_READ,
+      nullptr,
+      CREATE_ALWAYS,
+      FILE_ATTRIBUTE_NORMAL,
+      nullptr));
+
+    if (!file) {
+      return {};
+    }
 
     MINIDUMP_EXCEPTION_INFORMATION mdei{};
     mdei.ThreadId          = GetCurrentThreadId();
     mdei.ExceptionPointers = ep;
     mdei.ClientPointers    = FALSE;
 
-    MiniDumpWriteDump(GetCurrentProcess(), GetCurrentProcessId(), hFile,
-                      MiniDumpWithIndirectlyReferencedMemory | MiniDumpScanMemory,
-                      &mdei, nullptr, nullptr);
+    const MINIDUMP_TYPE dumpType = GetColonyDumpType();
 
-    CloseHandle(hFile);
+    BOOL ok = MiniDumpWriteDump(
+      GetCurrentProcess(),
+      GetCurrentProcessId(),
+      file.h,
+      dumpType,                // <- correct enum type, no more C2664
+      ep ? &mdei : nullptr,
+      nullptr,
+      nullptr);
+
+    if (!ok) {
+      // Dump creation failed; return empty path so caller can handle/log if desired.
+      return {};
+    }
+
     return out;
   }
 
   LONG WINAPI TopLevel(EXCEPTION_POINTERS* ep) {
+    // Simple re-entry guard: if we're already in the crash handler, don't recurse.
+    if (InterlockedExchange(&g_inTopLevel, 1) != 0) {
+      return EXCEPTION_EXECUTE_HANDLER;
+    }
+
     const auto dumps = cg::paths::CrashDumpsDir();
     cg::paths::EnsureCreated(dumps);
     const auto file = WriteDump(ep, dumps);
+
     if (!file.empty()) {
-      MessageBoxW(nullptr,
-        (L"Colony Game crashed.\nA crash dump was written to:\n" + file.wstring()).c_str(),
-        L"Crash", MB_OK | MB_ICONERROR);
+      const std::wstring msg =
+        L"Colony Game crashed.\nA crash dump was written to:\n" + file.wstring();
+      MessageBoxW(nullptr, msg.c_str(), L"Crash", MB_OK | MB_ICONERROR);
     }
+
     return EXCEPTION_EXECUTE_HANDLER;
   }
 }
@@ -55,6 +117,7 @@ namespace cg::win {
     g_prev = SetUnhandledExceptionFilter(TopLevel);
     return true;
   }
+
   void UninstallCrashHandler() {
     SetUnhandledExceptionFilter(g_prev);
   }
