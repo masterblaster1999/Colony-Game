@@ -16,14 +16,17 @@
 
 #pragma comment(lib, "Dbghelp.lib")
 
-// Only define this constant if it's missing (older SDKs).
+// Some older SDKs may not define this; newer ones do in windef.h.
+// We only add a fallback if it's missing.
 #ifndef DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2
     #define DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2 ((DPI_AWARENESS_CONTEXT)-4)
 #endif
 
 namespace
 {
-    // --- Global state ---
+    // ---------------------------------------------------------------------
+    // Global state
+    // ---------------------------------------------------------------------
     HANDLE                g_mutex   = nullptr;
     std::ofstream         g_log;
     std::mutex            g_logMu;
@@ -64,12 +67,14 @@ namespace
     std::wstring exe_path_w()
     {
         std::wstring buf(260, L'\0');
-        for (;;) {
+        for (;;)
+        {
             DWORD n = GetModuleFileNameW(nullptr, buf.data(), static_cast<DWORD>(buf.size()));
             if (n == 0)
                 return L"";
 
-            if (n < buf.size() - 1) {
+            if (n < buf.size() - 1)
+            {
                 buf.resize(n);
                 return buf;
             }
@@ -96,22 +101,24 @@ namespace
 
         const auto assetsPath = root / assetDir;
         if (!std::filesystem::exists(assetsPath, ec) ||
-            !std::filesystem::is_directory(assetsPath, ec)) {
+            !std::filesystem::is_directory(assetsPath, ec))
+        {
             return false;
         }
 
-        // Extra sanity: require "config" subdir inside the assetDir.
+        // Extra sanity: require a "config" subdir inside the assetDir.
         const auto configPath = assetsPath / L"config";
         if (!std::filesystem::exists(configPath, ec) ||
-            !std::filesystem::is_directory(configPath, ec)) {
+            !std::filesystem::is_directory(configPath, ec))
+        {
             return false;
         }
 
         return true;
     }
 
-    // Try exe dir, its parent, and current working dir; return first that
-    // contains assetDir. If none match, fall back to exe dir.
+    // Try exe dir, its parent, and CWD; return first that contains assetDir.
+    // If none match, fall back to exe dir.
     std::filesystem::path resolve_root(const std::wstring& assetDir)
     {
         const auto ed     = exe_dir();
@@ -120,13 +127,13 @@ namespace
 
         const std::filesystem::path candidates[] = { ed, parent, cwd };
 
-        for (const auto& d : candidates) {
-            if (!d.empty() && dir_has_assets(d, assetDir)) {
+        for (const auto& d : candidates)
+        {
+            if (!d.empty() && dir_has_assets(d, assetDir))
                 return d;
-            }
         }
 
-        // Fallback: exe dir (we'll log a warning later if needed).
+        // Fallback: exe dir; we'll log a warning in Preflight if assets are missing.
         return ed;
     }
 
@@ -162,7 +169,8 @@ namespace
     void log_write(const char* level, const std::string& line)
     {
         std::scoped_lock lk(g_logMu);
-        if (g_log.is_open()) {
+        if (g_log.is_open())
+        {
             g_log << "[" << ts_now() << "][" << level << "] " << line << "\n";
             g_log.flush();
         }
@@ -177,18 +185,18 @@ namespace
     void set_dpi_awareness()
     {
         // Prefer SetProcessDpiAwarenessContext (Win10+); fall back to SetProcessDPIAware.
-        HMODULE user32 = LoadLibraryW(L"user32.dll");
-        if (user32) {
+        HMODULE user32 = GetModuleHandleW(L"user32.dll");
+        if (user32)
+        {
             using SetDpiCtxFn = BOOL (WINAPI*)(DPI_AWARENESS_CONTEXT);
             auto pSet = reinterpret_cast<SetDpiCtxFn>(
                 GetProcAddress(user32, "SetProcessDpiAwarenessContext")
             );
-            if (pSet) {
+            if (pSet)
+            {
                 pSet(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
-                FreeLibrary(user32);
                 return;
             }
-            FreeLibrary(user32);
         }
 
         // Fallback available since Vista.
@@ -202,7 +210,8 @@ namespace
     {
     #if defined(_DEBUG)
         if (!enable) return;
-        if (AllocConsole()) {
+        if (AllocConsole())
+        {
             FILE* f = nullptr;
             freopen_s(&f, "CONOUT$", "w", stdout);
             freopen_s(&f, "CONOUT$", "w", stderr);
@@ -257,7 +266,8 @@ namespace
         );
         CloseHandle(hFile);
 
-        if (ok) {
+        if (ok)
+        {
             std::wstring msg = L"A crash dump was written to:\n";
             msg += filePath.wstring();
             MessageBoxW(
@@ -287,7 +297,8 @@ namespace
         if (!g_mutex)
             return true; // fail-open
 
-        if (GetLastError() == ERROR_ALREADY_EXISTS) {
+        if (GetLastError() == ERROR_ALREADY_EXISTS)
+        {
             CloseHandle(g_mutex);
             g_mutex = nullptr;
 
@@ -305,9 +316,9 @@ namespace
 
 } // anonymous namespace
 
-// -------------------------------------------------------------------------
-// winboot namespace API
-// -------------------------------------------------------------------------
+// ==========================================================================
+// winboot API
+// ==========================================================================
 namespace winboot
 {
 
@@ -326,7 +337,7 @@ void Preflight(const Options& opt)
     g_root = resolve_root(opt.assetDirName);
     std::filesystem::current_path(g_root);
 
-    // Prepare logging + (optional) crash dumps
+    // Prepare logging + (optional) crash dumps.
     const auto logsDir = ensure_dir(g_root / L"logs");
     log_open(logsDir / "launcher.log");
     log_info(std::string("Bootstrap start. Root: ") + path_u8(g_root));
@@ -334,21 +345,25 @@ void Preflight(const Options& opt)
     if (opt.writeCrashDumps)
         install_crash_filter(logsDir);
 
-    if (opt.singleInstance && !acquire_single_instance(opt.mutexName)) {
+    if (opt.singleInstance && !acquire_single_instance(opt.mutexName))
+    {
         log_info("Second instance prevented.");
         ExitProcess(0);
     }
 
     maybe_alloc_console(opt.showConsoleInDebug);
 
-    // Sanity check about assets
-    if (!dir_has_assets(g_root, opt.assetDirName)) {
+    // Sanity check about assets.
+    if (!dir_has_assets(g_root, opt.assetDirName))
+    {
         log_err(
             std::string("Assets folder '") +
             wide_to_utf8(opt.assetDirName) +
             "' not found; continuing with exe dir."
         );
-    } else {
+    }
+    else
+    {
         log_info(
             std::string("Assets folder present under root: ") +
             path_u8(g_root / opt.assetDirName)
@@ -360,13 +375,15 @@ void Shutdown()
 {
     log_info("Bootstrap shutdown.");
 
-    if (g_mutex) {
+    if (g_mutex)
+    {
         ReleaseMutex(g_mutex);
         CloseHandle(g_mutex);
         g_mutex = nullptr;
     }
 
-    if (g_log.is_open()) {
+    if (g_log.is_open())
+    {
         g_log.flush();
         g_log.close();
     }
