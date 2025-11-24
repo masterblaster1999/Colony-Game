@@ -1,65 +1,33 @@
 {
   "$schema": "https://raw.githubusercontent.com/microsoft/vcpkg-tool/main/docs/vcpkg.schema.json",
-
   "name": "colony-game",
   "version-string": "0.1.0",
   "description": "Windows-only colony sim / engine dependencies via vcpkg (DX11/DX12 toolchain, UI, profiling).",
   "homepage": "https://github.com/masterblaster1999/Colony-Game",
   "license": "MIT",
-
   "supports": "windows & !uwp",
-
-  "builtin-baseline": "b1b19307e2d2ec1eefbdb7ea069de7d4bcd31f01",
-
   "overrides": [
     { "name": "tracy", "version": "0.11.1#1" }
   ],
-
   "dependencies": [
     "fmt",
     "spdlog",
     "entt",
     "nlohmann-json",
-
     {
       "name": "imgui",
       "default-features": false,
       "features": [ "docking-experimental", "win32-binding", "dx11-binding", "freetype" ]
     },
-
     "directx-headers",
-
-    {
-      "name": "directx-dxc",
-      "host": true
-    },
-    {
-      "name": "directx-dxc"
-    },
-
-    {
-      "name": "directxtex",
-      "features": [ "dx11" ]
-    },
-
-    {
-      "name": "tracy",
-      "default-features": false
-    },
-
-    {
-      "name": "winpixevent",
-      "platform": "windows & x64"
-    },
-
+    { "name": "directx-dxc", "host": true },
+    { "name": "directx-dxc" },
+    { "name": "directxtex", "features": [ "dx11" ] },
+    { "name": "tracy", "default-features": false },
+    { "name": "winpixevent", "platform": "windows & x64" },
     "taskflow",
-
-    {
-      "$comment": "Build-fix deps from CI",
-      "name": "sdl2"
-    },
-    {
-      "name": "miniaudio"
-    }
+    "doctest",
+    { "$comment": "Build-fix deps from CI", "name": "sdl2" },
+    { "name": "miniaudio" }
   ]
 }
