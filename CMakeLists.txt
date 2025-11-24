@@ -92,11 +92,11 @@ endif()
 if(COLONY_ENABLE_ASAN)
   if(MSVC)
     add_compile_options(
-      $<$<CONFIG:Debug,RelWithDebInfo>:/fsanitize=address>
-      $<$<CONFIG:Debug,RelWithDebInfo>:/Zi>
+      $<$<OR:$<CONFIG:Debug>,$<CONFIG:RelWithDebInfo>>:/fsanitize=address>
+      $<$<OR:$<CONFIG:Debug>,$<CONFIG:RelWithDebInfo>>:/Zi>
     )
     add_link_options(
-      $<$<CONFIG:Debug,RelWithDebInfo>:/fsanitize=address>
+      $<$<OR:$<CONFIG:Debug>,$<CONFIG:RelWithDebInfo>>:/fsanitize=address>
     )
     add_compile_definitions(ASAN_ENABLED=1)
   elseif(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
@@ -279,7 +279,7 @@ find_package(SDL2 CONFIG REQUIRED)
 find_package(imgui CONFIG REQUIRED)
 
 # Tracy wiring (optional)
-# Prefer the lowercase 'tracy' package name (vcpkg port), but accept 'Tracy' too.
+# Prefer the lowercase 'tracy' package name (vcpkg port name), but accept 'Tracy' too.
 # When COLONY_ENABLE_TRACY=ON, we require it; otherwise we try quietly and skip if absent.
 set(_CG_TRACY_REQUEST_MODE QUIET)
 if(COLONY_ENABLE_TRACY)
