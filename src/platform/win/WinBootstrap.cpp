@@ -1,6 +1,6 @@
 // src/platform/win/WinBootstrap.cpp
 
-// Target at least Windows 10 for modern APIs (DPI, etc.)
+// Target at least Windows 10+ for modern APIs by default.
 #ifndef WINVER
 #   define WINVER 0x0A00
 #endif
@@ -23,6 +23,7 @@
 #include <ctime>
 #include <string>
 #include <string_view>
+#include <cstdio>      // freopen_s
 
 #pragma comment(lib, "Dbghelp.lib")
 
@@ -35,10 +36,10 @@ using DPI_AWARENESS_CONTEXT = HANDLE;
 
 namespace
 {
-    // --- State ---
-    HANDLE g_mutex = nullptr;
-    std::ofstream g_log;
-    std::mutex g_logMu;
+    // --- Global state ---
+    HANDLE               g_mutex   = nullptr;
+    std::ofstream        g_log;
+    std::mutex           g_logMu;
     std::filesystem::path g_root;
     std::filesystem::path g_dumpDir;
 
@@ -67,49 +68,65 @@ namespace
     }
 
     // --- Small utilities ---
+
     std::wstring exe_path_w()
     {
         std::wstring buf(260, L'\0');
         for (;;) {
             DWORD n = GetModuleFileNameW(nullptr, buf.data(), static_cast<DWORD>(buf.size()));
-            if (n == 0) return L"";
+            if (n == 0)
+                return L"";
+
             if (n < buf.size() - 1) {
                 buf.resize(n);
                 return buf;
             }
+
             buf.resize(buf.size() * 2);
         }
     }
 
     std::filesystem::path exe_dir()
     {
-        auto p = std::filesystem::path(exe_path_w());
+        std::filesystem::path p(exe_path_w());
         return p.empty() ? std::filesystem::current_path() : p.parent_path();
     }
 
-    // Does this root directory contain the requested assetDir (relative)?
+    // Does this directory appear to contain the requested assetDir?
+    // assetDir is typically something like L"assets".
     bool dir_has_assets(const std::filesystem::path& root, const std::wstring& assetDir)
     {
-        std::error_code ec;
         if (assetDir.empty())
             return false;
 
-        return std::filesystem::exists(root / assetDir, ec);
+        std::error_code ec;
+        const auto assetsPath = root / assetDir;
+
+        if (!std::filesystem::exists(assetsPath, ec) ||
+            !std::filesystem::is_directory(assetsPath, ec)) {
+            return false;
+        }
+
+        // Extra sanity: require "config" subdir inside the assetDir;
+        // if this is too strict, you can remove it.
+        const auto configPath = assetsPath / L"config";
+        if (!std::filesystem::exists(configPath, ec) ||
+            !std::filesystem::is_directory(configPath, ec)) {
+            return false;
+        }
+
+        return true;
     }
 
-    // Try a small set of candidate roots (exe dir, parent, CWD) and return
-    // the first one that contains assetDir. Fallback is exe dir.
+    // Try some plausible roots: exe dir, its parent, current working dir.
+    // Return the first that contains assetDir; otherwise fall back to exe dir.
     std::filesystem::path resolve_root(const std::wstring& assetDir)
     {
-        const auto ed    = exe_dir();
+        const auto ed     = exe_dir();
         const auto parent = ed.parent_path();
         const auto cwd    = std::filesystem::current_path();
 
-        const std::filesystem::path candidates[] = {
-            ed,
-            parent,
-            cwd
-        };
+        const std::filesystem::path candidates[] = { ed, parent, cwd };
 
         for (const auto& d : candidates) {
             if (!d.empty() && dir_has_assets(d, assetDir)) {
@@ -117,7 +134,7 @@ namespace
             }
         }
 
-        // Fallback: exe dir – we’ll log a warning later if assets are missing.
+        // Fallback: exe dir; we'll log a warning in Preflight if assets are missing.
         return ed;
     }
 
@@ -154,8 +171,8 @@ namespace
         }
     }
 
-    void log_info(const std::string& s)  { log_write("INFO",  s); }
-    void log_err (const std::string& s)  { log_write("ERROR", s); }
+    void log_info(const std::string& s) { log_write("INFO",  s); }
+    void log_err (const std::string& s) { log_write("ERROR", s); }
 
     void set_dpi_awareness()
     {
@@ -172,6 +189,7 @@ namespace
             }
             FreeLibrary(user32);
         }
+
         // Fallback available since Vista
         SetProcessDPIAware();
     }
@@ -190,16 +208,20 @@ namespace
     #endif
     }
 
-    // Crash dumps
+    // --- Crash dumps ---
+
     LONG WINAPI UnhandledFilter(EXCEPTION_POINTERS* info)
     {
-        SYSTEMTIME st{}; GetLocalTime(&st);
+        SYSTEMTIME st{};
+        GetLocalTime(&st);
+
         wchar_t stamp[64];
         swprintf_s(stamp, L"%04u%02u%02u_%02u%02u%02u",
                    st.wYear, st.wMonth, st.wDay,
                    st.wHour, st.wMinute, st.wSecond);
 
         auto filePath = g_dumpDir / (std::wstring(L"crash_") + stamp + L".dmp");
+
         HANDLE hFile = CreateFileW(
             filePath.c_str(),
             GENERIC_WRITE,
@@ -235,6 +257,7 @@ namespace
                 MB_OK | MB_ICONERROR
             );
         }
+
         return EXCEPTION_EXECUTE_HANDLER;
     }
 
@@ -244,7 +267,8 @@ namespace
         SetUnhandledExceptionFilter(UnhandledFilter);
     }
 
-    // Single-instance (named mutex)
+    // --- Single-instance (named mutex) ---
+
     bool acquire_single_instance(const std::wstring& name)
     {
         const std::wstring full = L"Global\\" + name;
@@ -265,12 +289,14 @@ namespace
             );
             return false;
         }
+
         return true;
     }
 
 } // anonymous namespace
 
-namespace winboot {
+namespace winboot
+{
 
 std::filesystem::path GameRoot()
 {
