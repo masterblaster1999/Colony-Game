@@ -1,24 +1,5 @@
 // src/platform/win/WinBootstrap.cpp
 
-// Target at least Windows 10+ for modern APIs by default.
-#ifndef WINVER
-#   define WINVER 0x0A00
-#endif
-
-#ifndef _WIN32_WINNT
-#   define _WIN32_WINNT WINVER
-#endif
-
-// These may be defined on the compiler command line already; guard to
-// avoid macro-redefinition warnings (which are treated as errors).
-#ifndef WIN32_LEAN_AND_MEAN
-#   define WIN32_LEAN_AND_MEAN
-#endif
-
-#ifndef NOMINMAX
-#   define NOMINMAX
-#endif
-
 #include "WinBootstrap.h"
 
 #include <windows.h>
@@ -31,13 +12,14 @@
 #include <ctime>
 #include <string>
 #include <string_view>
-#include <cstdio>      // freopen_s
+#include <cstdio> // freopen_s
 
 #pragma comment(lib, "Dbghelp.lib")
 
-// NOTE: We intentionally do NOT re-declare DPI_AWARENESS_CONTEXT or
-// DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2 here; they are provided
-// by the Windows SDK headers in modern toolchains.
+// Only define this constant if it's missing (older SDKs).
+#ifndef DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2
+    #define DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2 ((DPI_AWARENESS_CONTEXT)-4)
+#endif
 
 namespace
 {
@@ -48,17 +30,21 @@ namespace
     std::filesystem::path g_root;
     std::filesystem::path g_dumpDir;
 
-    // --- UTF helpers for logging (avoid char8_t issues) ---
+    // ---------------------------------------------------------------------
+    // UTF-8 helpers
+    // ---------------------------------------------------------------------
     std::string wide_to_utf8(std::wstring_view w)
     {
         if (w.empty()) return {};
+
         int n = ::WideCharToMultiByte(
             CP_UTF8, 0,
             w.data(), static_cast<int>(w.size()),
             nullptr, 0, nullptr, nullptr
         );
         if (n <= 0) return {};
-        std::string s(static_cast<size_t>(n), '\0');
+
+        std::string s(static_cast<std::size_t>(n), '\0');
         ::WideCharToMultiByte(
             CP_UTF8, 0,
             w.data(), static_cast<int>(w.size()),
@@ -72,8 +58,9 @@ namespace
         return wide_to_utf8(p.wstring());
     }
 
-    // --- Small utilities ---
-
+    // ---------------------------------------------------------------------
+    // Path helpers
+    // ---------------------------------------------------------------------
     std::wstring exe_path_w()
     {
         std::wstring buf(260, L'\0');
@@ -106,8 +93,8 @@ namespace
             return false;
 
         std::error_code ec;
-        const auto assetsPath = root / assetDir;
 
+        const auto assetsPath = root / assetDir;
         if (!std::filesystem::exists(assetsPath, ec) ||
             !std::filesystem::is_directory(assetsPath, ec)) {
             return false;
@@ -123,8 +110,8 @@ namespace
         return true;
     }
 
-    // Try some plausible roots: exe dir, its parent, current working dir.
-    // Return the first that contains assetDir; otherwise fall back to exe dir.
+    // Try exe dir, its parent, and current working dir; return first that
+    // contains assetDir. If none match, fall back to exe dir.
     std::filesystem::path resolve_root(const std::wstring& assetDir)
     {
         const auto ed     = exe_dir();
@@ -139,7 +126,7 @@ namespace
             }
         }
 
-        // Fallback: exe dir; we'll log a warning in Preflight if assets are missing.
+        // Fallback: exe dir (we'll log a warning later if needed).
         return ed;
     }
 
@@ -150,13 +137,18 @@ namespace
         return p;
     }
 
+    // ---------------------------------------------------------------------
+    // Logging
+    // ---------------------------------------------------------------------
     std::string ts_now()
     {
         using namespace std::chrono;
         auto now = system_clock::now();
         std::time_t t = system_clock::to_time_t(now);
+
         std::tm tm{};
         localtime_s(&tm, &t);
+
         char buf[32];
         std::strftime(buf, sizeof(buf), "%Y-%m-%d %H:%M:%S", &tm);
         return std::string(buf);
@@ -179,8 +171,12 @@ namespace
     void log_info(const std::string& s) { log_write("INFO",  s); }
     void log_err (const std::string& s) { log_write("ERROR", s); }
 
+    // ---------------------------------------------------------------------
+    // DPI awareness
+    // ---------------------------------------------------------------------
     void set_dpi_awareness()
     {
+        // Prefer SetProcessDpiAwarenessContext (Win10+); fall back to SetProcessDPIAware.
         HMODULE user32 = LoadLibraryW(L"user32.dll");
         if (user32) {
             using SetDpiCtxFn = BOOL (WINAPI*)(DPI_AWARENESS_CONTEXT);
@@ -199,6 +195,9 @@ namespace
         SetProcessDPIAware();
     }
 
+    // ---------------------------------------------------------------------
+    // Optional console in debug builds
+    // ---------------------------------------------------------------------
     void maybe_alloc_console(bool enable)
     {
     #if defined(_DEBUG)
@@ -213,24 +212,28 @@ namespace
     #endif
     }
 
-    // --- Crash dumps ---
-
+    // ---------------------------------------------------------------------
+    // Crash dumps
+    // ---------------------------------------------------------------------
     LONG WINAPI UnhandledFilter(EXCEPTION_POINTERS* info)
     {
         SYSTEMTIME st{};
         GetLocalTime(&st);
 
         wchar_t stamp[64];
-        swprintf_s(stamp, L"%04u%02u%02u_%02u%02u%02u",
-                   st.wYear, st.wMonth, st.wDay,
-                   st.wHour, st.wMinute, st.wSecond);
+        swprintf_s(
+            stamp, L"%04u%02u%02u_%02u%02u%02u",
+            st.wYear, st.wMonth, st.wDay,
+            st.wHour, st.wMinute, st.wSecond
+        );
 
         auto filePath = g_dumpDir / (std::wstring(L"crash_") + stamp + L".dmp");
 
         HANDLE hFile = CreateFileW(
             filePath.c_str(),
             GENERIC_WRITE,
-            0, nullptr,
+            0,
+            nullptr,
             CREATE_ALWAYS,
             FILE_ATTRIBUTE_NORMAL,
             nullptr
@@ -255,9 +258,11 @@ namespace
         CloseHandle(hFile);
 
         if (ok) {
+            std::wstring msg = L"A crash dump was written to:\n";
+            msg += filePath.wstring();
             MessageBoxW(
                 nullptr,
-                (L"A crash dump was written to:\n" + filePath.wstring()).c_str(),
+                msg.c_str(),
                 L"Colony-Game Crash",
                 MB_OK | MB_ICONERROR
             );
@@ -272,20 +277,20 @@ namespace
         SetUnhandledExceptionFilter(UnhandledFilter);
     }
 
-    // --- Single-instance (named mutex) ---
-
+    // ---------------------------------------------------------------------
+    // Single-instance via named mutex
+    // ---------------------------------------------------------------------
     bool acquire_single_instance(const std::wstring& name)
     {
         const std::wstring full = L"Global\\" + name;
         g_mutex = CreateMutexW(nullptr, TRUE, full.c_str());
         if (!g_mutex)
-            return true; // fail-open: don't block second instance if mutex fails
+            return true; // fail-open
 
         if (GetLastError() == ERROR_ALREADY_EXISTS) {
-            if (g_mutex) {
-                CloseHandle(g_mutex);
-                g_mutex = nullptr;
-            }
+            CloseHandle(g_mutex);
+            g_mutex = nullptr;
+
             MessageBoxW(
                 nullptr,
                 L"Colony-Game is already running.",
@@ -300,6 +305,9 @@ namespace
 
 } // anonymous namespace
 
+// -------------------------------------------------------------------------
+// winboot namespace API
+// -------------------------------------------------------------------------
 namespace winboot
 {
 
@@ -318,7 +326,7 @@ void Preflight(const Options& opt)
     g_root = resolve_root(opt.assetDirName);
     std::filesystem::current_path(g_root);
 
-    // Prepare logging + (optional) crash dumps.
+    // Prepare logging + (optional) crash dumps
     const auto logsDir = ensure_dir(g_root / L"logs");
     log_open(logsDir / "launcher.log");
     log_info(std::string("Bootstrap start. Root: ") + path_u8(g_root));
@@ -333,7 +341,7 @@ void Preflight(const Options& opt)
 
     maybe_alloc_console(opt.showConsoleInDebug);
 
-    // Sanity ping about assets.
+    // Sanity check about assets
     if (!dir_has_assets(g_root, opt.assetDirName)) {
         log_err(
             std::string("Assets folder '") +
@@ -342,8 +350,8 @@ void Preflight(const Options& opt)
         );
     } else {
         log_info(
-            std::string("Assets folder present: ") +
-            path_u8(g_root / opt.assetDirName / L"config")
+            std::string("Assets folder present under root: ") +
+            path_u8(g_root / opt.assetDirName)
         );
     }
 }
