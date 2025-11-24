@@ -1,11 +1,13 @@
-# cmake/CGToolchain.cmake
-include_guard(GLOBAL)
+# cmake/CGToolchain.cmake – Windows only, repo-local vcpkg
+if (WIN32)
+  set(VCPKG_ROOT "${CMAKE_SOURCE_DIR}/vcpkg" CACHE PATH "Path to vcpkg root" FORCE)
 
-# Auto-detect vcpkg toolchain only if the caller didn't set one
-if(NOT DEFINED CMAKE_TOOLCHAIN_FILE)
-  if(DEFINED ENV{VCPKG_INSTALLATION_ROOT} AND EXISTS "$ENV{VCPKG_INSTALLATION_ROOT}/scripts/buildsystems/vcpkg.cmake")
-    set(CMAKE_TOOLCHAIN_FILE "$ENV{VCPKG_INSTALLATION_ROOT}/scripts/buildsystems/vcpkg.cmake" CACHE FILEPATH "vcpkg toolchain")
-  elseif(DEFINED ENV{VCPKG_ROOT} AND EXISTS "$ENV{VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake")
-    set(CMAKE_TOOLCHAIN_FILE "$ENV{VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake" CACHE FILEPATH "vcpkg toolchain")
-  endif()
+  set(CMAKE_TOOLCHAIN_FILE
+      "${VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake"
+      CACHE STRING "vcpkg toolchain file" FORCE)
+
+  set(VCPKG_TARGET_TRIPLET "x64-windows" CACHE STRING "Target triplet" FORCE)
+  set(VCPKG_HOST_TRIPLET   "x64-windows" CACHE STRING "Host triplet"   FORCE)
+else()
+  message(FATAL_ERROR "Colony-Game currently only supports Windows.")
 endif()
