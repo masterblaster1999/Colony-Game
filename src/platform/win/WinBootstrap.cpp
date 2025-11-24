@@ -9,10 +9,18 @@
 #   define _WIN32_WINNT WINVER
 #endif
 
-#define WIN32_LEAN_AND_MEAN
-#define NOMINMAX
+// These may be defined on the compiler command line already; guard to
+// avoid macro-redefinition warnings (which are treated as errors).
+#ifndef WIN32_LEAN_AND_MEAN
+#   define WIN32_LEAN_AND_MEAN
+#endif
+
+#ifndef NOMINMAX
+#   define NOMINMAX
+#endif
 
 #include "WinBootstrap.h"
+
 #include <windows.h>
 #include <winerror.h> // ERROR_ALREADY_EXISTS
 #include <DbgHelp.h>
@@ -27,19 +35,16 @@
 
 #pragma comment(lib, "Dbghelp.lib")
 
-#ifndef DPI_AWARENESS_CONTEXT
-using DPI_AWARENESS_CONTEXT = HANDLE;
-#endif
-#ifndef DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2
-#define DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2 ((DPI_AWARENESS_CONTEXT)-4)
-#endif
+// NOTE: We intentionally do NOT re-declare DPI_AWARENESS_CONTEXT or
+// DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2 here; they are provided
+// by the Windows SDK headers in modern toolchains.
 
 namespace
 {
     // --- Global state ---
-    HANDLE               g_mutex   = nullptr;
-    std::ofstream        g_log;
-    std::mutex           g_logMu;
+    HANDLE                g_mutex   = nullptr;
+    std::ofstream         g_log;
+    std::mutex            g_logMu;
     std::filesystem::path g_root;
     std::filesystem::path g_dumpDir;
 
@@ -94,7 +99,8 @@ namespace
 
     // Does this directory appear to contain the requested assetDir?
     // assetDir is typically something like L"assets".
-    bool dir_has_assets(const std::filesystem::path& root, const std::wstring& assetDir)
+    bool dir_has_assets(const std::filesystem::path& root,
+                        const std::wstring&          assetDir)
     {
         if (assetDir.empty())
             return false;
@@ -107,8 +113,7 @@ namespace
             return false;
         }
 
-        // Extra sanity: require "config" subdir inside the assetDir;
-        // if this is too strict, you can remove it.
+        // Extra sanity: require "config" subdir inside the assetDir.
         const auto configPath = assetsPath / L"config";
         if (!std::filesystem::exists(configPath, ec) ||
             !std::filesystem::is_directory(configPath, ec)) {
@@ -190,7 +195,7 @@ namespace
             FreeLibrary(user32);
         }
 
-        // Fallback available since Vista
+        // Fallback available since Vista.
         SetProcessDPIAware();
     }
 
@@ -274,7 +279,7 @@ namespace
         const std::wstring full = L"Global\\" + name;
         g_mutex = CreateMutexW(nullptr, TRUE, full.c_str());
         if (!g_mutex)
-            return true; // fail-open
+            return true; // fail-open: don't block second instance if mutex fails
 
         if (GetLastError() == ERROR_ALREADY_EXISTS) {
             if (g_mutex) {
@@ -313,7 +318,7 @@ void Preflight(const Options& opt)
     g_root = resolve_root(opt.assetDirName);
     std::filesystem::current_path(g_root);
 
-    // Prepare logging + (optional) crash dumps
+    // Prepare logging + (optional) crash dumps.
     const auto logsDir = ensure_dir(g_root / L"logs");
     log_open(logsDir / "launcher.log");
     log_info(std::string("Bootstrap start. Root: ") + path_u8(g_root));
@@ -328,7 +333,7 @@ void Preflight(const Options& opt)
 
     maybe_alloc_console(opt.showConsoleInDebug);
 
-    // Sanity ping about assets
+    // Sanity ping about assets.
     if (!dir_has_assets(g_root, opt.assetDirName)) {
         log_err(
             std::string("Assets folder '") +
@@ -338,7 +343,7 @@ void Preflight(const Options& opt)
     } else {
         log_info(
             std::string("Assets folder present: ") +
-            path_u8(g_root / opt.assetDirName)
+            path_u8(g_root / opt.assetDirName / L"config")
         );
     }
 }
