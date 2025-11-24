@@ -1,13 +1,27 @@
 // src/Platform/Win/WinLauncher.cpp
+
+// Target at least Windows 10 (required for some DPI APIs we use)
+#ifndef WINVER
+#   define WINVER 0x0A00
+#endif
+
+#ifndef _WIN32_WINNT
+#   define _WIN32_WINNT WINVER
+#endif
+
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
 #include <Windows.h>
+#include <ShlObj.h>    // SHGetKnownFolderPath, KF_FLAG_CREATE, FOLDERID_LocalAppData
+#include <Objbase.h>   // CoTaskMemFree
 #include <shellapi.h>
 #include <filesystem>
 #include <fstream>
 #include <string_view>
+#include <exception>
 
 #pragma comment(lib, "Shell32.lib")
+#pragma comment(lib, "Ole32.lib")
 
 // Ask dGPU on laptops
 extern "C" {
