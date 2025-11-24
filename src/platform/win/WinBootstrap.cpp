@@ -1,9 +1,9 @@
 // src/platform/win/WinBootstrap.cpp
 
+#include "WinSDK.h"
 #include "WinBootstrap.h"
 
-#include <windows.h>
-#include <winerror.h> // ERROR_ALREADY_EXISTS
+#include <winerror.h>  // ERROR_ALREADY_EXISTS
 #include <DbgHelp.h>
 #include <filesystem>
 #include <fstream>
@@ -12,12 +12,13 @@
 #include <ctime>
 #include <string>
 #include <string_view>
-#include <cstdio> // freopen_s
+#include <cstdio>      // freopen_s
 
 #pragma comment(lib, "Dbghelp.lib")
 
 // Some older SDKs may not define this; newer ones do in windef.h.
-// We only add a fallback if it's missing.
+// We only add a fallback if it's missing. DPI_AWARENESS_CONTEXT itself
+// comes from the Windows headers included via WinSDK.h.
 #ifndef DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2
     #define DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2 ((DPI_AWARENESS_CONTEXT)-4)
 #endif
