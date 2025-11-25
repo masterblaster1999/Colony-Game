@@ -15,7 +15,9 @@ struct TextureTileCPU;
 // Loaders return nullptr on failure and fill out-of-band error strings if you want (omitted here).
 std::unique_ptr<HeightTileCPU> LoadHeightTileR16(const std::filesystem::path& file);
 
-struct DdsOwned {
+// Use 'class' here to match any earlier forward declaration and avoid C4099.
+class DdsOwned {
+public:
     std::unique_ptr<DirectX::ScratchImage> img; // owns the ScratchImage
 };
 
