@@ -6,17 +6,45 @@
 // Public entry point:
 //   void CG_DrawProcgen3DPreview(ID3D11Device* dev, ID3D11DeviceContext* ctx, float timeSeconds, bool wireframe);
 
-#define WIN32_LEAN_AND_MEAN
-#include <windows.h>
+#ifndef _WIN32
+#  error "Procgen3DPreview.cpp is Windows-only and should not be built on non-Windows platforms."
+#endif
+
+// Prefer the project's unified Windows header if available; otherwise fall back
+// to a minimal Windows.h include with the usual macro hygiene. Guard the
+// WIN32_LEAN_AND_MEAN define so we don't trigger C4005 when the macro is also
+// supplied via the compiler command line (/DWIN32_LEAN_AND_MEAN). :contentReference[oaicite:0]{index=0}
+#ifdef __has_include
+#  if __has_include("platform/win/WinHeaders.h")
+#    include "platform/win/WinHeaders.h"
+#  else
+#    ifndef WIN32_LEAN_AND_MEAN
+#      define WIN32_LEAN_AND_MEAN
+#    endif
+#    ifndef NOMINMAX
+#      define NOMINMAX
+#    endif
+#    include <Windows.h>
+#  endif
+#else
+#  ifndef WIN32_LEAN_AND_MEAN
+#    define WIN32_LEAN_AND_MEAN
+#  endif
+#  ifndef NOMINMAX
+#    define NOMINMAX
+#  endif
+#  include <Windows.h>
+#endif
+
 #include <d3d11.h>
 #include <d3dcompiler.h>
 #include <wrl/client.h>
 #include <DirectXMath.h>
 #include <vector>
-#include <array>
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
+#include <cstring> // for strlen in CompileShaderFromSrc
 
 #pragma comment(lib, "d3d11.lib")
 #pragma comment(lib, "d3dcompiler.lib")
@@ -97,9 +125,20 @@ void initPermutation(uint32_t seed) {
 // Compile a shader from memory source
 HRESULT CompileShaderFromSrc(const char* src, const char* entry, const char* profile, UINT flags, ComPtr<ID3DBlob>& blob) {
     ComPtr<ID3DBlob> err;
-    HRESULT hr = D3DCompile(src, strlen(src), nullptr, nullptr, nullptr, entry, profile, flags, 0, blob.GetAddressOf(), err.GetAddressOf());
+    HRESULT hr = D3DCompile(
+        src,
+        static_cast<SIZE_T>(std::strlen(src)),
+        nullptr,
+        nullptr,
+        nullptr,
+        entry,
+        profile,
+        flags,
+        0,
+        blob.GetAddressOf(),
+        err.GetAddressOf());
     if (FAILED(hr) && err) {
-        OutputDebugStringA((const char*)err->GetBufferPointer());
+        OutputDebugStringA(static_cast<const char*>(err->GetBufferPointer()));
     }
     return hr;
 }
@@ -215,9 +254,9 @@ void ensurePipeline(ID3D11Device* dev) {
 
     // Compile shaders
     UINT flags = D3DCOMPILE_ENABLE_STRICTNESS;
-    #if defined(_DEBUG)
-      flags |= D3DCOMPILE_DEBUG | D3DCOMPILE_SKIP_OPTIMIZATION;
-    #endif
+#if defined(_DEBUG)
+    flags |= D3DCOMPILE_DEBUG | D3DCOMPILE_SKIP_OPTIMIZATION;
+#endif
     ComPtr<ID3DBlob> vsb, psb;
     CompileShaderFromSrc(kHlsl, "vs_main", "vs_5_0", flags, vsb);
     CompileShaderFromSrc(kHlsl, "ps_main", "ps_5_0", flags, psb);
@@ -227,8 +266,8 @@ void ensurePipeline(ID3D11Device* dev) {
 
     // Input layout
     D3D11_INPUT_ELEMENT_DESC ied[] = {
-        { "POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, offsetof(Vertex,pos), D3D11_INPUT_PER_VERTEX_DATA, 0 },
-        { "NORMAL",   0, DXGI_FORMAT_R32G32B32_FLOAT, 0, offsetof(Vertex,nrm), D3D11_INPUT_PER_VERTEX_DATA, 0 },
+        { "POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, (UINT)offsetof(Vertex,pos), D3D11_INPUT_PER_VERTEX_DATA, 0 },
+        { "NORMAL",   0, DXGI_FORMAT_R32G32B32_FLOAT, 0, (UINT)offsetof(Vertex,nrm), D3D11_INPUT_PER_VERTEX_DATA, 0 },
     };
     dev->CreateInputLayout(ied, 2, vsb->GetBufferPointer(), vsb->GetBufferSize(), g.il.GetAddressOf());
 
@@ -249,9 +288,13 @@ void ensurePipeline(ID3D11Device* dev) {
 
     // Rasterizer states
     D3D11_RASTERIZER_DESC rsd{};
-    rsd.FillMode = D3D11_FILL_SOLID; rsd.CullMode = D3D11_CULL_BACK; rsd.DepthClipEnable = TRUE;
+    rsd.FillMode = D3D11_FILL_SOLID;
+    rsd.CullMode = D3D11_CULL_BACK;
+    rsd.DepthClipEnable = TRUE;
     dev->CreateRasterizerState(&rsd, g.rs_solid.GetAddressOf());
-    rsd.FillMode = D3D11_FILL_WIREFRAME; rsd.CullMode = D3D11_CULL_NONE;
+
+    rsd.FillMode = D3D11_FILL_WIREFRAME;
+    rsd.CullMode = D3D11_CULL_NONE;
     dev->CreateRasterizerState(&rsd, g.rs_wire.GetAddressOf());
 
     // Initial mesh
@@ -324,7 +367,7 @@ void CG_DrawProcgen3DPreview(ID3D11Device* dev, ID3D11DeviceContext* ctx, float 
     // Viewport from current RT
     D3D11_VIEWPORT vp{};
     if (vpCount) vp = oldVP[0];
-    else { vp.TopLeftX=0; vp.TopLeftY=0; vp.Width=1600; vp.Height=900; }
+    else { vp.TopLeftX=0; vp.TopLeftY=0; vp.Width=1600.0f; vp.Height=900.0f; }
     float aspect = vp.Width / std::max(1.0f, vp.Height);
     XMMATRIX proj = XMMatrixPerspectiveFovLH(XM_PIDIV4, aspect, 0.1f, 10000.0f);
     XMMATRIX world = XMMatrixIdentity();
@@ -361,4 +404,3 @@ void CG_DrawProcgen3DPreview(ID3D11Device* dev, ID3D11DeviceContext* ctx, float 
     if (vpCount) ctx->RSSetViewports(vpCount, oldVP.data());
     ctx->OMSetRenderTargets(1, oldRTV.GetAddressOf(), oldDSV.Get());
 }
-
