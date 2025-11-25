@@ -6,6 +6,9 @@
 #  error "win_utils.cpp is Windows-only and should not be built on non-Windows platforms."
 #endif
 
+#include <string>
+#include <filesystem>
+
 // Prefer the project's unified Windows header if available; otherwise fall
 // back to the standard Windows.h + trim common macro noise.
 #ifdef __has_include
@@ -35,9 +38,40 @@
 
 namespace
 {
-    // Per ShellExecuteW docs: returns HINSTANCE that can be cast to INT_PTR.
-    // > 32  == success
-    // <= 32 == error code (SE_ERR_XXX or similar). :contentReference[oaicite:2]{index=2}
+    // Helper to format a Win32 error code into a readable string.
+    std::wstring FormatSystemMessage(DWORD errorCode)
+    {
+        if (!errorCode)
+            return {};
+
+        LPWSTR buffer = nullptr;
+
+        const DWORD flags =
+            FORMAT_MESSAGE_ALLOCATE_BUFFER |
+            FORMAT_MESSAGE_FROM_SYSTEM |
+            FORMAT_MESSAGE_IGNORE_INSERTS;
+
+        const DWORD langId = MAKELANGID(LANG_NEUTRAL, SUBLANG_DEFAULT);
+
+        const DWORD len = ::FormatMessageW(
+            flags,
+            nullptr,
+            errorCode,
+            langId,
+            reinterpret_cast<LPWSTR>(&buffer),
+            0,
+            nullptr);
+
+        if (!len || !buffer)
+            return {};
+
+        std::wstring result(buffer, len);
+        ::LocalFree(buffer);
+
+        return result;
+    }
+
+    // Thin wrapper around ShellExecuteW that logs failures to the debugger.
     inline void ShellExecuteSafe(
         LPCWSTR verb,
         LPCWSTR file,
@@ -45,7 +79,7 @@ namespace
         LPCWSTR directory,
         int     showCmd)
     {
-        HINSTANCE h = ::ShellExecuteW(
+        const HINSTANCE h = ::ShellExecuteW(
             nullptr,   // parent window
             verb,
             file,
@@ -53,12 +87,30 @@ namespace
             directory,
             showCmd);
 
-        const auto code = static_cast<INT_PTR>(h);
+        // Per ShellExecuteW docs: the return value can be treated as an INT_PTR.
+        // > 32  == success
+        // <= 32 == error code (SE_ERR_XXX or similar).
+        const auto code = reinterpret_cast<INT_PTR>(h);
         if (code <= 32)
         {
-            // For now we just emit a debug string; you can wire this into your
-            // logging system if desired and map 'code' to SE_ERR_* / ERROR_*.
-            ::OutputDebugStringW(L"[util::ShellExecuteSafe] ShellExecuteW failed.\n");
+            const DWORD lastError = ::GetLastError();
+
+            std::wstring dbg = L"[util::ShellExecuteSafe] ShellExecuteW failed"
+                               L" (code = ";
+            dbg += std::to_wstring(code);
+            dbg += L", GetLastError = ";
+            dbg += std::to_wstring(lastError);
+            dbg += L")\n";
+
+            const std::wstring sysMsg = FormatSystemMessage(lastError);
+            if (!sysMsg.empty())
+            {
+                dbg += sysMsg;
+                if (!dbg.empty() && dbg.back() != L'\n')
+                    dbg.push_back(L'\n');
+            }
+
+            ::OutputDebugStringW(dbg.c_str());
         }
     }
 } // anonymous namespace
