@@ -45,6 +45,7 @@ VSOutput FullScreenTriangleVS(uint vertexId : SV_VertexID)
 }
 
 // Entry point used by CMake/VS (VS_SHADER_ENTRYPOINT "VSMain")
+// or via cg_set_hlsl_properties(... ENTRY "VSMain" PROFILE "vs_6_0")
 VSOutput VSMain(uint vertexId : SV_VertexID)
 {
     return FullScreenTriangleVS(vertexId);
