@@ -35,6 +35,15 @@ set(CG_DXC_PATH "" CACHE FILEPATH "Full path to dxc.exe (optional)")
 set(COLONY_HLSL_COMPILER "AUTO" CACHE STRING "HLSL compiler: AUTO (prefer DXC), DXC, FXC")
 set_property(CACHE COLONY_HLSL_COMPILER PROPERTY STRINGS "AUTO" "DXC" "FXC")
 
+# Default shader profiles (Shader Model 6.0 for DXC). FXC fallback will be
+# automatically downleveled to Shader Model 5.x when needed.
+set(COLONY_VS_PROFILE "vs_6_0")
+set(COLONY_PS_PROFILE "ps_6_0")
+set(COLONY_CS_PROFILE "cs_6_0")
+set(COLONY_GS_PROFILE "gs_6_0")
+set(COLONY_HS_PROFILE "hs_6_0")
+set(COLONY_DS_PROFILE "ds_6_0")
+
 # --- Tool discovery ------------------------------------------------------------
 function(_cg_find_dxc OUT_EXE)
   if(CG_DXC_PATH AND EXISTS "${CG_DXC_PATH}")
@@ -164,7 +173,25 @@ function(_cg_infer_profile SHADER_PATH OUT_PROFILE)
     set(_stage "ps") # conservative default
   endif()
 
-  set(${OUT_PROFILE} "${_stage}_5_0" PARENT_SCOPE) # D3D11 default
+  # Map stage to a Shader Model 6.0 profile by default. DXC compiles SM 6
+  # natively; FXC fallback is handled in cg_compile_hlsl().
+  if(_stage STREQUAL "vs")
+    set(_profile "${COLONY_VS_PROFILE}")
+  elseif(_stage STREQUAL "ps")
+    set(_profile "${COLONY_PS_PROFILE}")
+  elseif(_stage STREQUAL "cs")
+    set(_profile "${COLONY_CS_PROFILE}")
+  elseif(_stage STREQUAL "gs")
+    set(_profile "${COLONY_GS_PROFILE}")
+  elseif(_stage STREQUAL "hs")
+    set(_profile "${COLONY_HS_PROFILE}")
+  elseif(_stage STREQUAL "ds")
+    set(_profile "${COLONY_DS_PROFILE}")
+  else()
+    set(_profile "${COLONY_PS_PROFILE}")
+  endif()
+
+  set(${OUT_PROFILE} "${_profile}" PARENT_SCOPE)
 endfunction()
 
 function(_cg_accumulate_args PREFIX OUT_LIST)
@@ -249,28 +276,42 @@ function(cg_set_hlsl_properties FILE)
 endfunction()
 
 # --- Project-specific defaults for Colony-Game shaders -------------------------
-# These shaders use VSMain/PSMain instead of main() as their entrypoint.
-# Setting their properties here lets cg_compile_hlsl pick the correct entry
-# point without touching the shader source.
+# These shaders use non-main() entrypoints (VSMain/PSMain/CSMain/etc.). Setting
+# their properties here lets cg_compile_hlsl pick the correct entry point
+# without touching the shader source.
 set(_cg_sky_hlsl "${CMAKE_SOURCE_DIR}/renderer/Shaders/AtmosphereSky.hlsl")
 if(EXISTS "${_cg_sky_hlsl}")
   cg_set_hlsl_properties("${_cg_sky_hlsl}"
     ENTRY   PSMain
-    PROFILE ps_5_0)
+    PROFILE "${COLONY_PS_PROFILE}")
 endif()
 
 set(_cg_fullscreen_vs "${CMAKE_SOURCE_DIR}/shaders/raster/FullScreen.vs.hlsl")
 if(EXISTS "${_cg_fullscreen_vs}")
   cg_set_hlsl_properties("${_cg_fullscreen_vs}"
     ENTRY   VSMain
-    PROFILE vs_5_0)
+    PROFILE "${COLONY_VS_PROFILE}")
+endif()
+
+set(_cg_fullscreen_triangle_vs "${CMAKE_SOURCE_DIR}/renderer/Shaders/Common/FullScreenTriangleVS.hlsl")
+if(EXISTS "${_cg_fullscreen_triangle_vs}")
+  cg_set_hlsl_properties("${_cg_fullscreen_triangle_vs}"
+    ENTRY   FullScreenTriangleVS
+    PROFILE "${COLONY_VS_PROFILE}")
+endif()
+
+set(_cg_terrain_gen_cs "${CMAKE_SOURCE_DIR}/renderer/Shaders/TerrainGen.compute.hlsl")
+if(EXISTS "${_cg_terrain_gen_cs}")
+  cg_set_hlsl_properties("${_cg_terrain_gen_cs}"
+    ENTRY   CSMain
+    PROFILE "${COLONY_CS_PROFILE}")
 endif()
 
 set(_cg_water_hlsl "${CMAKE_SOURCE_DIR}/renderer/Shaders/WaterGerstner.hlsl")
 if(EXISTS "${_cg_water_hlsl}")
   cg_set_hlsl_properties("${_cg_water_hlsl}"
     ENTRY   PSMain
-    PROFILE ps_5_0)
+    PROFILE "${COLONY_PS_PROFILE}")
 endif()
 
 # --- Public API ----------------------------------------------------------------
@@ -341,6 +382,14 @@ function(cg_compile_hlsl TARGET_NAME)
 
     _cg_infer_profile("${_src}" _profile)
 
+    # FXC only supports Shader Models up to 5.1. If we are falling back to FXC,
+    # downlevel any SM 6.x profile to a 5.x equivalent.
+    set(_profile_to_use "${_profile}")
+    if(NOT _use_dxc)
+      string(REPLACE "_6_0" "_5_0" _profile_to_use "${_profile_to_use}")
+      string(REPLACE "_6_1" "_5_1" _profile_to_use "${_profile_to_use}")
+    endif()
+
     get_filename_component(_stem "${_src}" NAME_WE)
     set(_out "${_base_out}/${_stem}.${CG_SHADER_OUTPUT_EXT}")
 
@@ -378,7 +427,7 @@ function(cg_compile_hlsl TARGET_NAME)
       _cg_accumulate_args_dxc(FILE _args)
       add_custom_command(
         OUTPUT "${_out}"
-        COMMAND "${DXC_EXE}" -nologo -T "${_profile}" -E "${_entry}"
+        COMMAND "${DXC_EXE}" -nologo -T "${_profile_to_use}" -E "${_entry}"
                 -Fo "${_out}" "${_src}" ${_args} ${_perflags}
         MAIN_DEPENDENCY "${_src}"
         DEPENDS ${_header_deps}
@@ -389,7 +438,7 @@ function(cg_compile_hlsl TARGET_NAME)
       _cg_accumulate_args(FILE _args)
       add_custom_command(
         OUTPUT "${_out}"
-        COMMAND "${FXC_EXE}" /nologo /T "${_profile}" /E "${_entry}"
+        COMMAND "${FXC_EXE}" /nologo /T "${_profile_to_use}" /E "${_entry}"
                 /Fo "${_out}" "${_src}" ${_args} ${_perflags}
         MAIN_DEPENDENCY "${_src}"
         DEPENDS ${_header_deps}
