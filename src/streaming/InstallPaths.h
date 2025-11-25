@@ -2,7 +2,10 @@
 #include <filesystem>
 #include <string>
 #include <array>
+
+#ifndef NOMINMAX
 #define NOMINMAX
+#endif
 #include <Windows.h>
 
 // Windows-only: resolve the absolute directory of the running EXE.
