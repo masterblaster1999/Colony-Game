@@ -153,7 +153,8 @@ if(WIN32)
 
     # World / terrain shaders
     "${CMAKE_SOURCE_DIR}/shaders/Terrain.hlsl"
-    "${CMAKE_SOURCE_DIR}/shaders/TerrainSplatExample.hlsl"
+    # NOTE: TerrainSplatExample is now an include-only .hlsli helper and is
+    # intentionally not listed here.
 
     # Thermal erosion compute shaders (legacy)
     "${CMAKE_SOURCE_DIR}/shaders/ThermalOutflowCS.hlsl"
@@ -444,7 +445,7 @@ endif()
 # Map viewer tool (Windows-only)
 # ------------------------------------------------------------------------------
 if(WIN32)
-  add_executable(ColonyMapViewer
+  add_executable(ColonyMapViewer WIN32
     tools/map_viewer/MapViewerWin.cpp
   )
 
@@ -452,8 +453,9 @@ if(WIN32)
     target_compile_definitions(ColonyMapViewer PRIVATE UNICODE _UNICODE)
   endif()
 
-  # Link against Win32 GUI libs
+  # Link against world-gen (procgen) and Win32 GUI libs
   target_link_libraries(ColonyMapViewer PRIVATE
+    procgen
     user32
     gdi32
     comdlg32
