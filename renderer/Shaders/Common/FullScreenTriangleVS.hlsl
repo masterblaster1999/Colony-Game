@@ -44,9 +44,16 @@ VSOutput FullScreenTriangleVS(uint vertexId : SV_VertexID)
     return o;
 }
 
-// Entry point used by CMake/VS (VS_SHADER_ENTRYPOINT "VSMain")
+// Entry point used by CMake/VS (e.g. VS_SHADER_ENTRYPOINT "VSMain")
 // or via cg_set_hlsl_properties(... ENTRY "VSMain" PROFILE "vs_6_0")
 VSOutput VSMain(uint vertexId : SV_VertexID)
+{
+    return FullScreenTriangleVS(vertexId);
+}
+
+// Fallback entry point for configurations that still use "main"
+// (avoids DXC 'missing entry point definition' if /E main is used)
+VSOutput main(uint vertexId : SV_VertexID)
 {
     return FullScreenTriangleVS(vertexId);
 }
