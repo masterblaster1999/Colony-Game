@@ -106,18 +106,11 @@ static std::wstring Widen(const std::string& s) {
     return w;
 }
 
-static std::string Narrow(const std::wstring& w) {
-    if (w.empty()) return {};
-    int n = WideCharToMultiByte(CP_UTF8, 0, w.c_str(), (int)w.size(), nullptr, 0, nullptr, nullptr);
-    std::string s(n, 0);
-    WideCharToMultiByte(CP_UTF8, 0, w.c_str(), (int)w.size(), &s[0], n, nullptr, nullptr);
-    return s;
-}
-
 static std::wstring NowStampCompact() {
     SYSTEMTIME st; GetLocalTime(&st);
     wchar_t buf[32];
-    swprintf(buf, 32, L"%04u%02u%02u-%02u%02u%02u", st.wYear, st.wMonth, st.wDay, st.wHour, st.wMinute, st.wSecond);
+    swprintf(buf, 32, L"%04u%02u%02u-%02u%02u%02u",
+             st.wYear, st.wMonth, st.wDay, st.wHour, st.wMinute, st.wSecond);
     return buf;
 }
 
@@ -142,11 +135,6 @@ static std::wstring JoinPath(const std::wstring& a, const std::wstring& b) {
     wchar_t c = a.back();
     if (c == L'\\' || c == L'/') return a + b;
     return a + L"\\" + b;
-}
-
-static bool FileExists(const std::wstring& p) {
-    DWORD a = GetFileAttributesW(p.c_str());
-    return (a != INVALID_FILE_ATTRIBUTES) && !(a & FILE_ATTRIBUTE_DIRECTORY);
 }
 
 static bool EnsureDir(const std::wstring& p) {
