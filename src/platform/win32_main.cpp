@@ -841,8 +841,24 @@ static struct Recorder{ std::vector<FrameRec> frames; bool recording=false, play
 // --------------------------------------------------------
 int APIENTRY wWinMain(HINSTANCE hInst,HINSTANCE,LPWSTR,int){
     set_dpi_awareness();
-    WNDCLASSW wc{}; wc.style=CS_OWNDC|CS_HREDRAW|CS_VREDRAW; wc.lpfnWndProc=WndProc; wc.hInstance=hInst; wc.lpszClassName=L"GamePlatformWin32";
-    wc.hCursor=LoadCursor(nullptr,IDC_ARROW); RegisterClassW(&wc);
+
+    // --- FIX: use WNDCLASSEXW with explicit member initialization to avoid C2078 and match docs.
+    WNDCLASSEXW wc{};
+    wc.cbSize        = sizeof(wc);
+    wc.style         = CS_OWNDC | CS_HREDRAW | CS_VREDRAW;
+    wc.lpfnWndProc   = WndProc;
+    wc.cbClsExtra    = 0;
+    wc.cbWndExtra    = 0;
+    wc.hInstance     = hInst;
+    wc.hIcon         = nullptr; // or LoadIconW(hInst, MAKEINTRESOURCEW(IDI_APPLICATION))
+    wc.hCursor       = LoadCursorW(nullptr, IDC_ARROW);
+    wc.hbrBackground = (HBRUSH)(COLOR_WINDOW + 1);
+    wc.lpszMenuName  = nullptr;
+    wc.lpszClassName = L"GamePlatformWin32";
+    wc.hIconSm       = wc.hIcon;
+
+    RegisterClassExW(&wc); // RegisterClassEx for WNDCLASSEXW (supersedes WNDCLASS). :contentReference[oaicite:1]{index=1}
+
     DWORD style=WS_OVERLAPPEDWINDOW|WS_VISIBLE; RECT wr{0,0,g_win.baseW,g_win.baseH}; AdjustWindowRect(&wr,style,FALSE);
     HWND hwnd=CreateWindowW(wc.lpszClassName, L"Colony — Ultra Platform", style, CW_USEDEFAULT,CW_USEDEFAULT, wr.right-wr.left, wr.bottom-wr.top, nullptr,nullptr,hInst,nullptr);
     g_win.hwnd=hwnd;
