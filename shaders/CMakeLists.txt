@@ -14,9 +14,9 @@ set(SHADER_PROFILES
 )
 
 set(SHADER_ENTRY_POINTS
-  main     # fullscreen_triangle.hlsl
-  main     # terrain_ps.hlsl
-  main     # terrain_vs.hlsl
+  FullScreenTriangleVS  # fullscreen_triangle.hlsl
+  main                  # terrain_ps.hlsl
+  main                  # terrain_vs.hlsl
 )
 
 set(OUTPUT_DIR ${CMAKE_CURRENT_BINARY_DIR}/shaders)
