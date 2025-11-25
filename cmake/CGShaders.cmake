@@ -276,9 +276,12 @@ function(cg_set_hlsl_properties FILE)
 endfunction()
 
 # --- Project-specific defaults for Colony-Game shaders -------------------------
-# These shaders use non-main() entrypoints (VSMain/PSMain/CSMain/etc.). Setting
-# their properties here lets cg_compile_hlsl pick the correct entry point
-# without touching the shader source.
+# IMPORTANT:
+#   Only list shaders here that actually use non-main() entrypoints.
+#   Everything else relies on the default "main" entrypoint and the
+#   stage-to-profile inference above.
+#
+# Atmosphere & sky – pixel shader uses PSMain
 set(_cg_sky_hlsl "${CMAKE_SOURCE_DIR}/renderer/Shaders/AtmosphereSky.hlsl")
 if(EXISTS "${_cg_sky_hlsl}")
   cg_set_hlsl_properties("${_cg_sky_hlsl}"
@@ -286,6 +289,7 @@ if(EXISTS "${_cg_sky_hlsl}")
     PROFILE "${COLONY_PS_PROFILE}")
 endif()
 
+# Fullscreen quad vertex shader – uses VSMain
 set(_cg_fullscreen_vs "${CMAKE_SOURCE_DIR}/shaders/raster/FullScreen.vs.hlsl")
 if(EXISTS "${_cg_fullscreen_vs}")
   cg_set_hlsl_properties("${_cg_fullscreen_vs}"
@@ -293,20 +297,7 @@ if(EXISTS "${_cg_fullscreen_vs}")
     PROFILE "${COLONY_VS_PROFILE}")
 endif()
 
-set(_cg_fullscreen_triangle_vs "${CMAKE_SOURCE_DIR}/renderer/Shaders/Common/FullScreenTriangleVS.hlsl")
-if(EXISTS "${_cg_fullscreen_triangle_vs}")
-  cg_set_hlsl_properties("${_cg_fullscreen_triangle_vs}"
-    ENTRY   FullScreenTriangleVS
-    PROFILE "${COLONY_VS_PROFILE}")
-endif()
-
-set(_cg_terrain_gen_cs "${CMAKE_SOURCE_DIR}/renderer/Shaders/TerrainGen.compute.hlsl")
-if(EXISTS "${_cg_terrain_gen_cs}")
-  cg_set_hlsl_properties("${_cg_terrain_gen_cs}"
-    ENTRY   CSMain
-    PROFILE "${COLONY_CS_PROFILE}")
-endif()
-
+# Water pixel shader – uses PSMain
 set(_cg_water_hlsl "${CMAKE_SOURCE_DIR}/renderer/Shaders/WaterGerstner.hlsl")
 if(EXISTS "${_cg_water_hlsl}")
   cg_set_hlsl_properties("${_cg_water_hlsl}"
