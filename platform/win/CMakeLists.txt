@@ -10,7 +10,7 @@ target_include_directories(win_platform PUBLIC platform/win)
 if (MSVC)
   target_link_libraries(win_platform PUBLIC
       Shcore      # DPI awareness (SetProcessDpiAwareness etc.)
-      Shell32     # Drag&Drop (DragAcceptFiles)
+      Shell32     # Known folders, shell helpers
       Dbghelp     # MiniDumpWriteDump
   )
   target_compile_definitions(win_platform PUBLIC UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX)
