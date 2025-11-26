@@ -411,6 +411,7 @@ public:
 private:
     void worker(){
         for(;;){
+            // value-initialize to avoid use-before-init warnings on older toolsets
             TileJob job{}; bool has=false;
             {
                 std::unique_lock<std::mutex> lk(mx);
@@ -864,7 +865,7 @@ static struct Recorder{ std::vector<FrameRec> frames; bool recording=false, play
 // Entry
 // --------------------------------------------------------
 int APIENTRY wWinMain(HINSTANCE hInst,HINSTANCE,LPWSTR,int){
-    set_dpi_awareness(); // DPI PMv2 if available, else system DPI. Must be before any windows. :contentReference[oaicite:4]{index=4}
+    set_dpi_awareness(); // DPI PMv2 if available, else system DPI. Must be before any windows.
 
     // Use WNDCLASSEXW with explicit member initialization to avoid C2078 and match docs.
     WNDCLASSEXW wc{};
@@ -881,7 +882,7 @@ int APIENTRY wWinMain(HINSTANCE hInst,HINSTANCE,LPWSTR,int){
     wc.lpszClassName = L"GamePlatformWin32";
     wc.hIconSm       = wc.hIcon;
 
-    RegisterClassExW(&wc); // Register the EX class variant (supersedes WNDCLASS). :contentReference[oaicite:5]{index=5}
+    RegisterClassExW(&wc); // Register the EX class variant (supersedes WNDCLASS).
 
     DWORD style=WS_OVERLAPPEDWINDOW|WS_VISIBLE; RECT wr{0,0,g_win.baseW,g_win.baseH}; AdjustWindowRect(&wr,style,FALSE);
     HWND hwnd=CreateWindowW(wc.lpszClassName, L"Colony — Ultra Platform", style, CW_USEDEFAULT,CW_USEDEFAULT, wr.right-wr.left, wr.bottom-wr.top, nullptr,nullptr,hInst,nullptr);
@@ -986,13 +987,17 @@ int APIENTRY wWinMain(HINSTANCE hInst,HINSTANCE,LPWSTR,int){
         if(g_win.fixedTimestep){
             if(!paused){
                 int safety = 0;
+                // Clamp catch-up (implicit via iteration cap or add an explicit clamp if desired)
                 while(acc >= step && safety < 16){
+                    // --- Simulation-only path preferred
                     if(hot.active && hot.api.update_fixed){
                         hot.api.update_fixed(hot.userState, (float)step);
                     } else if(hot.active && hot.api.update_and_render){
+                        // Fallback: legacy combined step renders each update
                         hot.api.update_and_render(hot.userState, (float)step, (uint32_t*)g_bb.pixels, g_bb.w, g_bb.h, &g_in);
                         rendered_by_fallback = true;
                     } else {
+                        // Demo simulate
                         demo_simulate((float)step);
                     }
                     simTime += step; acc -= step; safety++;
@@ -1001,6 +1006,7 @@ int APIENTRY wWinMain(HINSTANCE hInst,HINSTANCE,LPWSTR,int){
             }
             alpha = (float)clampf((float)(acc/step), 0.f, 1.f);
         }else{
+            // Variable step
             if(!paused){
                 if(hot.active && hot.api.update_fixed){
                     hot.api.update_fixed(hot.userState, (float)acc);
@@ -1023,9 +1029,11 @@ int APIENTRY wWinMain(HINSTANCE hInst,HINSTANCE,LPWSTR,int){
                 hot.api.render(hot.userState, alpha, (uint32_t*)g_bb.pixels, g_bb.w, g_bb.h, &g_in);
                 useDirty=false;
             } else if(!hot.active){
+                // Demo single render with interpolation
                 demo_render(alpha);
                 useDirty=false;
             } else {
+                // Legacy combined API but no steps ran (acc < step): draw a zero-dt frame
                 if(hot.api.update_and_render){
                     hot.api.update_and_render(hot.userState, 0.0f, (uint32_t*)g_bb.pixels, g_bb.w, g_bb.h, &g_in);
                     useDirty=false;
@@ -1038,6 +1046,7 @@ int APIENTRY wWinMain(HINSTANCE hInst,HINSTANCE,LPWSTR,int){
         uint64_t tP0=tic();
         if(useDither) apply_dither_gamma(g_bb, gamma);
         if(magnify)   draw_magnifier(g_bb, g_in.mouseX,g_in.mouseY, 10,8,true);
+        // Show HUD using wall-clock delta for smoother UX
         g_perf.frameMS = (float)(dt*1000.0);
         draw_perf_hud(g_bb);
         g_micro.tPost=toc(tP0);
@@ -1045,7 +1054,7 @@ int APIENTRY wWinMain(HINSTANCE hInst,HINSTANCE,LPWSTR,int){
         // ---- Present
         uint64_t tPr0=tic();
         if(useDirty) present_dirty(hwnd,hdc,g_bb,g_dirty); else present_full(hwnd,hdc,g_bb);
-        if(g_win.useVsync){ BOOL comp=FALSE; DwmIsCompositionEnabled(&comp); if(comp) DwmFlush(); } // blocks until DWM presents :contentReference[oaicite:6]{index=6}
+        if(g_win.useVsync){ BOOL comp=FALSE; DwmIsCompositionEnabled(&comp); if(comp) DwmFlush(); }
         g_micro.tPresent=toc(tPr0);
 
         // HUD fps graph (based on wall dt)
@@ -1067,3 +1076,4 @@ int APIENTRY wWinMain(HINSTANCE hInst,HINSTANCE,LPWSTR,int){
     if(g_timerPeriod) timeEndPeriod(g_timerPeriod);
     return 0;
 }
+
