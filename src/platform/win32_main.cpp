@@ -1076,4 +1076,3 @@ int APIENTRY wWinMain(HINSTANCE hInst,HINSTANCE,LPWSTR,int){
     if(g_timerPeriod) timeEndPeriod(g_timerPeriod);
     return 0;
 }
-
