@@ -1,30 +1,52 @@
+// platform/win/WinApp.h
 #pragma once
-#define WIN32_LEAN_AND_MEAN
+#ifndef NOMINMAX
+#  define NOMINMAX
+#endif
 #include <windows.h>
 #include <string>
+#include <functional>
 
-// Small Win32 host: window + raw input + DPI fallback helper
+struct WinCreateDesc {
+    HINSTANCE hInstance = nullptr;
+    const wchar_t* title = L"Colony Game";
+    int width  = 1600;
+    int height = 900;
+    DWORD style  = WS_OVERLAPPEDWINDOW;
+    DWORD exStyle= 0;
+    bool  rawInputNoLegacy = true;     // if true, suppress legacy WM_* key msgs
+    bool  enableDpiFallback = true;    // manifest is preferred; API is fallback
+};
+
 class WinApp {
 public:
-    WinApp() = default;
+    struct Callbacks {
+        // Install any you need; leave null if unused
+        std::function<void(const RAWINPUT&)> onRawInput;     // WM_INPUT
+        std::function<void(UINT,UINT)>       onResize;       // WM_SIZE
+        std::function<void(UINT,UINT)>       onDpiChanged;   // WM_DPICHANGED
+        std::function<void()>                onClose;        // WM_CLOSE
+    };
 
-    // Creates the top-level window. Returns false on failure.
-    bool CreateWindowClassAndWindow(const std::wstring& title, int width, int height, bool borderless);
+    // --- Legacy static API expected by your main_win.cpp ---
+    static bool create(const WinCreateDesc& desc, const Callbacks& cbs);
+    static int  run();
+    static HWND hwnd();
 
-    // Registers Raw Input for keyboard+mouse. If noLegacy=true, legacy WM_* input is suppressed.
-    void RegisterRawInput(bool noLegacy);
-
-    // Standard message pump; return exit code
+    // --- Thin instance API (you can use directly elsewhere) ---
+    bool Create(const WinCreateDesc& desc, const Callbacks& cbs);
     int  RunMessageLoop();
-
-    HWND Hwnd() const { return hwnd_; }
-
-    // Runtime DPI fallback (manifest is primary; call this early in WinMain).
-    static void EnablePerMonitorV2DpiAwareness();
+    HWND GetHwnd() const { return m_hwnd; }
 
 private:
-    static LRESULT CALLBACK WndProc(HWND, UINT, WPARAM, LPARAM);
-    static WinApp* self_;
+    static WinApp* s_self;
+    HINSTANCE m_hInst = nullptr;
+    HWND      m_hwnd  = nullptr;
+    Callbacks m_cbs{};
 
-    HWND hwnd_ = nullptr;
+    static LRESULT CALLBACK WndProc(HWND, UINT, WPARAM, LPARAM);
+    void RegisterRawInput(bool noLegacy);
+
+    // DPI fallback (manifest is recommended way; this is just a safety net)
+    static void EnablePerMonitorV2DpiFallback();
 };
