@@ -3,6 +3,38 @@
 #include <algorithm> // std::find, std::find_if, std::remove
 #include <cmath>     // std::abs
 #include <limits>    // std::numeric_limits
+#include <objbase.h> // CoInitializeEx, CoUninitialize
+
+#pragma comment(lib, "ole32.lib") // CoInitializeEx/CoUninitialize import lib
+
+// -----------------------------------------------------------------------------
+// Per-thread COM initialization (RAII) for WIC/DirectXTex users.
+// Any thread that may decode/encode images must initialize COM.
+// This helper guarantees one CoInitializeEx per thread and pairs it with
+// CoUninitialize only when appropriate (S_OK/S_FALSE).
+// -----------------------------------------------------------------------------
+namespace {
+struct ComInitScope {
+    HRESULT hr = E_FAIL;
+    explicit ComInitScope(DWORD flags = COINIT_MULTITHREADED) noexcept {
+        hr = ::CoInitializeEx(nullptr, flags);
+        // Accept S_OK (fresh), S_FALSE (already initialized on this thread).
+        // If RPC_E_CHANGED_MODE is returned, don't call CoUninitialize later.
+    }
+    ~ComInitScope() noexcept {
+        if (hr == S_OK || hr == S_FALSE) {
+            ::CoUninitialize();
+        }
+    }
+};
+
+// Ensure COM is initialized on the current thread exactly once.
+// Call at the top of any API that can run on worker threads which touch WIC/DirectXTex.
+inline void EnsureCom() noexcept {
+    static thread_local ComInitScope s_com(COINIT_MULTITHREADED);
+    (void)s_com;
+}
+} // namespace
 
 // -----------------------------------------------------------------------------
 // Singleton boilerplate
@@ -23,6 +55,8 @@ JobSystem::~JobSystem() = default;
 
 Job* JobSystem::findJob(JobId id)
 {
+    EnsureCom(); // safe no-op if already initialized on this thread
+
     // Linear search through the job queue by ID.
     // Returns nullptr if the job doesn't exist.
     auto it = std::find_if(
@@ -43,6 +77,8 @@ Job* JobSystem::findJob(JobId id)
 
 JobId JobSystem::createJob(JobType type, const Int2& targetTile, int priority)
 {
+    EnsureCom(); // workers that create jobs (IO, streaming) will be COM-initialized
+
     Job job{}; // value-initialize to avoid any uninitialized fields
     job.id            = nextJobId_++;
     job.type          = type;
@@ -57,6 +93,8 @@ JobId JobSystem::createJob(JobType type, const Int2& targetTile, int priority)
 
 void JobSystem::notifyJobCompleted(JobId jobId, AgentId agent)
 {
+    EnsureCom();
+
     Job* job = findJob(jobId);
     if (!job)
         return;
@@ -71,6 +109,8 @@ void JobSystem::notifyJobCompleted(JobId jobId, AgentId agent)
 
 void JobSystem::notifyJobFailed(JobId jobId, AgentId agent)
 {
+    EnsureCom();
+
     Job* job = findJob(jobId);
     if (!job)
         return;
@@ -86,6 +126,8 @@ void JobSystem::notifyJobFailed(JobId jobId, AgentId agent)
 
 void JobSystem::registerAgent(AgentId agent)
 {
+    EnsureCom();
+
     const auto it = std::find(agents_.begin(), agents_.end(), agent);
     if (it == agents_.end())
     {
@@ -95,6 +137,8 @@ void JobSystem::registerAgent(AgentId agent)
 
 void JobSystem::unregisterAgent(AgentId agent)
 {
+    EnsureCom();
+
     const auto it = std::remove(agents_.begin(), agents_.end(), agent);
     if (it != agents_.end())
     {
@@ -114,6 +158,8 @@ void JobSystem::unregisterAgent(AgentId agent)
 
 void JobSystem::update(float dt)
 {
+    EnsureCom();
+
     // dt is currently unused but kept for future use (e.g. timeouts).
     (void)dt;
 
