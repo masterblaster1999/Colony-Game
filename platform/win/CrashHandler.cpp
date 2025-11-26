@@ -1,60 +1,30 @@
 #include "CrashHandler.h"
+#include <windows.h>
+#include <dbghelp.h>
+#include <pathcch.h>
+#pragma comment(lib, "Dbghelp.lib")
 
-#ifdef _WIN32
-    #ifndef NOMINMAX
-    #define NOMINMAX
-    #endif
+static LONG WINAPI UnhandledExceptionFilterFn(EXCEPTION_POINTERS* e) {
+    wchar_t exePath[MAX_PATH]{};
+    GetModuleFileNameW(nullptr, exePath, MAX_PATH);
+    PathCchRemoveFileSpec(exePath, MAX_PATH);
+    wchar_t dumpPath[MAX_PATH]{};
+    PathCchCombine(dumpPath, MAX_PATH, exePath, L"crash.dmp");
 
-    #ifndef WIN32_LEAN_AND_MEAN
-    #define WIN32_LEAN_AND_MEAN
-    #endif
-
-    #include <Windows.h>
-    #include <ShlObj.h>     // SHGetKnownFolderPath
-    #include <string>
-    #include <vector>
-
-    #include "CrashDumpWin.h"
-    using namespace CrashDumpWin;
-
-    // Resolve %LOCALAPPDATA%\{appName}\Crashes and ensure it exists.
-    static std::wstring GetCrashDir(const wchar_t* appName)
-    {
-        PWSTR localAppDataW = nullptr;
-        std::wstring out;
-        if (SUCCEEDED(SHGetKnownFolderPath(FOLDERID_LocalAppData, KF_FLAG_CREATE, nullptr, &localAppDataW)))
-        {
-            out.assign(localAppDataW);
-            CoTaskMemFree(localAppDataW);
-            out.append(L"\\");
-            out.append(appName && *appName ? appName : L"ColonyGame");
-            out.append(L"\\Crashes");
-            CreateDirectoryW(out.c_str(), nullptr);
-        }
-        else
-        {
-            out.assign(L"."); // fallback to current directory
-        }
-        return out;
+    HANDLE hFile = CreateFileW(dumpPath, GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS,
+                               FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (hFile != INVALID_HANDLE_VALUE) {
+        MINIDUMP_EXCEPTION_INFORMATION info{ GetCurrentThreadId(), e, FALSE };
+        MiniDumpWriteDump(GetCurrentProcess(), GetCurrentProcessId(), hFile,
+                          MiniDumpWithDataSegs | MiniDumpWithThreadInfo,
+                          &info, nullptr, nullptr);  // Microsoft API: MiniDumpWriteDump
+        CloseHandle(hFile);
     }
+    return EXCEPTION_EXECUTE_HANDLER;
+}
 
-    void InstallCrashHandler(const wchar_t* appName)
-    {
-        const std::wstring crashDir = GetCrashDir(appName);
-        // Configure sensible defaults (all are optional).
-        SetDumpLevel(DumpLevel::Balanced);             // detail preset (tiny/small/balanced/heavy/full)
-        SetPostCrashAction(PostCrashAction::ExitProcess);
-        SetMaxDumpsToKeep(10);                         // keep last N
-        SetThrottleSeconds(3);                         // collapse storms
-        SetSkipIfDebuggerPresent(true);                // do nothing under debugger
-        EnableSidecarMetadata(true);                   // write a small .txt alongside .dmp
-        SetExtraCommentLine(L"Crash handler: CrashDumpWin");
-
-        // Initialize the robust crash-dump facility.
-        // NOTE: we pass nullptr for buildTag; you can plumb your git hash here if desired.
-        Init(appName && *appName ? appName : L"ColonyGame", crashDir.c_str(), /*buildTag*/ nullptr);
-    }
-#else
-    // Non-Windows: no-op to keep any non-Windows tools compiling (repo is Windows-first anyway).
-    void InstallCrashHandler(const wchar_t*) {}
-#endif
+void InstallCrashHandler() {
+    // Best practice: avoid modal error dialogs; also set a top-level SEH filter.
+    SetErrorMode(SEM_FAILCRITICALERRORS | SEM_NOGPFAULTERRORBOX);  // no WER UI. :contentReference[oaicite:0]{index=0}
+    SetUnhandledExceptionFilter(UnhandledExceptionFilterFn);       // top-level SEH. :contentReference[oaicite:1]{index=1}
+}
