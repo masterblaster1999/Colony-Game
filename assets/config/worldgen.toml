@@ -1,0 +1,5 @@
+seed = 12345
+size = { width = 4096, height = 4096 }
+noise = { octaves = 5, lacunarity = 2.0, persistence = 0.5 }
+erosion = { iterations = 500000, rain = 0.02, evaporation = 0.1 }
+temperature = { lapseRateCPer100m = 0.65, polarBias = 0.2 }
