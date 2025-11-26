@@ -3,16 +3,16 @@
 #include "RendererHooks.h"
 #include "JobSystem.h"
 #include "InstallPaths.h"
+
 #include <unordered_map>
 #include <queue>
 #include <mutex>
 #include <optional>
 #include <filesystem>
-#include <wrl/client.h>            // ComPtr
 
-// Forward-declare to avoid pulling in <d3d11.h> from a header.
-// (The cpp that owns/binds the SRV will include <d3d11.h>.)
-struct ID3D11ShaderResourceView;
+// --- D3D11 SRV needs a complete type for WRL::ComPtr's destructor.
+#include <d3d11.h>          // defines ID3D11ShaderResourceView (and friends)
+#include <wrl/client.h>     // Microsoft::WRL::ComPtr
 
 struct TerrainStreamingConfig {
     int   radiusTiles = 3;            // hot radius in tiles in X/Y from camera
@@ -37,15 +37,20 @@ public:
     int ResidentHeightTiles() const { return (int)m_heightTiles.size(); }
 
     // Count unique texture tiles across both albedo (A) and normal (N) sets.
-    // Uses C++20 unordered_map::contains for O(1) membership tests. :contentReference[oaicite:1]{index=1}
     int ResidentTextureTiles() const {
+#if defined(__cpp_lib_unordered_map_contains) && __cpp_lib_unordered_map_contains >= 201411
         size_t count = m_texTilesA.size();
         for (const auto& kv : m_texTilesN) {
-            if (!m_texTilesA.contains(kv.first)) {
-                ++count;
-            }
+            if (!m_texTilesA.contains(kv.first)) ++count;
         }
         return (int)count;
+#else
+        size_t count = m_texTilesA.size();
+        for (const auto& kv : m_texTilesN) {
+            if (m_texTilesA.find(kv.first) == m_texTilesA.end()) ++count;
+        }
+        return (int)count;
+#endif
     }
 
 private:
@@ -90,14 +95,15 @@ private:
     // Frame counter for simple LRU touch
     uint64_t m_frame = 0;
 
+    // Height tile residency
     std::unordered_map<TileCoord, TileState, TileCoordHasher> m_heightTiles;
+
+    // Texture tile residency split by channel (albedo/normal).
     std::unordered_map<TileCoord, TileState, TileCoordHasher> m_texTilesA; // albedo
     std::unordered_map<TileCoord, TileState, TileCoordHasher> m_texTilesN; // normal
 
-    // GPU view of the streamed tile atlas/array (D3D11).
-    // Created/updated in the .cpp; bound with VS/PS SetShaderResources.
-    // See ID3D11ShaderResourceView on Microsoft Learn. :contentReference[oaicite:2]{index=2}
-    Microsoft::WRL::ComPtr<ID3D11ShaderResourceView> m_texTiles;            // SRV for tile atlas
+    // GPU view of the streamed tile atlas/array (D3D11). Bound via *SetShaderResources.
+    Microsoft::WRL::ComPtr<ID3D11ShaderResourceView> m_texTiles; // SRV handle
 
     mutable std::mutex m_readyMx;
     std::queue<PendingTex>    m_readyTex;
