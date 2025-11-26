@@ -857,7 +857,7 @@ int APIENTRY wWinMain(HINSTANCE hInst,HINSTANCE,LPWSTR,int){
     wc.lpszClassName = L"GamePlatformWin32";
     wc.hIconSm       = wc.hIcon;
 
-    RegisterClassExW(&wc); // RegisterClassEx for WNDCLASSEXW (supersedes WNDCLASS). :contentReference[oaicite:1]{index=1}
+    RegisterClassExW(&wc); // RegisterClassEx for WNDCLASSEXW (supersedes WNDCLASS)
 
     DWORD style=WS_OVERLAPPEDWINDOW|WS_VISIBLE; RECT wr{0,0,g_win.baseW,g_win.baseH}; AdjustWindowRect(&wr,style,FALSE);
     HWND hwnd=CreateWindowW(wc.lpszClassName, L"Colony — Ultra Platform", style, CW_USEDEFAULT,CW_USEDEFAULT, wr.right-wr.left, wr.bottom-wr.top, nullptr,nullptr,hInst,nullptr);
@@ -1051,4 +1051,3 @@ int APIENTRY wWinMain(HINSTANCE hInst,HINSTANCE,LPWSTR,int){
     if(g_timerPeriod) timeEndPeriod(g_timerPeriod);
     return 0;
 }
-
