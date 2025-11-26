@@ -321,7 +321,6 @@ static inline uint8_t aa_from_distance(float d){
     float a=0.5f - d; if(a<=0) return 0; if(a>=1) return 255; return (uint8_t)(a*255.f+0.5f);
 }
 static void draw_sdf_circle(Backbuffer& bb,float cx,float cy,float r,uint32_t rgb,float borderPx=1.0f){
-    // Removed unused minX to avoid C4189 under /WX
     int maxX=clampi((int)ceilf(cx+r+borderPx),0,bb.w);
     int minY=clampi((int)floorf(cy-r-borderPx),0,bb.h), maxY=clampi((int)ceilf(cy+r+borderPx),0,bb.h);
     for(int y=minY; y<maxY; ++y){
@@ -412,7 +411,6 @@ public:
 private:
     void worker(){
         for(;;){
-            // value-initialize to avoid use-before-init warnings on older toolsets
             TileJob job{}; bool has=false;
             {
                 std::unique_lock<std::mutex> lk(mx);
@@ -506,8 +504,8 @@ static void set_dpi_awareness(){
     HMODULE user=GetModuleHandleA("user32.dll");
     using SetDpiCtx=BOOL(WINAPI*)(HANDLE);
     if(user){ auto p=(SetDpiCtx)GetProcAddress(user,"SetProcessDpiAwarenessContext");
-        if(p){ p(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2); return; } }
-    SetProcessDPIAware();
+        if(p){ p(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2); return; } } // PMv2 if available
+    SetProcessDPIAware(); // Vista fallback
 }
 static void toggle_fullscreen(HWND hwnd){
     static WINDOWPLACEMENT prev={sizeof(prev)};
@@ -536,31 +534,57 @@ static RECT compute_dest_rect(int cw,int ch,int bw,int bh,float* outScale=nullpt
 }
 static void present_full(HWND hwnd,HDC hdc,Backbuffer& bb){
     RECT cr; GetClientRect(hwnd,&cr); int cw=cr.right-cr.left, ch=cr.bottom-cr.top; float s=1.f; RECT dst=compute_dest_rect(cw,ch,bb.w,bb.h,&s);
+
+    // paint background bands around destination rectangle
+    const RECT* pDst = &dst;
+    int dstLeft   = pDst->left;
+    int dstTop    = pDst->top;
+    int dstRight  = pDst->right;
+    int dstBottom = pDst->bottom;
+
     HBRUSH br=CreateSolidBrush(RGB(10,10,10));
-    RECT r1={0,0,cw,dst.top}, r2={0,dst.top,dst.left,dst.bottom}, r3={dst.right,dst.top,cw,dst.bottom}, r4={0,dst.bottom,cw,ch};
-    FillRect(hdc,&r1,br); FillRect(hdc,&r2,br); FillRect(hdc,&r3,br); FillRect(hdc,&r4,br);  // ensure all bands are painted
+    RECT r1,r2,r3,r4;
+    SetRect(&r1, 0, 0, cw, dstTop);
+    SetRect(&r2, 0, dstTop, dstLeft, dstBottom);
+    SetRect(&r3, dstRight, dstTop, cw, dstBottom);
+    SetRect(&r4, 0, dstBottom, cw, ch);
+    FillRect(hdc,&r1,br); FillRect(hdc,&r2,br); FillRect(hdc,&r3,br); FillRect(hdc,&r4,br);
     DeleteObject(br);
+
     if(g_win.smoothScale && !g_win.integerScale){ SetStretchBltMode(hdc, HALFTONE); SetBrushOrgEx(hdc,0,0,nullptr); }
     else{ SetStretchBltMode(hdc, COLORONCOLOR); }
-    int dx=dst.left, dy=dst.top, dw=dst.right-dst.left, dh=dst.bottom-dst.top;
+    int dx=dstLeft, dy=dstTop, dw=dstRight-dstLeft, dh=dstBottom-dstTop;
     StretchDIBits(hdc, dx,dy,dw,dh, 0,0,bb.w,bb.h, bb.pixels, &bb.bmi, DIB_RGB_COLORS, SRCCOPY);
 }
 static void present_dirty(HWND hwnd,HDC hdc,Backbuffer& bb,const DirtyTracker& dirty){
-    RECT cr; GetClientRect(hwnd,&cr); int cw=cr.right-cr.left, ch=cr.bottom-cr-top; float s=1.f; RECT dst=compute_dest_rect(cw,ch,bb.w,bb.h,&s);
-    if(dirty.rects.empty()){ present_full(hwnd,hdc,bb); return; } // early out before painting background
+    RECT cr; GetClientRect(hwnd,&cr); int cw=cr.right-cr.left, ch=cr.bottom-cr.top; float s=1.f; RECT dst=compute_dest_rect(cw,ch,bb.w,bb.h,&s);
+    if(dirty.rects.empty()){ present_full(hwnd,hdc,bb); return; }
+
+    const RECT* pDst = &dst;
+    int dstLeft   = pDst->left;
+    int dstTop    = pDst->top;
+    int dstRight  = pDst->right;
+    int dstBottom = pDst->bottom;
+
     HBRUSH br=CreateSolidBrush(RGB(10,10,10));
-    RECT r1={0,0,cw,dst.top}, r2={0,dst.top,dst.left,dst.bottom}, r3={dst.right,dst.top,cw,dst.bottom}, r4={0,dst.bottom,cw,ch};
+    RECT r1,r2,r3,r4;
+    SetRect(&r1, 0, 0, cw, dstTop);
+    SetRect(&r2, 0, dstTop, dstLeft, dstBottom);
+    SetRect(&r3, dstRight, dstTop, cw, dstBottom);
+    SetRect(&r4, 0, dstBottom, cw, ch);
     FillRect(hdc,&r1,br); FillRect(hdc,&r2,br); FillRect(hdc,&r3,br); FillRect(hdc,&r4,br);
     DeleteObject(br);
+
     if(g_win.smoothScale && !g_win.integerScale){ SetStretchBltMode(hdc, HALFTONE); SetBrushOrgEx(hdc,0,0,nullptr); }
     else{ SetStretchBltMode(hdc, COLORONCOLOR); }
+
     for(const auto& d: dirty.rects){
         RECT srect=d.r;
         int sw=(srect.right==INT32_MAX)?bb.w:(srect.right-srect.left);
         int sh=(srect.bottom==INT32_MAX)?bb.h:(srect.bottom-srect.top);
         if(sw<=0||sh<=0){ present_full(hwnd,hdc,bb); return; }
-        int ddx=dst.left + (int)((float)srect.left * s);
-        int ddy=dst.top  + (int)((float)srect.top  * s);
+        int ddx=dstLeft + (int)((float)srect.left * s);
+        int ddy=dstTop  + (int)((float)srect.top  * s);
         int ddw=(int)floorf(sw*s), ddh=(int)floorf(sh*s);
         StretchDIBits(hdc, ddx,ddy,ddw,ddh, srect.left,srect.top,sw,sh, bb.pixels,&bb.bmi,DIB_RGB_COLORS,SRCCOPY);
     }
@@ -840,9 +864,9 @@ static struct Recorder{ std::vector<FrameRec> frames; bool recording=false, play
 // Entry
 // --------------------------------------------------------
 int APIENTRY wWinMain(HINSTANCE hInst,HINSTANCE,LPWSTR,int){
-    set_dpi_awareness();
+    set_dpi_awareness(); // DPI PMv2 if available, else system DPI. Must be before any windows. :contentReference[oaicite:4]{index=4}
 
-    // --- FIX: use WNDCLASSEXW with explicit member initialization to avoid C2078 and match docs.
+    // Use WNDCLASSEXW with explicit member initialization to avoid C2078 and match docs.
     WNDCLASSEXW wc{};
     wc.cbSize        = sizeof(wc);
     wc.style         = CS_OWNDC | CS_HREDRAW | CS_VREDRAW;
@@ -850,14 +874,14 @@ int APIENTRY wWinMain(HINSTANCE hInst,HINSTANCE,LPWSTR,int){
     wc.cbClsExtra    = 0;
     wc.cbWndExtra    = 0;
     wc.hInstance     = hInst;
-    wc.hIcon         = LoadIconW(nullptr, IDI_APPLICATION); // explicit icon (was nullptr)
+    wc.hIcon         = LoadIconW(nullptr, IDI_APPLICATION);
     wc.hCursor       = LoadCursorW(nullptr, IDC_ARROW);
     wc.hbrBackground = (HBRUSH)(COLOR_WINDOW + 1);
     wc.lpszMenuName  = nullptr;
     wc.lpszClassName = L"GamePlatformWin32";
     wc.hIconSm       = wc.hIcon;
 
-    RegisterClassExW(&wc); // RegisterClassEx for WNDCLASSEXW (supersedes WNDCLASS)
+    RegisterClassExW(&wc); // Register the EX class variant (supersedes WNDCLASS). :contentReference[oaicite:5]{index=5}
 
     DWORD style=WS_OVERLAPPEDWINDOW|WS_VISIBLE; RECT wr{0,0,g_win.baseW,g_win.baseH}; AdjustWindowRect(&wr,style,FALSE);
     HWND hwnd=CreateWindowW(wc.lpszClassName, L"Colony — Ultra Platform", style, CW_USEDEFAULT,CW_USEDEFAULT, wr.right-wr.left, wr.bottom-wr.top, nullptr,nullptr,hInst,nullptr);
@@ -867,7 +891,7 @@ int APIENTRY wWinMain(HINSTANCE hInst,HINSTANCE,LPWSTR,int){
     int hw=(int)std::thread::hardware_concurrency(); g_pool.init( (hw>2)?(hw-1):1 );
     g_in.rawMouse=g_win.enableRawMouse; enable_raw_mouse(hwnd,g_in.rawMouse);
 
-    // ---- High-resolution timer period: request the minimum supported and track it
+    // High-resolution timer period: request the minimum supported and track it
     TIMECAPS tc{}; if(timeGetDevCaps(&tc,sizeof(tc))==TIMERR_NOERROR){
         UINT desired = clampi(1, (int)tc.wPeriodMin, (int)tc.wPeriodMax);
         if(timeBeginPeriod(desired)==TIMERR_NOERROR) g_timerPeriod = desired;
@@ -962,17 +986,13 @@ int APIENTRY wWinMain(HINSTANCE hInst,HINSTANCE,LPWSTR,int){
         if(g_win.fixedTimestep){
             if(!paused){
                 int safety = 0;
-                // Clamp catch-up (implicit via iteration cap or add an explicit clamp if desired)
                 while(acc >= step && safety < 16){
-                    // --- Simulation-only path preferred
                     if(hot.active && hot.api.update_fixed){
                         hot.api.update_fixed(hot.userState, (float)step);
                     } else if(hot.active && hot.api.update_and_render){
-                        // Fallback: legacy combined step renders each update
                         hot.api.update_and_render(hot.userState, (float)step, (uint32_t*)g_bb.pixels, g_bb.w, g_bb.h, &g_in);
                         rendered_by_fallback = true;
                     } else {
-                        // Demo simulate
                         demo_simulate((float)step);
                     }
                     simTime += step; acc -= step; safety++;
@@ -981,7 +1001,6 @@ int APIENTRY wWinMain(HINSTANCE hInst,HINSTANCE,LPWSTR,int){
             }
             alpha = (float)clampf((float)(acc/step), 0.f, 1.f);
         }else{
-            // Variable step
             if(!paused){
                 if(hot.active && hot.api.update_fixed){
                     hot.api.update_fixed(hot.userState, (float)acc);
@@ -1004,11 +1023,9 @@ int APIENTRY wWinMain(HINSTANCE hInst,HINSTANCE,LPWSTR,int){
                 hot.api.render(hot.userState, alpha, (uint32_t*)g_bb.pixels, g_bb.w, g_bb.h, &g_in);
                 useDirty=false;
             } else if(!hot.active){
-                // Demo single render with interpolation
                 demo_render(alpha);
                 useDirty=false;
             } else {
-                // Legacy combined API but no steps ran (acc < step): draw a zero-dt frame
                 if(hot.api.update_and_render){
                     hot.api.update_and_render(hot.userState, 0.0f, (uint32_t*)g_bb.pixels, g_bb.w, g_bb.h, &g_in);
                     useDirty=false;
@@ -1021,7 +1038,6 @@ int APIENTRY wWinMain(HINSTANCE hInst,HINSTANCE,LPWSTR,int){
         uint64_t tP0=tic();
         if(useDither) apply_dither_gamma(g_bb, gamma);
         if(magnify)   draw_magnifier(g_bb, g_in.mouseX,g_in.mouseY, 10,8,true);
-        // Show HUD using wall-clock delta for smoother UX
         g_perf.frameMS = (float)(dt*1000.0);
         draw_perf_hud(g_bb);
         g_micro.tPost=toc(tP0);
@@ -1029,7 +1045,7 @@ int APIENTRY wWinMain(HINSTANCE hInst,HINSTANCE,LPWSTR,int){
         // ---- Present
         uint64_t tPr0=tic();
         if(useDirty) present_dirty(hwnd,hdc,g_bb,g_dirty); else present_full(hwnd,hdc,g_bb);
-        if(g_win.useVsync){ BOOL comp=FALSE; DwmIsCompositionEnabled(&comp); if(comp) DwmFlush(); }
+        if(g_win.useVsync){ BOOL comp=FALSE; DwmIsCompositionEnabled(&comp); if(comp) DwmFlush(); } // blocks until DWM presents :contentReference[oaicite:6]{index=6}
         g_micro.tPresent=toc(tPr0);
 
         // HUD fps graph (based on wall dt)
