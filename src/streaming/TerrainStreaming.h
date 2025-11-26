@@ -8,6 +8,11 @@
 #include <mutex>
 #include <optional>
 #include <filesystem>
+#include <wrl/client.h>            // ComPtr
+
+// Forward-declare to avoid pulling in <d3d11.h> from a header.
+// (The cpp that owns/binds the SRV will include <d3d11.h>.)
+struct ID3D11ShaderResourceView;
 
 struct TerrainStreamingConfig {
     int   radiusTiles = 3;            // hot radius in tiles in X/Y from camera
@@ -30,7 +35,18 @@ public:
 
     // For testing & HUD
     int ResidentHeightTiles() const { return (int)m_heightTiles.size(); }
-    int ResidentTextureTiles() const { return (int)m_texTiles.size(); }
+
+    // Count unique texture tiles across both albedo (A) and normal (N) sets.
+    // Uses C++20 unordered_map::contains for O(1) membership tests. :contentReference[oaicite:1]{index=1}
+    int ResidentTextureTiles() const {
+        size_t count = m_texTilesA.size();
+        for (const auto& kv : m_texTilesN) {
+            if (!m_texTilesA.contains(kv.first)) {
+                ++count;
+            }
+        }
+        return (int)count;
+    }
 
 private:
     struct TileState {
@@ -77,6 +93,11 @@ private:
     std::unordered_map<TileCoord, TileState, TileCoordHasher> m_heightTiles;
     std::unordered_map<TileCoord, TileState, TileCoordHasher> m_texTilesA; // albedo
     std::unordered_map<TileCoord, TileState, TileCoordHasher> m_texTilesN; // normal
+
+    // GPU view of the streamed tile atlas/array (D3D11).
+    // Created/updated in the .cpp; bound with VS/PS SetShaderResources.
+    // See ID3D11ShaderResourceView on Microsoft Learn. :contentReference[oaicite:2]{index=2}
+    Microsoft::WRL::ComPtr<ID3D11ShaderResourceView> m_texTiles;            // SRV for tile atlas
 
     mutable std::mutex m_readyMx;
     std::queue<PendingTex>    m_readyTex;
