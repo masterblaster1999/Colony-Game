@@ -1,35 +1,27 @@
+// platform/win/WinApp.h
 #pragma once
-#ifndef NOMINMAX
-#  define NOMINMAX
-#endif
-#include <windows.h>
-#include <string>
-#include <vector>
 #include <functional>
+#include <utility>
+#include <stdint.h>
 
-// ----------------------------------------------------------------------------
-// Window creation descriptor — aligned with your launcher wiring.
-// ----------------------------------------------------------------------------
 struct WinCreateDesc {
-    HINSTANCE      hInstance        = nullptr;
-    const wchar_t* title            = L"Colony Game";
+    const wchar_t* title = L"Colony";
+    struct { int w = 1280, h = 720; } clientSize;
+    bool resizable     = true;
+    bool debugConsole  = false;
+    bool highDPIAware  = true;
+};
 
-    // Preferred client size; if {0,0} we fall back to width/height.
-    SIZE           clientSize       = { 0, 0 };
-    int            width            = 1600;   // fallback client width
-    int            height           = 900;    // fallback client height
-
-    // Launcher flags you used earlier:
-    bool           resizable        = true;   // toggles thickframe/maximize
-    bool           debugConsole     = false;  // AllocConsole + stdio redirect
-    bool           highDPIAware     = true;   // runtime PMv2 fallback (manifest preferred)
-
-    // Style (resizable may adjust these).
-    DWORD          style            = WS_OVERLAPPEDWINDOW;
-    DWORD          exStyle          = 0;
-
-    // Input/behavior:
-    bool           rawInputNoLegacy = true;   // suppress legacy KB/mouse messages
+class WinApp {
+public:
+    struct Callbacks {
+        std::function<void(WinApp&, int width, int height, float dt)> onUpdate;
+        std::function<void(WinApp&)>                                  onInit;
+        std::function<void(WinApp&)>                                  onShutdown;
+        std::function<void(WinApp&, int width, int height, float dt)> onRender;
+        std::function<void(WinApp&, const wchar_t* path)>             onFileDrop;
+    };
+    // ...
 };
 
 // ----------------------------------------------------------------------------
