@@ -546,7 +546,7 @@ static void present_full(HWND hwnd,HDC hdc,Backbuffer& bb){
     StretchDIBits(hdc, dx,dy,dw,dh, 0,0,bb.w,bb.h, bb.pixels, &bb.bmi, DIB_RGB_COLORS, SRCCOPY);
 }
 static void present_dirty(HWND hwnd,HDC hdc,Backbuffer& bb,const DirtyTracker& dirty){
-    RECT cr; GetClientRect(hwnd,&cr); int cw=cr.right-cr.left, ch=cr.bottom-cr.top; float s=1.f; RECT dst=compute_dest_rect(cw,ch,bb.w,bb.h,&s);
+    RECT cr; GetClientRect(hwnd,&cr); int cw=cr.right-cr.left, ch=cr.bottom-cr-top; float s=1.f; RECT dst=compute_dest_rect(cw,ch,bb.w,bb.h,&s);
     if(dirty.rects.empty()){ present_full(hwnd,hdc,bb); return; } // early out before painting background
     HBRUSH br=CreateSolidBrush(RGB(10,10,10));
     RECT r1={0,0,cw,dst.top}, r2={0,dst.top,dst.left,dst.bottom}, r3={dst.right,dst.top,cw,dst.bottom}, r4={0,dst.bottom,cw,ch};
