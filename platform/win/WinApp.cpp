@@ -3,22 +3,25 @@
 #include <shellapi.h>          // DragAcceptFiles, DragQueryFile, DragFinish
 #include <cstdio>
 #include <vector>
+#include <memory>
 
 #pragma comment(lib, "Shcore.lib")
 #pragma comment(lib, "Shell32.lib")
 
 WinApp* WinApp::s_self = nullptr;
 
-// Prefer manifest (Per-Monitor v2). This is a runtime fallback for safety.
-// AdjustWindowRectExForDpi computes window size from desired client size at a given DPI.  [MS Docs]
-void WinApp::EnablePerMonitorV2DpiFallback() {
+// Prefer process DPI awareness in the manifest; API is a safety fallback.  (MS recommends manifest.)
+void WinApp::EnablePerMonitorV2DpiFallback(bool enable) {
+    if (!enable) return;
     HMODULE user32 = ::GetModuleHandleW(L"user32.dll");
-    if (user32) {
-        using SetCtx = BOOL (WINAPI*)(DPI_AWARENESS_CONTEXT);
-        if (auto fn = reinterpret_cast<SetCtx>(::GetProcAddress(user32, "SetProcessDpiAwarenessContext"))) {
-            fn(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
-        }
+    if (!user32) return;
+    using SetCtx = BOOL (WINAPI*)(DPI_AWARENESS_CONTEXT);
+    if (auto fn = reinterpret_cast<SetCtx>(::GetProcAddress(user32, "SetProcessDpiAwarenessContext"))) {
+        fn(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
     }
+    // Docs: SetProcessDpiAwarenessContext; guidance to prefer manifest. 
+    // See: Setting the default DPI awareness for a process. 
+    // (Citations in the explanation below.)
 }
 
 static void ComputeWindowRectForClient(SIZE desiredClient, DWORD style, DWORD exStyle, RECT& outRect) {
@@ -31,7 +34,7 @@ static void ComputeWindowRectForClient(SIZE desiredClient, DWORD style, DWORD ex
 
     if (pAdjustWindowRectExForDpi) {
         const UINT dpi = pGetDpiForSystem ? pGetDpiForSystem() : 96u;
-        pAdjustWindowRectExForDpi(&r, style, FALSE, exStyle, dpi);  // DPI-aware sizing
+        pAdjustWindowRectExForDpi(&r, style, FALSE, exStyle, dpi);   // DPI-aware sizing
     } else {
         ::AdjustWindowRectEx(&r, style, FALSE, exStyle);
     }
@@ -48,32 +51,26 @@ void WinApp::RegisterRawInput(bool noLegacy) {
     rids[0].hwndTarget  = m_hwnd;
 
     // Mouse
-    rids[1].usUsagePage = 0x01;  // GENERIC
+    rids[1].usUsagePage = 0x01;  // HID_USAGE_PAGE_GENERIC
     rids[1].usUsage     = 0x02;  // MOUSE
     rids[1].dwFlags     = (noLegacy ? RIDEV_NOLEGACY : 0) | RIDEV_DEVNOTIFY;
     rids[1].hwndTarget  = m_hwnd;
 
-    ::RegisterRawInputDevices(rids, 2, sizeof(RAWINPUTDEVICE));   // Enables WM_INPUT
+    ::RegisterRawInputDevices(rids, 2, sizeof(RAWINPUTDEVICE));      // enables WM_INPUT
+}
+
+void WinApp::EnableFileDrops(bool accept) {
+    ::DragAcceptFiles(m_hwnd, accept ? TRUE : FALSE);                 // enables WM_DROPFILES
 }
 
 bool WinApp::Create(const WinCreateDesc& desc, const Callbacks& cbs) {
+    s_self = this;
+    m_cbs  = cbs;
+
     m_hInst = desc.hInstance ? desc.hInstance : ::GetModuleHandleW(nullptr);
-    m_cbs   = cbs;
 
-    // Optional debug console: attach to parent or allocate a new one.
-    if (desc.debugConsole) {
-        if (!::AttachConsole(ATTACH_PARENT_PROCESS)) {
-            ::AllocConsole();
-        }
-        FILE* f = nullptr;
-        freopen_s(&f, "CONOUT$", "w", stdout);
-        freopen_s(&f, "CONOUT$", "w", stderr);
-        freopen_s(&f, "CONIN$",  "r", stdin);
-    }
-
-    if (desc.highDPIAware && desc.enableDpiFallback) {
-        EnablePerMonitorV2DpiFallback();
-    }
+    // High-DPI: manifest is preferred; this API is a fallback to PMv2 when needed.
+    EnablePerMonitorV2DpiFallback(desc.highDPIAware);
 
     // Window class
     WNDCLASSW wc{};
@@ -83,24 +80,25 @@ bool WinApp::Create(const WinCreateDesc& desc, const Callbacks& cbs) {
     wc.hCursor       = ::LoadCursor(nullptr, IDC_ARROW);
     if (!::RegisterClassW(&wc)) return false;
 
-    // Style (respect resizable=false)
+    // Style controls resize capability
     DWORD style  = desc.style;
     DWORD exStyle= desc.exStyle;
     if (!desc.resizable) {
-        style &= ~WS_THICKFRAME;
-        style &= ~WS_MAXIMIZEBOX;
+        style &= ~(WS_THICKFRAME | WS_MAXIMIZEBOX);
+    } else {
+        style |=  (WS_THICKFRAME | WS_MAXIMIZEBOX);
     }
 
-    // Desired client area
+    // Desired client size -> DPI-correct window rect
     SIZE desiredClient = desc.clientSize;
     if (desiredClient.cx <= 0 || desiredClient.cy <= 0) {
         desiredClient.cx = desc.width;
         desiredClient.cy = desc.height;
     }
-
     RECT wr{};
-    ComputeWindowRectForClient(desiredClient, style, exStyle, wr);
+    ComputeWindowRectForClient(desiredClient, style, exStyle, wr);     // AdjustWindowRectExForDpi
 
+    // Create window
     m_hwnd = ::CreateWindowExW(
         exStyle, wc.lpszClassName, desc.title, style,
         CW_USEDEFAULT, CW_USEDEFAULT,
@@ -108,18 +106,29 @@ bool WinApp::Create(const WinCreateDesc& desc, const Callbacks& cbs) {
         nullptr, nullptr, m_hInst, nullptr);
     if (!m_hwnd) return false;
 
-    if (m_cbs.onFileDrop) {
-        ::DragAcceptFiles(m_hwnd, TRUE); // enables WM_DROPFILES
+    // Optional debug console
+    if (desc.debugConsole) {
+        if (!::AttachConsole(ATTACH_PARENT_PROCESS)) {
+            ::AllocConsole();
+        }
+        FILE* f{};
+        _wfreopen_s(&f, L"CONOUT$", L"w", stdout);
+        _wfreopen_s(&f, L"CONOUT$", L"w", stderr);
+        _wfreopen_s(&f, L"CONIN$",  L"r", stdin);
     }
 
     ::ShowWindow(m_hwnd, SW_SHOW);
     ::UpdateWindow(m_hwnd);
 
-    RegisterRawInput(desc.rawInputNoLegacy);
+    // Input & DnD
+    EnableFileDrops(true);                                             // DragAcceptFiles
+    RegisterRawInput(desc.rawInputNoLegacy);                           // RegisterRawInputDevices
+
+    if (m_cbs.onInit) m_cbs.onInit(*this);
     return true;
 }
 
-// Legacy static wrappers
+// Legacy wrappers
 bool WinApp::create(const WinCreateDesc& d, const Callbacks& c) {
     if (!s_self) s_self = new WinApp();
     return s_self->Create(d, c);
@@ -132,11 +141,9 @@ HWND WinApp::hwnd() {
 }
 
 int WinApp::RunMessageLoop() {
-    if (m_cbs.onInit) m_cbs.onInit(*this);
-
-    LARGE_INTEGER freq{}, prev{}, cur{};
+    LARGE_INTEGER freq{}, last{};
     ::QueryPerformanceFrequency(&freq);
-    ::QueryPerformanceCounter(&prev);
+    ::QueryPerformanceCounter(&last);
 
     MSG msg{};
     bool running = true;
@@ -148,16 +155,17 @@ int WinApp::RunMessageLoop() {
         }
         if (!running) break;
 
-        ::QueryPerformanceCounter(&cur);
-        const float dt = float(double(cur.QuadPart - prev.QuadPart) / double(freq.QuadPart));
-        prev = cur;
+        LARGE_INTEGER now{};
+        ::QueryPerformanceCounter(&now);
+        const float dt = static_cast<float>(now.QuadPart - last.QuadPart) / static_cast<float>(freq.QuadPart);
+        last = now;
 
         if (m_cbs.onUpdate) m_cbs.onUpdate(*this, dt);
         if (m_cbs.onRender) m_cbs.onRender(*this);
     }
 
-    if (m_cbs.onShutdown) m_cbs.onShutdown();
-    return int(msg.wParam);
+    if (m_cbs.onShutdown) m_cbs.onShutdown(*this);
+    return static_cast<int>(msg.wParam);
 }
 
 LRESULT CALLBACK WinApp::WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
@@ -167,34 +175,22 @@ LRESULT CALLBACK WinApp::WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPar
         if (self && self->m_cbs.onRawInput) {
             UINT size = 0;
             ::GetRawInputData((HRAWINPUT)lParam, RID_INPUT, nullptr, &size, sizeof(RAWINPUTHEADER));
-            std::vector<BYTE> buf(size);
-            if (::GetRawInputData((HRAWINPUT)lParam, RID_INPUT, buf.data(), &size, sizeof(RAWINPUTHEADER)) == size) {
-                self->m_cbs.onRawInput(*reinterpret_cast<RAWINPUT*>(buf.data()));
+            std::unique_ptr<BYTE[]> buf(new BYTE[size]);
+            if (::GetRawInputData((HRAWINPUT)lParam, RID_INPUT, buf.get(), &size, sizeof(RAWINPUTHEADER)) == size) {
+                self->m_cbs.onRawInput(*reinterpret_cast<RAWINPUT*>(buf.get()));
             }
         }
-        return 0;
-    }
+        return 0;                                                      // WM_INPUT should return 0
+    } // Raw input requires RegisterRawInputDevices; hot‑plug via RIDEV_DEVNOTIFY. :contentReference[oaicite:1]{index=1}
 
-    case WM_SIZE:
+    case WM_SIZE: {
         if (self && self->m_cbs.onResize) {
-            self->m_cbs.onResize(LOWORD(lParam), HIWORD(lParam));
+            const int w = LOWORD(lParam);
+            const int h = HIWORD(lParam);
+            self->m_cbs.onResize(*self, w, h, 0.0f);
         }
         return 0;
-
-    case WM_DPICHANGED: {
-        // Use Windows' suggested rectangle on DPI change (mixed-DPI monitors). [MS Docs]
-        const RECT* suggested = reinterpret_cast<RECT*>(lParam);
-        ::SetWindowPos(hWnd, nullptr,
-            suggested->left, suggested->top,
-            suggested->right - suggested->left,
-            suggested->bottom - suggested->top,
-            SWP_NOZORDER | SWP_NOACTIVATE);
-        if (self && self->m_cbs.onDpiChanged) {
-            const UINT dpi = HIWORD(wParam);
-            self->m_cbs.onDpiChanged(dpi, dpi);
-        }
-        return 0;
-    }
+    } // WM_SIZE docs. :contentReference[oaicite:2]{index=2}
 
     case WM_DROPFILES: {
         if (self && self->m_cbs.onFileDrop) {
@@ -206,17 +202,32 @@ LRESULT CALLBACK WinApp::WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPar
                 const UINT len = ::DragQueryFileW(hDrop, i, nullptr, 0);
                 std::wstring path(len, L'\0');
                 ::DragQueryFileW(hDrop, i, path.data(), len + 1);
+                if (!path.empty() && path.back() == L'\0') path.pop_back();
                 files.push_back(std::move(path));
             }
             ::DragFinish(hDrop);
-            self->m_cbs.onFileDrop(*self, files); // WM_DROPFILES/DragQueryFileW/DragFinish
-            return 0;
+            self->m_cbs.onFileDrop(*self, files);
         }
-        break;
-    }
+        return 0;
+    } // DragAcceptFiles + WM_DROPFILES. :contentReference[oaicite:3]{index=3}
+
+    case WM_DPICHANGED: {
+        // Resize to Windows' suggested rectangle to avoid mixed‑DPI glitches.
+        const RECT* suggested = reinterpret_cast<RECT*>(lParam);
+        ::SetWindowPos(hWnd, nullptr,
+            suggested->left, suggested->top,
+            suggested->right - suggested->left,
+            suggested->bottom - suggested->top,
+            SWP_NOZORDER | SWP_NOACTIVATE);
+        if (self && self->m_cbs.onDpiChanged) {
+            const UINT dpi = HIWORD(wParam);
+            self->m_cbs.onDpiChanged(dpi, dpi);
+        }
+        return 0;
+    } // WM_DPICHANGED guidance. :contentReference[oaicite:4]{index=4}
 
     case WM_CLOSE:
-        if (self && self->m_cbs.onClose) self->m_cbs.onClose();
+        // Let the app decide shutdown order; post quit on destroy.
         ::DestroyWindow(hWnd);
         return 0;
 
