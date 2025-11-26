@@ -1,0 +1,8 @@
+{
+  "version": 1,
+  "files": [
+    {"path":"heightmap.r16","sha256":"..."},
+    {"path":"biome_index.u8","sha256":"..."},
+    {"path":"nav/hpa_clusters.bin","sha256":"..."}
+  ]
+}
