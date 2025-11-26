@@ -29,6 +29,7 @@
 #  define NOMINMAX
 #endif
 #include <windows.h>
+#include <shellapi.h>   // CommandLineToArgvW, LocalFree (needed with WIN32_LEAN_AND_MEAN)
 #include <windowsx.h>
 #include <d3d11.h>
 #include <d3dcompiler.h>
@@ -63,6 +64,7 @@ extern slice::ObjectiveTracker g_slice;
 #pragma comment(lib, "d3d11.lib")
 #pragma comment(lib, "dxgi.lib")
 #pragma comment(lib, "d3dcompiler.lib")
+#pragma comment(lib, "shell32.lib") // for CommandLineToArgvW / LocalFree on MSVC
 
 using Microsoft::WRL::ComPtr;
 using namespace DirectX;
@@ -112,7 +114,7 @@ static std::wstring Widen(const std::string& s) {
 static uint32_t gSeed = 1337;
 static void ParseArgs(LPWSTR cmdLine) {
     int argc = 0;
-    LPWSTR* argv = CommandLineToArgvW(cmdLine, &argc);
+    LPWSTR* argv = CommandLineToArgvW(cmdLine, &argc); // requires shellapi.h; free with LocalFree
     if (!argv) return;
     for (int i = 0; i + 1 < argc; ++i) {
         if (wcscmp(argv[i], L"--seed") == 0) {
@@ -156,11 +158,19 @@ struct Device {
     #if defined(_DEBUG)
         flags |= D3D11_CREATE_DEVICE_DEBUG;
     #endif
-        D3D_FEATURE_LEVEL fl;
-        HR(D3D11CreateDeviceAndSwapChain(
+        D3D_FEATURE_LEVEL fl{};
+        // Robust creation: try hardware, then WARP as fallback (helps in CI/VMs)
+        HRESULT hr = D3D11CreateDeviceAndSwapChain(
             nullptr, D3D_DRIVER_TYPE_HARDWARE, nullptr, flags,
             nullptr, 0, D3D11_SDK_VERSION,
-            &sd, swap.GetAddressOf(), dev.GetAddressOf(), &fl, ctx.GetAddressOf()));
+            &sd, swap.GetAddressOf(), dev.GetAddressOf(), &fl, ctx.GetAddressOf());
+        if (FAILED(hr)) {
+            hr = D3D11CreateDeviceAndSwapChain(
+                nullptr, D3D_DRIVER_TYPE_WARP, nullptr, flags,
+                nullptr, 0, D3D11_SDK_VERSION,
+                &sd, swap.GetAddressOf(), dev.GetAddressOf(), &fl, ctx.GetAddressOf());
+        }
+        HR(hr);
 
     #if defined(_DEBUG)
         // Debug InfoQueue: break on ERROR/CORRUPTION if available
@@ -221,7 +231,9 @@ struct Device {
 static ComPtr<ID3DBlob> Compile(const wchar_t* file, const char* entry, const char* target) {
     UINT flags = D3DCOMPILE_ENABLE_STRICTNESS;
 #if defined(_DEBUG)
-    flags |= D3DCOMPILE_DEBUG;
+    flags |= D3DCOMPILE_DEBUG | D3DCOMPILE_SKIP_OPTIMIZATION;
+#else
+    flags |= D3DCOMPILE_OPTIMIZATION_LEVEL3;
 #endif
     ComPtr<ID3DBlob> blob, errs;
     HRESULT hr = D3DCompileFromFile(file, nullptr, nullptr, entry, target, flags, 0, blob.GetAddressOf(), errs.GetAddressOf());
@@ -364,7 +376,7 @@ static Mesh makeCube(ID3D11Device* dev, float s) {
         {{-h, h,-h},{0,1,0}}, {{ h, h,-h},{0,1,0}}, {{ h, h, h},{0,1,0}}, {{-h, h, h},{0,1,0}},
         {{-h,-h, h},{0,-1,0}},{{ h,-h, h},{0,-1,0}},{{ h,-h,-h},{0,-1,0}},{{-h,-h,-h},{0,-1,0}},
         {{-h,-h, h},{0,0,1}}, {{-h, h, h},{0,0,1}}, {{ h, h, h},{0,0,1}}, {{ h,-h, h},{0,0,1}},
-        {{ h,-h,-h},{0,0,-1}},{{ h, h,-h},{0,0,-1}},{{-h, h,-h},{0,0,-1}},{{-h,-h,-h},{0,0,-1}}
+        {{ h,-h,-h},{0,0,-1}},{{ h, h,-h},{0,0,-1}},{{-h, h,-h},{0,0,-1}},{{-h,-h,-1},{0,0,-1}}
     };
     uint16_t idx[] = {
         0,1,2, 0,2,3,  4,5,6, 4,6,7,  8,9,10, 8,10,11,
@@ -879,7 +891,6 @@ struct Slice {
         lightDir = XMFLOAT3(std::cos(tLight)*0.3f, 0.8f, std::sin(tLight)*0.5f);
 
         // --- Added: feed objective tracker time ---
-        // Pause/resume logic mirrors app 'paused' + 'singleStep' semantics.
         if (!paused) {
             g_slice.update(dt);
         } else if (singleStep) {
@@ -1041,10 +1052,20 @@ LRESULT CALLBACK WndProc(HWND h, UINT m, WPARAM w, LPARAM l) {
     switch (m) {
     case WM_SIZE:
         if (gDev.dev) {
-            gDev.width  = LOWORD(l);
-            gDev.height = HIWORD(l);
+            UINT newW = LOWORD(l), newH = HIWORD(l);
+            if (newW == 0 || newH == 0) return 0; // minimized; skip resize to avoid errors
+            gDev.width  = newW;
+            gDev.height = newH;
             HR(gDev.swap->ResizeBuffers(0, gDev.width, gDev.height, DXGI_FORMAT_UNKNOWN, 0));
             gDev.recreateRT();
+        }
+        return 0;
+    case WM_MOUSEWHEEL:
+        // Smooth orbit zoom via wheel
+        if (gSlice.camMode == Slice::CamMode::Orbit) {
+            short delta = GET_WHEEL_DELTA_WPARAM(w);
+            if (delta > 0) gSlice.orbitCam.radius = std::max(2.f,  gSlice.orbitCam.radius - 1.f);
+            else           gSlice.orbitCam.radius = std::min(100.f, gSlice.orbitCam.radius + 1.f);
         }
         return 0;
     case WM_SYSKEYDOWN:
