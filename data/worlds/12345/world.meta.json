@@ -1,8 +1,17 @@
-// data/worlds/12345/world.meta.json
 {
   "version": 1,
   "seed": 12345,
-  "tileSizeMeters": 1.0,
   "size": { "width": 4096, "height": 4096 },
-  "scales": { "height": {"min": -50, "max": 350}, "temperature": {"min": -10, "max": 40} }
+  "tileSizeMeters": 1.0,
+  "scales": {
+    "height": { "min": -50.0, "max": 350.0 },
+    "temperature": { "min": -10.0, "max": 40.0 }
+  },
+  "subseeds": {
+    "terrain": 1111,
+    "structures": 2222,
+    "factions": 3333,
+    "events": 4444
+  },
+  "createdAt": "2025-11-26T00:00:00Z"
 }
