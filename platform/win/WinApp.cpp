@@ -1,114 +1,131 @@
+// platform/win/WinApp.cpp
 #include "WinApp.h"
-#include <hidusage.h>    // HID usages for Raw Input
-#include <shellscalingapi.h> // SetProcessDpiAwareness (SHCore)
-#pragma comment(lib, "Shcore.lib")
+#include <shellscalingapi.h>   // optional fallback API
+#include <pathcch.h>
 
-WinApp* WinApp::self_ = nullptr;
+#pragma comment(lib, "Pathcch.lib")
+#pragma comment(lib, "Shcore.lib")   // if you ever call SetProcessDpiAwareness
 
-void WinApp::EnablePerMonitorV2DpiAwareness() {
-    // Microsoft: prefer manifest; this is only a fallback.
-    // Try user32!SetProcessDpiAwarenessContext(PER_MONITOR_AWARE_V2), else fall back to SHCore. :contentReference[oaicite:1]{index=1}
-    HMODULE user32 = ::LoadLibraryW(L"user32.dll");
-    if (user32) {
-        using SetCtx = BOOL (WINAPI*)(DPI_AWARENESS_CONTEXT);
-        if (auto fn = reinterpret_cast<SetCtx>(::GetProcAddress(user32, "SetProcessDpiAwarenessContext"))) {
-            if (fn(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2)) {
-                ::FreeLibrary(user32);
-                return;
-            }
-        }
-        ::FreeLibrary(user32);
-    }
-    // Downlevel fallback (Windows 8.1 API) if needed: System or PerMonitor. :contentReference[oaicite:2]{index=2}
-    ::SetProcessDpiAwareness(PROCESS_PER_MONITOR_DPI_AWARE);
-}
+WinApp* WinApp::s_self = nullptr;
 
-bool WinApp::CreateWindowClassAndWindow(const std::wstring& title, int w, int h, bool borderless) {
-    self_ = this;
-
-    WNDCLASSW wc{};
-    wc.hInstance     = ::GetModuleHandleW(nullptr);
-    wc.lpszClassName = L"ColonyGameWndClass";
-    wc.lpfnWndProc   = &WinApp::WndProc;
-    wc.hCursor       = ::LoadCursor(nullptr, IDC_ARROW);
-    if (!::RegisterClassW(&wc)) return false;
-
-    DWORD style   = borderless ? WS_POPUP : WS_OVERLAPPEDWINDOW;
-    DWORD exstyle = borderless ? WS_EX_APPWINDOW : 0;
-
-    RECT r{0,0,w,h};
-    ::AdjustWindowRectEx(&r, style, FALSE, exstyle);
-
-    hwnd_ = ::CreateWindowExW(
-        exstyle, wc.lpszClassName, title.c_str(), style,
-        CW_USEDEFAULT, CW_USEDEFAULT,
-        r.right - r.left, r.bottom - r.top,
-        nullptr, nullptr, wc.hInstance, nullptr);
-
-    return hwnd_ != nullptr;
+void WinApp::EnablePerMonitorV2DpiFallback() {
+    // Microsoft: prefer manifest for default DPI awareness. API fallback is allowed, but not recommended. :contentReference[oaicite:3]{index=3}
+    SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
 }
 
 void WinApp::RegisterRawInput(bool noLegacy) {
-    // Register for keyboard + mouse raw input. WM_INPUT will be delivered to our WndProc. :contentReference[oaicite:3]{index=3}
     RAWINPUTDEVICE rids[2]{};
 
     // Keyboard
     rids[0].usUsagePage = 0x01;  // HID_USAGE_PAGE_GENERIC
-    rids[0].usUsage     = 0x06;  // HID_USAGE_GENERIC_KEYBOARD
-    rids[0].dwFlags     = RIDEV_INPUTSINK | (noLegacy ? RIDEV_NOLEGACY : 0);
-    rids[0].hwndTarget  = hwnd_;
+    rids[0].usUsage     = 0x06;  // KEYBOARD
+    rids[0].dwFlags     = (noLegacy ? RIDEV_NOLEGACY : 0);
+    rids[0].hwndTarget  = m_hwnd;
 
     // Mouse
-    rids[1].usUsagePage = 0x01;
-    rids[1].usUsage     = 0x02;  // HID_USAGE_GENERIC_MOUSE
-    rids[1].dwFlags     = RIDEV_INPUTSINK | (noLegacy ? RIDEV_NOLEGACY : 0);
-    rids[1].hwndTarget  = hwnd_;
+    rids[1].usUsagePage = 0x01;  // GENERIC
+    rids[1].usUsage     = 0x02;  // MOUSE
+    rids[1].dwFlags     = 0;
+    rids[1].hwndTarget  = m_hwnd;
 
-    ::RegisterRawInputDevices(rids, 2, sizeof(RAWINPUTDEVICE)); // enables WM_INPUT. :contentReference[oaicite:4]{index=4}
+    RegisterRawInputDevices(rids, 2, sizeof(RAWINPUTDEVICE)); // Required to receive WM_INPUT. :contentReference[oaicite:4]{index=4}
+}
+
+bool WinApp::Create(const WinCreateDesc& desc, const Callbacks& cbs) {
+    m_hInst = desc.hInstance ? desc.hInstance : GetModuleHandleW(nullptr);
+    m_cbs = cbs;
+
+    if (desc.enableDpiFallback) EnablePerMonitorV2DpiFallback();  // fallback; manifest preferred. :contentReference[oaicite:5]{index=5}
+
+    WNDCLASSW wc{};
+    wc.hInstance     = m_hInst;
+    wc.lpszClassName = L"ColonyGameWindowClass";
+    wc.lpfnWndProc   = &WinApp::WndProc;
+    wc.hCursor       = LoadCursor(nullptr, IDC_ARROW);
+    if (!RegisterClassW(&wc)) return false;
+
+    RECT r{0,0,desc.width,desc.height};
+    AdjustWindowRectEx(&r, desc.style, FALSE, desc.exStyle);
+
+    m_hwnd = CreateWindowExW(
+        desc.exStyle, wc.lpszClassName, desc.title, desc.style,
+        CW_USEDEFAULT, CW_USEDEFAULT,
+        r.right - r.left, r.bottom - r.top,
+        nullptr, nullptr, m_hInst, nullptr);
+    if (!m_hwnd) return false;
+
+    ShowWindow(m_hwnd, SW_SHOW);
+    UpdateWindow(m_hwnd);
+
+    RegisterRawInput(desc.rawInputNoLegacy);
+    return true;
 }
 
 int WinApp::RunMessageLoop() {
-    ::ShowWindow(hwnd_, SW_SHOW);
-    ::UpdateWindow(hwnd_);
-
     MSG msg{};
-    while (true) {
-        while (::PeekMessageW(&msg, nullptr, 0, 0, PM_REMOVE)) {
-            if (msg.message == WM_QUIT) return int(msg.wParam);
-            ::TranslateMessage(&msg);
-            ::DispatchMessageW(&msg);
-        }
-        // TODO: call your game tick/render here
+    while (GetMessageW(&msg, nullptr, 0, 0) > 0) {
+        TranslateMessage(&msg);
+        DispatchMessageW(&msg);
     }
+    return (int)msg.wParam;
 }
 
-LRESULT CALLBACK WinApp::WndProc(HWND h, UINT m, WPARAM w, LPARAM l) {
-    switch (m) {
+// ---- Legacy static API wrappers ----
+bool WinApp::create(const WinCreateDesc& d, const Callbacks& c) {
+    if (!s_self) s_self = new WinApp();
+    return s_self->Create(d, c);
+}
+int WinApp::run() {
+    return s_self ? s_self->RunMessageLoop() : -1;
+}
+HWND WinApp::hwnd() {
+    return s_self ? s_self->GetHwnd() : nullptr;
+}
+
+// ---- WndProc ----
+LRESULT CALLBACK WinApp::WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
+    WinApp* self = s_self;
+    switch (msg) {
     case WM_INPUT: {
-        // Read per-message RAWINPUT when needed. :contentReference[oaicite:5]{index=5}
-        UINT size = 0;
-        ::GetRawInputData(reinterpret_cast<HRAWINPUT>(l), RID_INPUT, nullptr, &size, sizeof(RAWINPUTHEADER));
-        std::unique_ptr<BYTE[]> buf(new BYTE[size]);
-        if (::GetRawInputData(reinterpret_cast<HRAWINPUT>(l), RID_INPUT, buf.get(), &size, sizeof(RAWINPUTHEADER)) == size) {
-            // const RAWINPUT* ri = reinterpret_cast<const RAWINPUT*>(buf.get());
-            // TODO: forward ri->data.keyboard / ri->data.mouse to your input system
+        if (self && self->m_cbs.onRawInput) {
+            UINT size = 0;
+            GetRawInputData((HRAWINPUT)lParam, RID_INPUT, nullptr, &size, sizeof(RAWINPUTHEADER));
+            std::unique_ptr<BYTE[]> buf(new BYTE[size]);
+            if (GetRawInputData((HRAWINPUT)lParam, RID_INPUT, buf.get(), &size, sizeof(RAWINPUTHEADER)) == size) {
+                self->m_cbs.onRawInput(*reinterpret_cast<RAWINPUT*>(buf.get()));
+            }
         }
         return 0;
-    }
+    } // Raw input prerequisites and WM_INPUT behavior. :contentReference[oaicite:6]{index=6}
+
+    case WM_SIZE:
+        if (self && self->m_cbs.onResize) {
+            self->m_cbs.onResize(LOWORD(lParam), HIWORD(lParam));
+        }
+        return 0;
+
     case WM_DPICHANGED: {
-        // Resize to suggested rect per Microsoft guidance for PMv2. :contentReference[oaicite:6]{index=6}
-        const RECT* suggested = reinterpret_cast<RECT*>(l);
-        ::SetWindowPos(h, nullptr,
+        const RECT* suggested = reinterpret_cast<RECT*>(lParam);
+        SetWindowPos(hWnd, nullptr,
             suggested->left, suggested->top,
             suggested->right - suggested->left,
             suggested->bottom - suggested->top,
             SWP_NOZORDER | SWP_NOACTIVATE);
+        if (self && self->m_cbs.onDpiChanged) {
+            const UINT dpi = HIWORD(wParam); // x and y are equal in most cases
+            self->m_cbs.onDpiChanged(dpi, dpi);
+        }
         return 0;
-    }
-    case WM_DESTROY:
-        ::PostQuitMessage(0);
-        return 0;
-    }
-    return ::DefWindowProcW(h, m, w, l);
-}
+    } // Use suggested rect per Microsoft DPI doc. :contentReference[oaicite:7]{index=7}
 
+    case WM_CLOSE:
+        if (self && self->m_cbs.onClose) self->m_cbs.onClose();
+        DestroyWindow(hWnd);
+        return 0;
+
+    case WM_DESTROY:
+        PostQuitMessage(0);
+        return 0;
+    }
+    return DefWindowProcW(hWnd, msg, wParam, lParam);
+}
