@@ -1,0 +1,8 @@
+// data/worlds/12345/world.meta.json
+{
+  "version": 1,
+  "seed": 12345,
+  "tileSizeMeters": 1.0,
+  "size": { "width": 4096, "height": 4096 },
+  "scales": { "height": {"min": -50, "max": 350}, "temperature": {"min": -10, "max": 40} }
+}
