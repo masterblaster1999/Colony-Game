@@ -5,9 +5,12 @@
 
 // Windows lean headers
 #ifndef NOMINMAX
-# define NOMINMAX
+#  define NOMINMAX
 #endif
-#define WIN32_LEAN_AND_MEAN
+#ifndef WIN32_LEAN_AND_MEAN
+#  define WIN32_LEAN_AND_MEAN 1
+#endif
+
 #include <Windows.h>
 #include <knownfolders.h>    // KNOWNFOLDERID
 #include <shlobj_core.h>     // SHGetKnownFolderPath
