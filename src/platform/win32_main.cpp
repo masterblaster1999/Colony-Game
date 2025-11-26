@@ -850,7 +850,7 @@ int APIENTRY wWinMain(HINSTANCE hInst,HINSTANCE,LPWSTR,int){
     wc.cbClsExtra    = 0;
     wc.cbWndExtra    = 0;
     wc.hInstance     = hInst;
-    wc.hIcon         = nullptr; // or LoadIconW(hInst, MAKEINTRESOURCEW(IDI_APPLICATION))
+    wc.hIcon         = LoadIconW(nullptr, IDI_APPLICATION); // explicit icon (was nullptr)
     wc.hCursor       = LoadCursorW(nullptr, IDC_ARROW);
     wc.hbrBackground = (HBRUSH)(COLOR_WINDOW + 1);
     wc.lpszMenuName  = nullptr;
