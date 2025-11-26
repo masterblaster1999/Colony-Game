@@ -6,8 +6,9 @@
 #include <cstdint>
 #include <memory>
 
-// Forward declare DirectXTex types; we include the header in the .cpp.
-namespace DirectX { class ScratchImage; }
+// Include the DirectXTex public header so DirectX::ScratchImage is a *complete type*
+// where std::unique_ptr's default_delete is instantiated.
+#include <DirectXTex.h>
 
 struct HeightTileCPU;
 struct TextureTileCPU;
