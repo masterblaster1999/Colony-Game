@@ -1,27 +1,28 @@
 // platform/win/WinApp.h
 #pragma once
+#ifndef WIN32_LEAN_AND_MEAN
+#  define WIN32_LEAN_AND_MEAN
+#endif
+#ifndef NOMINMAX
+#  define NOMINMAX
+#endif
+
+#include <windows.h>   // HWND, RAWINPUT, etc.
 #include <functional>
 #include <utility>
-#include <stdint.h>
+#include <cstdint>
+#include <string>
+#include <vector>
 
+// ----------------------------------------------------------------------------
+// Window creation description
+// ----------------------------------------------------------------------------
 struct WinCreateDesc {
     const wchar_t* title = L"Colony";
     struct { int w = 1280, h = 720; } clientSize;
     bool resizable     = true;
     bool debugConsole  = false;
     bool highDPIAware  = true;
-};
-
-class WinApp {
-public:
-    struct Callbacks {
-        std::function<void(WinApp&, int width, int height, float dt)> onUpdate;
-        std::function<void(WinApp&)>                                  onInit;
-        std::function<void(WinApp&)>                                  onShutdown;
-        std::function<void(WinApp&, int width, int height, float dt)> onRender;
-        std::function<void(WinApp&, const wchar_t* path)>             onFileDrop;
-    };
-    // ...
 };
 
 // ----------------------------------------------------------------------------
@@ -31,18 +32,26 @@ class WinApp {
 public:
     struct Callbacks {
         // Lifecycle / frame
-        std::function<void(WinApp&)>                   onInit;         // once before loop
-        std::function<void(WinApp&, float /*dt*/)>     onUpdate;       // each frame (dt)
-        std::function<void(WinApp&)>                   onRender;       // each frame
-        std::function<void(WinApp&)>                   onShutdown;     // once after loop
+        std::function<void(WinApp&)>               onInit;         // once before loop
+        std::function<void(WinApp&, float /*dt*/)> onUpdate;       // each frame (dt)
+        std::function<void(WinApp&)>               onRender;       // each frame
+        std::function<void(WinApp&)>               onShutdown;     // once after loop
 
         // File drop (WM_DROPFILES)
         std::function<void(WinApp&, const std::vector<std::wstring>&)> onFileDrop;
 
         // Input / windowing
-        std::function<void(const RAWINPUT&)>           onRawInput;     // WM_INPUT
-        std::function<void(WinApp&, int,int,float)>    onResize;       // WM_SIZE (w,h,dt=0)
-        std::function<void(UINT,UINT)>                 onDpiChanged;   // WM_DPICHANGED (xDPI,yDPI)
+        std::function<void(const RAWINPUT&)>       onRawInput;     // WM_INPUT (raw struct, if needed)
+        std::function<void(WinApp&, int,int,float)> onResize;      // WM_SIZE (w,h,dpiScale)
+        std::function<void(UINT,UINT)>             onDpiChanged;   // WM_DPICHANGED (xDPI,yDPI)
+
+        // --- New optional raw-input convenience slots ---
+        // Mouse raw delta: dx, dy (relative unless isAbsolute==true)
+        std::function<void(WinApp&, LONG, LONG, bool)> onMouseRawDelta;
+        // Mouse wheel: delta (WHEEL_DELTA multiples). horizontal==true for tilt wheel.
+        std::function<void(WinApp&, short, bool)>      onMouseWheel;
+        // Keyboard: Win32 virtual key (L/R variants when distinguishable), down?
+        std::function<void(WinApp&, unsigned short, bool)> onKeyRaw;
     };
 
     // Legacy static API (kept for compatibility with main_win.cpp)
