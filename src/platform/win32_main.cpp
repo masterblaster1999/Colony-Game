@@ -868,9 +868,8 @@ static struct Recorder{ std::vector<FrameRec> frames; bool recording=false, play
 int APIENTRY wWinMain(HINSTANCE hInst,HINSTANCE,LPWSTR,int){
     set_dpi_awareness(); // Must be before any windows.
 
-    // --- Register window class (explicit assignments avoid C2078)
-    WNDCLASSEXW wc{};
-    wc.cbSize        = sizeof(wc);
+    // --- Register window class using WNDCLASSW (explicit assignments; no brace-list pitfalls)
+    WNDCLASSW wc{};
     wc.style         = CS_OWNDC | CS_HREDRAW | CS_VREDRAW;
     wc.lpfnWndProc   = WndProc;
     wc.cbClsExtra    = 0;
@@ -881,9 +880,8 @@ int APIENTRY wWinMain(HINSTANCE hInst,HINSTANCE,LPWSTR,int){
     wc.hbrBackground = (HBRUSH)(COLOR_WINDOW + 1);
     wc.lpszMenuName  = nullptr;
     wc.lpszClassName = L"GamePlatformWin32";
-    wc.hIconSm       = wc.hIcon;
 
-    RegisterClassExW(&wc);
+    RegisterClassW(&wc);
 
     // --- DPI-correct initial window rectangle
     HMODULE user = GetModuleHandleA("user32.dll");
