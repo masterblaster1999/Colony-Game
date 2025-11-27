@@ -3,6 +3,7 @@
 #include <shellapi.h>          // DragAcceptFiles, DragQueryFile, DragFinish
 #include <cstdio>
 #include <vector>
+#include <string>
 #include <memory>
 
 #pragma comment(lib, "Shcore.lib")
@@ -10,7 +11,7 @@
 
 WinApp* WinApp::s_self = nullptr;
 
-// Prefer process DPI awareness in the manifest; API is a safety fallback.  (MS recommends manifest.)
+// Prefer process DPI awareness in the manifest; API is a safety fallback. (MS recommends manifest.)
 void WinApp::EnablePerMonitorV2DpiFallback(bool enable) {
     if (!enable) return;
     HMODULE user32 = ::GetModuleHandleW(L"user32.dll");
@@ -19,10 +20,32 @@ void WinApp::EnablePerMonitorV2DpiFallback(bool enable) {
     if (auto fn = reinterpret_cast<SetCtx>(::GetProcAddress(user32, "SetProcessDpiAwarenessContext"))) {
         fn(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
     }
-    // Docs: SetProcessDpiAwarenessContext; guidance to prefer manifest. 
-    // See: Setting the default DPI awareness for a process. 
-    // (Citations in the explanation below.)
+    // Prefer manifest for DPI awareness; API fallback remains for older installs.
 }
+
+// If you also added fine-grained raw-input callbacks (onMouseRawDelta/onMouseWheel/onKeyRaw)
+// in WinApp::Callbacks, define this macro (e.g., in your project settings) to enable the
+// extra fan-out below.
+// #define WINAPP_HAS_FINE_RAW_INPUT_CALLBACKS 1
+
+#ifdef WINAPP_HAS_FINE_RAW_INPUT_CALLBACKS
+// Map generic VKs to left/right variants when possible (for raw keyboard).
+static inline unsigned short MapLeftRightVK(unsigned short vkey, unsigned short make, USHORT flags)
+{
+    const bool e0 = (flags & RI_KEY_E0) != 0;
+    switch (vkey) {
+        case VK_SHIFT:
+            // MapVirtualKeyW with VSC->VK_EX distinguishes L/R Shift
+            return static_cast<unsigned short>(::MapVirtualKeyW(make, MAPVK_VSC_TO_VK_EX));
+        case VK_CONTROL:
+            return e0 ? VK_RCONTROL : VK_LCONTROL;
+        case VK_MENU: // ALT
+            return e0 ? VK_RMENU : VK_LMENU;
+        default:
+            return vkey;
+    }
+}
+#endif // WINAPP_HAS_FINE_RAW_INPUT_CALLBACKS
 
 static void ComputeWindowRectForClient(SIZE desiredClient, DWORD style, DWORD exStyle, RECT& outRect) {
     RECT r{ 0, 0, desiredClient.cx, desiredClient.cy };
@@ -172,16 +195,56 @@ LRESULT CALLBACK WinApp::WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPar
     WinApp* self = s_self;
     switch (msg) {
     case WM_INPUT: {
-        if (self && self->m_cbs.onRawInput) {
-            UINT size = 0;
-            ::GetRawInputData((HRAWINPUT)lParam, RID_INPUT, nullptr, &size, sizeof(RAWINPUTHEADER));
-            std::unique_ptr<BYTE[]> buf(new BYTE[size]);
-            if (::GetRawInputData((HRAWINPUT)lParam, RID_INPUT, buf.get(), &size, sizeof(RAWINPUTHEADER)) == size) {
-                self->m_cbs.onRawInput(*reinterpret_cast<RAWINPUT*>(buf.get()));
+        if (!self) return 0;
+
+        // Retrieve the RAWINPUT packet
+        UINT size = 0;
+        ::GetRawInputData((HRAWINPUT)lParam, RID_INPUT, nullptr, &size, sizeof(RAWINPUTHEADER));
+        if (!size) return 0;
+
+        std::unique_ptr<BYTE[]> buf(new BYTE[size]);
+        if (::GetRawInputData((HRAWINPUT)lParam, RID_INPUT, buf.get(), &size, sizeof(RAWINPUTHEADER)) != size)
+            return 0;
+
+        RAWINPUT* raw = reinterpret_cast<RAWINPUT*>(buf.get());
+
+        // 1) Raw packet passthrough (if requested)
+        if (self->m_cbs.onRawInput) {
+            self->m_cbs.onRawInput(*raw);
+        }
+
+#ifdef WINAPP_HAS_FINE_RAW_INPUT_CALLBACKS
+        // 2) Optional decoded fan-out to fine-grained callbacks
+        if (raw->header.dwType == RIM_TYPEMOUSE) {
+            const RAWMOUSE& m = raw->data.mouse;
+
+            if (self->m_cbs.onMouseRawDelta) {
+                self->m_cbs.onMouseRawDelta(*self, static_cast<int>(m.lLastX), static_cast<int>(m.lLastY));
+            }
+            if (self->m_cbs.onMouseWheel) {
+                if (m.usButtonFlags & RI_MOUSE_WHEEL) {
+                    const short delta = static_cast<short>(m.usButtonData);
+                    self->m_cbs.onMouseWheel(*self, delta, /*horizontal*/false);
+                }
+                if (m.usButtonFlags & RI_MOUSE_HWHEEL) {
+                    const short delta = static_cast<short>(m.usButtonData);
+                    self->m_cbs.onMouseWheel(*self, delta, /*horizontal*/true);
+                }
             }
         }
-        return 0;                                                      // WM_INPUT should return 0
-    } // Raw input requires RegisterRawInputDevices; hot‑plug via RIDEV_DEVNOTIFY. :contentReference[oaicite:1]{index=1}
+        else if (raw->header.dwType == RIM_TYPEKEYBOARD) {
+            const RAWKEYBOARD& k = raw->data.keyboard;
+            const bool keyUp   = (k.Flags & RI_KEY_BREAK) != 0;
+            const bool keyDown = !keyUp;
+            if (self->m_cbs.onKeyRaw) {
+                unsigned short vkey = MapLeftRightVK(k.VKey, k.MakeCode, k.Flags);
+                self->m_cbs.onKeyRaw(*self, vkey, keyDown);
+            }
+        }
+#endif // WINAPP_HAS_FINE_RAW_INPUT_CALLBACKS
+
+        return 0; // processed
+    } // WM_INPUT
 
     case WM_SIZE: {
         if (self && self->m_cbs.onResize) {
@@ -190,7 +253,7 @@ LRESULT CALLBACK WinApp::WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPar
             self->m_cbs.onResize(*self, w, h, 0.0f);
         }
         return 0;
-    } // WM_SIZE docs. :contentReference[oaicite:2]{index=2}
+    } // WM_SIZE
 
     case WM_DROPFILES: {
         if (self && self->m_cbs.onFileDrop) {
@@ -209,7 +272,7 @@ LRESULT CALLBACK WinApp::WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPar
             self->m_cbs.onFileDrop(*self, files);
         }
         return 0;
-    } // DragAcceptFiles + WM_DROPFILES. :contentReference[oaicite:3]{index=3}
+    } // WM_DROPFILES
 
     case WM_DPICHANGED: {
         // Resize to Windows' suggested rectangle to avoid mixed‑DPI glitches.
@@ -224,7 +287,7 @@ LRESULT CALLBACK WinApp::WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPar
             self->m_cbs.onDpiChanged(dpi, dpi);
         }
         return 0;
-    } // WM_DPICHANGED guidance. :contentReference[oaicite:4]{index=4}
+    } // WM_DPICHANGED
 
     case WM_CLOSE:
         // Let the app decide shutdown order; post quit on destroy.
