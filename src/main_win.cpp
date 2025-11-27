@@ -7,6 +7,7 @@
 
 #include <windows.h>
 #include <DbgHelp.h>
+#include <shellapi.h>   // Drag&Drop (WM_DROPFILES)
 #include <vector>
 #include <string>
 
@@ -21,6 +22,7 @@ using namespace winplat;
 
 #ifdef _MSC_VER
 #  pragma comment(lib, "Dbghelp.lib")
+#  pragma comment(lib, "Shell32.lib")  // DragQueryFileW / DragFinish
 #endif
 
 // -----------------------------------------------------------------------------
@@ -109,6 +111,43 @@ namespace {
 
     // 4) Helpful for native debuggers and ETW traces.
     SetMainThreadDescription();
+  }
+
+  // Returns the DPI for a given window if available; otherwise falls back to LOGPIXELSY or 96.
+  static float GetWindowDPI(HWND hwnd)
+  {
+    UINT dpi = 96;
+    if (HMODULE user32 = ::GetModuleHandleW(L"user32.dll")) {
+      using GetDpiForWindow_t = UINT (WINAPI*)(HWND);
+      if (auto p = reinterpret_cast<GetDpiForWindow_t>(
+              ::GetProcAddress(user32, "GetDpiForWindow"))) {
+        dpi = p(hwnd); // Available on Win10 1607+ (declared in winuser.h)
+      } else {
+        // Fallback: query device caps
+        if (HDC hdc = ::GetDC(hwnd)) {
+          dpi = static_cast<UINT>(::GetDeviceCaps(hdc, LOGPIXELSY));
+          ::ReleaseDC(hwnd, hdc);
+        }
+      }
+    }
+    return static_cast<float>(dpi);
+  }
+
+  // Extract file paths from an HDROP into a vector of std::wstring.
+  static std::vector<std::wstring> ExtractDroppedFiles(HDROP hDrop)
+  {
+    std::vector<std::wstring> files;
+    const UINT count = ::DragQueryFileW(hDrop, 0xFFFFFFFF, nullptr, 0);
+    files.reserve(count);
+    for (UINT i = 0; i < count; ++i) {
+      const UINT len = ::DragQueryFileW(hDrop, i, nullptr, 0);
+      std::wstring path(len, L'\0');
+      ::DragQueryFileW(hDrop, i, path.data(), len + 1);
+      if (!path.empty() && path.back() == L'\0') path.pop_back();
+      files.emplace_back(std::move(path));
+    }
+    ::DragFinish(hDrop);
+    return files;
   }
 }
 
@@ -220,6 +259,95 @@ static void GameResize(WinApp& /*app*/, int /*w*/, int /*h*/, float /*dpi*/) {
 static void GameShutdown(WinApp& /*app*/) {}
 
 // -----------------------------------------------------------------------------
+// Message-pump driven run loop that fans messages out to cbs
+// -----------------------------------------------------------------------------
+static int RunMessageLoop(WinApp& app, WinApp::Callbacks& cbs)
+{
+  // Optional: if WinApp::create() does NOT call onInit, do it here once.
+  if (cbs.onInit) {
+    cbs.onInit(app);
+  }
+
+  LARGE_INTEGER freq{}, last{};
+  ::QueryPerformanceFrequency(&freq);
+  ::QueryPerformanceCounter(&last);
+
+  bool running = true;
+  MSG msg{};
+  while (running) {
+    // Drain message queue
+    while (::PeekMessageW(&msg, nullptr, 0, 0, PM_REMOVE)) {
+      if (msg.message == WM_QUIT) {
+        running = false;
+        break;
+      }
+
+      switch (msg.message) {
+        case WM_SIZE: {
+          if (cbs.onResize) {
+            const int w = static_cast<int>(LOWORD(msg.lParam));
+            const int h = static_cast<int>(HIWORD(msg.lParam));
+            const float dpi = GetWindowDPI(msg.hwnd);
+            cbs.onResize(app, w, h, dpi);
+          }
+        } break;
+
+        case WM_DPICHANGED: {
+          // wParam: HIWORD/LOWORD contain the new DPI (same in both)
+          // lParam: RECT* suggested new window rect for the new DPI
+          if (cbs.onResize) {
+            RECT* const suggested = reinterpret_cast<RECT*>(msg.lParam);
+            // Apps are expected to resize/move to the suggested rect (we don’t reposition here
+            // because WinApp likely owns the HWND; this still informs engine about DPI/size).
+            const float dpi = static_cast<float>(LOWORD(msg.wParam));
+            // If we can read the current client size, pass it along; otherwise use suggested.
+            RECT rc{};
+            if (::GetClientRect(msg.hwnd, &rc)) {
+              cbs.onResize(app, rc.right - rc.left, rc.bottom - rc.top, dpi);
+            } else {
+              cbs.onResize(app, suggested->right - suggested->left, suggested->bottom - suggested->top, dpi);
+            }
+          }
+        } break;
+
+        case WM_DROPFILES: {
+          if (cbs.onFileDrop) {
+            const auto files = ExtractDroppedFiles(reinterpret_cast<HDROP>(msg.wParam));
+            cbs.onFileDrop(app, files);
+          }
+        } break;
+
+        default:
+          break;
+      }
+
+      ::TranslateMessage(&msg);
+      ::DispatchMessageW(&msg);
+    }
+
+    // --- Per-frame update & render ---
+    LARGE_INTEGER now{};
+    ::QueryPerformanceCounter(&now);
+    const float dt = static_cast<float>(now.QuadPart - last.QuadPart) / static_cast<float>(freq.QuadPart);
+    last = now;
+
+#if defined(TRACY_ENABLE)
+    FrameMarkStart("Frame");
+#endif
+
+    if (cbs.onUpdate) cbs.onUpdate(app, dt);
+    if (cbs.onRender) cbs.onRender(app);
+
+#if defined(TRACY_ENABLE)
+    FrameMarkEnd("Frame");
+#endif
+  }
+
+  if (cbs.onShutdown) cbs.onShutdown(app);
+  return 0;
+}
+
+// -----------------------------------------------------------------------------
 // Entry point
 // -----------------------------------------------------------------------------
 int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int)
@@ -265,5 +393,7 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int)
 #if defined(TRACY_ENABLE)
   FrameMarkEnd("Startup"); // close the discontinuous "Startup" frame
 #endif
-  return app.run();
+
+  // Our own Win32 message pump that forwards messages into cbs and runs update/render.
+  return RunMessageLoop(app, cbs);
 }
