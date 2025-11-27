@@ -411,7 +411,6 @@ public:
 private:
     void worker(){
         for(;;){
-            // value-initialize to avoid use-before-init warnings on older toolsets
             TileJob job{}; bool has=false;
             {
                 std::unique_lock<std::mutex> lk(mx);
@@ -478,7 +477,6 @@ static bool load_game(HotReload& hr, const char* dllName){
     auto resize=(void(*)(void*,int,int))GetProcAddress(dll,"game_resize");
     auto step=(void(*)(void*,float,uint32_t*,int,int,const InputState*))GetProcAddress(dll,"game_update_and_render");
     auto bind=(void(*)(PlatformAPI*,int))GetProcAddress(dll,"game_bind_platform");
-    // New optional decoupled entry points
     auto upf =(void(*)(void*,float))GetProcAddress(dll,"game_update_fixed");
     auto rend=(void(*)(void*,float,uint32_t*,int,int,const InputState*))GetProcAddress(dll,"game_render");
 
@@ -536,7 +534,6 @@ static RECT compute_dest_rect(int cw,int ch,int bw,int bh,float* outScale=nullpt
 static void present_full(HWND hwnd,HDC hdc,Backbuffer& bb){
     RECT cr; GetClientRect(hwnd,&cr); int cw=cr.right-cr.left, ch=cr.bottom-cr.top; float s=1.f; RECT dst=compute_dest_rect(cw,ch,bb.w,bb.h,&s);
 
-    // paint background bands around destination rectangle
     const RECT* pDst = &dst;
     int dstLeft   = pDst->left;
     int dstTop    = pDst->top;
@@ -655,6 +652,13 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam){
     case WM_DPICHANGED:{ g_win.dpi=HIWORD(wParam); RECT* nr=(RECT*)lParam;
         SetWindowPos(hwnd,nullptr,nr->left,nr->top,nr->right-nr->left,nr->bottom-nr->top,SWP_NOZORDER|SWP_NOACTIVATE); } return 0;
     case WM_SIZE:{ if(!g_bb.pixels) g_bb.alloc(g_win.baseW,g_win.baseH); return 0; }
+    case WM_ERASEBKGND: return 1; // reduce flicker on resize/expose
+    case WM_GETMINMAXINFO:{
+        MINMAXINFO* mmi=(MINMAXINFO*)lParam;
+        UINT dpi = g_win.dpi ? g_win.dpi : 96;
+        mmi->ptMinTrackSize.x = MulDiv(320, dpi, 96);
+        mmi->ptMinTrackSize.y = MulDiv(180, dpi, 96);
+    } return 0;
     case WM_MOUSEMOVE: g_in.mouseX=GET_X_LPARAM(lParam); g_in.mouseY=GET_Y_LPARAM(lParam); return 0;
     case WM_MOUSEWHEEL: g_in.wheel += (float)GET_WHEEL_DELTA_WPARAM(wParam)/WHEEL_DELTA; return 0;
     case WM_LBUTTONDOWN: set_button(g_in.mouseL,true); SetCapture(hwnd); return 0;
@@ -665,10 +669,14 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam){
     case WM_MBUTTONUP:   set_button(g_in.mouseM,false); ReleaseCapture(); return 0;
     case WM_INPUT:{
         if(!g_in.rawMouse) break;
-        UINT size=0; GetRawInputData((HRAWINPUT)lParam,RID_INPUT,nullptr,&size,sizeof(RAWINPUTHEADER));
-        uint8_t buf[sizeof(RAWINPUT)]{}; RAWINPUT* ri=(RAWINPUT*)buf;
-        if(size<=sizeof(buf) && GetRawInputData((HRAWINPUT)lParam,RID_INPUT,ri,&size,sizeof(RAWINPUTHEADER))==size){
-            if(ri->header.dwType==RIM_TYPEMOUSE){ g_in.mouseDX += ri->data.mouse.lLastX; g_in.mouseDY += ri->data.mouse.lLastY; }
+        UINT size=0;
+        GetRawInputData((HRAWINPUT)lParam,RID_INPUT,nullptr,&size,sizeof(RAWINPUTHEADER));
+        if(size){
+            std::vector<uint8_t> buf(size);
+            if(GetRawInputData((HRAWINPUT)lParam,RID_INPUT,buf.data(),&size,sizeof(RAWINPUTHEADER))==size){
+                RAWINPUT* ri=(RAWINPUT*)buf.data();
+                if(ri->header.dwType==RIM_TYPEMOUSE){ g_in.mouseDX += ri->data.mouse.lLastX; g_in.mouseDY += ri->data.mouse.lLastY; }
+            }
         }
     } return 0;
     case WM_CHAR:{
@@ -712,12 +720,10 @@ static void draw_perf_hud(Backbuffer& bb){
     _snprintf_s(buf,sizeof(buf),
         "FPS %.1f  %.2f ms [F1 HUD] [F2 int:%s] [F3 vsync:%s] [F4 raw:%s] [F5 pause] [F6 step] [F7 slow] [F8 rec] [F9 play] [F10 dither] [H smooth] [Z magnify]",
         g_perf.fps,g_perf.frameMS, g_win.integerScale?"on":"off", g_win.useVsync?"on":"off", g_in.rawMouse?"on":"off");
-    // micro lanes
     char lanes[160];
     _snprintf_s(lanes,sizeof(lanes)," | upd %.2fms ren %.2fms fx %.2fms pr %.2fms",
         g_micro.tUpdate*1000.0, g_micro.tRender*1000.0, g_micro.tPost*1000.0, g_micro.tPresent*1000.0);
     strncat_s(buf, lanes, _TRUNCATE);
-    // frame hash
     uint32_t fh=crc32_frame(bb); char hb[32]; _snprintf_s(hb,sizeof(hb),"  hash %08X", fh); strncat_s(buf, hb, _TRUNCATE);
     draw_text6x8(bb,x0,y0,buf,rgb8(255,255,255));
     int gx=x0, gy=y0+10;
@@ -786,27 +792,22 @@ static void demo_simulate(float dt){
 
 static void demo_render(float alpha){
     const int tileRows=32;
-    // MT tile background render
     std::vector<TileJob> jobs; for(int y=0;y<g_bb.h;y+=tileRows) jobs.push_back({ y,clampi(y+tileRows,0,g_bb.h), demo_tile_job,nullptr });
     g_pool.dispatch(jobs); g_pool.wait();
 
-    // UI panel + icon
     draw_soft_shadow(g_bb, 24,24, 220,64, 8, 80, pack_rgb(0,0,0));
     draw_sdf_roundrect(g_bb, 20,20, 220,64, 10.f, pack_rgb(38,40,48), 1.0f);
     draw_sdf_circle(g_bb, 50.f,52.f, 14.5f, pack_rgb(250,230,90), 1.25f);
 
-    // Interpolated moving circle marker
     float t = g_demo.prev_t + (g_demo.t - g_demo.prev_t) * clampf(alpha,0.f,1.f);
     float cx=(sinf(t*0.7f)*0.5f+0.5f)*(g_bb.w-80);
     float cy=(sinf(t*1.1f+1.57f)*0.5f+0.5f)*(g_bb.h-80);
     draw_sdf_circle(g_bb, cx,cy, 14.5f, pack_rgb(232,85,120), 1.25f);
 
-    // Grid
     uint32_t grid=rgb8(0,0,0); const int step=16;
     for(int x=0;x<g_bb.w;x+=step) line(g_bb,x,0,x,g_bb.h-1,grid);
     for(int y=0;y<g_bb.h;y+=step) line(g_bb,0,y,g_bb.w-1,y,grid);
 
-    // Input info
     char info[160];
     _snprintf_s(info,sizeof(info),"Mouse (%d,%d) d(%d,%d) wheel %.1f  Pad0 lx %.2f ly %.2f",
         g_in.mouseX,g_in.mouseY,g_in.mouseDX,g_in.mouseDY,g_in.wheel,g_in.pads[0].lx,g_in.pads[0].ly);
@@ -865,9 +866,9 @@ static struct Recorder{ std::vector<FrameRec> frames; bool recording=false, play
 // Entry
 // --------------------------------------------------------
 int APIENTRY wWinMain(HINSTANCE hInst,HINSTANCE,LPWSTR,int){
-    set_dpi_awareness(); // DPI PMv2 if available, else system DPI. Must be before any windows.
+    set_dpi_awareness(); // Must be before any windows.
 
-    // Use WNDCLASSEXW with explicit member initialization to avoid C2078 and match docs.
+    // --- Register window class (explicit assignments avoid C2078)
     WNDCLASSEXW wc{};
     wc.cbSize        = sizeof(wc);
     wc.style         = CS_OWNDC | CS_HREDRAW | CS_VREDRAW;
@@ -882,17 +883,36 @@ int APIENTRY wWinMain(HINSTANCE hInst,HINSTANCE,LPWSTR,int){
     wc.lpszClassName = L"GamePlatformWin32";
     wc.hIconSm       = wc.hIcon;
 
-    RegisterClassExW(&wc); // Register the EX class variant (supersedes WNDCLASS).
+    RegisterClassExW(&wc);
 
-    DWORD style=WS_OVERLAPPEDWINDOW|WS_VISIBLE; RECT wr{0,0,g_win.baseW,g_win.baseH}; AdjustWindowRect(&wr,style,FALSE);
-    HWND hwnd=CreateWindowW(wc.lpszClassName, L"Colony — Ultra Platform", style, CW_USEDEFAULT,CW_USEDEFAULT, wr.right-wr.left, wr.bottom-wr.top, nullptr,nullptr,hInst,nullptr);
+    // --- DPI-correct initial window rectangle
+    HMODULE user = GetModuleHandleA("user32.dll");
+    typedef UINT (WINAPI *GetDpiForSystem_t)(void);
+    GetDpiForSystem_t pGetDpiForSystem = (GetDpiForSystem_t)(user?GetProcAddress(user,"GetDpiForSystem"):nullptr);
+    UINT initDpi = pGetDpiForSystem ? pGetDpiForSystem() : 96;
+
+    DWORD exStyle = 0;
+    DWORD style = WS_OVERLAPPEDWINDOW | WS_VISIBLE;
+
+    int initW = MulDiv(g_win.baseW, (int)initDpi, 96);
+    int initH = MulDiv(g_win.baseH, (int)initDpi, 96);
+    RECT wr{0,0,initW,initH};
+
+    typedef BOOL (WINAPI *AdjustWindowRectExForDpi_t)(LPRECT,DWORD,BOOL,DWORD,UINT);
+    AdjustWindowRectExForDpi_t pAdjForDpi = (AdjustWindowRectExForDpi_t)(user?GetProcAddress(user,"AdjustWindowRectExForDpi"):nullptr);
+    if(pAdjForDpi) pAdjForDpi(&wr, style, FALSE, exStyle, initDpi);
+    else AdjustWindowRectEx(&wr, style, FALSE, exStyle);
+
+    HWND hwnd=CreateWindowExW(exStyle, wc.lpszClassName, L"Colony — Ultra Platform", style,
+                              CW_USEDEFAULT,CW_USEDEFAULT, wr.right-wr.left, wr.bottom-wr.top,
+                              nullptr,nullptr,hInst,nullptr);
     g_win.hwnd=hwnd;
 
     g_bb.alloc(g_win.baseW,g_win.baseH);
     int hw=(int)std::thread::hardware_concurrency(); g_pool.init( (hw>2)?(hw-1):1 );
     g_in.rawMouse=g_win.enableRawMouse; enable_raw_mouse(hwnd,g_in.rawMouse);
 
-    // High-resolution timer period: request the minimum supported and track it
+    // High-resolution timer period
     TIMECAPS tc{}; if(timeGetDevCaps(&tc,sizeof(tc))==TIMERR_NOERROR){
         UINT desired = clampi(1, (int)tc.wPeriodMin, (int)tc.wPeriodMax);
         if(timeBeginPeriod(desired)==TIMERR_NOERROR) g_timerPeriod = desired;
@@ -966,7 +986,7 @@ int APIENTRY wWinMain(HINSTANCE hInst,HINSTANCE,LPWSTR,int){
         // Timing
         uint64_t tNow=now_qpc(); double dt=(double)(tNow-tPrev)*invFreq; tPrev=tNow; if(slowmo) dt*=0.25;
 
-        // Replay/Record feed (overrides dt/inputs if playing)
+        // Replay/Record feed
         if(g_rec.playing){
             if(g_rec.idx<g_rec.frames.size()){
                 g_in = g_rec.frames[g_rec.idx].in; dt = g_rec.frames[g_rec.idx].dt; g_rec.idx++;
@@ -975,9 +995,6 @@ int APIENTRY wWinMain(HINSTANCE hInst,HINSTANCE,LPWSTR,int){
 
         if(g_win.fixedTimestep){ acc += dt; } else { acc = dt; }
 
-        // -----------------------------
-        // Simulate (0..N times), Render once with alpha
-        // -----------------------------
         bool rendered_by_fallback = false;
         g_dirty.clear();
 
@@ -987,17 +1004,13 @@ int APIENTRY wWinMain(HINSTANCE hInst,HINSTANCE,LPWSTR,int){
         if(g_win.fixedTimestep){
             if(!paused){
                 int safety = 0;
-                // Clamp catch-up (implicit via iteration cap or add an explicit clamp if desired)
                 while(acc >= step && safety < 16){
-                    // --- Simulation-only path preferred
                     if(hot.active && hot.api.update_fixed){
                         hot.api.update_fixed(hot.userState, (float)step);
                     } else if(hot.active && hot.api.update_and_render){
-                        // Fallback: legacy combined step renders each update
                         hot.api.update_and_render(hot.userState, (float)step, (uint32_t*)g_bb.pixels, g_bb.w, g_bb.h, &g_in);
                         rendered_by_fallback = true;
                     } else {
-                        // Demo simulate
                         demo_simulate((float)step);
                     }
                     simTime += step; acc -= step; safety++;
@@ -1006,7 +1019,6 @@ int APIENTRY wWinMain(HINSTANCE hInst,HINSTANCE,LPWSTR,int){
             }
             alpha = (float)clampf((float)(acc/step), 0.f, 1.f);
         }else{
-            // Variable step
             if(!paused){
                 if(hot.active && hot.api.update_fixed){
                     hot.api.update_fixed(hot.userState, (float)acc);
@@ -1022,18 +1034,15 @@ int APIENTRY wWinMain(HINSTANCE hInst,HINSTANCE,LPWSTR,int){
             acc = 0.0;
         }
 
-        // ---- Render once (decoupled), unless the legacy fallback already rendered
         uint64_t tR0=tic();
         if(!rendered_by_fallback){
             if(hot.active && hot.api.render){
                 hot.api.render(hot.userState, alpha, (uint32_t*)g_bb.pixels, g_bb.w, g_bb.h, &g_in);
                 useDirty=false;
             } else if(!hot.active){
-                // Demo single render with interpolation
                 demo_render(alpha);
                 useDirty=false;
             } else {
-                // Legacy combined API but no steps ran (acc < step): draw a zero-dt frame
                 if(hot.api.update_and_render){
                     hot.api.update_and_render(hot.userState, 0.0f, (uint32_t*)g_bb.pixels, g_bb.w, g_bb.h, &g_in);
                     useDirty=false;
@@ -1042,26 +1051,21 @@ int APIENTRY wWinMain(HINSTANCE hInst,HINSTANCE,LPWSTR,int){
         }
         g_micro.tRender=toc(tR0);
 
-        // ---- Post (dither, magnifier, HUD)
         uint64_t tP0=tic();
         if(useDither) apply_dither_gamma(g_bb, gamma);
         if(magnify)   draw_magnifier(g_bb, g_in.mouseX,g_in.mouseY, 10,8,true);
-        // Show HUD using wall-clock delta for smoother UX
         g_perf.frameMS = (float)(dt*1000.0);
         draw_perf_hud(g_bb);
         g_micro.tPost=toc(tP0);
 
-        // ---- Present
         uint64_t tPr0=tic();
         if(useDirty) present_dirty(hwnd,hdc,g_bb,g_dirty); else present_full(hwnd,hdc,g_bb);
         if(g_win.useVsync){ BOOL comp=FALSE; DwmIsCompositionEnabled(&comp); if(comp) DwmFlush(); }
         g_micro.tPresent=toc(tPr0);
 
-        // HUD fps graph (based on wall dt)
         double walldt=dt; g_perf.fps=(float)(1.0/(walldt>1e-6?walldt:1.0/1000.0));
         g_perf.graph[g_perf.head=(g_perf.head+1)%180] = (float)(walldt*1000.0);
 
-        // Pace a bit in variable-step
         if(!g_win.fixedTimestep){
             double tAfter=qpc_to_sec(now_qpc()); double target=1.0/60.0;
             double remain = target - (tAfter - (simTime - acc));
