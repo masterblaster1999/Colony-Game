@@ -1,69 +1,46 @@
 #pragma once
-#include <array>
 #include <vector>
+#include <cstdint>
 #include <random>
+#include <algorithm>
 #include <cmath>
 
 namespace procgen {
 
-class Perlin {
-    std::array<int,512> p{};
-    static inline float fade(float t){ return t*t*t*(t*(t*6-15)+10); }
-    static inline float lerp(float a,float b,float t){ return a + t*(b-a); }
-    static inline float grad(int h, float x, float y, float z){
-        int b = h & 15;
-        float u = b<8?x:y;
-        float v = b<4?y:(b==12||b==14?x:z);
-        return ((b&1)?-u:u) + ((b&2)?-v:v);
-    }
+// Classic Perlin (improved variant-inspired), 2D only here.
+class PerlinNoise {
 public:
-    explicit Perlin(uint32_t seed=1337u){
-        std::array<int,256> base{};
-        for (int i=0;i<256;++i) base[i]=i;
+    explicit PerlinNoise(uint32_t seed = 0) {
+        p.resize(256);
+        for (int i = 0; i < 256; ++i) p[i] = i;
         std::mt19937 rng(seed);
-        for (int i=255;i>=0;--i){ std::uniform_int_distribution<int> d(0,i); std::swap(base[i], base[d(rng)]); }
-        for (int i=0;i<512;++i) p[i]=base[i&255];
+        std::shuffle(p.begin(), p.end(), rng);
+        p.insert(p.end(), p.begin(), p.end()); // 512
     }
 
-    float noise(float x,float y,float z=0.f) const {
-        int X = (int)std::floor(x) & 255;
-        int Y = (int)std::floor(y) & 255;
-        int Z = (int)std::floor(z) & 255;
-        x -= std::floor(x); y -= std::floor(y); z -= std::floor(z);
-        float u=fade(x), v=fade(y), w=fade(z);
+    // Single octave in [-1,1]
+    float noise(float x, float y) const;
 
-        int A = p[X]+Y, AA = p[A]+Z, AB = p[A+1]+Z;
-        int B = p[X+1]+Y, BA = p[B]+Z, BB = p[B+1]+Z;
+    // Fractal Brownian motion (fBM) in [-1,1]
+    float fbm(float x, float y, int octaves, float lacunarity, float gain) const;
 
-        float res =
-          lerp( lerp( lerp( grad(p[AA  ], x  , y  , z  ),
-                            grad(p[BA  ], x-1, y  , z  ), u),
-                      lerp( grad(p[AB  ], x  , y-1, z  ),
-                            grad(p[BB  ], x-1, y-1, z  ), u), v),
-                lerp( lerp( grad(p[AA+1], x  , y  , z-1),
-                            grad(p[BA+1], x-1, y  , z-1), u),
-                      lerp( grad(p[AB+1], x  , y-1, z-1),
-                            grad(p[BB+1], x-1, y-1, z-1), u), v), w);
-        // res in [-1,1]
-        return res;
-    }
+    // Ridged multifractal in [0,1]
+    float ridged(float x, float y, int octaves, float lacunarity, float gain) const;
 
-    float fbm2(float x, float y, int oct=5, float lac=2.0f, float gain=0.5f, float freq=1.0f) const {
-        float amp=1.0f, sum=0.0f, norm=0.0f;
-        for(int i=0;i<oct;++i){
-            sum += amp * noise(x*freq, y*freq, 0.0f);
-            norm += amp;
-            amp *= gain;
-            freq *= lac;
-        }
-        return sum / norm; // ~[-1,1]
-    }
+    // Domain warp: modifies x,y in-place using low-octave fbm fields.
+    void domainWarp(float& x, float& y, float amplitude, float baseFreq, int octaves) const;
 
-    // Domain warp trick.
-    float warped2(float x, float y, float freq, float warpAmp, float warpFreq) const {
-        float dx = noise(x*warpFreq, y*warpFreq, 37.0f) * warpAmp;
-        float dy = noise((x+5.2f)*warpFreq, (y+1.3f)*warpFreq, 11.0f) * warpAmp;
-        return noise((x+dx)*freq, (y+dy)*freq, 0.0f);
+private:
+    std::vector<int> p;
+
+    static inline float fade(float t) { return t*t*t*(t*(t*6 - 15) + 10); }
+    static inline float lerp(float t, float a, float b) { return a + t*(b - a); }
+    static inline float grad(int h, float x, float y) {
+        // 12 gradient directions
+        const int hh = h & 7;
+        const float u = (hh < 4) ? x : y;
+        const float v = (hh < 4) ? y : x;
+        return ((hh & 1) ? -u : u) + ((hh & 2) ? -2.f*v : 2.f*v) * 0.5f;
     }
 };
 
