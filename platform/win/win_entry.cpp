@@ -42,6 +42,8 @@ void gdi_present_dirty(HWND hwnd, HDC hdc, int backW, int backH,
                        const PresentConfig& cfg);
 // -----------------------------------------------------------------------------
 
+// 🔸 Include shared input API (Option B)
+#include "win_input.h"
 
 // --------------------------------- Utils -------------------------------------
 static inline int  clampi(int v, int lo, int hi){ return (v<lo)?lo:((v>hi)?hi:v); }
@@ -53,7 +55,6 @@ static inline uint64_t now_qpc(){ LARGE_INTEGER li; QueryPerformanceCounter(&li)
 static inline double   qpc_to_sec(uint64_t t){ static double inv=0; if(!inv){ LARGE_INTEGER f; QueryPerformanceFrequency(&f); inv=1.0/(double)f.QuadPart; } return t*inv; }
 static inline uint32_t hash32(uint32_t x){ x^=x>>16; x*=0x7feb352dU; x^=x>>15; x*=0x846ca68bU; x^=x>>16; return x; }
 static inline uint32_t pack_rgb(uint8_t r, uint8_t g, uint8_t b){ return (uint32_t)b<<16 | (uint32_t)g<<8 | (uint32_t)r; }
-
 
 // ------------------------------- Backbuffer ----------------------------------
 struct Backbuffer{
@@ -76,44 +77,6 @@ struct Backbuffer{
     void free(){ if(pixels){ VirtualFree(pixels,0,MEM_RELEASE); pixels=nullptr; } w=h=pitch=0; }
 };
 static inline void* rowptr(Backbuffer& bb, int y){ return (uint8_t*)bb.pixels + (size_t)y*bb.pitch; }
-
-
-// --------------------------------- Input -------------------------------------
-struct Button{ bool down=false; uint8_t trans=0; };
-static inline void set_button(Button& b, bool d){ if(b.down!=d){ b.down=d; b.trans++; } }
-static inline void begin_button(Button& b){ b.trans=0; }
-static inline bool pressed(const Button& b){ return b.down && b.trans>0; }
-
-enum KeyCode{
-    Key_Unknown=0,
-    Key_W,Key_A,Key_S,Key_D, Key_Q,Key_E,
-    Key_Space, Key_Escape, Key_Up,Key_Down,Key_Left,Key_Right,
-    Key_F1,Key_F2,Key_F3,Key_F4,Key_F5,Key_F6,Key_F7,Key_F8,Key_F9,Key_F10,Key_F11,Key_F12,
-    Key_Z, Key_H, Key_G,
-    Key_Count
-};
-
-struct Gamepad{
-    bool connected=false; float lx=0,ly=0,rx=0,ry=0, lt=0,rt=0;
-    Button a,b,x,y, lb,rb, back,start, lsb,rsb, up,down,left,right;
-};
-
-struct InputState{
-    int mouseX=0,mouseY=0,mouseDX=0,mouseDY=0;
-    float wheel=0.f;
-    Button mouseL,mouseM,mouseR;
-    Button key[Key_Count]{};
-    Gamepad pads[4]{};
-    bool rawMouse=false;
-    char text[128]{}; int textLen=0;
-};
-
-static inline void begin_frame(InputState& in){
-    in.wheel=0; in.mouseDX=in.mouseDY=0; in.textLen=0; in.text[0]=0;
-    begin_button(in.mouseL); begin_button(in.mouseM); begin_button(in.mouseR);
-    for(int i=0;i<Key_Count;i++) begin_button(in.key[i]);
-}
-
 
 // ------------------------------ Tiny bitmap font -----------------------------
 #define GLYPH6x8(...) {__VA_ARGS__}
@@ -167,7 +130,6 @@ static void draw_text6x8(Backbuffer& bb,int x,int y,const char* s,uint32_t c){
     }
 }
 
-
 // ------------------------- Procedural + tiny demo ----------------------------
 static inline uint32_t tile_color(int tx,int ty){
     uint32_t h = hash32((uint32_t)tx*73856093u ^ (uint32_t)ty*19349663u);
@@ -185,7 +147,6 @@ static void line(Backbuffer& bb,int x0,int y0,int x1,int y1,uint32_t c){
         int e2=2*err; if(e2>=dy){err+=dy; x0+=sx;} if(e2<=dx){err+=dx; y0+=sy;}
     }
 }
-
 
 // ----------------------------- Thread pool -----------------------------------
 struct TileJob{ int y0,y1; void(*fn)(void*,int,int); void* ctx; };
@@ -216,7 +177,6 @@ private:
     std::mutex mx; std::condition_variable cv, doneCv; bool stop=false;
 };
 
-
 // ------------------------------ Dirty rectangles -----------------------------
 struct Dirty{ RECT r; };
 struct DirtyTracker{
@@ -229,7 +189,6 @@ struct DirtyTracker{
         if(rects.size()>256){ rects.clear(); rects.push_back({ RECT{0,0,INT32_MAX,INT32_MAX} }); }
     }
 };
-
 
 // ------------------------- Platform/Game API + hot reload --------------------
 struct PlatformAPI{
@@ -269,7 +228,6 @@ static bool load_game(HotReload& hr, const char* dllName){
     hr.api.bind_platform=bind; hr.api.update_fixed=upf; hr.api.render=rend; hr.active=true; return true;
 }
 static void unload_game(HotReload& hr){ if(hr.dll){ FreeLibrary(hr.dll); hr.dll=nullptr; } hr.api={}; hr.userState=nullptr; hr.active=false; }
-
 
 // ------------------------------ Window state/DPI -----------------------------
 struct WindowState{
@@ -320,7 +278,6 @@ static void toggle_fullscreen(HWND hwnd){
     }
 }
 
-
 // -------------------------------- XInput + raw mouse -------------------------
 static float norm_stick(SHORT v){ const float inv=1.0f/32767.0f; float f=(float)v*inv; return clampf(f,-1.f,1.f); }
 static float norm_trig(BYTE v){ const float inv=1.0f/255.0f; return (float)v*inv; }
@@ -347,7 +304,6 @@ static void enable_raw_mouse(HWND hwnd,bool enable){
     rid.dwFlags= enable ? (RIDEV_INPUTSINK|RIDEV_CAPTUREMOUSE) : RIDEV_REMOVE; rid.hwndTarget=hwnd;
     RegisterRawInputDevices(&rid,1,sizeof(rid));
 }
-
 
 // ---------------------------------- WndProc ----------------------------------
 static KeyCode vk_to_key(WPARAM vk){
@@ -403,10 +359,9 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam){
     return DefWindowProc(hwnd,msg,wParam,lParam);
 }
 
-
 // ------------------------------- Demo content --------------------------------
 static Backbuffer g_bb;
-static InputState g_in;
+// 🔸 g_in now comes from win_input.cpp via win_input.h (do not define here)
 static ThreadPool g_pool;
 static DirtyTracker g_dirty;
 static UINT g_timerPeriod = 0;
@@ -454,7 +409,6 @@ static void demo_render(float alpha){
     draw_text6x8(g_bb, 8, g_bb.h-20, info, rgb8(255,255,255));
 }
 
-
 // --------------------------------- HUD/CRC -----------------------------------
 static struct PerfHUD{ float frameMS=0, fps=0; float graph[180]{}; int head=0; bool show=true; } g_perf;
 struct Micro{ double tUpdate=0, tRender=0, tPost=0, tPresent=0; } g_micro;
@@ -480,13 +434,12 @@ static void draw_perf_hud(Backbuffer& bb, double dtMs){
     g_perf.graph[g_perf.head=(g_perf.head+1)%180]=(float)dtMs;
 }
 
-
 // ----------------------------------- Entry -----------------------------------
 int APIENTRY wWinMain(HINSTANCE hInst,HINSTANCE,LPWSTR,int){
     // High-DPI awareness before any window is created.
-    set_dpi_awareness(); // PMv2 -> PMv1 -> system. Docs: SetProcessDpiAwarenessContext / WM_DPICHANGED / GetDpiForWindow.
+    set_dpi_awareness(); // PMv2 -> PMv1 -> system.
 
-    // Register window class using WNDCLASSEXW (no brace-initializer -> avoid C2078). 
+    // Register window class using WNDCLASSEXW (explicit assignments).
     WNDCLASSEXW wc{}; wc.cbSize=sizeof(wc);
     wc.style=CS_OWNDC|CS_HREDRAW|CS_VREDRAW; wc.lpfnWndProc=WndProc; wc.hInstance=hInst;
     wc.hIcon=LoadIconW(nullptr,IDI_APPLICATION); wc.hCursor=LoadCursorW(nullptr,IDC_ARROW);
