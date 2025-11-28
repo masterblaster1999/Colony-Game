@@ -41,7 +41,8 @@ static Biome pickBiome(float h, float m, float t, float sea, float beach) {
         return Biome::Taiga;
     } else if (hot) {
         if (m < 0.33f) return Biome::Desert;
-        if (m > 0.66f) return Biome::Rainforest;
+        // Canonical Biome set does not include Rainforest; fold into Forest.
+        if (m > 0.66f) return Biome::Forest;
         return Biome::Savanna;
     } else {
         if (m < 0.33f) return Biome::Grassland;
@@ -57,7 +58,7 @@ static Color biomeColor(Biome b){
         case Biome::Desert:     return {210,180, 80,255};
         case Biome::Grassland:  return { 80,180, 60,255};
         case Biome::Forest:     return { 30,120, 40,255};
-        case Biome::Rainforest: return { 20,140, 60,255};
+        // Rainforest folded into Forest; keep a single Forest color entry.
         case Biome::Savanna:    return {160,180, 60,255};
         case Biome::Taiga:      return { 50,120,100,255};
         case Biome::Tundra:     return {150,160,150,255};
@@ -166,9 +167,9 @@ WorldData generateWorld(const WorldParams& params) {
                 if (out.biome[i] == b) out.resources.push_back({t, x, y});
             }
         };
-        // Forest / Rainforest trees
-        place(Biome::Forest,     6.0f, ResourceType::Tree);
-        place(Biome::Rainforest, 3.5f, ResourceType::Tree);
+        // Forest trees (standard + extra-dense pass to mimic former Rainforest density)
+        place(Biome::Forest, 6.0f, ResourceType::Tree);
+        place(Biome::Forest, 3.5f, ResourceType::Tree);
         // Grassland berries + animals
         place(Biome::Grassland, 12.0f, ResourceType::BerryBush);
         place(Biome::Grassland, 20.0f, ResourceType::Animal);
@@ -179,7 +180,7 @@ WorldData generateWorld(const WorldParams& params) {
         place(Biome::Mountain,  28.0f, ResourceType::OreIron);
         place(Biome::Mountain,  28.0f, ResourceType::OreCopper);
         place(Biome::Desert,    22.0f, ResourceType::Stone);
-        // Taiga/taiga trees lighter density
+        // Taiga trees lighter density
         place(Biome::Taiga,      9.0f, ResourceType::Tree);
     }
 
