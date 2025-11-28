@@ -2,6 +2,7 @@
 #include <cstdint>
 #include <vector>
 #include <string>
+#include "procgen/Biome.h" // Single authoritative Biome definition
 
 namespace procgen {
 
@@ -24,10 +25,7 @@ struct Color {
     uint8_t r=0, g=0, b=0, a=255;
 };
 
-enum struct Biome : uint8_t {
-    Ocean = 0, Beach, Desert, Grassland, Forest, Rainforest,
-    Savanna, Taiga, Tundra, Snow, Mountain
-};
+// REMOVED: duplicate Biome enum. Use procgen::Biome from procgen/Biome.h instead.
 
 enum struct ResourceType : uint8_t {
     Tree=0, Stone, OreIron, OreCopper, Animal, BerryBush
