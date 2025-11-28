@@ -7,6 +7,19 @@ namespace procgen {
 
 struct Vec2 { float x = 0.f, y = 0.f; };
 
+// --- Back-compat shims (keep until all call sites are migrated) ---
+struct IV2 { int x = 0, y = 0; };
+
+// Your new 'Vec2' is the float vector. Keep the old alias alive:
+using FV2 = Vec2;
+
+// Keep the old helper (many call sites rely on it in Rivers and friends)
+constexpr inline bool in_bounds(int x, int y, int w, int h) noexcept {
+    return static_cast<unsigned>(x) < static_cast<unsigned>(w) &&
+           static_cast<unsigned>(y) < static_cast<unsigned>(h);
+}
+// -------------------------------------------------------------------
+
 struct Color {
     uint8_t r=0, g=0, b=0, a=255;
 };
