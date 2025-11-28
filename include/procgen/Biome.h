@@ -11,6 +11,7 @@
 #include <algorithm>
 #include <ostream>
 #include <cctype>
+#include <functional>
 
 namespace procgen {
 
