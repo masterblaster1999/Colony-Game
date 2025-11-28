@@ -1,4 +1,5 @@
 #pragma once
+#include "Types.h"
 #include "Heightmap.h"
 #include <vector>
 
