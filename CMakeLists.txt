@@ -1,8 +1,8 @@
 cmake_minimum_required(VERSION 3.27...3.31 FATAL_ERROR)
 
-# --------------------------------------------------------------------------
+# ------------------------------------------------------------------------------
 # Windows-only: hard-fail on non-Windows platforms
-# --------------------------------------------------------------------------
+# ------------------------------------------------------------------------------
 if(NOT WIN32)
   message(FATAL_ERROR "Colony-Game currently only supports Windows.")
 endif()
@@ -95,8 +95,10 @@ if(COLONY_ENABLE_ASAN)
       $<$<OR:$<CONFIG:Debug>,$<CONFIG:RelWithDebInfo>>:/fsanitize=address>
       $<$<OR:$<CONFIG:Debug>,$<CONFIG:RelWithDebInfo>>:/Zi>
     )
+    # ASan is not compatible with incremental linking: explicitly disable it.
     add_link_options(
       $<$<OR:$<CONFIG:Debug>,$<CONFIG:RelWithDebInfo>>:/fsanitize=address>
+      $<$<OR:$<CONFIG:Debug>,$<CONFIG:RelWithDebInfo>>:/INCREMENTAL:NO>
     )
     add_compile_definitions(ASAN_ENABLED=1)
   elseif(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
@@ -278,6 +280,7 @@ endif()
 # ------------------------------------------------------------------------------
 find_package(SDL2 CONFIG REQUIRED)
 find_package(imgui CONFIG REQUIRED)
+find_package(spdlog CONFIG REQUIRED) # logging
 
 # Tracy wiring (optional)
 # Prefer the lowercase 'tracy' package name (vcpkg port name), but accept 'Tracy' too.
@@ -310,6 +313,17 @@ if(COLONY_ENABLE_TRACY AND NOT COLONY_TRACY_TARGET)
     "See: https://vcpkg.io/en/package/tracy")
 endif()
 
+# Choose spdlog target (static/compiled vs header-only)
+set(COLONY_SPDLOG_TARGET "")
+if(TARGET spdlog::spdlog)
+  set(COLONY_SPDLOG_TARGET spdlog::spdlog)
+elseif(TARGET spdlog::spdlog_header_only)
+  set(COLONY_SPDLOG_TARGET spdlog::spdlog_header_only)
+endif()
+if(NOT COLONY_SPDLOG_TARGET)
+  message(FATAL_ERROR "spdlog was found, but exported targets are missing. Expecting spdlog::spdlog or spdlog::spdlog_header_only.")
+endif()
+
 # ------------------------------------------------------------------------------
 # Core game source tree
 # ------------------------------------------------------------------------------
@@ -325,6 +339,7 @@ if(TARGET colony_core)
     SDL2::SDL2
     SDL2::SDL2main
     imgui::imgui
+    ${COLONY_SPDLOG_TARGET}
   )
 
   # Link Tracy only when enabled and available
@@ -339,6 +354,11 @@ if(TARGET colony_core)
       endif()
     endif()
   endif()
+
+  # Optional: spdlog runtime log level (trace in Debug, info otherwise)
+  target_compile_definitions(colony_core PRIVATE
+    SPDLOG_ACTIVE_LEVEL=$<IF:$<CONFIG:Debug>,SPDLOG_LEVEL_TRACE,SPDLOG_LEVEL_INFO>
+  )
 
   # --------------------------------------------------------------------------
   # Compile CrashDumpWin.cpp with /EHa (Structured Exception Handling)
