@@ -1,4 +1,5 @@
 #include "procgen/WorldGen.h"
+#include "procgen/Biome.h"     // canonical Biome + (header) helpers
 #include "procgen/Noise.h"
 #include "procgen/Poisson.h"
 #include "procgen/Erosion.h"
@@ -8,9 +9,13 @@
 
 namespace procgen {
 
-static inline int id(int x,int y,int w){ return y*w + x; }
-static inline float clamp01(float v){ return v<0.f?0.f:(v>1.f?1.f:v); }
+// Enable unqualified enumerators (e.g., `case Forest:`) in this TU (C++20).
+using enum Biome;
 
+static inline int id(int x,int y,int w){ return y*w + x; }
+// Removed local clamp01 to avoid redefinition with the header version.
+
+// Keep this local, island-shaped falloff used by optional archipelago mode.
 static float falloff_island(float nx, float ny) {
     // Circular island falloff (0 at edges, 1 in center)
     float d = std::sqrt(nx*nx + ny*ny);
