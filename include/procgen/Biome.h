@@ -19,16 +19,18 @@ namespace procgen {
 // Core type
 //------------------------------------------------------------------------------
 enum class Biome : std::uint8_t {
-    Ocean,
+    // Order chosen to preserve legacy expectations seen in older Types.h
+    Ocean = 0,
     Beach,
+    Desert,
     Grassland,
     Forest,
-    Desert,
+    Rainforest, // <--- restored
     Savanna,
     Taiga,
     Tundra,
-    Mountain,
-    Snow
+    Snow,
+    Mountain
 };
 
 static_assert(std::is_enum_v<Biome>, "Biome must be an enum type");
@@ -44,9 +46,9 @@ template <class E>
 //------------------------------------------------------------------------------
 // Enumerant inventory / iteration helpers
 //------------------------------------------------------------------------------
-inline constexpr std::array<Biome, 10> kAllBiomes{
-    Biome::Ocean, Biome::Beach, Biome::Grassland, Biome::Forest, Biome::Desert,
-    Biome::Savanna, Biome::Taiga, Biome::Tundra, Biome::Mountain, Biome::Snow
+inline constexpr std::array<Biome, 11> kAllBiomes{
+    Biome::Ocean, Biome::Beach, Biome::Desert, Biome::Grassland, Biome::Forest,
+    Biome::Rainforest, Biome::Savanna, Biome::Taiga, Biome::Tundra, Biome::Snow, Biome::Mountain
 };
 
 [[nodiscard]] constexpr std::size_t biome_count() noexcept { return kAllBiomes.size(); }
@@ -61,17 +63,18 @@ using namespace std::literals;
 
 [[nodiscard]] constexpr std::string_view to_string(Biome b) noexcept {
     switch (b) {
-        case Biome::Ocean:     return "Ocean"sv;
-        case Biome::Beach:     return "Beach"sv;
-        case Biome::Grassland: return "Grassland"sv;
-        case Biome::Forest:    return "Forest"sv;
-        case Biome::Desert:    return "Desert"sv;
-        case Biome::Savanna:   return "Savanna"sv;
-        case Biome::Taiga:     return "Taiga"sv;
-        case Biome::Tundra:    return "Tundra"sv;
-        case Biome::Mountain:  return "Mountain"sv;
-        case Biome::Snow:      return "Snow"sv;
-        default:               return "Unknown"sv;
+        case Biome::Ocean:      return "Ocean"sv;
+        case Biome::Beach:      return "Beach"sv;
+        case Biome::Desert:     return "Desert"sv;
+        case Biome::Grassland:  return "Grassland"sv;
+        case Biome::Forest:     return "Forest"sv;
+        case Biome::Rainforest: return "Rainforest"sv;
+        case Biome::Savanna:    return "Savanna"sv;
+        case Biome::Taiga:      return "Taiga"sv;
+        case Biome::Tundra:     return "Tundra"sv;
+        case Biome::Snow:       return "Snow"sv;
+        case Biome::Mountain:   return "Mountain"sv;
+        default:                return "Unknown"sv;
     }
 }
 
@@ -114,17 +117,18 @@ inline std::ostream& operator<<(std::ostream& os, Biome b) {
 //------------------------------------------------------------------------------
 [[nodiscard]] constexpr std::uint32_t biome_color_argb(Biome b) noexcept {
     switch (b) {
-        case Biome::Ocean:     return 0xFF1F4E79u; // deep blue
-        case Biome::Beach:     return 0xFFF7E9A8u; // sand
-        case Biome::Grassland: return 0xFF7FBF7Fu; // green
-        case Biome::Forest:    return 0xFF2F6B2Fu; // dark green
-        case Biome::Desert:    return 0xFFCCB36Cu; // tan
-        case Biome::Savanna:   return 0xFFD7C67Fu; // yellow-green
-        case Biome::Taiga:     return 0xFF2C5F5Fu; // teal
-        case Biome::Tundra:    return 0xFF9FB4C8u; // pale blue-gray
-        case Biome::Mountain:  return 0xFF7A7A7Au; // rock
-        case Biome::Snow:      return 0xFFFFFFFFu; // white
-        default:               return 0xFFFF00FFu; // magenta for unknown
+        case Biome::Ocean:      return 0xFF1F4E79u; // deep blue
+        case Biome::Beach:      return 0xFFF7E9A8u; // sand
+        case Biome::Desert:     return 0xFFCCB36Cu; // tan
+        case Biome::Grassland:  return 0xFF7FBF7Fu; // green
+        case Biome::Forest:     return 0xFF2F6B2Fu; // dark green
+        case Biome::Rainforest: return 0xFF0F5F2Fu; // lush deep green
+        case Biome::Savanna:    return 0xFFD7C67Fu; // yellow-green
+        case Biome::Taiga:      return 0xFF2C5F5Fu; // teal
+        case Biome::Tundra:     return 0xFF9FB4C8u; // pale blue-gray
+        case Biome::Snow:       return 0xFFFFFFFFu; // white
+        case Biome::Mountain:   return 0xFF7A7A7Au; // rock
+        default:                return 0xFFFF00FFu; // magenta for unknown
     }
 }
 
@@ -133,20 +137,21 @@ inline std::ostream& operator<<(std::ostream& os, Biome b) {
 //------------------------------------------------------------------------------
 struct BiomeThresholds {
     // Elevation (0..1)
-    float ocean_elev_max   = 0.02f;
-    float beach_elev_max   = 0.06f;
-    float mountain_elev_min= 0.75f;
+    float ocean_elev_max    = 0.02f;
+    float beach_elev_max    = 0.06f;
+    float mountain_elev_min = 0.75f;
 
     // Temperature (Celsius)
-    float snow_tempC       = -5.0f;  // above mountains or very cold regions
-    float cold_tempC       = 5.0f;   // boundary between Tundra/Taiga decisions
-    float temperate_tempC  = 18.0f;  // boundary between temperate vs warm
+    float snow_tempC        = -5.0f;  // above mountains or very cold regions
+    float cold_tempC        = 5.0f;   // boundary between Tundra/Taiga decisions
+    float temperate_tempC   = 18.0f;  // boundary between temperate vs warm
 
     // Moisture (0..1)
-    float desert_moisture  = 0.25f;
-    float grass_moisture   = 0.55f;
-    float savanna_moisture = 0.60f;
-    float taiga_moisture   = 0.50f;
+    float desert_moisture   = 0.25f;
+    float grass_moisture    = 0.55f;
+    float savanna_moisture  = 0.60f;
+    float taiga_moisture    = 0.50f;
+    float rainforest_moist  = 0.75f;  // NEW: very wet → Rainforest when warm
 };
 
 // Clamp helpers (kept inline for zero overhead)
@@ -178,8 +183,9 @@ struct BiomeThresholds {
     }
 
     // Warm
-    if (moisture < t.desert_moisture) return Biome::Desert;
+    if (moisture < t.desert_moisture)  return Biome::Desert;
     if (moisture < t.savanna_moisture) return Biome::Savanna;
+    if (moisture >= t.rainforest_moist) return Biome::Rainforest;
     return Biome::Forest;
 }
 
