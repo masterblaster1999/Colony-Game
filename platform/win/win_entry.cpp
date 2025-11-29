@@ -22,7 +22,7 @@
 #include <atomic>
 #include <mutex>
 #include <condition_variable>
-#include <string.h>
+#include <cstring> // (E) use cstring, and ::memcpy/::memset
 
 #pragma comment(lib, "user32.lib")
 #pragma comment(lib, "gdi32.lib")
@@ -98,18 +98,19 @@ static const uint8_t kFont6x8[96][8] = {
     GLYPH6x8(0x0c,0x30,0xc0,0x30,0x0c,0,0,0),       GLYPH6x8(0,0x7c,0,0x7c,0,0,0,0),
     GLYPH6x8(0xc0,0x30,0x0c,0x30,0xc0,0,0,0),       GLYPH6x8(0x7c,0x82,0x04,0x18,0x10,0,0x10,0),
     GLYPH6x8(0x7c,0x82,0xba,0xaa,0xbe,0x80,0x7c,0), GLYPH6x8(0x38,0x44,0x82,0xfe,0x82,0x82,0x82,0),
-    GLYPH6x8(0xfc,0x82,0x82,0xfc,0x82,0x82,0xfc,0), GLYPH6x8(0x7c,0x82,0x80,0x80,0x80,0x82,0x7c,0),
+    GLYPH6x8(0xfc,0x82,0x82,0xfc,0x80,0x80,0x80,0), GLYPH6x8(0x7c,0x82,0x82,0x82,0x82,0x82,0x7c,0),
     GLYPH6x8(0xf8,0x84,0x82,0x82,0x82,0x84,0xf8,0), GLYPH6x8(0xfe,0x80,0x80,0xfc,0x80,0x80,0xfe,0),
     GLYPH6x8(0xfe,0x80,0x80,0xfc,0x80,0x80,0x80,0), GLYPH6x8(0x7c,0x82,0x80,0x8e,0x82,0x82,0x7e,0),
     GLYPH6x8(0x82,0x82,0x82,0xfe,0x82,0x82,0x82,0), GLYPH6x8(0x7c,0x10,0x10,0x10,0x10,0x10,0x7c,0),
     GLYPH6x8(0x3e,0x04,0x04,0x04,0x84,0x84,0x78,0), GLYPH6x8(0x82,0x84,0x88,0xf0,0x88,0x84,0x82,0),
     GLYPH6x8(0x80,0x80,0x80,0x80,0x80,0x80,0xfe,0), GLYPH6x8(0x82,0xc6,0xaa,0x92,0x82,0x82,0x82,0),
     GLYPH6x8(0x82,0xc2,0xa2,0x92,0x8a,0x86,0x82,0), GLYPH6x8(0x7c,0x82,0x82,0x82,0x82,0x82,0x7c,0),
-    GLYPH6x8(0xfc,0x82,0x82,0xfc,0x80,0x80,0x80,0), GLYPH6x8(0x7c,0x82,0x82,0x82,0x92,0x8c,0x7e,0),
-    GLYPH6x8(0xfc,0x82,0x82,0xfc,0x88,0x84,0x82,0), GLYPH6x8(0x7c,0x80,0x7c,0x02,0x02,0x82,0x7c,0),
+    GLYPH6x8(0xfc,0x82,0x82,0xfc,0x80,0x80,0x80,0), GLYPH6x8(0xfc,0x82,0x82,0xfc,0x88,0x84,0x82,0),
+    GLYPH6x8(0x7c,0x80,0x7c,0x02,0x02,0x82,0x7c,0),
     GLYPH6x8(0xfe,0x10,0x10,0x10,0x10,0x10,0x10,0), GLYPH6x8(0x82,0x82,0x82,0x82,0x82,0x82,0x7c,0),
     GLYPH6x8(0x82,0x82,0x44,0x44,0x28,0x28,0x10,0), GLYPH6x8(0x82,0x92,0xaa,0xc6,0x82,0x82,0x82,0),
-    GLYPH6x8(0x82,0x44,0x28,0x10,0x10,0x10,0x10,0), GLYPH6x8(0xfe,0x04,0x08,0x30,0x40,0x80,0xfe,0)
+    GLYPH6x8(0x82,0x44,0x28,0x10,0x10,0x10,0x10,0),
+    GLYPH6x8(0xfe,0x04,0x08,0x30,0x40,0x80,0xfe,0)
 };
 #undef GLYPH6x8
 
@@ -129,13 +130,18 @@ static void draw_text6x8(Backbuffer& bb,int x,int y,const char* s,uint32_t c){
     }
 }
 
-// ------------------------- Procedural + tiny demo ----------------------------
+// ------------------------------- Demo content --------------------------------
+// (C) Define globals once, before first use.
+static Backbuffer   g_bb;
+static ThreadPool   g_pool;
+static DirtyTracker g_dirty;
+static UINT         g_timerPeriod = 0;
+
 static inline uint32_t tile_color(int tx,int ty){
     uint32_t h = hash32((uint32_t)tx*73856093u ^ (uint32_t)ty*19349663u);
     uint8_t r=(uint8_t)(128+(h&63)), g=(uint8_t)(80+((h>>8)&127)), b=(uint8_t)(80+((h>>16)&127));
     return rgb8(r,g,b);
 }
-
 static void line(Backbuffer& bb,int x0,int y0,int x1,int y1,uint32_t c){
     int dx=abs(x1-x0), sx=x0<x1?1:-1;
     int dy=-abs(y1-y0), sy=y0<y1?1:-1;
@@ -146,165 +152,32 @@ static void line(Backbuffer& bb,int x0,int y0,int x1,int y1,uint32_t c){
         int e2=2*err; if(e2>=dy){err+=dy; x0+=sx;} if(e2<=dx){err+=dx; y0+=sy;}
     }
 }
-
-// ----------------------------- Thread pool -----------------------------------
-struct TileJob{ int y0,y1; void(*fn)(void*,int,int); void* ctx; };
-class ThreadPool{
-public:
-    void init(int threads){ shutdown(); if(threads<1) threads=1; stop=false; for(int i=0;i<threads;i++) workers.emplace_back([this]{ worker(); }); }
-    void shutdown(){ { std::lock_guard<std::mutex> lk(mx); stop=true; } cv.notify_all(); for(auto& t:workers){ if(t.joinable()) t.join(); } workers.clear(); }
-    void dispatch(const std::vector<TileJob>& jobs){ std::lock_guard<std::mutex> lk(mx); queue=jobs; next=0; pending=(int)queue.size(); cv.notify_all(); }
-    void wait(){ std::unique_lock<std::mutex> lk(mx); doneCv.wait(lk,[&]{return pending==0;}); }
-    ~ThreadPool(){ shutdown(); }
-private:
-    void worker(){
-        for(;;){
-            TileJob job{}; bool has=false;
-            {
-                std::unique_lock<std::mutex> lk(mx);
-                cv.wait(lk,[&]{return stop || next<(int)queue.size();});
-                if(stop) return;
-                if(next<(int)queue.size()){ job=queue[next++]; has=true; }
-            }
-            if(has){
-                job.fn(job.ctx, job.y0, job.y1);
-                if(--pending==0){ std::lock_guard<std::mutex> lk(mx); doneCv.notify_all(); }
-            }
+struct DemoCtx{ float t=0.f, prev_t=0.f; } g_demo;
+static void demo_tile_job(void*,int y0,int y1){
+    const int tile=16;
+    for(int y=y0;y<y1;y++){
+        uint32_t* row=(uint32_t*)rowptr(g_bb,y);
+        for(int x=0;x<g_bb.w;x++){
+            int tx=x/tile, ty=y/tile; row[x]=tile_color(tx,ty);
         }
     }
-    std::vector<std::thread> workers; std::vector<TileJob> queue; int next=0; std::atomic<int> pending{0};
-    std::mutex mx; std::condition_variable cv, doneCv; bool stop=false;
-};
-
-// ------------------------------ Dirty rectangles -----------------------------
-struct Dirty{ RECT r; };
-struct DirtyTracker{
-    std::vector<Dirty> rects;
-    void clear(){ rects.clear(); }
-    void mark(int x,int y,int w,int h){
-        if(w<=0||h<=0) return;
-        RECT r{ x,y,x+w,y+h };
-        rects.push_back(Dirty{r});
-        if(rects.size()>256){ rects.clear(); rects.push_back(Dirty{ RECT{0,0,INT32_MAX,INT32_MAX} }); }
-    }
-};
-
-// ------------------------- Platform/Game API + hot reload --------------------
-struct PlatformAPI{
-    void (*log_text)(const char* msg)=nullptr;
-    double (*time_now_sec)()=nullptr;
-    bool (*screenshot_bmp)(const char* path)=nullptr;
-    bool (*clipboard_copy_bitmap)()=nullptr;
-    bool (*file_write_all)(const char* path, const void* data, size_t bytes)=nullptr;
-    bool (*file_read_all)(const char* path, std::vector<uint8_t>* out)=nullptr;
-};
-
-struct GameAPI{
-    void (*init)(void** user, int w, int h)=nullptr;
-    void (*resize)(void* user, int w, int h)=nullptr;
-    void (*update_and_render)(void* user, float dt, uint32_t* pixels, int w, int h, const InputState* input)=nullptr;
-    void (*bind_platform)(PlatformAPI* plat, int version)=nullptr;
-    void (*update_fixed)(void* user, float dt)=nullptr;
-    void (*render)(void* user, float alpha, uint32_t* pixels, int w, int h, const InputState* input)=nullptr;
-};
-
-struct HotReload{
-    HMODULE dll=nullptr; FILETIME lastWrite{}; GameAPI api{}; void* userState=nullptr; bool active=false;
-};
-static FILETIME filetimeA(const char* path){ WIN32_FILE_ATTRIBUTE_DATA d{}; if(GetFileAttributesExA(path,GetFileExInfoStandard,&d)) return d.ftLastWriteTime; FILETIME z{}; return z; }
-static bool file_existsA(const char* path){ DWORD a=GetFileAttributesA(path); return (a!=INVALID_FILE_ATTRIBUTES && !(a&FILE_ATTRIBUTE_DIRECTORY)); }
-static bool load_game(HotReload& hr, const char* dllName){
-    char tmp[MAX_PATH]; wsprintfA(tmp,"%s_hot.dll",dllName); CopyFileA(dllName,tmp,FALSE);
-    HMODULE dll=LoadLibraryA(tmp); if(!dll) return false;
-    auto init =(void(*)(void**,int,int))GetProcAddress(dll,"game_init");
-    auto resize=(void(*)(void*,int,int))GetProcAddress(dll,"game_resize");
-    auto step =(void(*)(void*,float,uint32_t*,int,int,const InputState*))GetProcAddress(dll,"game_update_and_render");
-    auto bind =(void(*)(PlatformAPI*,int))GetProcAddress(dll,"game_bind_platform");
-    auto upf  =(void(*)(void*,float))GetProcAddress(dll,"game_update_fixed");
-    auto rend =(void(*)(void*,float,uint32_t*,int,int,const InputState*))GetProcAddress(dll,"game_render");
-    if(!step && !upf && !rend){ FreeLibrary(dll); DeleteFileA(tmp); return false; }
-    hr.dll=dll; hr.api={}; hr.api.init=init; hr.api.resize=resize; hr.api.update_and_render=step;
-    hr.api.bind_platform=bind; hr.api.update_fixed=upf; hr.api.render=rend; hr.active=true; return true;
 }
-static void unload_game(HotReload& hr){ if(hr.dll){ FreeLibrary(hr.dll); hr.dll=nullptr; } hr.api={}; hr.userState=nullptr; hr.active=false; }
+static void demo_simulate(float dt){ g_demo.prev_t=g_demo.t; g_demo.t+=dt; }
+static void demo_render(float /*alpha*/){
+    const int tileRows=32;
+    std::vector<TileJob> jobs; for(int y=0;y<g_bb.h;y+=tileRows) jobs.push_back({ y,clampi(y+tileRows,0,g_bb.h), demo_tile_job,nullptr });
+    g_pool.dispatch(jobs); g_pool.wait();
 
-// ------------------------------ Window state/DPI -----------------------------
-struct WindowState{
-    HWND hwnd=nullptr; bool running=true;
-    bool useVsync=true; bool integerScale=true; bool borderless=false; bool enableRawMouse=true;
-    bool fixedTimestep=false; float fixedDT=1.f/60.f;
-    bool smoothScale=false;
-    int baseW=1280, baseH=720; UINT dpi=96;
-} g_win;
+    // Grid
+    const int step=16;
+    for(int x=0;x<g_bb.w;x+=step) line(g_bb,x,0,x,g_bb.h-1, rgb8(0,0,0));
+    for(int y=0;y<g_bb.h;y+=step) line(g_bb,0,y,g_bb.w-1,y, rgb8(0,0,0));
 
-// DPI awareness: PMv2 -> PMv1 (SHCore) -> system DPI
-static void set_dpi_awareness(){
-    HMODULE user = GetModuleHandleA("user32.dll");
-    if(user){
-        typedef BOOL (WINAPI *SetDpiCtx)(HANDLE);
-        auto p = (SetDpiCtx)GetProcAddress(user,"SetProcessDpiAwarenessContext");
-        if(p){ if(p(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2)) return; } // Win10+ PMv2
-    }
-    HMODULE shcore = LoadLibraryA("SHCore.dll");
-    if(shcore){
-        typedef HRESULT (WINAPI *SetPDA)(int);
-        auto sp = (SetPDA)GetProcAddress(shcore,"SetProcessDpiAwareness");
-        if(sp){
-            const int PROCESS_PER_MONITOR_DPI_AWARE = 2;
-            if(SUCCEEDED(sp(PROCESS_PER_MONITOR_DPI_AWARE))){ FreeLibrary(shcore); return; }
-        }
-        FreeLibrary(shcore);
-    }
-    SetProcessDPIAware();
-}
-
-static void toggle_fullscreen(HWND hwnd){
-    static WINDOWPLACEMENT prev{};            // C2078-safe: zero-init then set length
-    prev.length = sizeof(prev);
-
-    DWORD style=(DWORD)GetWindowLongPtr(hwnd,GWL_STYLE);
-    if(!g_win.borderless){
-        MONITORINFO mi{}; mi.cbSize = sizeof(mi); // C2078-safe: set cbSize before GetMonitorInfo
-        GetWindowPlacement(hwnd,&prev);
-        GetMonitorInfo(MonitorFromWindow(hwnd,MONITOR_DEFAULTTONEAREST),&mi);
-        SetWindowLongPtr(hwnd,GWL_STYLE, style & ~WS_OVERLAPPEDWINDOW);
-        SetWindowPos(hwnd,HWND_TOP, mi.rcMonitor.left,mi.rcMonitor.top,
-            mi.rcMonitor.right-mi.rcMonitor.left, mi.rcMonitor.bottom-mi.rcMonitor.top,
-            SWP_NOOWNERZORDER|SWP_FRAMECHANGED);
-        g_win.borderless=true;
-    }else{
-        SetWindowLongPtr(hwnd,GWL_STYLE, style | WS_OVERLAPPEDWINDOW);
-        SetWindowPlacement(hwnd,&prev);
-        SetWindowPos(hwnd,nullptr,0,0,0,0, SWP_NOMOVE|SWP_NOSIZE|SWP_NOZORDER|SWP_NOOWNERZORDER|SWP_FRAMECHANGED);
-        g_win.borderless=false;
-    }
-}
-
-// -------------------------------- XInput + raw mouse -------------------------
-static float norm_stick(SHORT v){ const float inv=1.0f/32767.0f; float f=(float)v*inv; return clampf(f,-1.f,1.f); }
-static float norm_trig(BYTE v){ const float inv=1.0f/255.0f; return (float)v*inv; }
-static void poll_gamepads(InputState& in){
-    for(DWORD i=0;i<4;i++){
-        XINPUT_STATE st{}; DWORD r=XInputGetState(i,&st);
-        Gamepad& p=in.pads[i]; p.connected=(r==ERROR_SUCCESS); if(!p.connected) continue;
-        const XINPUT_GAMEPAD& g=st.Gamepad;
-        auto set=[&](Button& b,bool d){ set_button(b,d); };
-        p.lx=norm_stick(g.sThumbLX); p.ly=norm_stick(g.sThumbLY);
-        p.rx=norm_stick(g.sThumbRX); p.ry=norm_stick(g.sThumbRY);
-        p.lt=norm_trig(g.bLeftTrigger); p.rt=norm_trig(g.bRightTrigger);
-        set(p.a, g.wButtons&XINPUT_GAMEPAD_A); set(p.b, g.wButtons&XINPUT_GAMEPAD_B);
-        set(p.x, g.wButtons&XINPUT_GAMEPAD_X); set(p.y, g.wButtons&XINPUT_GAMEPAD_Y);
-        set(p.lb,g.wButtons&XINPUT_GAMEPAD_LEFT_SHOULDER); set(p.rb,g.wButtons&XINPUT_GAMEPAD_RIGHT_SHOULDER);
-        set(p.back,g.wButtons&XINPUT_GAMEPAD_BACK); set(p.start,g.wButtons&XINPUT_GAMEPAD_START);
-        set(p.lsb,g.wButtons&XINPUT_GAMEPAD_LEFT_THUMB); set(p.rsb,g.wButtons&XINPUT_GAMEPAD_RIGHT_THUMB);
-        set(p.up,g.wButtons&XINPUT_GAMEPAD_DPAD_UP); set(p.down,g.wButtons&XINPUT_GAMEPAD_DPAD_DOWN);
-        set(p.left,g.wButtons&XINPUT_GAMEPAD_DPAD_LEFT); set(p.right,g.wButtons&XINPUT_GAMEPAD_DPAD_RIGHT);
-    }
-}
-static void enable_raw_mouse(HWND hwnd,bool enable){
-    RAWINPUTDEVICE rid{}; rid.usUsagePage=0x01; rid.usUsage=0x02;
-    rid.dwFlags= enable ? (RIDEV_INPUTSINK|RIDEV_CAPTUREMOUSE) : RIDEV_REMOVE; rid.hwndTarget=hwnd;
-    RegisterRawInputDevices(&rid,1,sizeof(rid));
+    // HUD text
+    char info[160];
+    _snprintf_s(info,sizeof(info),"Mouse (%d,%d) d(%d,%d) wheel %.1f",
+        g_in.mouseX,g_in.mouseY,g_in.mouseDX,g_in.mouseDY,g_in.wheel);
+    draw_text6x8(g_bb, 8, g_bb.h-20, info, rgb8(255,255,255));
 }
 
 // ---------------------------------- WndProc ----------------------------------
@@ -361,6 +234,129 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam){
     return DefWindowProc(hwnd,msg,wParam,lParam);
 }
 
+// ------------------------------ Dirty rectangles -----------------------------
+struct Dirty{ RECT r; };
+struct DirtyTracker{
+    std::vector<Dirty> rects;
+    void clear(){ rects.clear(); }
+    void mark(int x,int y,int w,int h){
+        if(w<=0||h<=0) return;
+        RECT r{ x,y,x+w,y+h };
+        rects.push_back(Dirty{r});
+        if(rects.size()>256){ rects.clear(); rects.push_back(Dirty{ RECT{0,0,INT32_MAX,INT32_MAX} }); }
+    }
+};
+
+// ----------------------------- Thread pool -----------------------------------
+struct TileJob{ int y0,y1; void(*fn)(void*,int,int); void* ctx; };
+class ThreadPool{
+public:
+    void init(int threads){ shutdown(); if(threads<1) threads=1; stop=false; for(int i=0;i<threads;i++) workers.emplace_back([this]{ worker(); }); }
+    void shutdown(){ { std::lock_guard<std::mutex> lk(mx); stop=true; } cv.notify_all(); for(auto& t:workers){ if(t.joinable()) t.join(); } workers.clear(); }
+    void dispatch(const std::vector<TileJob>& jobs){ std::lock_guard<std::mutex> lk(mx); queue=jobs; next=0; pending=(int)queue.size(); cv.notify_all(); }
+    void wait(){ std::unique_lock<std::mutex> lk(mx); doneCv.wait(lk,[&]{return pending==0;}); }
+    ~ThreadPool(){ shutdown(); }
+private:
+    void worker(){
+        for(;;){
+            TileJob job{}; bool has=false;
+            {
+                std::unique_lock<std::mutex> lk(mx);
+                cv.wait(lk,[&]{return stop || next<(int)queue.size();});
+                if(stop) return;
+                if(next<(int)queue.size()){ job=queue[next++]; has=true; }
+            }
+            if(has){
+                job.fn(job.ctx, job.y0, job.y1);
+                if(--pending==0){ std::lock_guard<std::mutex> lk(mx); doneCv.notify_all(); }
+            }
+        }
+    }
+    std::vector<std::thread> workers; std::vector<TileJob> queue; int next=0; std::atomic<int> pending{0};
+    std::mutex mx; std::condition_variable cv, doneCv; bool stop=false;
+};
+
+// ------------------------------ Window state/DPI -----------------------------
+struct WindowState{
+    HWND hwnd=nullptr; bool running=true;
+    bool useVsync=true; bool integerScale=true; bool borderless=false; bool enableRawMouse=true;
+    bool fixedTimestep=false; float fixedDT=1.f/60.f;
+    bool smoothScale=false;
+    int baseW=1280, baseH=720; UINT dpi=96;
+} g_win;
+
+// DPI awareness: PMv2 -> PMv1 (SHCore) -> system DPI
+static void set_dpi_awareness(){
+    HMODULE user = GetModuleHandleA("user32.dll");
+    if(user){
+        typedef BOOL (WINAPI *SetDpiCtx)(HANDLE);
+        auto p = (SetDpiCtx)GetProcAddress(user,"SetProcessDpiAwarenessContext");
+        if(p){ if(p(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2)) return; } // Win10+ PMv2
+    }
+    HMODULE shcore = LoadLibraryA("SHCore.dll");
+    if(shcore){
+        typedef HRESULT (WINAPI *SetPDA)(int);
+        auto sp = (SetPDA)GetProcAddress(shcore,"SetProcessDpiAwareness");
+        if(sp){
+            const int PROCESS_PER_MONITOR_DPI_AWARE = 2;
+            if(SUCCEEDED(sp(PROCESS_PER_MONITOR_DPI_AWARE))){ FreeLibrary(shcore); return; }
+        }
+        FreeLibrary(shcore);
+    }
+    SetProcessDPIAware();
+}
+
+static void toggle_fullscreen(HWND hwnd){
+    static WINDOWPLACEMENT prev{};            // (A) / (C2078) safe
+    prev.length = sizeof(prev);               // must be set per Win32 docs. :contentReference[oaicite:3]{index=3}
+
+    DWORD style=(DWORD)GetWindowLongPtr(hwnd,GWL_STYLE);
+    if(!g_win.borderless){
+        MONITORINFO mi{}; mi.cbSize = sizeof(mi); // required by GetMonitorInfo. :contentReference[oaicite:4]{index=4}
+        GetWindowPlacement(hwnd,&prev);
+        GetMonitorInfo(MonitorFromWindow(hwnd,MONITOR_DEFAULTTONEAREST),&mi);
+        SetWindowLongPtr(hwnd,GWL_STYLE, style & ~WS_OVERLAPPEDWINDOW);
+        SetWindowPos(hwnd,HWND_TOP, mi.rcMonitor.left,mi.rcMonitor.top,
+            mi.rcMonitor.right-mi.rcMonitor.left, mi.rcMonitor.bottom-mi.rcMonitor.top,
+            SWP_NOOWNERZORDER|SWP_FRAMECHANGED);
+        g_win.borderless=true;
+    }else{
+        SetWindowLongPtr(hwnd,GWL_STYLE, style | WS_OVERLAPPEDWINDOW);
+        SetWindowPlacement(hwnd,&prev);
+        SetWindowPos(hwnd,nullptr,0,0,0,0, SWP_NOMOVE|SWP_NOSIZE|SWP_NOZORDER|SWP_NOOWNERZORDER|SWP_FRAMECHANGED);
+        g_win.borderless=false;
+    }
+}
+
+// -------------------------------- XInput + raw mouse -------------------------
+static float norm_stick(SHORT v){ const float inv=1.0f/32767.0f; float f=(float)v*inv; return clampf(f,-1.f,1.f); }
+static float norm_trig(BYTE v){ const float inv=1.0f/255.0f; return (float)v*inv; }
+static void poll_gamepads(InputState& in){
+    for(DWORD i=0;i<4;i++){
+        XINPUT_STATE st{}; DWORD r=XInputGetState(i,&st);
+        Gamepad& p=in.pads[i]; p.connected=(r==ERROR_SUCCESS); if(!p.connected) continue;
+        const XINPUT_GAMEPAD& g=st.Gamepad;
+        auto set=[&](Button& b,bool d){ set_button(b,d); };
+        p.lx=norm_stick(g.sThumbLX); p.ly=norm_stick(g.sThumbLY);
+        p.rx=norm_stick(g.sThumbRX); p.ry=norm_stick(g.sThumbRY);
+        p.lt=norm_trig(g.bLeftTrigger); p.rt=norm_trig(g.bRightTrigger);
+        set(p.a, g.wButtons&XINPUT_GAMEPAD_A); set(p.b, g.wButtons&XINPUT_GAMEPAD_B);
+        set(p.x, g.wButtons&XINPUT_GAMEPAD_X); set(p.y, g.wButtons&XINPUT_GAMEPAD_Y);
+        set(p.lb,g.wButtons&XINPUT_GAMEPAD_LEFT_SHOULDER); set(p.rb,g.wButtons&XINPUT_GAMEPAD_RIGHT_SHOULDER);
+        set(p.back,g.wButtons&XINPUT_GAMEPAD_BACK); set(p.start,g.wButtons&XINPUT_GAMEPAD_START);
+        set(p.lsb,g.wButtons&XINPUT_GAMEPAD_LEFT_THUMB); set(p.rsb,g.wButtons&XINPUT_GAMEPAD_RIGHT_THUMB);
+        set(p.up,g.wButtons&XINPUT_GAMEPAD_DPAD_UP); set(p.down,g.wButtons&XINPUT_GAMEPAD_DPAD_DOWN);
+        set(p.left,g.wButtons&XINPUT_GAMEPAD_DPAD_LEFT); set(p.right,g.wButtons&XINPUT_GAMEPAD_DPAD_RIGHT);
+    }
+}
+static void enable_raw_mouse(HWND hwnd,bool enable){
+    RAWINPUTDEVICE rid{}; rid.usUsagePage=0x01; rid.usUsage=0x02;
+    // (G) RIDEV_CAPTUREMOUSE is valid for mouse only when RIDEV_NOLEGACY is also set. :contentReference[oaicite:5]{index=5}
+    rid.dwFlags= enable ? (RIDEV_INPUTSINK|RIDEV_NOLEGACY|RIDEV_CAPTUREMOUSE) : RIDEV_REMOVE;
+    rid.hwndTarget=hwnd;
+    RegisterRawInputDevices(&rid,1,sizeof(rid));    // must register to receive WM_INPUT. :contentReference[oaicite:6]{index=6}
+}
+
 // --------------------------------- HUD/CRC -----------------------------------
 static struct PerfHUD{ float frameMS=0, fps=0; float graph[180]{}; int head=0; bool show=true; } g_perf;
 struct Micro{ double tUpdate=0, tRender=0, tPost=0, tPresent=0; } g_micro;
@@ -386,7 +382,7 @@ static void draw_perf_hud(Backbuffer& bb, double dtMs){
     g_perf.graph[g_perf.head=(g_perf.head+1)%180]=(float)dtMs;
 }
 
-// ---------- File-scope helpers to replace capturing lambdas (C2088 fix) ----------
+// ---------- File-scope helpers to replace capturing lambdas (B: no unary '+') ----------
 static bool SaveBackbufferBMP(const char* path){
     HANDLE f=CreateFileA(path,GENERIC_WRITE,0,nullptr,CREATE_ALWAYS,FILE_ATTRIBUTE_NORMAL,nullptr);
     if(f==INVALID_HANDLE_VALUE) return false;
@@ -406,10 +402,10 @@ static bool SaveBackbufferBMP(const char* path){
 static bool CopyBackbufferToClipboard(){
     int sz=g_bb.w*g_bb.h*4 + sizeof(BITMAPINFOHEADER);
     HGLOBAL h=GlobalAlloc(GHND,sz); if(!h) return false; uint8_t* mem=(uint8_t*)GlobalLock(h);
-    BITMAPINFOHEADER* bih=(BITMAPINFOHEADER*)mem; memset(bih,0,sizeof(BITMAPINFOHEADER));
+    BITMAPINFOHEADER* bih=(BITMAPINFOHEADER*)mem; ::memset(bih,0,sizeof(BITMAPINFOHEADER));
     bih->biSize=sizeof(BITMAPINFOHEADER); bih->biWidth=g_bb.w; bih->biHeight=-g_bb.h;
     bih->biPlanes=1; bih->biBitCount=32; bih->biCompression=BI_RGB;
-    memcpy(mem+sizeof(BITMAPINFOHEADER), g_bb.pixels, (size_t)g_bb.w*g_bb.h*4);
+    ::memcpy(mem+sizeof(BITMAPINFOHEADER), g_bb.pixels, (size_t)g_bb.w*g_bb.h*4);
     GlobalUnlock(h);
     if(OpenClipboard(g_win.hwnd)){ EmptyClipboard(); SetClipboardData(CF_DIB,h); CloseClipboard(); return true; }
     GlobalFree(h); return false;
@@ -450,7 +446,43 @@ int APIENTRY wWinMain(HINSTANCE hInst,HINSTANCE,LPWSTR,int){
     LARGE_INTEGER freqLi; QueryPerformanceFrequency(&freqLi); const double invFreq=1.0/(double)freqLi.QuadPart;
     uint64_t tPrev=now_qpc(); double simTime=0.0; double acc=0.0;
 
-    // Hot-reload
+    // ------------------------- Hot-reload -------------------------
+    struct PlatformAPI{
+        void (*log_text)(const char* msg)=nullptr;
+        double (*time_now_sec)()=nullptr;
+        bool (*screenshot_bmp)(const char* path)=nullptr;
+        bool (*clipboard_copy_bitmap)()=nullptr;
+        bool (*file_write_all)(const char* path, const void* data, size_t bytes)=nullptr;
+        bool (*file_read_all)(const char* path, std::vector<uint8_t>* out)=nullptr;
+    };
+    struct GameAPI{
+        void (*init)(void** user, int w, int h)=nullptr;
+        void (*resize)(void* user, int w, int h)=nullptr;
+        void (*update_and_render)(void* user, float dt, uint32_t* pixels, int w, int h, const InputState* input)=nullptr;
+        void (*bind_platform)(PlatformAPI* plat, int version)=nullptr;
+        void (*update_fixed)(void* user, float dt)=nullptr;
+        void (*render)(void* user, float alpha, uint32_t* pixels, int w, int h, const InputState* input)=nullptr;
+    };
+    struct HotReload{
+        HMODULE dll=nullptr; FILETIME lastWrite{}; GameAPI api{}; void* userState=nullptr; bool active=false;
+    };
+    auto filetimeA=[](const char* path)->FILETIME{ WIN32_FILE_ATTRIBUTE_DATA d{}; if(GetFileAttributesExA(path,GetFileExInfoStandard,&d)) return d.ftLastWriteTime; FILETIME z{}; return z; };
+    auto file_existsA=[](const char* path)->bool{ DWORD a=GetFileAttributesA(path); return (a!=INVALID_FILE_ATTRIBUTES && !(a&FILE_ATTRIBUTE_DIRECTORY)); };
+    auto load_game=[](HotReload& hr, const char* dllName)->bool{
+        char tmp[MAX_PATH]; wsprintfA(tmp,"%s_hot.dll",dllName); CopyFileA(dllName,tmp,FALSE);
+        HMODULE dll=LoadLibraryA(tmp); if(!dll) return false;
+        auto init =(void(*)(void**,int,int))GetProcAddress(dll,"game_init");
+        auto resize=(void(*)(void*,int,int))GetProcAddress(dll,"game_resize");
+        auto step =(void(*)(void*,float,uint32_t*,int,int,const InputState*))GetProcAddress(dll,"game_update_and_render");
+        auto bind =(void(*)(PlatformAPI*,int))GetProcAddress(dll,"game_bind_platform");
+        auto upf  =(void(*)(void*,float))GetProcAddress(dll,"game_update_fixed");
+        auto rend =(void(*)(void*,float,uint32_t*,int,int,const InputState*))GetProcAddress(dll,"game_render");
+        if(!step && !upf && !rend){ FreeLibrary(dll); DeleteFileA(tmp); return false; }
+        hr.dll=dll; hr.api={}; hr.api.init=init; hr.api.resize=resize; hr.api.update_and_render=step;
+        hr.api.bind_platform=bind; hr.api.update_fixed=upf; hr.api.render=rend; hr.active=true; return true;
+    };
+    auto unload_game=[](HotReload& hr){ if(hr.dll){ FreeLibrary(hr.dll); hr.dll=nullptr; } hr.api={}; hr.userState=nullptr; hr.active=false; };
+
     HotReload hot{}; hot.lastWrite=filetimeA("game.dll");
     if(file_existsA("game.dll") && load_game(hot,"game.dll")){
         auto plat_log=[](const char* s){ OutputDebugStringA(s); OutputDebugStringA("\n"); };
@@ -467,8 +499,8 @@ int APIENTRY wWinMain(HINSTANCE hInst,HINSTANCE,LPWSTR,int){
 
         if(hot.api.bind_platform){
             PlatformAPI plat{}; plat.log_text=plat_log; plat.time_now_sec=plat_time;
-            // C2088-safe: use static functions (no unary '+' on lambdas)
-            plat.screenshot_bmp = &SaveBackbufferBMP;
+            // (B) no unary '+'; pass static functions
+            plat.screenshot_bmp        = &SaveBackbufferBMP;
             plat.clipboard_copy_bitmap = &CopyBackbufferToClipboard;
             plat.file_write_all=plat_write; plat.file_read_all=plat_read;
             hot.api.bind_platform(&plat,1);
@@ -480,7 +512,7 @@ int APIENTRY wWinMain(HINSTANCE hInst,HINSTANCE,LPWSTR,int){
     HDC hdc=GetDC(hwnd);
     crc32_init();
 
-    bool paused=false, slowmo=false, useDither=false, gamma=false, magnify=false, useDirty=true;
+    bool paused=false, slowmo=false, useDirty=true;
 
     while(g_win.running){
         // Hot reload check
@@ -488,7 +520,6 @@ int APIENTRY wWinMain(HINSTANCE hInst,HINSTANCE,LPWSTR,int){
         if( (ft.dwLowDateTime|ft.dwHighDateTime) && CompareFileTime(&ft,&hot.lastWrite)==1 ){
             unload_game(hot); hot.lastWrite=ft;
             if(load_game(hot,"game.dll")){
-                // re-bind platform
                 auto plat_log=[](const char* s){ OutputDebugStringA(s); OutputDebugStringA("\n"); };
                 auto plat_time=[]()->double{ return qpc_to_sec(now_qpc()); };
                 auto plat_write=[](const char* path,const void* data,size_t bytes)->bool{
@@ -502,13 +533,12 @@ int APIENTRY wWinMain(HINSTANCE hInst,HINSTANCE,LPWSTR,int){
                 };
                 if(hot.api.bind_platform){
                     PlatformAPI plat{}; plat.log_text=plat_log; plat.time_now_sec=plat_time;
-                    // C2088-safe again
-                    plat.screenshot_bmp = &SaveBackbufferBMP;
+                    plat.screenshot_bmp        = &SaveBackbufferBMP;
                     plat.clipboard_copy_bitmap = &CopyBackbufferToClipboard;
                     plat.file_write_all=plat_write; plat.file_read_all=plat_read;
                     hot.api.bind_platform(&plat,1);
                 }
-                if(hot.api.init) hot.api.init(&hot.userState, g_bb.w, g_bb.h);
+                if(hot.api.init)   hot.api.init(&hot.userState, g_bb.w, g_bb.h);
                 if(hot.api.resize) hot.api.resize(hot.userState, g_bb.w, g_bb.h);
             }
         }
@@ -524,8 +554,6 @@ int APIENTRY wWinMain(HINSTANCE hInst,HINSTANCE,LPWSTR,int){
         if(pressed(g_in.key[Key_F5]))  paused=!paused;
         if(pressed(g_in.key[Key_F6])){ paused=true; acc += g_win.fixedDT; } // step one frame
         if(pressed(g_in.key[Key_F7]))  slowmo=!slowmo;
-        if(pressed(g_in.key[Key_F8])){ /* record stub */ }
-        if(pressed(g_in.key[Key_F9])){ /* playback stub */ }
         if(pressed(g_in.key[Key_H]))  g_win.smoothScale=!g_win.smoothScale;
 
         poll_gamepads(g_in);
@@ -533,7 +561,6 @@ int APIENTRY wWinMain(HINSTANCE hInst,HINSTANCE,LPWSTR,int){
 
         // Timing
         uint64_t tNow=now_qpc(); double dt=(double)(tNow-tPrev)*invFreq; tPrev=tNow; if(slowmo) dt*=0.25;
-
         if(g_win.fixedTimestep){ acc += dt; } else { acc = dt; }
 
         // Simulate 0..N times, render once
@@ -599,7 +626,6 @@ int APIENTRY wWinMain(HINSTANCE hInst,HINSTANCE,LPWSTR,int){
         uint64_t tP0=tic();
         PresentConfig cfg{ g_win.integerScale, g_win.smoothScale };
         if(useDirty){
-            // Build a flat rect list for the presenter
             std::vector<RECT> rects; rects.reserve(g_dirty.rects.size());
             for(const auto& d : g_dirty.rects) rects.push_back(d.r);
             gdi_present_dirty(hwnd, hdc, g_bb.w, g_bb.h, g_bb.pixels, &g_bb.bmi,
