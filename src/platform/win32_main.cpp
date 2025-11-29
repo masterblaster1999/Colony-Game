@@ -507,10 +507,15 @@ static void set_dpi_awareness(){
     SetProcessDPIAware(); // Vista fallback
 }
 static void toggle_fullscreen(HWND hwnd){
-    static WINDOWPLACEMENT prev={sizeof(prev)};
+    // ---- C2078 fix: explicit size init for WINDOWPLACEMENT / MONITORINFO
+    static WINDOWPLACEMENT prev{};       // zero-initialize
+    prev.length = sizeof(prev);          // must be set before API calls (Get/SetWindowPlacement)
+
     DWORD style=(DWORD)GetWindowLongPtr(hwnd,GWL_STYLE);
     if(!g_win.borderless){
-        MONITORINFO mi={sizeof(mi)}; GetWindowPlacement(hwnd,&prev);
+        MONITORINFO mi{};                // zero-initialize
+        mi.cbSize = sizeof(mi);          // must be set before GetMonitorInfo
+        GetWindowPlacement(hwnd,&prev);
         GetMonitorInfo(MonitorFromWindow(hwnd,MONITOR_DEFAULTTONEAREST),&mi);
         SetWindowLongPtr(hwnd,GWL_STYLE, style & ~WS_OVERLAPPEDWINDOW);
         SetWindowPos(hwnd,HWND_TOP, mi.rcMonitor.left,mi.rcMonitor.top,
