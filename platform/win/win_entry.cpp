@@ -22,7 +22,7 @@
 #include <atomic>
 #include <mutex>
 #include <condition_variable>
-#include <cstring> // (E) use cstring, and ::memcpy/::memset
+#include <cstring>   // (E) prefer <cstring> and ::memcpy/::memset
 
 #pragma comment(lib, "user32.lib")
 #pragma comment(lib, "gdi32.lib")
@@ -98,14 +98,14 @@ static const uint8_t kFont6x8[96][8] = {
     GLYPH6x8(0x0c,0x30,0xc0,0x30,0x0c,0,0,0),       GLYPH6x8(0,0x7c,0,0x7c,0,0,0,0),
     GLYPH6x8(0xc0,0x30,0x0c,0x30,0xc0,0,0,0),       GLYPH6x8(0x7c,0x82,0x04,0x18,0x10,0,0x10,0),
     GLYPH6x8(0x7c,0x82,0xba,0xaa,0xbe,0x80,0x7c,0), GLYPH6x8(0x38,0x44,0x82,0xfe,0x82,0x82,0x82,0),
-    GLYPH6x8(0xfc,0x82,0x82,0xfc,0x80,0x80,0x80,0), GLYPH6x8(0x7c,0x82,0x82,0x82,0x82,0x82,0x7c,0),
+    GLYPH6x8(0xfc,0x82,0x82,0xfc,0x82,0x82,0xfc,0), GLYPH6x8(0x7c,0x82,0x80,0x80,0x80,0x82,0x7c,0),
     GLYPH6x8(0xf8,0x84,0x82,0x82,0x82,0x84,0xf8,0), GLYPH6x8(0xfe,0x80,0x80,0xfc,0x80,0x80,0xfe,0),
     GLYPH6x8(0xfe,0x80,0x80,0xfc,0x80,0x80,0x80,0), GLYPH6x8(0x7c,0x82,0x80,0x8e,0x82,0x82,0x7e,0),
     GLYPH6x8(0x82,0x82,0x82,0xfe,0x82,0x82,0x82,0), GLYPH6x8(0x7c,0x10,0x10,0x10,0x10,0x10,0x7c,0),
     GLYPH6x8(0x3e,0x04,0x04,0x04,0x84,0x84,0x78,0), GLYPH6x8(0x82,0x84,0x88,0xf0,0x88,0x84,0x82,0),
     GLYPH6x8(0x80,0x80,0x80,0x80,0x80,0x80,0xfe,0), GLYPH6x8(0x82,0xc6,0xaa,0x92,0x82,0x82,0x82,0),
     GLYPH6x8(0x82,0xc2,0xa2,0x92,0x8a,0x86,0x82,0), GLYPH6x8(0x7c,0x82,0x82,0x82,0x82,0x82,0x7c,0),
-    GLYPH6x8(0xfc,0x82,0x82,0xfc,0x80,0x80,0x80,0), GLYPH6x8(0xfc,0x82,0x82,0xfc,0x88,0x84,0x82,0),
+    GLYPH6x8(0xfc,0x82,0x82,0xfc,0x80,0x80,0x80,0), GLYPH6x8(0x7c,0x82,0x82,0x82,0x92,0x8c,0x7e,0),
     GLYPH6x8(0x7c,0x80,0x7c,0x02,0x02,0x82,0x7c,0),
     GLYPH6x8(0xfe,0x10,0x10,0x10,0x10,0x10,0x10,0), GLYPH6x8(0x82,0x82,0x82,0x82,0x82,0x82,0x7c,0),
     GLYPH6x8(0x82,0x82,0x44,0x44,0x28,0x28,0x10,0), GLYPH6x8(0x82,0x92,0xaa,0xc6,0x82,0x82,0x82,0),
@@ -130,13 +130,7 @@ static void draw_text6x8(Backbuffer& bb,int x,int y,const char* s,uint32_t c){
     }
 }
 
-// ------------------------------- Demo content --------------------------------
-// (C) Define globals once, before first use.
-static Backbuffer   g_bb;
-static ThreadPool   g_pool;
-static DirtyTracker g_dirty;
-static UINT         g_timerPeriod = 0;
-
+// ------------------------- Procedural + tiny demo ----------------------------
 static inline uint32_t tile_color(int tx,int ty){
     uint32_t h = hash32((uint32_t)tx*73856093u ^ (uint32_t)ty*19349663u);
     uint8_t r=(uint8_t)(128+(h&63)), g=(uint8_t)(80+((h>>8)&127)), b=(uint8_t)(80+((h>>16)&127));
@@ -152,100 +146,6 @@ static void line(Backbuffer& bb,int x0,int y0,int x1,int y1,uint32_t c){
         int e2=2*err; if(e2>=dy){err+=dy; x0+=sx;} if(e2<=dx){err+=dx; y0+=sy;}
     }
 }
-struct DemoCtx{ float t=0.f, prev_t=0.f; } g_demo;
-static void demo_tile_job(void*,int y0,int y1){
-    const int tile=16;
-    for(int y=y0;y<y1;y++){
-        uint32_t* row=(uint32_t*)rowptr(g_bb,y);
-        for(int x=0;x<g_bb.w;x++){
-            int tx=x/tile, ty=y/tile; row[x]=tile_color(tx,ty);
-        }
-    }
-}
-static void demo_simulate(float dt){ g_demo.prev_t=g_demo.t; g_demo.t+=dt; }
-static void demo_render(float /*alpha*/){
-    const int tileRows=32;
-    std::vector<TileJob> jobs; for(int y=0;y<g_bb.h;y+=tileRows) jobs.push_back({ y,clampi(y+tileRows,0,g_bb.h), demo_tile_job,nullptr });
-    g_pool.dispatch(jobs); g_pool.wait();
-
-    // Grid
-    const int step=16;
-    for(int x=0;x<g_bb.w;x+=step) line(g_bb,x,0,x,g_bb.h-1, rgb8(0,0,0));
-    for(int y=0;y<g_bb.h;y+=step) line(g_bb,0,y,g_bb.w-1,y, rgb8(0,0,0));
-
-    // HUD text
-    char info[160];
-    _snprintf_s(info,sizeof(info),"Mouse (%d,%d) d(%d,%d) wheel %.1f",
-        g_in.mouseX,g_in.mouseY,g_in.mouseDX,g_in.mouseDY,g_in.wheel);
-    draw_text6x8(g_bb, 8, g_bb.h-20, info, rgb8(255,255,255));
-}
-
-// ---------------------------------- WndProc ----------------------------------
-static KeyCode vk_to_key(WPARAM vk){
-    switch(vk){
-        case 'W':return Key_W; case 'A':return Key_A; case 'S':return Key_S; case 'D':return Key_D;
-        case 'Q':return Key_Q; case 'E':return Key_E;
-        case 'Z':return Key_Z; case 'H':return Key_H; case 'G':return Key_G;
-        case VK_SPACE:return Key_Space; case VK_ESCAPE:return Key_Escape;
-        case VK_UP:return Key_Up; case VK_DOWN:return Key_Down; case VK_LEFT:return Key_Left; case VK_RIGHT:return Key_Right;
-        case VK_F1:return Key_F1; case VK_F2:return Key_F2; case VK_F3:return Key_F3; case VK_F4:return Key_F4;
-        case VK_F5:return Key_F5; case VK_F6:return Key_F6; case VK_F7:return Key_F7; case VK_F8:return Key_F8; case VK_F9:return Key_F9;
-        case VK_F10:return Key_F10; case VK_F11:return Key_F11; case VK_F12:return Key_F12;
-        default:return Key_Unknown;
-    }
-}
-LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam){
-    switch(msg){
-    case WM_CREATE: { g_win.dpi=GetDpiForWindow(hwnd); DragAcceptFiles(hwnd, TRUE); } return 0;
-    case WM_DPICHANGED:{ g_win.dpi=HIWORD(wParam); RECT* nr=(RECT*)lParam;
-        SetWindowPos(hwnd,nullptr,nr->left,nr->top,nr->right-nr->left,nr->bottom-nr->top,SWP_NOZORDER|SWP_NOACTIVATE); } return 0;
-    case WM_SIZE:{ return 0; }
-    case WM_MOUSEMOVE: g_in.mouseX=GET_X_LPARAM(lParam); g_in.mouseY=GET_Y_LPARAM(lParam); return 0;
-    case WM_MOUSEWHEEL: g_in.wheel += (float)GET_WHEEL_DELTA_WPARAM(wParam)/WHEEL_DELTA; return 0;
-    case WM_LBUTTONDOWN: set_button(g_in.mouseL,true); SetCapture(hwnd); return 0;
-    case WM_LBUTTONUP:   set_button(g_in.mouseL,false); ReleaseCapture(); return 0;
-    case WM_RBUTTONDOWN: set_button(g_in.mouseR,true); SetCapture(hwnd); return 0;
-    case WM_RBUTTONUP:   set_button(g_in.mouseR,false); ReleaseCapture(); return 0;
-    case WM_MBUTTONDOWN: set_button(g_in.mouseM,true); SetCapture(hwnd); return 0;
-    case WM_MBUTTONUP:   set_button(g_in.mouseM,false); ReleaseCapture(); return 0;
-    case WM_INPUT:{
-        if(!g_in.rawMouse) break;
-        UINT size=0; GetRawInputData((HRAWINPUT)lParam,RID_INPUT,nullptr,&size,sizeof(RAWINPUTHEADER));
-        uint8_t buf[sizeof(RAWINPUT)]{}; RAWINPUT* ri=(RAWINPUT*)buf;
-        if(size<=sizeof(buf) && GetRawInputData((HRAWINPUT)lParam,RID_INPUT,ri,&size,sizeof(RAWINPUTHEADER))==size){
-            if(ri->header.dwType==RIM_TYPEMOUSE){ g_in.mouseDX += ri->data.mouse.lLastX; g_in.mouseDY += ri->data.mouse.lLastY; }
-        }
-    } return 0;
-    case WM_CHAR:{
-        WCHAR wc=(WCHAR)wParam;
-        if(wc>=32 && wc<128 && g_in.textLen<(int)sizeof(g_in.text)-1){ g_in.text[g_in.textLen++]=(char)wc; g_in.text[g_in.textLen]=0; }
-    } return 0;
-    case WM_SYSKEYDOWN:
-    case WM_KEYDOWN:{
-        if(wParam==VK_RETURN && (HIWORD(lParam)&KF_ALTDOWN)){ toggle_fullscreen(hwnd); return 0; }
-        KeyCode k=vk_to_key(wParam); if(k!=Key_Unknown) set_button(g_in.key[k],true);
-    } return 0;
-    case WM_SYSKEYUP:
-    case WM_KEYUP:{ KeyCode k=vk_to_key(wParam); if(k!=Key_Unknown) set_button(g_in.key[k],false); } return 0;
-    case WM_DROPFILES:{ HDROP h=(HDROP)wParam; UINT n=DragQueryFileW(h,0xFFFFFFFF,nullptr,0); (void)n; DragFinish(h); return 0; }
-    case WM_CLOSE: g_win.running=false; DestroyWindow(hwnd); return 0;
-    case WM_DESTROY: PostQuitMessage(0); return 0;
-    }
-    return DefWindowProc(hwnd,msg,wParam,lParam);
-}
-
-// ------------------------------ Dirty rectangles -----------------------------
-struct Dirty{ RECT r; };
-struct DirtyTracker{
-    std::vector<Dirty> rects;
-    void clear(){ rects.clear(); }
-    void mark(int x,int y,int w,int h){
-        if(w<=0||h<=0) return;
-        RECT r{ x,y,x+w,y+h };
-        rects.push_back(Dirty{r});
-        if(rects.size()>256){ rects.clear(); rects.push_back(Dirty{ RECT{0,0,INT32_MAX,INT32_MAX} }); }
-    }
-};
 
 // ----------------------------- Thread pool -----------------------------------
 struct TileJob{ int y0,y1; void(*fn)(void*,int,int); void* ctx; };
@@ -275,6 +175,58 @@ private:
     std::vector<std::thread> workers; std::vector<TileJob> queue; int next=0; std::atomic<int> pending{0};
     std::mutex mx; std::condition_variable cv, doneCv; bool stop=false;
 };
+
+// ------------------------------ Dirty rectangles -----------------------------
+struct Dirty{ RECT r; };
+struct DirtyTracker{
+    std::vector<Dirty> rects;
+    void clear(){ rects.clear(); }
+    void mark(int x,int y,int w,int h){
+        if(w<=0||h<=0) return;
+        RECT r{ x,y,x+w,y+h };
+        rects.push_back(Dirty{r});
+        if(rects.size()>256){ rects.clear(); rects.push_back(Dirty{ RECT{0,0,INT32_MAX,INT32_MAX} }); }
+    }
+};
+
+// ------------------------- Platform/Game API + hot reload --------------------
+struct PlatformAPI{
+    void (*log_text)(const char* msg)=nullptr;
+    double (*time_now_sec)()=nullptr;
+    bool (*screenshot_bmp)(const char* path)=nullptr;
+    bool (*clipboard_copy_bitmap)()=nullptr;
+    bool (*file_write_all)(const char* path, const void* data, size_t bytes)=nullptr;
+    bool (*file_read_all)(const char* path, std::vector<uint8_t>* out)=nullptr;
+};
+
+struct GameAPI{
+    void (*init)(void** user, int w, int h)=nullptr;
+    void (*resize)(void* user, int w, int h)=nullptr;
+    void (*update_and_render)(void* user, float dt, uint32_t* pixels, int w, int h, const InputState* input)=nullptr;
+    void (*bind_platform)(PlatformAPI* plat, int version)=nullptr;
+    void (*update_fixed)(void* user, float dt)=nullptr;
+    void (*render)(void* user, float alpha, uint32_t* pixels, int w, int h, const InputState* input)=nullptr;
+};
+
+struct HotReload{
+    HMODULE dll=nullptr; FILETIME lastWrite{}; GameAPI api{}; void* userState=nullptr; bool active=false;
+};
+static FILETIME filetimeA(const char* path){ WIN32_FILE_ATTRIBUTE_DATA d{}; if(GetFileAttributesExA(path,GetFileExInfoStandard,&d)) return d.ftLastWriteTime; FILETIME z{}; return z; }
+static bool file_existsA(const char* path){ DWORD a=GetFileAttributesA(path); return (a!=INVALID_FILE_ATTRIBUTES && !(a&FILE_ATTRIBUTE_DIRECTORY)); }
+static bool load_game(HotReload& hr, const char* dllName){
+    char tmp[MAX_PATH]; wsprintfA(tmp,"%s_hot.dll",dllName); CopyFileA(dllName,tmp,FALSE);
+    HMODULE dll=LoadLibraryA(tmp); if(!dll) return false;
+    auto init =(void(*)(void**,int,int))GetProcAddress(dll,"game_init");
+    auto resize=(void(*)(void*,int,int))GetProcAddress(dll,"game_resize");
+    auto step =(void(*)(void*,float,uint32_t*,int,int,const InputState*))GetProcAddress(dll,"game_update_and_render");
+    auto bind =(void(*)(PlatformAPI*,int))GetProcAddress(dll,"game_bind_platform");
+    auto upf  =(void(*)(void*,float))GetProcAddress(dll,"game_update_fixed");
+    auto rend =(void(*)(void*,float,uint32_t*,int,int,const InputState*))GetProcAddress(dll,"game_render");
+    if(!step && !upf && !rend){ FreeLibrary(dll); DeleteFileA(tmp); return false; }
+    hr.dll=dll; hr.api={}; hr.api.init=init; hr.api.resize=resize; hr.api.update_and_render=step;
+    hr.api.bind_platform=bind; hr.api.update_fixed=upf; hr.api.render=rend; hr.active=true; return true;
+}
+static void unload_game(HotReload& hr){ if(hr.dll){ FreeLibrary(hr.dll); hr.dll=nullptr; } hr.api={}; hr.userState=nullptr; hr.active=false; }
 
 // ------------------------------ Window state/DPI -----------------------------
 struct WindowState{
@@ -307,12 +259,12 @@ static void set_dpi_awareness(){
 }
 
 static void toggle_fullscreen(HWND hwnd){
-    static WINDOWPLACEMENT prev{};            // (A) / (C2078) safe
-    prev.length = sizeof(prev);               // must be set per Win32 docs. :contentReference[oaicite:3]{index=3}
+    static WINDOWPLACEMENT prev{};
+    prev.length = sizeof(prev); // required by Get/SetWindowPlacement. 
 
     DWORD style=(DWORD)GetWindowLongPtr(hwnd,GWL_STYLE);
     if(!g_win.borderless){
-        MONITORINFO mi{}; mi.cbSize = sizeof(mi); // required by GetMonitorInfo. :contentReference[oaicite:4]{index=4}
+        MONITORINFO mi{}; mi.cbSize = sizeof(mi); // required by GetMonitorInfo. 
         GetWindowPlacement(hwnd,&prev);
         GetMonitorInfo(MonitorFromWindow(hwnd,MONITOR_DEFAULTTONEAREST),&mi);
         SetWindowLongPtr(hwnd,GWL_STYLE, style & ~WS_OVERLAPPEDWINDOW);
@@ -351,10 +303,97 @@ static void poll_gamepads(InputState& in){
 }
 static void enable_raw_mouse(HWND hwnd,bool enable){
     RAWINPUTDEVICE rid{}; rid.usUsagePage=0x01; rid.usUsage=0x02;
-    // (G) RIDEV_CAPTUREMOUSE is valid for mouse only when RIDEV_NOLEGACY is also set. :contentReference[oaicite:5]{index=5}
-    rid.dwFlags= enable ? (RIDEV_INPUTSINK|RIDEV_NOLEGACY|RIDEV_CAPTUREMOUSE) : RIDEV_REMOVE;
+    rid.dwFlags= enable ? (RIDEV_INPUTSINK|RIDEV_CAPTUREMOUSE) : RIDEV_REMOVE; // register before WM_INPUT. 
     rid.hwndTarget=hwnd;
-    RegisterRawInputDevices(&rid,1,sizeof(rid));    // must register to receive WM_INPUT. :contentReference[oaicite:6]{index=6}
+    RegisterRawInputDevices(&rid,1,sizeof(rid));
+}
+
+// ---------------------------------- WndProc ----------------------------------
+static KeyCode vk_to_key(WPARAM vk){
+    switch(vk){
+        case 'W':return Key_W; case 'A':return Key_A; case 'S':return Key_S; case 'D':return Key_D;
+        case 'Q':return Key_Q; case 'E':return Key_E;
+        case 'Z':return Key_Z; case 'H':return Key_H; case 'G':return Key_G;
+        case VK_SPACE:return Key_Space; case VK_ESCAPE:return Key_Escape;
+        case VK_UP:return Key_Up; case VK_DOWN:return Key_Down; case VK_LEFT:return Key_Left; case VK_RIGHT:return Key_Right;
+        case VK_F1:return Key_F1; case VK_F2:return Key_F2; case VK_F3:return Key_F3; case VK_F4:return Key_F4;
+        case VK_F5:return Key_F5; case VK_F6:return Key_F6; case VK_F7:return Key_F7; case VK_F8:return Key_F8; case VK_F9:return Key_F9;
+        case VK_F10:return Key_F10; case VK_F11:return Key_F11; case VK_F12:return Key_F12;
+        default:return Key_Unknown;
+    }
+}
+LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam){
+    switch(msg){
+    case WM_CREATE: { g_win.dpi=GetDpiForWindow(hwnd); DragAcceptFiles(hwnd, TRUE); } return 0;
+    case WM_DPICHANGED:{ g_win.dpi=HIWORD(wParam); RECT* nr=(RECT*)lParam;
+        // Use the suggested RECT per Microsoft HIDPI guidance. 
+        SetWindowPos(hwnd,nullptr,nr->left,nr->top,nr->right-nr->left,nr->bottom-nr->top,SWP_NOZORDER|SWP_NOACTIVATE); } return 0;
+    case WM_SIZE:{ return 0; }
+    case WM_MOUSEMOVE: g_in.mouseX=GET_X_LPARAM(lParam); g_in.mouseY=GET_Y_LPARAM(lParam); return 0;
+    case WM_MOUSEWHEEL: g_in.wheel += (float)GET_WHEEL_DELTA_WPARAM(wParam)/WHEEL_DELTA; return 0;
+    case WM_LBUTTONDOWN: set_button(g_in.mouseL,true); SetCapture(hwnd); return 0;
+    case WM_LBUTTONUP:   set_button(g_in.mouseL,false); ReleaseCapture(); return 0;
+    case WM_RBUTTONDOWN: set_button(g_in.mouseR,true); SetCapture(hwnd); return 0;
+    case WM_RBUTTONUP:   set_button(g_in.mouseR,false); ReleaseCapture(); return 0;
+    case WM_MBUTTONDOWN: set_button(g_in.mouseM,true); SetCapture(hwnd); return 0;
+    case WM_MBUTTONUP:   set_button(g_in.mouseM,false); ReleaseCapture(); return 0;
+    case WM_INPUT:{
+        if(!g_in.rawMouse) break;
+        UINT size=0; GetRawInputData((HRAWINPUT)lParam,RID_INPUT,nullptr,&size,sizeof(RAWINPUTHEADER));
+        uint8_t buf[sizeof(RAWINPUT)]{}; RAWINPUT* ri=(RAWINPUT*)buf;
+        if(size<=sizeof(buf) && GetRawInputData((HRAWINPUT)lParam,RID_INPUT,ri,&size,sizeof(RAWINPUTHEADER))==size){
+            if(ri->header.dwType==RIM_TYPEMOUSE){ g_in.mouseDX += ri->data.mouse.lLastX; g_in.mouseDY += ri->data.mouse.lLastY; }
+        }
+    } return 0;
+    case WM_CHAR:{
+        WCHAR wc=(WCHAR)wParam;
+        if(wc>=32 && wc<128 && g_in.textLen<(int)sizeof(g_in.text)-1){ g_in.text[g_in.textLen++]=(char)wc; g_in.text[g_in.textLen]=0; }
+    } return 0;
+    case WM_SYSKEYDOWN:
+    case WM_KEYDOWN:{
+        if(wParam==VK_RETURN && (HIWORD(lParam)&KF_ALTDOWN)){ toggle_fullscreen(hwnd); return 0; }
+        KeyCode k=vk_to_key(wParam); if(k!=Key_Unknown) set_button(g_in.key[k],true);
+    } return 0;
+    case WM_SYSKEYUP:
+    case WM_KEYUP:{ KeyCode k=vk_to_key(wParam); if(k!=Key_Unknown) set_button(g_in.key[k],false); } return 0;
+    case WM_DROPFILES:{ HDROP h=(HDROP)wParam; UINT n=DragQueryFileW(h,0xFFFFFFFF,nullptr,0); (void)n; DragFinish(h); return 0; }
+    case WM_CLOSE: g_win.running=false; DestroyWindow(hwnd); return 0;
+    case WM_DESTROY: PostQuitMessage(0); return 0;
+    }
+    return DefWindowProc(hwnd,msg,wParam,lParam);
+}
+
+// ------------------------------- Demo content + globals (C) ------------------
+static Backbuffer   g_bb;
+static ThreadPool   g_pool;
+static DirtyTracker g_dirty;
+static UINT         g_timerPeriod = 0;
+
+struct DemoCtx{ float t=0.f, prev_t=0.f; } g_demo;
+
+static void demo_tile_job(void*,int y0,int y1){
+    const int tile=16;
+    for(int y=y0;y<y1;y++){
+        uint32_t* row=(uint32_t*)rowptr(g_bb,y);
+        for(int x=0;x<g_bb.w;x++){
+            int tx=x/tile, ty=y/tile; row[x]=tile_color(tx,ty);
+        }
+    }
+}
+static void demo_simulate(float dt){ g_demo.prev_t=g_demo.t; g_demo.t+=dt; }
+static void demo_render(float /*alpha*/){
+    const int tileRows=32;
+    std::vector<TileJob> jobs; for(int y=0;y<g_bb.h;y+=tileRows) jobs.push_back({ y,clampi(y+tileRows,0,g_bb.h), demo_tile_job,nullptr });
+    g_pool.dispatch(jobs); g_pool.wait();
+
+    const int step=16;
+    for(int x=0;x<g_bb.w;x+=step) line(g_bb,x,0,x,g_bb.h-1, rgb8(0,0,0));
+    for(int y=0;y<g_bb.h;y+=step) line(g_bb,0,y,g_bb.w-1,y, rgb8(0,0,0));
+
+    char info[160];
+    _snprintf_s(info,sizeof(info),"Mouse (%d,%d) d(%d,%d) wheel %.1f",
+        g_in.mouseX,g_in.mouseY,g_in.mouseDX,g_in.mouseDY,g_in.wheel);
+    draw_text6x8(g_bb, 8, g_bb.h-20, info, rgb8(255,255,255));
 }
 
 // --------------------------------- HUD/CRC -----------------------------------
@@ -382,7 +421,7 @@ static void draw_perf_hud(Backbuffer& bb, double dtMs){
     g_perf.graph[g_perf.head=(g_perf.head+1)%180]=(float)dtMs;
 }
 
-// ---------- File-scope helpers to replace capturing lambdas (B: no unary '+') ----------
+// ---------- File-scope helpers used in PlatformAPI (no unary '+' needed) -----
 static bool SaveBackbufferBMP(const char* path){
     HANDLE f=CreateFileA(path,GENERIC_WRITE,0,nullptr,CREATE_ALWAYS,FILE_ATTRIBUTE_NORMAL,nullptr);
     if(f==INVALID_HANDLE_VALUE) return false;
@@ -416,8 +455,8 @@ int APIENTRY wWinMain(HINSTANCE hInst,HINSTANCE,LPWSTR,int){
     // High-DPI awareness before any window is created.
     set_dpi_awareness(); // PMv2 -> PMv1 -> system.
 
-    // Register window class using WNDCLASSEXW (explicit assignments).
-    WNDCLASSEXW wc{}; wc.cbSize=sizeof(wc);
+    // (A) Register window class using WNDCLASSEXW (explicit assignments).
+    WNDCLASSEXW wc{}; wc.cbSize=sizeof(wc);                 // must set cbSize. 
     wc.style=CS_OWNDC|CS_HREDRAW|CS_VREDRAW; wc.lpfnWndProc=WndProc; wc.hInstance=hInst;
     wc.hIcon=LoadIconW(nullptr,IDI_APPLICATION); wc.hCursor=LoadCursorW(nullptr,IDC_ARROW);
     wc.hbrBackground=(HBRUSH)(COLOR_WINDOW+1); wc.lpszClassName=L"GamePlatformWin32"; wc.hIconSm=wc.hIcon;
@@ -446,43 +485,7 @@ int APIENTRY wWinMain(HINSTANCE hInst,HINSTANCE,LPWSTR,int){
     LARGE_INTEGER freqLi; QueryPerformanceFrequency(&freqLi); const double invFreq=1.0/(double)freqLi.QuadPart;
     uint64_t tPrev=now_qpc(); double simTime=0.0; double acc=0.0;
 
-    // ------------------------- Hot-reload -------------------------
-    struct PlatformAPI{
-        void (*log_text)(const char* msg)=nullptr;
-        double (*time_now_sec)()=nullptr;
-        bool (*screenshot_bmp)(const char* path)=nullptr;
-        bool (*clipboard_copy_bitmap)()=nullptr;
-        bool (*file_write_all)(const char* path, const void* data, size_t bytes)=nullptr;
-        bool (*file_read_all)(const char* path, std::vector<uint8_t>* out)=nullptr;
-    };
-    struct GameAPI{
-        void (*init)(void** user, int w, int h)=nullptr;
-        void (*resize)(void* user, int w, int h)=nullptr;
-        void (*update_and_render)(void* user, float dt, uint32_t* pixels, int w, int h, const InputState* input)=nullptr;
-        void (*bind_platform)(PlatformAPI* plat, int version)=nullptr;
-        void (*update_fixed)(void* user, float dt)=nullptr;
-        void (*render)(void* user, float alpha, uint32_t* pixels, int w, int h, const InputState* input)=nullptr;
-    };
-    struct HotReload{
-        HMODULE dll=nullptr; FILETIME lastWrite{}; GameAPI api{}; void* userState=nullptr; bool active=false;
-    };
-    auto filetimeA=[](const char* path)->FILETIME{ WIN32_FILE_ATTRIBUTE_DATA d{}; if(GetFileAttributesExA(path,GetFileExInfoStandard,&d)) return d.ftLastWriteTime; FILETIME z{}; return z; };
-    auto file_existsA=[](const char* path)->bool{ DWORD a=GetFileAttributesA(path); return (a!=INVALID_FILE_ATTRIBUTES && !(a&FILE_ATTRIBUTE_DIRECTORY)); };
-    auto load_game=[](HotReload& hr, const char* dllName)->bool{
-        char tmp[MAX_PATH]; wsprintfA(tmp,"%s_hot.dll",dllName); CopyFileA(dllName,tmp,FALSE);
-        HMODULE dll=LoadLibraryA(tmp); if(!dll) return false;
-        auto init =(void(*)(void**,int,int))GetProcAddress(dll,"game_init");
-        auto resize=(void(*)(void*,int,int))GetProcAddress(dll,"game_resize");
-        auto step =(void(*)(void*,float,uint32_t*,int,int,const InputState*))GetProcAddress(dll,"game_update_and_render");
-        auto bind =(void(*)(PlatformAPI*,int))GetProcAddress(dll,"game_bind_platform");
-        auto upf  =(void(*)(void*,float))GetProcAddress(dll,"game_update_fixed");
-        auto rend =(void(*)(void*,float,uint32_t*,int,int,const InputState*))GetProcAddress(dll,"game_render");
-        if(!step && !upf && !rend){ FreeLibrary(dll); DeleteFileA(tmp); return false; }
-        hr.dll=dll; hr.api={}; hr.api.init=init; hr.api.resize=resize; hr.api.update_and_render=step;
-        hr.api.bind_platform=bind; hr.api.update_fixed=upf; hr.api.render=rend; hr.active=true; return true;
-    };
-    auto unload_game=[](HotReload& hr){ if(hr.dll){ FreeLibrary(hr.dll); hr.dll=nullptr; } hr.api={}; hr.userState=nullptr; hr.active=false; };
-
+    // Hot-reload
     HotReload hot{}; hot.lastWrite=filetimeA("game.dll");
     if(file_existsA("game.dll") && load_game(hot,"game.dll")){
         auto plat_log=[](const char* s){ OutputDebugStringA(s); OutputDebugStringA("\n"); };
@@ -499,8 +502,8 @@ int APIENTRY wWinMain(HINSTANCE hInst,HINSTANCE,LPWSTR,int){
 
         if(hot.api.bind_platform){
             PlatformAPI plat{}; plat.log_text=plat_log; plat.time_now_sec=plat_time;
-            // (B) no unary '+'; pass static functions
-            plat.screenshot_bmp        = &SaveBackbufferBMP;
+            // (B) C2088-safe: plain functions, no unary '+'
+            plat.screenshot_bmp = &SaveBackbufferBMP;
             plat.clipboard_copy_bitmap = &CopyBackbufferToClipboard;
             plat.file_write_all=plat_write; plat.file_read_all=plat_read;
             hot.api.bind_platform(&plat,1);
@@ -533,12 +536,12 @@ int APIENTRY wWinMain(HINSTANCE hInst,HINSTANCE,LPWSTR,int){
                 };
                 if(hot.api.bind_platform){
                     PlatformAPI plat{}; plat.log_text=plat_log; plat.time_now_sec=plat_time;
-                    plat.screenshot_bmp        = &SaveBackbufferBMP;
+                    plat.screenshot_bmp = &SaveBackbufferBMP;            // (B)
                     plat.clipboard_copy_bitmap = &CopyBackbufferToClipboard;
                     plat.file_write_all=plat_write; plat.file_read_all=plat_read;
                     hot.api.bind_platform(&plat,1);
                 }
-                if(hot.api.init)   hot.api.init(&hot.userState, g_bb.w, g_bb.h);
+                if(hot.api.init) hot.api.init(&hot.userState, g_bb.w, g_bb.h);
                 if(hot.api.resize) hot.api.resize(hot.userState, g_bb.w, g_bb.h);
             }
         }
@@ -547,6 +550,7 @@ int APIENTRY wWinMain(HINSTANCE hInst,HINSTANCE,LPWSTR,int){
         uint64_t tU0=tic();
         MSG msg; begin_frame(g_in);
         while(PeekMessage(&msg,nullptr,0,0,PM_REMOVE)){ if(msg.message==WM_QUIT) g_win.running=false; TranslateMessage(&msg); DispatchMessage(&msg); }
+
         if(pressed(g_in.key[Key_F1]))  g_perf.show=!g_perf.show;
         if(pressed(g_in.key[Key_F2]))  g_win.integerScale=!g_win.integerScale;
         if(pressed(g_in.key[Key_F3]))  g_win.useVsync=!g_win.useVsync;
@@ -622,7 +626,7 @@ int APIENTRY wWinMain(HINSTANCE hInst,HINSTANCE,LPWSTR,int){
         g_perf.frameMS=(float)(dt*1000.0);
         draw_perf_hud(g_bb, g_perf.frameMS);
 
-        // Present
+        // Present  (D)
         uint64_t tP0=tic();
         PresentConfig cfg{ g_win.integerScale, g_win.smoothScale };
         if(useDirty){
@@ -633,7 +637,7 @@ int APIENTRY wWinMain(HINSTANCE hInst,HINSTANCE,LPWSTR,int){
         }else{
             gdi_present_full(hwnd, hdc, g_bb.w, g_bb.h, g_bb.pixels, &g_bb.bmi, cfg);
         }
-        if(g_win.useVsync){ BOOL comp=FALSE; DwmIsCompositionEnabled(&comp); if(comp) DwmFlush(); } // optional pacing
+        if(g_win.useVsync){ BOOL comp=FALSE; DwmIsCompositionEnabled(&comp); if(comp) DwmFlush(); }
         g_micro.tPresent=toc(tP0);
 
         // FPS
