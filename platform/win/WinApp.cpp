@@ -220,7 +220,7 @@ bool WinApp::Create(const WinCreateDesc& desc, const Callbacks& cbs)
     }
 
     // DPI-correct client sizing
-    RECT wr{0,0, desc.clientSize.w, desc.clientSize.h};
+    RECT wr{0,0, desc.clientSize.cx, desc.clientSize.cy};
     HMODULE user = ::GetModuleHandleA("user32.dll");
     using AdjustForDpi_t = BOOL (WINAPI*)(LPRECT,DWORD,BOOL,DWORD,UINT);
     AdjustForDpi_t pAdjForDpi = user ? (AdjustForDpi_t)::GetProcAddress(user, "AdjustWindowRectExForDpi") : nullptr;
