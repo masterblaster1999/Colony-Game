@@ -109,8 +109,7 @@ static const uint8_t kFont6x8[96][8] = {
     GLYPH6x8(0xfc,0x82,0x82,0xfc,0x88,0x84,0x82,0), GLYPH6x8(0x7c,0x80,0x7c,0x02,0x02,0x82,0x7c,0),
     GLYPH6x8(0xfe,0x10,0x10,0x10,0x10,0x10,0x10,0), GLYPH6x8(0x82,0x82,0x82,0x82,0x82,0x82,0x7c,0),
     GLYPH6x8(0x82,0x82,0x44,0x44,0x28,0x28,0x10,0), GLYPH6x8(0x82,0x92,0xaa,0xc6,0x82,0x82,0x82,0),
-    GLYPH6x8(0x82,0x44,0x28,0x10,0x28,0x44,0x82,0), GLYPH6x8(0x82,0x44,0x28,0x10,0x10,0x10,0x10,0),
-    GLYPH6x8(0xfe,0x04,0x08,0x30,0x40,0x80,0xfe,0)
+    GLYPH6x8(0x82,0x44,0x28,0x10,0x10,0x10,0x10,0), GLYPH6x8(0xfe,0x04,0x08,0x30,0x40,0x80,0xfe,0)
 };
 #undef GLYPH6x8
 
@@ -185,8 +184,8 @@ struct DirtyTracker{
     void mark(int x,int y,int w,int h){
         if(w<=0||h<=0) return;
         RECT r{ x,y,x+w,y+h };
-        rects.push_back({r});
-        if(rects.size()>256){ rects.clear(); rects.push_back({ RECT{0,0,INT32_MAX,INT32_MAX} }); }
+        rects.push_back(Dirty{r});
+        if(rects.size()>256){ rects.clear(); rects.push_back(Dirty{ RECT{0,0,INT32_MAX,INT32_MAX} }); }
     }
 };
 
@@ -260,10 +259,13 @@ static void set_dpi_awareness(){
 }
 
 static void toggle_fullscreen(HWND hwnd){
-    static WINDOWPLACEMENT prev={sizeof(prev)};
+    static WINDOWPLACEMENT prev{};            // C2078-safe: zero-init then set length
+    prev.length = sizeof(prev);
+
     DWORD style=(DWORD)GetWindowLongPtr(hwnd,GWL_STYLE);
     if(!g_win.borderless){
-        MONITORINFO mi={sizeof(mi)}; GetWindowPlacement(hwnd,&prev);
+        MONITORINFO mi{}; mi.cbSize = sizeof(mi); // C2078-safe: set cbSize before GetMonitorInfo
+        GetWindowPlacement(hwnd,&prev);
         GetMonitorInfo(MonitorFromWindow(hwnd,MONITOR_DEFAULTTONEAREST),&mi);
         SetWindowLongPtr(hwnd,GWL_STYLE, style & ~WS_OVERLAPPEDWINDOW);
         SetWindowPos(hwnd,HWND_TOP, mi.rcMonitor.left,mi.rcMonitor.top,
@@ -359,56 +361,6 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam){
     return DefWindowProc(hwnd,msg,wParam,lParam);
 }
 
-// ------------------------------- Demo content --------------------------------
-static Backbuffer g_bb;
-// 🔸 g_in now comes from win_input.cpp via win_input.h (do not define here)
-static ThreadPool g_pool;
-static DirtyTracker g_dirty;
-static UINT g_timerPeriod = 0;
-
-struct DemoCtx{ float t=0.f, prev_t=0.f; } g_demo;
-
-static void demo_tile_job(void*,int y0,int y1){
-    const int tile=16;
-    for(int y=y0;y<y1;y++){
-        uint32_t* row=(uint32_t*)rowptr(g_bb,y);
-        for(int x=0;x<g_bb.w;x++){
-            int tx=x/tile, ty=y/tile; row[x]=tile_color(tx,ty);
-        }
-    }
-}
-static void demo_simulate(float dt){ g_demo.prev_t=g_demo.t; g_demo.t+=dt; }
-static void demo_render(float alpha){
-    const int tileRows=32;
-    std::vector<TileJob> jobs; for(int y=0;y<g_bb.h;y+=tileRows) jobs.push_back({ y,clampi(y+tileRows,0,g_bb.h), demo_tile_job,nullptr });
-    g_pool.dispatch(jobs); g_pool.wait();
-
-    // panel + icon
-    auto fill_rect = [](Backbuffer& bb,int x,int y,int w,int h,uint32_t c){
-        int x0=clampi(x,0,bb.w), y0=clampi(y,0,bb.h);
-        int x1=clampi(x+w,0,bb.w), y1=clampi(y+h,0,bb.h);
-        for(int yy=y0;yy<y1;++yy){
-            uint32_t* row=(uint32_t*)rowptr(bb,yy);
-            for(int xx=x0;xx<x1;++xx) row[xx]=c;
-        }
-    };
-    fill_rect(g_bb, 20,20, 220,64, rgba8(0,0,0,160)); // soft background
-
-    // Moving marker
-    float t = g_demo.prev_t + (g_demo.t - g_demo.prev_t) * clampf(alpha,0.f,1.f);
-    float cx=(sinf(t*0.7f)*0.5f+0.5f)*(g_bb.w-80);
-    float cy=(sinf(t*1.1f+1.57f)*0.5f+0.5f)*(g_bb.h-80);
-    const int step=16;
-    for(int x=0;x<g_bb.w;x+=step) line(g_bb,x,0,x,g_bb.h-1, rgb8(0,0,0));
-    for(int y=0;y<g_bb.h;y+=step) line(g_bb,0,y,g_bb.w-1,y, rgb8(0,0,0));
-
-    // Input text
-    char info[160];
-    _snprintf_s(info,sizeof(info),"Mouse (%d,%d) d(%d,%d) wheel %.1f",
-        g_in.mouseX,g_in.mouseY,g_in.mouseDX,g_in.mouseDY,g_in.wheel);
-    draw_text6x8(g_bb, 8, g_bb.h-20, info, rgb8(255,255,255));
-}
-
 // --------------------------------- HUD/CRC -----------------------------------
 static struct PerfHUD{ float frameMS=0, fps=0; float graph[180]{}; int head=0; bool show=true; } g_perf;
 struct Micro{ double tUpdate=0, tRender=0, tPost=0, tPresent=0; } g_micro;
@@ -432,6 +384,35 @@ static void draw_perf_hud(Backbuffer& bb, double dtMs){
     draw_text6x8(bb,x0,y0,buf,rgb8(255,255,255));
     uint32_t fh=crc32_frame(bb); char hb[32]; _snprintf_s(hb,sizeof(hb),"  hash %08X", fh); draw_text6x8(bb,x0,y0+10,hb,rgb8(200,240,120));
     g_perf.graph[g_perf.head=(g_perf.head+1)%180]=(float)dtMs;
+}
+
+// ---------- File-scope helpers to replace capturing lambdas (C2088 fix) ----------
+static bool SaveBackbufferBMP(const char* path){
+    HANDLE f=CreateFileA(path,GENERIC_WRITE,0,nullptr,CREATE_ALWAYS,FILE_ATTRIBUTE_NORMAL,nullptr);
+    if(f==INVALID_HANDLE_VALUE) return false;
+    BITMAPFILEHEADER bfh{}; BITMAPINFOHEADER bih{};
+    int stride=g_bb.w*4, imageSize=stride*g_bb.h;
+    bfh.bfType=0x4D42; // 'BM'
+    bfh.bfOffBits=sizeof(BITMAPFILEHEADER)+sizeof(BITMAPINFOHEADER);
+    bfh.bfSize=bfh.bfOffBits+imageSize;
+    bih.biSize=sizeof(BITMAPINFOHEADER); bih.biWidth=g_bb.w; bih.biHeight=g_bb.h;
+    bih.biPlanes=1; bih.biBitCount=32; bih.biCompression=BI_RGB;
+    DWORD wr;
+    WriteFile(f,&bfh,sizeof(bfh),&wr,nullptr);
+    WriteFile(f,&bih,sizeof(bih),&wr,nullptr);
+    for(int y=g_bb.h-1;y>=0;--y){ uint8_t* row=(uint8_t*)rowptr(g_bb,y); WriteFile(f,row,stride,&wr,nullptr); }
+    CloseHandle(f); return true;
+}
+static bool CopyBackbufferToClipboard(){
+    int sz=g_bb.w*g_bb.h*4 + sizeof(BITMAPINFOHEADER);
+    HGLOBAL h=GlobalAlloc(GHND,sz); if(!h) return false; uint8_t* mem=(uint8_t*)GlobalLock(h);
+    BITMAPINFOHEADER* bih=(BITMAPINFOHEADER*)mem; memset(bih,0,sizeof(BITMAPINFOHEADER));
+    bih->biSize=sizeof(BITMAPINFOHEADER); bih->biWidth=g_bb.w; bih->biHeight=-g_bb.h;
+    bih->biPlanes=1; bih->biBitCount=32; bih->biCompression=BI_RGB;
+    memcpy(mem+sizeof(BITMAPINFOHEADER), g_bb.pixels, (size_t)g_bb.w*g_bb.h*4);
+    GlobalUnlock(h);
+    if(OpenClipboard(g_win.hwnd)){ EmptyClipboard(); SetClipboardData(CF_DIB,h); CloseClipboard(); return true; }
+    GlobalFree(h); return false;
 }
 
 // ----------------------------------- Entry -----------------------------------
@@ -483,31 +464,12 @@ int APIENTRY wWinMain(HINSTANCE hInst,HINSTANCE,LPWSTR,int){
             if(f==INVALID_HANDLE_VALUE) return false; LARGE_INTEGER sz; GetFileSizeEx(f,&sz); out->resize((size_t)sz.QuadPart);
             DWORD rd=0; BOOL ok=ReadFile(f,out->data(),(DWORD)out->size(),&rd,nullptr); CloseHandle(f); return ok && rd==(DWORD)out->size();
         };
-        auto save_bmp=[&](const char* path)->bool{
-            HANDLE f=CreateFileA(path,GENERIC_WRITE,0,nullptr,CREATE_ALWAYS,FILE_ATTRIBUTE_NORMAL,nullptr);
-            if(f==INVALID_HANDLE_VALUE) return false;
-            BITMAPFILEHEADER bfh{}; BITMAPINFOHEADER bih{};
-            int stride=g_bb.w*4, imageSize=stride*g_bb.h;
-            bfh.bfType=0x4D42; bfh.bfOffBits=sizeof(BITMAPFILEHEADER)+sizeof(BITMAPINFOHEADER); bfh.bfSize=bfh.bfOffBits+imageSize;
-            bih.biSize=sizeof(BITMAPINFOHEADER); bih.biWidth=g_bb.w; bih.biHeight=g_bb.h; bih.biPlanes=1; bih.biBitCount=32; bih.biCompression=BI_RGB;
-            DWORD wr; WriteFile(f,&bfh,sizeof(bfh),&wr,nullptr); WriteFile(f,&bih,sizeof(bih),&wr,nullptr);
-            for(int y=g_bb.h-1;y>=0;--y){ uint8_t* row=(uint8_t*)rowptr(g_bb,y); WriteFile(f,row,stride,&wr,nullptr); }
-            CloseHandle(f); return true;
-        };
-        auto copy_bmp=[&]()->bool{
-            int sz=g_bb.w*g_bb.h*4 + sizeof(BITMAPINFOHEADER);
-            HGLOBAL h=GlobalAlloc(GHND,sz); if(!h) return false; uint8_t* mem=(uint8_t*)GlobalLock(h);
-            BITMAPINFOHEADER* bih=(BITMAPINFOHEADER*)mem; *bih={}; bih->biSize=sizeof(BITMAPINFOHEADER);
-            bih->biWidth=g_bb.w; bih->biHeight=-g_bb.h; bih->biPlanes=1; bih->biBitCount=32; bih->biCompression=BI_RGB;
-            memcpy(mem+sizeof(BITMAPINFOHEADER), g_bb.pixels, (size_t)g_bb.w*g_bb.h*4);
-            GlobalUnlock(h);
-            if(OpenClipboard(hwnd)){ EmptyClipboard(); SetClipboardData(CF_DIB,h); CloseClipboard(); return true; } else { GlobalFree(h); return false; }
-        };
 
         if(hot.api.bind_platform){
             PlatformAPI plat{}; plat.log_text=plat_log; plat.time_now_sec=plat_time;
-            plat.screenshot_bmp = +save_bmp;
-            plat.clipboard_copy_bitmap = +copy_bmp;
+            // C2088-safe: use static functions (no unary '+' on lambdas)
+            plat.screenshot_bmp = &SaveBackbufferBMP;
+            plat.clipboard_copy_bitmap = &CopyBackbufferToClipboard;
             plat.file_write_all=plat_write; plat.file_read_all=plat_read;
             hot.api.bind_platform(&plat,1);
         }
@@ -538,30 +500,11 @@ int APIENTRY wWinMain(HINSTANCE hInst,HINSTANCE,LPWSTR,int){
                     if(f==INVALID_HANDLE_VALUE) return false; LARGE_INTEGER sz; GetFileSizeEx(f,&sz); out->resize((size_t)sz.QuadPart);
                     DWORD rd=0; BOOL ok=ReadFile(f,out->data(),(DWORD)out->size(),&rd,nullptr); CloseHandle(f); return ok && rd==(DWORD)out->size();
                 };
-                auto save_bmp=[&](const char* path)->bool{
-                    HANDLE f=CreateFileA(path,GENERIC_WRITE,0,nullptr,CREATE_ALWAYS,FILE_ATTRIBUTE_NORMAL,nullptr);
-                    if(f==INVALID_HANDLE_VALUE) return false;
-                    BITMAPFILEHEADER bfh{}; BITMAPINFOHEADER bih{};
-                    int stride=g_bb.w*4, imageSize=stride*g_bb.h;
-                    bfh.bfType=0x4D42; bfh.bfOffBits=sizeof(BITMAPFILEHEADER)+sizeof(BITMAPINFOHEADER); bfh.bfSize=bfh.bfOffBits+imageSize;
-                    bih.biSize=sizeof(BITMAPINFOHEADER); bih.biWidth=g_bb.w; bih.biHeight=g_bb.h; bih.biPlanes=1; bih.biBitCount=32; bih.biCompression=BI_RGB;
-                    DWORD wr; WriteFile(f,&bfh,sizeof(bfh),&wr,nullptr); WriteFile(f,&bih,sizeof(bih),&wr,nullptr);
-                    for(int y=g_bb.h-1;y>=0;--y){ uint8_t* row=(uint8_t*)rowptr(g_bb,y); WriteFile(f,row,stride,&wr,nullptr); }
-                    CloseHandle(f); return true;
-                };
-                auto copy_bmp=[&]()->bool{
-                    int sz=g_bb.w*g_bb.h*4 + sizeof(BITMAPINFOHEADER);
-                    HGLOBAL h=GlobalAlloc(GHND,sz); if(!h) return false; uint8_t* mem=(uint8_t*)GlobalLock(h);
-                    BITMAPINFOHEADER* bih=(BITMAPINFOHEADER*)mem; *bih={}; bih->biSize=sizeof(BITMAPINFOHEADER);
-                    bih->biWidth=g_bb.w; bih->biHeight=-g_bb.h; bih->biPlanes=1; bih->biBitCount=32; bih->biCompression=BI_RGB;
-                    memcpy(mem+sizeof(BITMAPINFOHEADER), g_bb.pixels, (size_t)g_bb.w*g_bb.h*4);
-                    GlobalUnlock(h);
-                    if(OpenClipboard(hwnd)){ EmptyClipboard(); SetClipboardData(CF_DIB,h); CloseClipboard(); return true; } else { GlobalFree(h); return false; }
-                };
                 if(hot.api.bind_platform){
                     PlatformAPI plat{}; plat.log_text=plat_log; plat.time_now_sec=plat_time;
-                    plat.screenshot_bmp = +save_bmp;
-                    plat.clipboard_copy_bitmap = +copy_bmp;
+                    // C2088-safe again
+                    plat.screenshot_bmp = &SaveBackbufferBMP;
+                    plat.clipboard_copy_bitmap = &CopyBackbufferToClipboard;
                     plat.file_write_all=plat_write; plat.file_read_all=plat_read;
                     hot.api.bind_platform(&plat,1);
                 }
