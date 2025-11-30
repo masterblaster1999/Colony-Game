@@ -1,99 +1,79 @@
-# cmake/Shaders.cmake
-# Compiles HLSL with DXC and picks the correct stage + entry from the filename suffix.
-# Supports: *_vs.hlsl, *_ps.hlsl, *_cs.hlsl, and *.compute.hlsl.
-#
-# Naming convention:
-#   *_vs.hlsl      -> vs_6_0, entry VSMain
-#   *_ps.hlsl      -> ps_6_0, entry PSMain
-#   *_cs.hlsl      -> cs_6_0, entry CSMain
-#   *.compute.hlsl -> cs_6_0, entry CSMain
-
+# Minimal DXC helper for SM6. Requires Windows + DXC in PATH or vcpkg 'directx-dxc'.
 function(colony_add_hlsl OUT_VAR)
   set(options)
   set(oneValueArgs OUTDIR)
   set(multiValueArgs FILES INCLUDES DEFINES)
   cmake_parse_arguments(HLSL "${options}" "${oneValueArgs}" "${multiValueArgs}" ${ARGN})
 
-  if (NOT HLSL_OUTDIR)
+  if(NOT HLSL_OUTDIR)
     message(FATAL_ERROR "colony_add_hlsl: OUTDIR is required")
   endif()
-
-  # Find DXC on Windows (prefers the one from PATH / Windows SDK / vcpkg).
-  if (WIN32)
-    find_program(DXC_EXECUTABLE NAMES dxc HINTS
-      "$ENV{VCToolsInstallDir}/bin/Hostx64/x64"
-      "$ENV{WindowsSdkDir}/bin/x64"
-      "${VCPKG_INSTALLED_DIR}/${VCPKG_TARGET_TRIPLET}/tools/dxc"
-    )
+  if(NOT HLSL_FILES)
+    message(FATAL_ERROR "colony_add_hlsl: FILES is empty")
   endif()
-  if (NOT DXC_EXECUTABLE)
-    message(FATAL_ERROR "colony_add_hlsl: dxc.exe not found")
-  endif()
-
   file(MAKE_DIRECTORY "${HLSL_OUTDIR}")
 
+  # Try find DXC: system PATH first, then vcpkg tool dir.
+  find_program(DXC_EXE NAMES dxc dxc.exe)
+  if(NOT DXC_EXE AND DEFINED VCPKG_TARGET_TRIPLET AND DEFINED VCPKG_ROOT)
+    find_program(DXC_EXE NAMES dxc dxc.exe
+      HINTS "$ENV{VCPKG_ROOT}/installed/${VCPKG_TARGET_TRIPLET}/tools/directx-dxc")
+  endif()
+  if(NOT DXC_EXE)
+    message(FATAL_ERROR "DXC not found. Install 'directx-dxc' (e.g., via vcpkg) or put dxc.exe in PATH.")
+  endif()
+
   set(_outputs)
-  foreach(SRC IN LISTS HLSL_FILES)
-    get_filename_component(NAME "${SRC}" NAME_WE)  # e.g. TerrainGen.compute
-    get_filename_component(FULL "${SRC}" NAME)     # e.g. TerrainGen.compute.hlsl
-    get_filename_component(ABS  "${SRC}" ABSOLUTE)
-
-    # Infer stage + default entry from suffix / extension
-    set(PROFILE "")
-    set(ENTRY   "")
-
-    if (NAME MATCHES "_vs$")
-      set(PROFILE "vs_6_0")
-      set(ENTRY   "VSMain")
-    elseif (NAME MATCHES "_ps$")
-      set(PROFILE "ps_6_0")
-      set(ENTRY   "PSMain")
-    elseif (NAME MATCHES "_cs$")
-      set(PROFILE "cs_6_0")
-      set(ENTRY   "CSMain")
-    elseif (FULL MATCHES "\\.compute\\.hlsl$")
-      # Files like TerrainGen.compute.hlsl are treated as compute shaders.
-      set(PROFILE "cs_6_0")
-      set(ENTRY   "CSMain")
-    else()
-      message(FATAL_ERROR
-        "Unknown shader stage for ${SRC} (expected *_vs/_ps/_cs.hlsl or *.compute.hlsl). "
-        "Either rename the file to follow the convention or extend Shaders.cmake.")
+  foreach(_src IN LISTS HLSL_FILES)
+    get_filename_component(_namewe "${_src}" NAME_WE)
+    # Read VS properties (you set these in shaders/CMakeLists.txt)
+    get_source_file_property(_stype "${_src}" VS_SHADER_TYPE)
+    get_source_file_property(_smodel "${_src}" VS_SHADER_MODEL)
+    get_source_file_property(_sentry "${_src}" VS_SHADER_ENTRYPOINT)
+    if(NOT _stype OR NOT _smodel OR NOT _sentry)
+      message(FATAL_ERROR "HLSL ${_src}: VS_SHADER_TYPE/MODEL/ENTRYPOINT must be set")
     endif()
 
-    # Output .cso next to other binary outputs
-    set(OUT "${HLSL_OUTDIR}/${NAME}.cso")
-
-    # Compose include/define args
-    set(INC_ARGS "")
-    foreach(inc IN LISTS HLSL_INCLUDES)
-      list(APPEND INC_ARGS "-I" "${inc}")
-    endforeach()
-
-    set(DEF_ARGS "")
-    foreach(def IN LISTS HLSL_DEFINES)
-      list(APPEND DEF_ARGS "-D" "${def}")
-    endforeach()
-
-    # Common DXC args: explicit entry (-E) and profile (-T).
-    set(DCOMMON -E ${ENTRY} -T ${PROFILE} ${INC_ARGS} ${DEF_ARGS})
-
-    # Debug info in Debug; optimized in Release
-    if (CMAKE_BUILD_TYPE STREQUAL "Debug")
-      list(APPEND DCOMMON -Zi -Qembed_debug -Od -WX)
+    if(_stype STREQUAL "Vertex")
+      set(_profile "vs_${_smodel}")
+      set(_suffix  "vs")
+    elseif(_stype STREQUAL "Pixel")
+      set(_profile "ps_${_smodel}")
+      set(_suffix  "ps")
+    elseif(_stype STREQUAL "Compute")
+      set(_profile "cs_${_smodel}")
+      set(_suffix  "cs")
     else()
-      list(APPEND DCOMMON -O3 -Qstrip_debug -Qstrip_reflect -WX)
+      message(FATAL_ERROR "Unknown VS_SHADER_TYPE='${_stype}' for ${_src}")
     endif()
+
+    set(_out "${HLSL_OUTDIR}/${_namewe}.${_suffix}.cso")
+    # Build command with config-conditional flags (generator expressions)
+    set(_cmd "${DXC_EXE}" -nologo
+      -T "${_profile}" -E "${_sentry}"
+      $<$<OR:$<CONFIG:Debug>,$<CONFIG:RelWithDebInfo>>:-Zi>
+      $<$<OR:$<CONFIG:Debug>,$<CONFIG:RelWithDebInfo>>:-Qembed_debug>
+      $<$<CONFIG:Debug>:-Od>
+      $<$<CONFIG:Release>:-O3>
+    )
+    foreach(_def IN LISTS HLSL_DEFINES)
+      list(APPEND _cmd -D "${_def}")
+    endforeach()
+    foreach(_inc IN LISTS HLSL_INCLUDES)
+      list(APPEND _cmd -I "${_inc}")
+    endforeach()
+    list(APPEND _cmd -Fo "${_out}" "${_src}")
 
     add_custom_command(
-      OUTPUT  "${OUT}"
-      COMMAND "${DXC_EXECUTABLE}" ${DCOMMON} -Fo "${OUT}" "${ABS}"
-      DEPENDS "${ABS}"
-      COMMENT "HLSL: ${FULL} -> ${NAME}.cso (${PROFILE}, entry=${ENTRY})"
+      OUTPUT  "${_out}"
+      COMMAND ${_cmd}
+      DEPENDS "${_src}"
+      COMMENT "DXC ${_src} -> ${_out}"
       VERBATIM
     )
-    list(APPEND _outputs "${OUT}")
+    list(APPEND _outputs "${_out}")
   endforeach()
 
-  set(${OUT_VAR} "${_outputs}" PARENT_SCOPE)
+  set(${OUT_VAR} ${_outputs} PARENT_SCOPE)
 endfunction()
+
