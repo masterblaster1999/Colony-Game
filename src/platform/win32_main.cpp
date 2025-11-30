@@ -631,7 +631,9 @@ static void poll_gamepads(InputState& in){
 // --------------------------------------------------------
 static void enable_raw_mouse(HWND hwnd,bool enable){
     RAWINPUTDEVICE rid{}; rid.usUsagePage=0x01; rid.usUsage=0x02;
-    rid.dwFlags= enable ? (RIDEV_INPUTSINK|RIDEV_CAPTUREMOUSE) : RIDEV_REMOVE; rid.hwndTarget=hwnd;
+    // Keep legacy WM_* mouse messages; avoid RIDEV_CAPTUREMOUSE unless RIDEV_NOLEGACY is also set (per docs).
+    rid.dwFlags= enable ? RIDEV_INPUTSINK : RIDEV_REMOVE;
+    rid.hwndTarget=hwnd;
     RegisterRawInputDevices(&rid,1,sizeof(rid));
 }
 
