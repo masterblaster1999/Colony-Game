@@ -1,30 +1,35 @@
 #include "CrashHandler.h"
-#include <windows.h>
-#include <dbghelp.h>
-#include <pathcch.h>
-#pragma comment(lib, "Dbghelp.lib")
+#include <DbgHelp.h>
+#include <filesystem>
+#include <string>
+#pragma comment(lib, "DbgHelp.lib")
 
-static LONG WINAPI UnhandledExceptionFilterFn(EXCEPTION_POINTERS* e) {
-    wchar_t exePath[MAX_PATH]{};
-    GetModuleFileNameW(nullptr, exePath, MAX_PATH);
-    PathCchRemoveFileSpec(exePath, MAX_PATH);
-    wchar_t dumpPath[MAX_PATH]{};
-    PathCchCombine(dumpPath, MAX_PATH, exePath, L"crash.dmp");
+static std::wstring g_dumpDir;
 
-    HANDLE hFile = CreateFileW(dumpPath, GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS,
-                               FILE_ATTRIBUTE_NORMAL, nullptr);
-    if (hFile != INVALID_HANDLE_VALUE) {
-        MINIDUMP_EXCEPTION_INFORMATION info{ GetCurrentThreadId(), e, FALSE };
-        MiniDumpWriteDump(GetCurrentProcess(), GetCurrentProcessId(), hFile,
-                          MiniDumpWithDataSegs | MiniDumpWithThreadInfo,
-                          &info, nullptr, nullptr);  // Microsoft API: MiniDumpWriteDump
-        CloseHandle(hFile);
-    }
-    return EXCEPTION_EXECUTE_HANDLER;
+static LONG WINAPI ColonyUnhandledExceptionFilter(EXCEPTION_POINTERS* info) {
+  ::CreateDirectoryW(g_dumpDir.c_str(), nullptr);
+  SYSTEMTIME st; GetLocalTime(&st);
+  wchar_t name[256];
+  swprintf_s(name, L"ColonyCrash_%04d%02d%02d_%02d%02d%02d.dmp",
+             st.wYear, st.wMonth, st.wDay, st.wHour, st.wMinute, st.wSecond);
+  std::filesystem::path path = std::filesystem::path(g_dumpDir) / name;
+
+  HANDLE hFile = ::CreateFileW(path.c_str(), GENERIC_WRITE, FILE_SHARE_READ, nullptr,
+                               CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+  if (hFile != INVALID_HANDLE_VALUE) {
+    MINIDUMP_EXCEPTION_INFORMATION mei{};
+    mei.ThreadId = ::GetCurrentThreadId();
+    mei.ExceptionPointers = info;
+    mei.ClientPointers = FALSE;
+    ::MiniDumpWriteDump(GetCurrentProcess(), GetCurrentProcessId(), hFile,
+                        MiniDumpWithIndirectlyReferencedMemory | MiniDumpScanMemory,
+                        &mei, nullptr, nullptr);
+    ::CloseHandle(hFile);
+  }
+  return EXCEPTION_EXECUTE_HANDLER; // let OS terminate
 }
 
-void InstallCrashHandler() {
-    // Best practice: avoid modal error dialogs; also set a top-level SEH filter.
-    SetErrorMode(SEM_FAILCRITICALERRORS | SEM_NOGPFAULTERRORBOX);  // no WER UI. :contentReference[oaicite:0]{index=0}
-    SetUnhandledExceptionFilter(UnhandledExceptionFilterFn);       // top-level SEH. :contentReference[oaicite:1]{index=1}
+void CrashHandler::Install(const wchar_t* dumpDir) {
+  g_dumpDir = dumpDir ? dumpDir : L".";
+  ::SetUnhandledExceptionFilter(&ColonyUnhandledExceptionFilter);
 }
