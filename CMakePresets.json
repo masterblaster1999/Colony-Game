@@ -1,65 +1,23 @@
 {
   "version": 6,
-  "cmakeMinimumRequired": { "major": 3, "minor": 24 },
-  "include": [],
+  "cmakeMinimumRequired": { "major": 3, "minor": 25 },
   "configurePresets": [
     {
-      "name": "windows-vs2022-debug",
-      "displayName": "VS2022 - Debug",
-      "generator": "Visual Studio 17 2022",
-      "binaryDir": "${sourceDir}/build/vs2022-debug",
-      "cacheVariables": {
-        "CMAKE_BUILD_TYPE": "Debug",
-        "CMAKE_CXX_STANDARD": "23",
-        "COLONY_USE_PCH": "ON",
-        "COLONY_UNITY_BUILD": "OFF",
-        "FRONTEND": "win32",
-        "COLONY_RENDERER": "d3d11",
-        "CMAKE_MSVC_RUNTIME_LIBRARY": "MultiThreadedDebugDLL",
-        "CMAKE_TOOLCHAIN_FILE": "$env{VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake"
-      }
-    },
-    {
-      "name": "windows-vs2022-release",
-      "displayName": "VS2022 - Release (/MT)",
-      "generator": "Visual Studio 17 2022",
-      "binaryDir": "${sourceDir}/build/vs2022-release",
-      "cacheVariables": {
-        "CMAKE_BUILD_TYPE": "Release",
-        "CMAKE_CXX_STANDARD": "23",
-        "COLONY_USE_PCH": "ON",
-        "COLONY_UNITY_BUILD": "ON",
-        "COLONY_LTO": "OFF",
-        "FRONTEND": "win32",
-        "COLONY_RENDERER": "d3d11",
-        "CMAKE_MSVC_RUNTIME_LIBRARY": "MultiThreaded",
-        "CMAKE_TOOLCHAIN_FILE": "$env{VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake"
-      }
-    },
-    {
-      "name": "windows-ninja-rel",
-      "displayName": "Ninja - RelWithDebInfo (/MT)",
+      "name": "windows-msvc-x64",
+      "displayName": "Windows MSVC x64 (Release+Debug)",
       "generator": "Ninja",
-      "binaryDir": "${sourceDir}/build/ninja-rel",
+      "binaryDir": "${sourceDir}/out/build/${presetName}",
       "cacheVariables": {
-        "CMAKE_BUILD_TYPE": "RelWithDebInfo",
-        "CMAKE_CXX_STANDARD": "23",
-        "COLONY_USE_PCH": "ON",
-        "COLONY_UNITY_BUILD": "ON",
-        "FRONTEND": "win32",
-        "COLONY_RENDERER": "d3d11",
-        "CMAKE_MSVC_RUNTIME_LIBRARY": "MultiThreaded",
-        "CMAKE_TOOLCHAIN_FILE": "$env{VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake"
-      }
+        "CMAKE_CXX_STANDARD": "20",
+        "CMAKE_MSVC_RUNTIME_LIBRARY": "MultiThreaded$<$<CONFIG:Debug>:Debug>",
+        "USE_PIX": "ON",
+        "USE_RAWINPUT": "ON"
+      },
+      "vendor": { "microsoft.com/VisualStudioSettings/CMake/1.0": { "hostOS": [ "Windows" ] } }
     }
   ],
   "buildPresets": [
-    { "name": "build-vs-debug",   "configurePreset": "windows-vs2022-debug" },
-    { "name": "build-vs-release", "configurePreset": "windows-vs2022-release" },
-    { "name": "build-ninja-rel",  "configurePreset": "windows-ninja-rel" }
-  ],
-  "testPresets": [
-    { "name": "test-vs-debug",   "configurePreset": "windows-vs2022-debug" },
-    { "name": "test-ninja-rel",  "configurePreset": "windows-ninja-rel" }
+    { "name": "build-debug",   "configurePreset": "windows-msvc-x64", "configuration": "Debug" },
+    { "name": "build-release", "configurePreset": "windows-msvc-x64", "configuration": "Release" }
   ]
 }
