@@ -1,6 +1,7 @@
 #include <windows.h>
 #include "platform/win/CrashHandler.h"
 #include "platform/win/WindowsHost.h"
+#include "platform/win/WinIntegration.h"
 
 int APIENTRY wWinMain(HINSTANCE hInst, HINSTANCE, LPWSTR, int nCmdShow) {
     InstallCrashHandler();
