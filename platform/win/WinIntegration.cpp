@@ -2,12 +2,19 @@
 // Windows-only shims to preserve legacy call sites in WinLauncher.cpp
 
 #include "WinIntegration.h"
-#include "CrashHandler.h"      // your existing crash handler API
-#include <windows.h>           // do NOT define WIN32_LEAN_AND_MEAN here
+#include "CrashHandler.h"      // your crash handler (uses SetUnhandledExceptionFilter + MiniDumpWriteDump)
+#include <windows.h>           // don't define WIN32_LEAN_AND_MEAN here; let build do it
 
+// NEW: zero-arg overload to satisfy WinLauncher.cpp()
+void InstallCrashHandler()
+{
+    // Use current directory by default (or change to a better default if you prefer).
+    CrashHandler::Install(L".");
+}
+
+// Existing 1-arg overload
 void InstallCrashHandler(const wchar_t* dumpDir)
 {
-    // Forward to the current API; keep legacy call site working.
     CrashHandler::Install(dumpDir ? dumpDir : L".");
 }
 
