@@ -1,111 +1,41 @@
-# cmake/Shaders.cmake
-if(NOT WIN32)
-  message(FATAL_ERROR "HLSL build is Windows-only in this project.")
-endif()
-
 function(colony_add_hlsl OUTVAR)
-  cmake_parse_arguments(HLSL "" "OUTDIR" "FILES;INCLUDES;DEFINES" ${ARGN})
-  if(NOT HLSL_OUTDIR)
-    message(FATAL_ERROR "colony_add_hlsl: OUTDIR is required")
-  endif()
-  if(NOT HLSL_FILES)
-    set(${OUTVAR} "" PARENT_SCOPE)
-    return()
-  endif()
+  set(options)
+  set(oneValueArgs OUTDIR)
+  set(multiValueArgs FILES INCLUDES DEFINES)
+  cmake_parse_arguments(HLSL "${options}" "${oneValueArgs}" "${multiValueArgs}" ${ARGN})
 
-  # Prepare flags from lists
-  set(_def_flags "")
-  foreach(d ${HLSL_DEFINES})
-    list(APPEND _def_flags "-D${d}")
-  endforeach()
-
-  set(_inc_flags "")
-  foreach(i ${HLSL_INCLUDES})
-    list(APPEND _inc_flags -I "${i}")
-  endforeach()
-
-  set(_outputs "")
-
-  # Use Visual Studio’s built-in HLSL handling when available,
-  # otherwise fall back to explicit DXC custom commands.
-  if(MSVC AND CMAKE_GENERATOR MATCHES "Visual Studio")
-    foreach(src ${HLSL_FILES})
-      # Record a nominal output path to make a target dependency
-      get_filename_component(_name ${src} NAME_WE)
-      get_source_file_property(_type  ${src} VS_SHADER_TYPE)
-      get_source_file_property(_model ${src} VS_SHADER_MODEL)
-      if(_type STREQUAL "Vertex")
-        set(_profile "vs_${_model}")
-      elseif(_type STREQUAL "Pixel")
-        set(_profile "ps_${_model}")
-      elseif(_type STREQUAL "Compute")
-        set(_profile "cs_${_model}")
-      else()
-        set(_profile "bin")
-      endif()
-      set(_out "${HLSL_OUTDIR}/${_name}.${_profile}.cso")
-      add_custom_command(OUTPUT "${_out}"
-        COMMAND ${CMAKE_COMMAND} -E touch "${_out}"
-        DEPENDS "${src}"
-        COMMENT "VS handles ${_name} (${_profile}); stamping ${_out}"
+  if (CMAKE_GENERATOR MATCHES "Visual Studio")
+    foreach(f ${HLSL_FILES})
+      set_source_files_properties(${f} PROPERTIES
+        VS_SHADER_ENABLE_DEBUG $<$<OR:$<CONFIG:Debug>,$<CONFIG:RelWithDebInfo>>:true>
+        VS_SHADER_OBJECT_FILE_NAME "${HLSL_OUTDIR}/$<TARGET_FILE_BASE_NAME:${f}>.cso"
+        VS_SHADER_INCLUDE_DIRECTORIES "$<JOIN:${HLSL_INCLUDES},;>"
       )
-      list(APPEND _outputs "${_out}")
     endforeach()
+    set(${OUTVAR} ${HLSL_FILES} PARENT_SCOPE)
   else()
-    # Find dxc.exe
-    find_program(DXC_EXE NAMES dxc
-      HINTS
-        "$ENV{DXC_DIR}"
-        "$ENV{VCToolsInstallDir}/bin/Hostx64/x64"
-        "$ENV{ProgramFiles}/Microsoft Visual Studio/2022/Community/VC/Tools/Llvm/x64/bin"
-        "$ENV{ProgramFiles}/Microsoft Visual Studio/2022/Professional/VC/Tools/Llvm/x64/bin"
-        "$ENV{ProgramFiles}/Microsoft Visual Studio/2022/Enterprise/VC/Tools/Llvm/x64/bin"
-      DOC "Path to dxc.exe (DirectX Shader Compiler)"
-    )
+    find_program(DXC_EXE NAMES dxc)
     if(NOT DXC_EXE)
-      message(FATAL_ERROR "dxc.exe not found. Install DXC or set DXC_DIR.")
+      message(FATAL_ERROR "dxc.exe not found; install DirectX Shader Compiler or add to PATH.")
     endif()
-
+    file(MAKE_DIRECTORY ${HLSL_OUTDIR})
+    set(outputs)
     foreach(src ${HLSL_FILES})
-      get_filename_component(_name ${src} NAME_WE)
-      get_source_file_property(_type  ${src} VS_SHADER_TYPE)
-      get_source_file_property(_model ${src} VS_SHADER_MODEL)
-      get_source_file_property(_entry ${src} VS_SHADER_ENTRYPOINT)
-      if(NOT _type OR NOT _model OR NOT _entry)
-        message(FATAL_ERROR "Set VS_SHADER_TYPE/ENTRYPOINT/MODEL for ${src}")
-      endif()
-
-      if(_type STREQUAL "Vertex")
-        set(_profile "vs_${_model}")
-      elseif(_type STREQUAL "Pixel")
-        set(_profile "ps_${_model}")
-      elseif(_type STREQUAL "Compute")
-        set(_profile "cs_${_model}")
-      else()
-        message(FATAL_ERROR "Unsupported shader type ${_type} for ${src}")
-      endif()
-
-      set(_out "${HLSL_OUTDIR}/${_name}.${_profile}.cso")
-
-      add_custom_command(
-        OUTPUT "${_out}"
-        COMMAND ${CMAKE_COMMAND} -E make_directory "${HLSL_OUTDIR}"
-        COMMAND "${DXC_EXE}"
-          -T "${_profile}"
-          -E "${_entry}"
-          -Fo "${_out}"
-          $<$<CONFIG:Debug>:-Zi -Qembed_debug>
-          $<$<CONFIG:RelWithDebInfo>:-Zi -Qstrip_debug>
-          $<$<CONFIG:Release>:-O3 -Qstrip_debug>
-          ${_def_flags} ${_inc_flags}
-          "${src}"
-        DEPENDS "${src}"
-        COMMENT "DXC ${_name} (${_profile})"
-        VERBATIM
-      )
-      list(APPEND _outputs "${_out}")
+      get_filename_component(name ${src} NAME_WE)
+      # obtain type/profile/entry from properties if you prefer; here’s a basic map:
+      set(profile "$<$<MATCHES:${src},.*compute.*>:cs_6_0>$<$<MATCHES:${src},.*_vs\\..*>:vs_6_0>$<$<MATCHES:${src},.*_ps\\..*>:ps_6_0>")
+      set(entry   "$<$<MATCHES:${src},.*compute.*>:CSMain>$<$<MATCHES:${src},.*_vs\\..*>:VSMain>$<$<MATCHES:${src},.*_ps\\..*>:PSMain>")
+      set(out "${HLSL_OUTDIR}/${name}.cso")
+      add_custom_command(OUTPUT ${out}
+        COMMAND ${DXC_EXE} -nologo -T ${profile} -E ${entry}
+                -Fo ${out} $<$<CONFIG:Debug>:-Zi -Qembed_debug>
+                $<$<BOOL:${HLSL_DEFINES}>:-D${HLSL_DEFINES}>
+                $<$<BOOL:${HLSL_INCLUDES}>:-I${HLSL_INCLUDES}>
+                ${src}
+        DEPENDS ${src} VERBATIM)
+      list(APPEND outputs ${out})
     endforeach()
+    add_custom_target(ColonyGame_hlsl_build ALL DEPENDS ${outputs})
+    set(${OUTVAR} ${outputs} PARENT_SCOPE)
   endif()
-
-  set(${OUTVAR} ${_outputs} PARENT_SCOPE)
 endfunction()
