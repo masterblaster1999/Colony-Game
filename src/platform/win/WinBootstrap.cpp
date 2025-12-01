@@ -6,6 +6,7 @@
 #include <winerror.h>  // ERROR_ALREADY_EXISTS
 #include <DbgHelp.h>
 #include <filesystem>
+#include <optional>     // for std::optional (C++17)
 #include <fstream>
 #include <mutex>
 #include <chrono>
