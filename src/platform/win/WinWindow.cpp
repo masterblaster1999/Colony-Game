@@ -1,88 +1,89 @@
-#include "WinWindow.h"
-#include <windows.h>
+#include "colony/platform/win/WinWindow.hpp"
 
-namespace platform::win {
+#define WIN32_LEAN_AND_MEAN
+#define NOMINMAX
+#include <Windows.h>
 
-static const wchar_t* kWindowClass = L"ColonyGameWindowClass";
+#include <string>
+#include <stdexcept>
 
+namespace colony::win {
+
+// The COMPLETE definition lives in the .cpp (private to this TU).
+struct WinWindowState {
+    HINSTANCE   hinst   = nullptr;
+    HWND        hwnd    = nullptr;
+    std::wstring className;
+};
+
+// Simple window procedure for this sample.
+static LRESULT CALLBACK WinWindowProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
+    switch (msg) {
+    case WM_DESTROY: ::PostQuitMessage(0); return 0;
+    default:         return ::DefWindowProcW(hwnd, msg, wParam, lParam);
+    }
+}
+
+// ----- Ctors/dtor/move: define OUT-OF-LINE so unique_ptr<WinWindowState> sees a complete type -----
 WinWindow::WinWindow() = default;
 WinWindow::~WinWindow() = default;
+WinWindow::WinWindow(WinWindow&&) noexcept = default;
+WinWindow& WinWindow::operator=(WinWindow&&) noexcept = default;
 
-bool WinWindow::Create(const wchar_t* title, int width, int height) {
-    m_hinst = GetModuleHandleW(nullptr);
+// ----- API -----
+bool WinWindow::create(const wchar_t* title, int width, int height, void* hInstance, int nCmdShow) {
+    state_ = std::make_unique<WinWindowState>();
+    state_->hinst = static_cast<HINSTANCE>(hInstance);
 
-    // Register window class
+    // Register class (per-instance; good enough for engine tools/games)
+    state_->className = L"ColonyWinWindowClass";
     WNDCLASSEXW wc{};
     wc.cbSize        = sizeof(wc);
     wc.style         = CS_HREDRAW | CS_VREDRAW | CS_OWNDC;
-    wc.lpfnWndProc   = &WinWindow::WndProc;
-    wc.hInstance     = m_hinst;
-    wc.hCursor       = LoadCursor(nullptr, IDC_ARROW);
-    wc.lpszClassName = kWindowClass;
-
-    if (!RegisterClassExW(&wc)) {
+    wc.lpfnWndProc   = &WinWindowProc;
+    wc.hInstance     = state_->hinst;
+    wc.hCursor       = ::LoadCursorW(nullptr, IDC_ARROW);
+    wc.hbrBackground = (HBRUSH)(COLOR_WINDOW+1);
+    wc.lpszClassName = state_->className.c_str();
+    if (!::RegisterClassExW(&wc) && ::GetLastError() != ERROR_CLASS_ALREADY_EXISTS) {
         return false;
     }
 
-    // Calculate size incl. non-client area
-    RECT rc{0,0,width,height};
-    AdjustWindowRect(&rc, WS_OVERLAPPEDWINDOW, FALSE);
-    const int w = rc.right - rc.left;
-    const int h = rc.bottom - rc.top;
+    // Create the actual window
+    RECT r{ 0, 0, width, height };
+    ::AdjustWindowRect(&r, WS_OVERLAPPEDWINDOW, FALSE);
 
-    // Create window (hidden initially)
-    m_hwnd = CreateWindowExW(
-        0, kWindowClass, title, WS_OVERLAPPEDWINDOW,
-        CW_USEDEFAULT, CW_USEDEFAULT, w, h,
-        nullptr, nullptr, m_hinst, this);
+    state_->hwnd = ::CreateWindowExW(
+        0, state_->className.c_str(), title,
+        WS_OVERLAPPEDWINDOW,
+        CW_USEDEFAULT, CW_USEDEFAULT,
+        r.right - r.left, r.bottom - r.top,
+        nullptr, nullptr, state_->hinst, nullptr);
 
-    if (!m_hwnd) return false;
+    if (!state_->hwnd) {
+        return false;
+    }
 
-    ShowWindow(m_hwnd, SW_SHOWDEFAULT);
-    UpdateWindow(m_hwnd);
+    ::ShowWindow(state_->hwnd, nCmdShow);
+    ::UpdateWindow(state_->hwnd);
     return true;
 }
 
-bool WinWindow::ProcessMessages() {
-    MSG msg;
-    while (PeekMessageW(&msg, nullptr, 0, 0, PM_REMOVE)) {
-        if (msg.message == WM_QUIT) return false;
-        TranslateMessage(&msg);
-        DispatchMessageW(&msg);
+void WinWindow::show() {
+    if (state_ && state_->hwnd) {
+        ::ShowWindow(state_->hwnd, SW_SHOW);
+        ::UpdateWindow(state_->hwnd);
     }
-    return true;
 }
 
-void WinWindow::GetClientSize(unsigned& w, unsigned& h) const {
-    RECT r{};
-    GetClientRect(m_hwnd, &r);
-    w = static_cast<unsigned>(r.right - r.left);
-    h = static_cast<unsigned>(r.bottom - r.top);
-}
-
-LRESULT CALLBACK WinWindow::WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
-    WinWindow* self;
-    if (msg == WM_NCCREATE) {
-        CREATESTRUCTW* cs = reinterpret_cast<CREATESTRUCTW*>(lParam);
-        self = reinterpret_cast<WinWindow*>(cs->lpCreateParams);
-        SetWindowLongPtrW(hwnd, GWLP_USERDATA, (LONG_PTR)self);
-        self->m_hwnd = hwnd;
-    } else {
-        self = reinterpret_cast<WinWindow*>(GetWindowLongPtrW(hwnd, GWLP_USERDATA));
+void WinWindow::set_title(const std::wstring& title) {
+    if (state_ && state_->hwnd) {
+        ::SetWindowTextW(state_->hwnd, title.c_str());
     }
-    if (self) return self->HandleMsg(hwnd, msg, wParam, lParam);
-    return DefWindowProcW(hwnd, msg, wParam, lParam);
 }
 
-LRESULT WinWindow::HandleMsg(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
-    switch (msg) {
-    case WM_DESTROY:
-        PostQuitMessage(0);
-        return 0;
-    default:
-        break;
-    }
-    return DefWindowProcW(hwnd, msg, wParam, lParam);
+HWND WinWindow::hwnd() const noexcept {
+    return state_ ? state_->hwnd : nullptr;
 }
 
-} // namespace platform::win
+} // namespace colony::win
