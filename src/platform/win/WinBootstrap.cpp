@@ -145,6 +145,35 @@ namespace
         return ed;
     }
 
+    // NEW: utility that previously tends to be written with an unqualified 'optional'
+    // If older code declares this with 'optional<...>&', MSVC raises C4430/C2143
+    // and then 'opt' becomes "undeclared". Keeping it here with the correct type
+    // fixes that cascade even if other TUs call it.
+    bool pick_content_root(std::optional<std::filesystem::path>& opt,
+                           const std::wstring& assetDir)
+    {
+        // If caller provided a hint and it looks valid, keep it.
+        if (opt && dir_has_assets(*opt, assetDir))
+            return true;
+
+        // Try common candidates near the executable.
+        const auto ed     = exe_dir();
+        const auto parent = ed.parent_path();
+        const auto cwd    = std::filesystem::current_path();
+
+        const std::filesystem::path candidates[] = { ed, parent, cwd };
+        for (const auto& d : candidates)
+        {
+            if (!d.empty() && dir_has_assets(d, assetDir))
+            {
+                opt = d;
+                return true;
+            }
+        }
+        opt.reset();
+        return false;
+    }
+
     std::filesystem::path ensure_dir(const std::filesystem::path& p)
     {
         std::error_code ec;
@@ -188,43 +217,30 @@ namespace
     void log_err (const std::string& s) { log_write("ERROR", s); }
 
     // ---------------------------------------------------------------------
-    // DLL search path hardening (security)
+    // Process hardening (safe, no deps)
     // ---------------------------------------------------------------------
-    void harden_dll_search(const std::filesystem::path& /*appDir*/)
+    void harden_dll_search()
     {
-        // Prefer SetDefaultDllDirectories if available; fall back to removing CWD from search.
+        // Remove CWD from DLL search path and use default safe directories.
         HMODULE k32 = GetModuleHandleW(L"kernel32.dll");
-        if (k32)
+        if (!k32) return;
+        using SetDefaultDllDirectories_t = BOOL (WINAPI*)(DWORD);
+        auto pSet = reinterpret_cast<SetDefaultDllDirectories_t>(
+            GetProcAddress(k32, "SetDefaultDllDirectories"));
+        if (pSet)
         {
-            using SetDefaultDllDirectories_t = BOOL (WINAPI*)(DWORD);
-            auto pSetDefaults = reinterpret_cast<SetDefaultDllDirectories_t>(
-                GetProcAddress(k32, "SetDefaultDllDirectories"));
-
-            if (pSetDefaults)
-            {
-                // Limit search to system32 + application dir (and any user-added DIRS if needed).
-                pSetDefaults(LOAD_LIBRARY_SEARCH_SYSTEM32 | LOAD_LIBRARY_SEARCH_APPLICATION_DIR);
-                return;
-            }
+            pSet(LOAD_LIBRARY_SEARCH_DEFAULT_DIRS);
         }
-        // Legacy mitigation: remove current directory from the DLL search path.
-        SetDllDirectoryW(L"");
     }
 
-    // ---------------------------------------------------------------------
-    // Thread annotation (diagnostics)
-    // ---------------------------------------------------------------------
-    void annotate_current_thread(LPCWSTR name)
+    void set_thread_name(PCWSTR name)
     {
         HMODULE k32 = GetModuleHandleW(L"kernel32.dll");
         if (!k32) return;
         using SetThreadDescription_t = HRESULT (WINAPI*)(HANDLE, PCWSTR);
-        auto pSetThreadDescription = reinterpret_cast<SetThreadDescription_t>(
+        auto pSet = reinterpret_cast<SetThreadDescription_t>(
             GetProcAddress(k32, "SetThreadDescription"));
-        if (pSetThreadDescription)
-        {
-            pSetThreadDescription(GetCurrentThread(), name);
-        }
+        if (pSet) { pSet(GetCurrentThread(), name); }
     }
 
     // ---------------------------------------------------------------------
@@ -270,17 +286,10 @@ namespace
     }
 
     // ---------------------------------------------------------------------
-    // Crash dumps (re-entrancy-safe)
+    // Crash dumps
     // ---------------------------------------------------------------------
     LONG WINAPI UnhandledFilter(EXCEPTION_POINTERS* info)
     {
-        static volatile LONG s_inFilter = 0;
-        if (InterlockedCompareExchange(&s_inFilter, 1, 0) != 0)
-        {
-            // Already handling a crash — avoid recursion re-entering the dumper.
-            return EXCEPTION_EXECUTE_HANDLER;
-        }
-
         SYSTEMTIME st{};
         GetLocalTime(&st);
 
@@ -310,21 +319,11 @@ namespace
         mei.ExceptionPointers = info;
         mei.ClientPointers    = FALSE;
 
-        // Richer dump for better postmortem analysis (still a MINIDUMP_TYPE).
-        const MINIDUMP_TYPE dumpType = static_cast<MINIDUMP_TYPE>(
-            MiniDumpWithFullMemory |
-            MiniDumpWithIndirectlyReferencedMemory |
-            MiniDumpScanMemory |
-            MiniDumpWithThreadInfo |
-            MiniDumpWithUnloadedModules |
-            MiniDumpWithHandleData
-        );
-
         BOOL ok = MiniDumpWriteDump(
             GetCurrentProcess(),
             GetCurrentProcessId(),
             hFile,
-            dumpType,
+            MiniDumpWithFullMemory, // (MINIDUMP_TYPE) – matches official signature
             &mei,
             nullptr,
             nullptr
@@ -394,10 +393,11 @@ std::filesystem::path GameRoot()
 
 void Preflight(const Options& opt)
 {
-    // Process-wide stability & security first.
+    // Early process hardening (no UI, no deps)
+    SetErrorMode(SEM_FAILCRITICALERRORS | SEM_NOGPFAULTERRORBOX | SEM_NOOPENFILEERRORBOX);
     HeapSetInformation(nullptr, HeapEnableTerminationOnCorruption, nullptr, 0);
-    harden_dll_search(exe_dir());
-    annotate_current_thread(L"Bootstrap/Main");
+    harden_dll_search();
+    set_thread_name(L"Main");
 
     if (opt.makeDpiAware)
         set_dpi_awareness();
@@ -407,8 +407,16 @@ void Preflight(const Options& opt)
     g_root = resolve_root(opt.assetDirName);
     std::filesystem::current_path(g_root);
 
-    // Prepare logging + (optional) crash dumps.
-    const auto logsDir = ensure_dir(g_root / L"logs");
+    // Prepare logging (fallback to %TEMP% if root/logs not writable) + (optional) crash dumps.
+    auto logsDir = ensure_dir(g_root / L"logs");
+    {
+        std::error_code ec;
+        if (!std::filesystem::exists(logsDir, ec) || !std::filesystem::is_directory(logsDir, ec))
+        {
+            logsDir = ensure_dir(std::filesystem::temp_directory_path() / L"ColonyGame" / L"logs");
+        }
+    }
+
     log_open(logsDir / "launcher.log");
     log_info(std::string("Bootstrap start. Root: ") + path_u8(g_root));
 
