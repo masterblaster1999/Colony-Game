@@ -6,7 +6,7 @@
 #include <winerror.h>  // ERROR_ALREADY_EXISTS
 #include <DbgHelp.h>
 #include <filesystem>
-#include <optional>     // for std::optional (C++17)
+#include <optional>     // C++17: std::optional (if used anywhere in this TU)
 #include <fstream>
 #include <mutex>
 #include <chrono>
@@ -117,6 +117,12 @@ namespace
         }
 
         return true;
+    }
+
+    // ✅ Backward-compatible wrapper for single-argument call sites
+    bool dir_has_assets(const std::filesystem::path& root)
+    {
+        return dir_has_assets(root, std::wstring(L"assets"));
     }
 
     // Try exe dir, its parent, and CWD; return first that contains assetDir.
@@ -261,7 +267,7 @@ namespace
             GetCurrentProcess(),
             GetCurrentProcessId(),
             hFile,
-            MiniDumpWithFullMemory,
+            MiniDumpWithFullMemory, // (MINIDUMP_TYPE) – matches official signature
             &mei,
             nullptr,
             nullptr
