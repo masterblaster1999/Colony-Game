@@ -273,6 +273,10 @@ static void apply_dither_gamma(Backbuffer& bb, bool gamma){
 // SIMD fills + compositing + SDF + soft shadows
 // --------------------------------------------------------
 #if COLONY_HAS_SSE2
+#if defined(_MSC_VER)
+#pragma warning(push)
+#pragma warning(disable:4505)  // C4505: unreferenced function with internal linkage has been removed (keep /WX elsewhere)
+#endif
 static void clear_solid_sse2(Backbuffer& bb, uint32_t c){
     __m128i v=_mm_set1_epi32((int)c);
     for(int y=0;y<bb.h;y++){
@@ -282,6 +286,9 @@ static void clear_solid_sse2(Backbuffer& bb, uint32_t c){
         uint32_t* tail=(uint32_t*)p; for(;i<n;i++) *tail++=c;
     }
 }
+#if defined(_MSC_VER)
+#pragma warning(pop)
+#endif
 static void fill_rect_sse2(Backbuffer& bb,int x,int y,int w,int h,uint32_t c){
     int x0=clampi(x,0,bb.w), y0=clampi(y,0,bb.h);
     int x1=clampi(x+w,0,bb.w), y1=clampi(y+h,0,bb.h);
@@ -297,12 +304,19 @@ static void fill_rect_sse2(Backbuffer& bb,int x,int y,int w,int h,uint32_t c){
 }
 #else
 // Scalar fallbacks for toolchains without SSE2
+#if defined(_MSC_VER)
+#pragma warning(push)
+#pragma warning(disable:4505)  // keep function parked without breaking /WX
+#endif
 static void clear_solid_sse2(Backbuffer& bb, uint32_t c){
     for(int y=0;y<bb.h;y++){
         uint32_t* p=(uint32_t*)rowptr(bb,y);
         for(int x=0;x<bb.w;x++) p[x]=c;
     }
 }
+#if defined(_MSC_VER)
+#pragma warning(pop)
+#endif
 static void fill_rect_sse2(Backbuffer& bb,int x,int y,int w,int h,uint32_t c){
     fill_rect_scalar(bb,x,y,w,h,c);
 }
