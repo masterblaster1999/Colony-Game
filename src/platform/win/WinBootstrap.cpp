@@ -188,6 +188,46 @@ namespace
     void log_err (const std::string& s) { log_write("ERROR", s); }
 
     // ---------------------------------------------------------------------
+    // DLL search path hardening (security)
+    // ---------------------------------------------------------------------
+    void harden_dll_search(const std::filesystem::path& /*appDir*/)
+    {
+        // Prefer SetDefaultDllDirectories if available; fall back to removing CWD from search.
+        HMODULE k32 = GetModuleHandleW(L"kernel32.dll");
+        if (k32)
+        {
+            using SetDefaultDllDirectories_t = BOOL (WINAPI*)(DWORD);
+            auto pSetDefaults = reinterpret_cast<SetDefaultDllDirectories_t>(
+                GetProcAddress(k32, "SetDefaultDllDirectories"));
+
+            if (pSetDefaults)
+            {
+                // Limit search to system32 + application dir (and any user-added DIRS if needed).
+                pSetDefaults(LOAD_LIBRARY_SEARCH_SYSTEM32 | LOAD_LIBRARY_SEARCH_APPLICATION_DIR);
+                return;
+            }
+        }
+        // Legacy mitigation: remove current directory from the DLL search path.
+        SetDllDirectoryW(L"");
+    }
+
+    // ---------------------------------------------------------------------
+    // Thread annotation (diagnostics)
+    // ---------------------------------------------------------------------
+    void annotate_current_thread(LPCWSTR name)
+    {
+        HMODULE k32 = GetModuleHandleW(L"kernel32.dll");
+        if (!k32) return;
+        using SetThreadDescription_t = HRESULT (WINAPI*)(HANDLE, PCWSTR);
+        auto pSetThreadDescription = reinterpret_cast<SetThreadDescription_t>(
+            GetProcAddress(k32, "SetThreadDescription"));
+        if (pSetThreadDescription)
+        {
+            pSetThreadDescription(GetCurrentThread(), name);
+        }
+    }
+
+    // ---------------------------------------------------------------------
     // DPI awareness
     // ---------------------------------------------------------------------
     void set_dpi_awareness()
@@ -230,10 +270,17 @@ namespace
     }
 
     // ---------------------------------------------------------------------
-    // Crash dumps
+    // Crash dumps (re-entrancy-safe)
     // ---------------------------------------------------------------------
     LONG WINAPI UnhandledFilter(EXCEPTION_POINTERS* info)
     {
+        static volatile LONG s_inFilter = 0;
+        if (InterlockedCompareExchange(&s_inFilter, 1, 0) != 0)
+        {
+            // Already handling a crash — avoid recursion re-entering the dumper.
+            return EXCEPTION_EXECUTE_HANDLER;
+        }
+
         SYSTEMTIME st{};
         GetLocalTime(&st);
 
@@ -263,11 +310,21 @@ namespace
         mei.ExceptionPointers = info;
         mei.ClientPointers    = FALSE;
 
+        // Richer dump for better postmortem analysis (still a MINIDUMP_TYPE).
+        const MINIDUMP_TYPE dumpType = static_cast<MINIDUMP_TYPE>(
+            MiniDumpWithFullMemory |
+            MiniDumpWithIndirectlyReferencedMemory |
+            MiniDumpScanMemory |
+            MiniDumpWithThreadInfo |
+            MiniDumpWithUnloadedModules |
+            MiniDumpWithHandleData
+        );
+
         BOOL ok = MiniDumpWriteDump(
             GetCurrentProcess(),
             GetCurrentProcessId(),
             hFile,
-            MiniDumpWithFullMemory, // (MINIDUMP_TYPE) – matches official signature
+            dumpType,
             &mei,
             nullptr,
             nullptr
@@ -337,6 +394,11 @@ std::filesystem::path GameRoot()
 
 void Preflight(const Options& opt)
 {
+    // Process-wide stability & security first.
+    HeapSetInformation(nullptr, HeapEnableTerminationOnCorruption, nullptr, 0);
+    harden_dll_search(exe_dir());
+    annotate_current_thread(L"Bootstrap/Main");
+
     if (opt.makeDpiAware)
         set_dpi_awareness();
 
