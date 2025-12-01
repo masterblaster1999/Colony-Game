@@ -1,43 +1,35 @@
 // platform/win/WinIntegration.cpp
-#define WIN32_LEAN_AND_MEAN
-#include <windows.h>
+// Windows-only shims to preserve legacy call sites in WinLauncher.cpp
 
-#include "CrashHandler.h"   // lives in platform/win/
+#include "WinIntegration.h"
+#include "CrashHandler.h"      // your existing crash handler API
+#include <windows.h>           // do NOT define WIN32_LEAN_AND_MEAN here
 
-// Forward old free-function name to your class API.
 void InstallCrashHandler(const wchar_t* dumpDir)
 {
+    // Forward to the current API; keep legacy call site working.
     CrashHandler::Install(dumpDir ? dumpDir : L".");
 }
 
 // Try to enable Per-Monitor (V2) DPI awareness as early as possible.
-// Docs recommend manifest-based DPI selection; this API path is a supported fallback.
-// Ref: SetProcessDpiAwarenessContext + PMv2 docs.
+// Microsoft recommends manifest-based DPI awareness; this API is a supported fallback.
+// Must be called BEFORE any window is created.
 void TryEnablePerMonitorV2Dpi()
 {
-    // Prefer runtime lookup so older systems/toolchains still build and run.
-    HMODULE user32 = ::GetModuleHandleW(L"user32.dll");
-    if (user32)
-    {
-        using SetProcDpiCtxFn = BOOL (WINAPI *)(DPI_AWARENESS_CONTEXT);
-        auto pSetCtx = reinterpret_cast<SetProcDpiCtxFn>(
-            ::GetProcAddress(user32, "SetProcessDpiAwarenessContext"));
-
-        if (pSetCtx)
-        {
+    HMODULE user = ::GetModuleHandleW(L"user32.dll");
+    using SetCtx = BOOL (WINAPI*)(DPI_AWARENESS_CONTEXT);
+    if (user) {
+        auto pSet = reinterpret_cast<SetCtx>(::GetProcAddress(user, "SetProcessDpiAwarenessContext"));
+        if (pSet) {
         #ifdef DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2
-            pSetCtx(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
+            pSet(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
             return;
         #elif defined(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE)
-            pSetCtx(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE); // PMv1 fallback if PMv2 not defined by SDK
+            pSet(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE); // PMv1 fallback
             return;
-        #else
-            // No modern constants exposed by this SDK; fall through to system-aware.
         #endif
         }
     }
-
-    // Final fallback for very old OS/SDK combos.
-    // (Recommended approach is process manifest; calling after a window exists may have limited effect.)
+    // Old OS fallback (Vista+). Benign if already DPI-aware via manifest.
     ::SetProcessDPIAware();
 }
