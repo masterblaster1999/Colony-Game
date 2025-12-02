@@ -14,9 +14,14 @@
 // ================================================================
 // Build toggles (safe defaults). You can override in CMake:
 //   add_compile_definitions(HYDRO_USE_DINF=1)
+//   add_compile_definitions(HYDRO_EXPOSE_D8_HELPERS=1)   // <— only if you want the D8 helper compiled
 // ================================================================
 #ifndef HYDRO_USE_DINF
 #define HYDRO_USE_DINF 1   // 0=D8 only, 1=enable D∞ (Tarboton) recipients with angle-split
+#endif
+
+#ifndef HYDRO_EXPOSE_D8_HELPERS
+#define HYDRO_EXPOSE_D8_HELPERS 0   // helper is compile-guarded to avoid C4505 under /WX
 #endif
 
 #ifndef HYDRO_COAST_DECAY_CELLS
@@ -193,7 +198,7 @@ static std::vector<int> distanceToCoast(const HeightField& H, float seaLevel)
         int i = q.front(); q.pop();
         int x = i % W, y = i / W;
         int di = dist[i];
-        for (int k=0;k<4;++k){
+        for (int k=0;k<4;++k++){
             int nx=x+d4x[k], ny=y+d4y[k];
             if (!inBounds(nx,ny,W,HH)) continue;
             int j = idx(nx,ny,W);
@@ -395,6 +400,7 @@ static HeightField priorityFloodFill(const HeightField& H, float seaLevel)
 //
 // References: Tarboton D∞ algorithm (TAUDEM/QGIS docs). :contentReference[oaicite:7]{index=7}
 // ---------------------------------------------------------------
+#if HYDRO_EXPOSE_D8_HELPERS
 static void computeFlowDirD8(const HeightField& F, std::vector<uint8_t>& dir, float seaLevel)
 {
     const int W=F.w, H=F.h;
@@ -415,6 +421,10 @@ static void computeFlowDirD8(const HeightField& F, std::vector<uint8_t>& dir, fl
         }
     }
 }
+// Take a harmless address so MSVC doesn’t emit C4505 when the helper
+// is compiled but unused (e.g., in Unity/aggregate builds).
+namespace { [[maybe_unused]] auto* const cg_keep_ref_computeFlowDirD8 = &computeFlowDirD8; }
+#endif // HYDRO_EXPOSE_D8_HELPERS
 
 struct FlowRecipients {
     // up to two recipients per cell (Tarboton D∞); if D8, B is -1
@@ -683,7 +693,7 @@ static void gaussianBlur1D(float* data, int W, int H, float sigma)
     }
     // Vertical
     for (int y=0;y<H;++y){
-        for (int x=0;x<W;++x){
+        for (int x=0;x<W;++x]){
             float s=0.0f;
             for (int i=-r;i<=r;++i){
                 int yy = clamp(y+i, 0, H-1);
