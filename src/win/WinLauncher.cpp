@@ -52,16 +52,22 @@
 //
 // ---------------------------------------------------------------------------
 
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#ifndef NOMINMAX
 #define NOMINMAX
+#endif
+
 #include <windows.h>
-#include <shellapi.h>   // CommandLineToArgvW
-#include <shlobj.h>     // SHGetKnownFolderPath
-#include <shcore.h>     // SetProcessDpiAwareness
-#include <dbghelp.h>    // MiniDumpWriteDump
-#include <tlhelp32.h>   // CreateToolhelp32Snapshot (bring-to-front helper)
-#include <winreg.h>     // Registry (WER LocalDumps)
-#include <dxgi1_6.h>    // DXGI factory + tearing detection
-#include <wrl/client.h> // ComPtr
+#include <shellapi.h>         // CommandLineToArgvW
+#include <shlobj.h>           // SHGetKnownFolderPath
+#include <ShellScalingAPI.h>  // SetProcessDpiAwareness / PROCESS_DPI_AWARENESS (Win 8.1+)  <-- changed
+#include <dbghelp.h>          // MiniDumpWriteDump
+#include <tlhelp32.h>         // CreateToolhelp32Snapshot (bring-to-front helper)
+#include <winreg.h>           // Registry (WER LocalDumps)
+#include <dxgi1_6.h>          // DXGI factory + tearing detection
+#include <wrl/client.h>       // ComPtr
 #include <filesystem>
 #include <fstream>
 #include <string>
@@ -72,23 +78,29 @@
 #include <algorithm>
 #include <cstdint>
 #include <cwchar>
-#include <cwctype>      // iswspace
-#include <cstdlib>      // _set_abort_behavior, _wgetenv
-#include <crtdbg.h>     // _set_invalid_parameter_handler
-#include <eh.h>         // _set_purecall_handler
+#include <cwctype>            // iswspace
+#include <cstdlib>            // _set_abort_behavior, _wgetenv
+#include <crtdbg.h>           // _set_invalid_parameter_handler
+#include <eh.h>               // _set_purecall_handler
 #include <csignal>
 
 #pragma comment(lib, "Dbghelp.lib")
 #pragma comment(lib, "Shell32.lib")
 #pragma comment(lib, "Ole32.lib")
-#pragma comment(lib, "Shcore.lib")
+#pragma comment(lib, "Shcore.lib")   // ShellScalingAPI (Win 8.1+)
 #pragma comment(lib, "Advapi32.lib")
 #pragma comment(lib, "User32.lib")
 #pragma comment(lib, "DXGI.lib")
 
-// Fallback for older SDKs that may not define this constant at compile time.
+// Fallbacks for older SDKs that may not define these constants at compile time.
 #ifndef DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2
 #define DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2 ((DPI_AWARENESS_CONTEXT)-4)
+#endif
+#ifndef DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE
+#define DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE    ((DPI_AWARENESS_CONTEXT)-3)
+#endif
+#ifndef DPI_AWARENESS_CONTEXT_SYSTEM_AWARE
+#define DPI_AWARENESS_CONTEXT_SYSTEM_AWARE         ((DPI_AWARENESS_CONTEXT)-2)
 #endif
 
 namespace fs = std::filesystem;
@@ -352,16 +364,18 @@ static void InstallLauncherCrashHandlers(const fs::path& dumpDir) {
 // ------------------------------------------------------------
 
 static void EnableDPI() {
-    // Prefer PerMonitorV2 via user32 SetProcessDpiAwarenessContext, then SHCore Per-Monitor, then legacy.
-    // MS guidance: manifest is preferred where possible; runtime API is a valid fallback. (See docs.)
-    // https://learn.microsoft.com/windows/win32/hidpi/setting-the-default-dpi-awareness-for-a-process
+    // Prefer PerMonitorV2 (Win10+) via user32!SetProcessDpiAwarenessContext.
+    // Fall back to SHCore Per-Monitor (Win8.1), then legacy system-DPI aware. :contentReference[oaicite:2]{index=2}
     using SetDpiCtxFn = BOOL (WINAPI *)(DPI_AWARENESS_CONTEXT);
-    HMODULE hUser = GetModuleHandleW(L"user32.dll");
-    if (hUser) {
-        auto p = reinterpret_cast<SetDpiCtxFn>(GetProcAddress(hUser, "SetProcessDpiAwarenessContext"));
-        if (p && p(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2)) return; // PMv2 succeed
+    if (HMODULE hUser = GetModuleHandleW(L"user32.dll")) {
+        if (auto p = reinterpret_cast<SetDpiCtxFn>(GetProcAddress(hUser, "SetProcessDpiAwarenessContext"))) {
+            if (p(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2)) return; // PMv2
+            if (p(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE))    return; // PMv1 (fallback)
+            if (p(DPI_AWARENESS_CONTEXT_SYSTEM_AWARE))         return; // system-DPI (last resort via Context)
+        }
     }
-    // SHCore fallback (Win 8.1+)
+
+    // SHCore fallback (Win 8.1+) — Set process to Per‑Monitor DPI aware. :contentReference[oaicite:3]{index=3}
     if (SUCCEEDED(SetProcessDpiAwareness(PROCESS_PER_MONITOR_DPI_AWARE))) return;
 
     // Legacy (Vista/7)
@@ -725,12 +739,11 @@ static void SetDefaultEngineEnvHints(Logger& logger, bool disabled) {
     }
     const bool tearing = DxgiSupportsTearing(); // DXGI factory query
     // Hints: only set if not already defined in the environment.
-    SetEnvIfMissing(L"COLONY_PRESENT_MODE", L"flip_discard", logger);           // nudge engine to flip model
+    SetEnvIfMissing(L"COLONY_PRESENT_MODE", L"flip_discard", logger);                // nudge engine to flip model
     SetEnvIfMissing(L"COLONY_PRESENT_ALLOW_TEARING", tearing ? L"1" : L"0", logger); // reflect capability
-    SetEnvIfMissing(L"COLONY_SIM_FIXED_DT_MS", L"16.6667", logger);             // fixed 60 Hz
-    SetEnvIfMissing(L"COLONY_SIM_MAX_FRAME_MS", L"250", logger);                // clamp large frames
-    // References:
-    // DXGI flip-model & tearing guidance:
+    SetEnvIfMissing(L"COLONY_SIM_FIXED_DT_MS", L"16.6667", logger);                  // fixed 60 Hz
+    SetEnvIfMissing(L"COLONY_SIM_MAX_FRAME_MS", L"250", logger);                     // clamp large frames
+    // References: Microsoft guidance on flip‑model & tearing
     // https://learn.microsoft.com/windows/win32/direct3ddxgi/for-best-performance--use-dxgi-flip-model
     // https://learn.microsoft.com/windows/win32/api/dxgi1_5/ne-dxgi1_5-dxgi_feature
 }
@@ -743,7 +756,7 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR /*lpCmdLine*/, int) {
     // Make DLL search slightly safer early
     TightenDllSearchPath();
 
-    EnableDPI(); // PMv2 -> SHCore Per-Monitor -> legacy DPI aware
+    EnableDPI(); // PMv2 (Win10+) -> SHCore Per-Monitor (Win8.1) -> legacy system DPI aware. :contentReference[oaicite:4]{index=4}
 
     // Data roots
     fs::path dataRoot = DataRoot();
