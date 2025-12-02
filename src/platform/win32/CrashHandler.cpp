@@ -20,6 +20,7 @@
 #define WIN32_LEAN_AND_MEAN
 
 #include <windows.h>
+#include <winreg.h>
 #include <dbghelp.h>      // MiniDumpWriteDump, symbol APIs
 #include <crtdbg.h>       // _set_invalid_parameter_handler, _set_purecall_handler, _set_abort_behavior
 #include <eh.h>           // _set_se_translator (optional)
@@ -46,6 +47,7 @@
 #pragma comment(lib, "Dbghelp.lib")
 #pragma comment(lib, "Shell32.lib")
 #pragma comment(lib, "User32.lib")
+#pragma comment(lib, "Advapi32.lib")
 
 namespace {
 
@@ -138,21 +140,58 @@ std::wstring CpuBrandString() {
     return w;
 }
 
+// --- Replaced GetVersionExW with VersionHelpers + registry read for display/build ---
 std::wstring OsVersionString() {
-    // Prefer VersionHelpers for rough name + RtlGetVersion (via GetVersionExW) for build
-    OSVERSIONINFOW osv{}; osv.dwOSVersionInfoSize = sizeof(osv);
-    // GetVersionEx is deprecated but works for retrieving build when the app has a manifest.
-    // If manifest is absent, result may be virtualized; we still log majors.
-    if (!::GetVersionExW(&osv)) {
-        return L"(unknown Windows version)";
+    // Read Windows release identifiers from the documented registry keys and
+    // combine with VersionHelpers buckets for a user-friendly string.
+    constexpr const wchar_t* kKey = L"SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion";
+
+    auto readSz = [](HKEY root, const wchar_t* subkey, const wchar_t* name) -> std::wstring {
+        HKEY h = nullptr;
+        std::wstring value;
+        // Prefer the 64-bit view when available; fall back otherwise.
+        if (RegOpenKeyExW(root, subkey, 0, KEY_QUERY_VALUE | KEY_WOW64_64KEY, &h) != ERROR_SUCCESS) {
+            if (RegOpenKeyExW(root, subkey, 0, KEY_QUERY_VALUE, &h) != ERROR_SUCCESS)
+                return value;
+        }
+        DWORD type = 0, bytes = 0;
+        if (RegGetValueW(h, nullptr, name, RRF_RT_REG_SZ, &type, nullptr, &bytes) == ERROR_SUCCESS &&
+            bytes >= sizeof(wchar_t)) {
+            value.resize((bytes / sizeof(wchar_t)) - 1);
+            if (RegGetValueW(h, nullptr, name, RRF_RT_REG_SZ, &type, value.data(), &bytes) != ERROR_SUCCESS) {
+                value.clear();
+            }
+        }
+        RegCloseKey(h);
+        return value;
+    };
+
+    std::wstring display = readSz(HKEY_LOCAL_MACHINE, kKey, L"DisplayVersion");   // e.g. 24H2 / 23H2
+    if (display.empty())
+        display = readSz(HKEY_LOCAL_MACHINE, kKey, L"ReleaseId");                 // older Win10 fallback
+    std::wstring build   = readSz(HKEY_LOCAL_MACHINE, kKey, L"CurrentBuildNumber");
+
+    std::wstring result = L"Windows ";
+
+    if (IsWindows10OrGreater()) {
+        result += !display.empty() ? display : L"10/11";
+    } else if (IsWindows8Point1OrGreater()) {
+        result += L"8.1";
+    } else if (IsWindows8OrGreater()) {
+        result += L"8";
+    } else if (IsWindows7SP1OrGreater()) {
+        result += L"7 SP1";
+    } else {
+        result += L"(unknown)";
     }
-    std::wstringstream ss;
-    ss << L"Windows " << osv.dwMajorVersion << L"." << osv.dwMinorVersion << L" (build " << osv.dwBuildNumber << L")";
-    if (IsWindows10OrGreater()) ss << L" [10+]";
-    else if (IsWindows8Point1OrGreater()) ss << L" [8.1]";
-    else if (IsWindows8OrGreater()) ss << L" [8]";
-    else if (IsWindows7SP1OrGreater()) ss << L" [7 SP1]";
-    return ss.str();
+
+    if (!build.empty()) {
+        result += L" (Build ";
+        result += build;
+        result += L")";
+    }
+
+    return result;
 }
 
 void SafeFlushLog() {
