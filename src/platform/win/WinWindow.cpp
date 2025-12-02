@@ -1,8 +1,5 @@
+#include "colony/platform/win/WinCommon.h"
 #include "colony/platform/win/WinWindow.hpp"
-
-#define WIN32_LEAN_AND_MEAN
-#define NOMINMAX
-#include <Windows.h>
 
 #include <string>
 #include <stdexcept>
