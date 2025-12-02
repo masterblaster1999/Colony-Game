@@ -72,6 +72,13 @@ template<typename T> struct has_smoothIterations<T,  std::void_t<decltype(std::d
 template<typename T, typename = void> struct has_smoothIters       : std::false_type {};
 template<typename T> struct has_smoothIters<T,       std::void_t<decltype(std::declval<const T&>().smoothIters)>>       : std::true_type {};
 
+// Optional alternates commonly seen in erosion codebases
+template<typename T, typename = void> struct has_streamPower_m     : std::false_type {};
+template<typename T> struct has_streamPower_m<T, std::void_t<decltype(std::declval<const T&>().streamPower_m)>>         : std::true_type {};
+
+template<typename T, typename = void> struct has_streamPower_n     : std::false_type {};
+template<typename T> struct has_streamPower_n<T, std::void_t<decltype(std::declval<const T&>().streamPower_n)>>         : std::true_type {};
+
 template<typename T>
 static float tempLatGradient_of(const T& c) {
     if constexpr (has_tempLatGradient<T>::value) return static_cast<float>(c.tempLatGradient);
@@ -100,13 +107,17 @@ static float seaLevel_of(const T& h) {
 }
 template<typename T>
 static float incision_m_of(const T& h) {
-    if constexpr (has_incision_m<T>::value)     return static_cast<float>(h.incision_m);
-    else                                        return static_cast<float>(h.incisionExp_m);
+    if constexpr (has_incision_m<T>::value)         return static_cast<float>(h.incision_m);
+    else if constexpr (has_incision_m_exp<T>::value)return static_cast<float>(h.incisionExp_m);
+    else if constexpr (has_streamPower_m<T>::value) return static_cast<float>(h.streamPower_m);
+    else                                            return 0.5f; // typical default for stream-power m
 }
 template<typename T>
 static float incision_n_of(const T& h) {
-    if constexpr (has_incision_n<T>::value)     return static_cast<float>(h.incision_n);
-    else                                        return static_cast<float>(h.incisionExp_n);
+    if constexpr (has_incision_n<T>::value)         return static_cast<float>(h.incision_n);
+    else if constexpr (has_incision_n_exp<T>::value)return static_cast<float>(h.incisionExp_n);
+    else if constexpr (has_streamPower_n<T>::value) return static_cast<float>(h.streamPower_n);
+    else                                            return 1.0f; // typical default for stream-power n
 }
 template<typename T>
 static int smoothIterations_of(const T& h) {
@@ -812,7 +823,8 @@ HydroOutputs buildHydrology(const HeightField& baseHeight,
                             const ClimateParams& climate,
                             const HydroParams& hydro)
 {
-    const int W=baseHeight.w, H=baseHeight.h;
+    [[maybe_unused]] const int W = baseHeight.w;
+    [[maybe_unused]] const int H = baseHeight.h;
     const float sea = seaLevel_of(hydro);
 
     // 1) Climate fields
