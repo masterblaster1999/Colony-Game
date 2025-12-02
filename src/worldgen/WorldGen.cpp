@@ -39,18 +39,31 @@ namespace {
 // Use the inline/constexpr implementations declared in Math.hpp.
 
 // Hash-based value noise (no external deps). Deterministic & tileable via seeds.
-static inline std::uint32_t hash32(std::uint32_t x) {
+// MSVC-only note:
+// These helpers (hash32/valNoise2D) and fbm2D may be intentionally unused in some
+// builds. When /WX is on, warning C4505 ("unreferenced function with internal
+// linkage has been removed") would otherwise become error C2220. We quarantine
+// that specific warning *only* for this block.
+// Ref: MSVC C4505, C2220.
+// (Scopes are restored with #pragma warning(pop).)
+#ifdef _MSC_VER
+  #pragma warning(push)
+  #pragma warning(disable: 4505)
+#endif
+
+[[maybe_unused]] static inline std::uint32_t hash32(std::uint32_t x) {
     x ^= x >> 16; x *= 0x7feb352du; x ^= x >> 15; x *= 0x846ca68bu; x ^= x >> 16;
     return x;
 }
-static inline float valNoise2D(int xi, int yi, std::uint32_t s) {
+
+[[maybe_unused]] static inline float valNoise2D(int xi, int yi, std::uint32_t s) {
     std::uint32_t h = hash32(static_cast<std::uint32_t>(xi) * 374761393u
                            + static_cast<std::uint32_t>(yi) * 668265263u
                            + s * 362437u);
     return (h >> 8) * (1.0f / 16777216.0f); // [0,1)
 }
 
-static float fbm2D(float fx, float fy, std::uint32_t seed, int octaves, float lacunarity, float gain) {
+[[maybe_unused]] static float fbm2D(float fx, float fy, std::uint32_t seed, int octaves, float lacunarity, float gain) {
     float amp = 0.5f, freq = 1.0f, sum = 0.f, norm = 0.f;
     for (int o=0; o<octaves; ++o) {
         int x0 = static_cast<int>(std::floor(fx * freq));
@@ -74,6 +87,10 @@ static float fbm2D(float fx, float fy, std::uint32_t seed, int octaves, float la
     }
     return sum / std::max(norm, 1e-6f);
 }
+
+#ifdef _MSC_VER
+  #pragma warning(pop)
+#endif
 
 // -------------------- WorldGenerator --------------------
 
