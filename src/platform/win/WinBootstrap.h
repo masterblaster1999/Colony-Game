@@ -1,17 +1,25 @@
+// src/platform/win/WinBootstrap.h
 #pragma once
-#ifdef _WIN32
 #include <string>
+#include <filesystem>
 
 namespace winboot {
 
-// Call once at the very start of main()/wWinMain().
-// mutexName example: L"Global\\ColonyGame_SingleInstance"
-void PrepareProcess(const std::wstring& appName,
-                    const std::wstring& mutexName,
-                    bool allowMultipleInstancesForDev = false);
+// Configuration used by WinBootstrap.cpp
+struct Options {
+    bool makeDpiAware        = true;
+    bool writeCrashDumps     = true;
+    bool singleInstance      = true;
+    bool showConsoleInDebug  = false;
 
-// Optional: call on shutdown (currently a no‑op, reserved for future use).
-void CleanupProcess();
+    // Paths / names
+    std::wstring assetDirName = L"assets";
+    std::wstring mutexName    = L"ColonyGameMutex";
+};
+
+// API
+std::filesystem::path GameRoot();
+void Preflight(const Options& opt);
+void Shutdown();
 
 } // namespace winboot
-#endif
