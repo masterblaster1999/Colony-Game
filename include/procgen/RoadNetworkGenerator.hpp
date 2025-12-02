@@ -1,422 +1,336 @@
 #pragma once
-/*
-    RoadNetworkGenerator.hpp — header-only, dependency-free procedural roads
-    For: Colony-Game (C++17+)
-
-    What it does
-    ------------
-    • Connects N terminals (town center, mines, forests, ruins, ports) with a compact,
-      cost-aware network using repeated shortest paths on a grid (A* / Dijkstra).
-    • Costs include slope/grade, water & soft terrain penalties, and a "reuse" discount
-      so new routes tend to snap to existing roads (natural trunk–branch shapes).
-    • Automatically tags bridge segments when crossing water, with a max span limit.
-    • Optional: carves a shallow roadbed into the terrain for readability and movement.
-    • Optional: returns smoothed/simplified polylines for decals or mesh roads.
-
-    Background (concepts; this implementation is original)
-    ------------------------------------------------------
-    • Shortest paths via A* (Hart, Nilsson, Raphael, 1968).        // admissible h=0 here
-    • Repeated shortest paths are a common Steiner-tree heuristic.  // Kou, Markowsky, Berman
-    • Chaikin corner-cutting smoothing; Douglas–Peucker simplification.
-
-    Usage example at the bottom of the file.
-    References: see README snippet in your PR message.
-*/
+// ============================================================================
+// RoadNetworkGenerator.hpp — terrain-aware roads + bridges for Colony-Game
+// C++17 / STL-only, header-only.
+//
+// Inputs (grid):
+//  • height01: W×H normalized height in [0,1]
+//  • optional waterMask: W×H (1=water)
+//  • optional flowDirD8: W×H D8 codes {0..7} else 255 (no flow)  [for river crossing tags]
+//  • optional flowAccum: W×H uint32_t contributing-area values   [for river crossing tags]
+//  • settlements: list of (x,y, kind)
+//
+// Outputs:
+//  • polylines: vector of road centerline points (grid coords)
+//  • crossings: ford/bridge markers with length & where
+//  • debug: cost grid, slope grid
+//
+// Core ideas (concepts; implementation here is original):
+//  • Least-cost path over a raster cost surface (as in GIS "Cost Path/Distance").
+//  • Slope-dependent travel cost shaped after Tobler's hiking function.
+//  • A* path reconstruction with an admissible Euclidean heuristic.
+//  • Kruskal MST on pairwise least-cost distances builds a small, global network.
+//  • River crossings identified using D8/flow-accumulation thresholds.
+// ----------------------------------------------------------------------------
 
 #include <vector>
 #include <queue>
 #include <cstdint>
 #include <cmath>
-#include <limits>
 #include <algorithm>
-#include <tuple>
+#include <limits>
+#include <utility>
+#include <numeric>
 
 namespace procgen {
 
-// ----------------------------- Parameters & Types -----------------------------
+struct Settlement {
+    int x=0, y=0;
+    enum Kind : uint8_t { TOWN=0, HAMLET=1, OUTPOST=2 } kind = TOWN;
+};
 
-struct Terminal {
-    int x = 0, y = 0;       // grid coords
-    uint8_t kind = 0;       // optional categorization (town=0, mine=1, etc.)
+struct Crossing {
+    int x0=0, y0=0, x1=0, y1=0; // inclusive run through water
+    int cells=0;                // length in cells
+    enum Type : uint8_t { FORD=0, BRIDGE=1 } type = FORD;
 };
 
 struct RoadParams {
-    // Movement model
-    bool   eight_neighbors = true;        // D8 vs. D4
-    float  diag_cost       = 1.41421356f; // step cost for diagonals
+    // Sea & masks
+    float sea_level = 0.50f;          // used if waterMask not provided
 
-    // Terrain/slope costs
-    float  slope_weight    = 24.0f;       // multiplies local |grad|; tune to map scale
-    float  max_grade       = 0.35f;       // extra penalty for slopes beyond this
+    // Cost model (units are relative; only ratios matter)
+    float slope_weight   = 2.0f;      // higher → steeper cells much more expensive
+    float water_penalty  = 80.0f;     // additive penalty when traversing water cell
+    float river_penalty  = 40.0f;     // extra penalty if flowAccum >= river_threshold
+    float diagonal_cost  = 1.41421356f;
+    float min_cell_cost  = 1.0f;      // keeps A* heuristic admissible
 
-    // Obstacles/water
-    float  water_penalty   = 1000.0f;     // make water very unattractive
-    float  soft_penalty    = 4.0f;        // e.g., forest, rough ground
-    float  bridge_penalty  = 120.0f;      // added per water cell when crossing
-    int    bridge_max_len  = 18;          // forbid spans longer than this many cells
+    // River definition (if flowAccum provided)
+    uint32_t river_threshold = 150;   // >= → treat as river for penalty/crossing tag
 
-    // Network shaping
-    float  reuse_discount  = 0.45f;       // discount cost near existing roads
-    float  near_road_bonus_radius = 2.0f; // radius for reuse discount propagation
+    // Crossing classification
+    int ford_max_run   = 2;           // <= cells through water → FORD, else BRIDGE
 
-    // Carving/visuals (optional)
-    bool   carve_roadbed   = true;
-    float  bed_half_width  = 1.0f;        // ~1→3x3 footprint
-    float  bed_depth       = 0.006f;      // subtract from normalized height (0..1)
-    float  bed_falloff     = 0.55f;       // per-ring falloff
-    int    smooth_iters    = 2;           // Chaikin smoothing iterations
-    float  simplify_eps    = 0.75f;       // Douglas–Peucker epsilon in cells
-
-    // Safety
-    float  clamp_min_height = -10000.f;
+    // Network
+    bool connect_all   = true;        // if false, only connect towns+hamlets
+    uint64_t seed      = 0xC0FFEEu;   // reserved for future tie-break randomness
 };
 
-struct RoadResult {
-    int width = 0, height = 0;
-
-    std::vector<uint8_t> road_mask;     // 0/1 per cell
-    std::vector<uint8_t> bridge_mask;   // 0/1 per cell (subset of road on water)
-    std::vector<float>   carved_height; // height after optional roadbed carve
-
-    // Optional: smoothed/simplified polylines for rendering
-    std::vector<std::vector<std::pair<float,float>>> polylines;
-
-    // Stats
-    int roads_cells = 0;
-    int bridges_cells = 0;
+struct RoadNetwork {
+    int width=0, height=0;
+    std::vector<std::vector<std::pair<int,int>>> polylines; // per-road polyline
+    std::vector<Crossing> crossings;                        // bridge/ford tags
+    std::vector<float> slope01;                             // debug: 0..1
+    std::vector<float> cost;                                // debug: per-cell cost
 };
 
-// ----------------------------- Utilities -----------------------------
+// ----------------------------- internals ------------------------------------
 
-static inline int idx(int x, int y, int W) { return y * W + x; }
-static inline bool in_bounds(int x, int y, int W, int H) { return x>=0 && y>=0 && x<W && y<H; }
-static inline float clamp01(float v){ return v<0?0:(v>1?1:v); }
+namespace detail {
 
-// Octile distance (if you later want non-zero heuristic); not used by default.
-static inline float octile(int x0, int y0, int x1, int y1, float D, float D2) {
-    int dx = std::abs(x1 - x0), dy = std::abs(y1 - y0);
-    return (float)(D * (dx + dy) + (D2 - 2.0f * D) * std::min(dx, dy));
-}
+inline size_t I(int x,int y,int W){ return (size_t)y*(size_t)W + (size_t)x; }
+inline bool inb(int x,int y,int W,int H){ return (unsigned)x<(unsigned)W && (unsigned)y<(unsigned)H; }
+inline float clamp01(float v){ return v<0.f?0.f:(v>1.f?1.f:v); }
 
-// Chaikin smoothing for open polylines (non-cyclic)
-static inline std::vector<std::pair<float,float>>
-chaikin(const std::vector<std::pair<float,float>>& P, int iters) {
-    if (P.size() < 2 || iters <= 0) return P;
-    std::vector<std::pair<float,float>> cur = P;
-    for (int it = 0; it < iters; ++it) {
-        std::vector<std::pair<float,float>> out;
-        out.reserve(cur.size()*2);
-        out.push_back(cur.front());
-        for (size_t i = 0; i + 1 < cur.size(); ++i) {
-            auto a = cur[i], b = cur[i+1];
-            out.emplace_back(0.75f*a.first + 0.25f*b.first,
-                              0.75f*a.second + 0.25f*b.second);
-            out.emplace_back(0.25f*a.first + 0.75f*b.first,
-                              0.25f*a.second + 0.75f*b.second);
-        }
-        out.push_back(cur.back());
-        cur.swap(out);
+// central-difference slope in normalized units, then rescale to [0,1]
+inline std::vector<float> slope01(const std::vector<float>& h,int W,int H){
+    std::vector<float> s((size_t)W*H,0.f);
+    auto Hs=[&](int x,int y){ x=std::clamp(x,0,W-1); y=std::clamp(y,0,H-1); return h[I(x,y,W)]; };
+    float gmax=1e-6f;
+    for(int y=0;y<H;++y) for(int x=0;x<W;++x){
+        float gx=0.5f*(Hs(x+1,y)-Hs(x-1,y));
+        float gy=0.5f*(Hs(x,y+1)-Hs(x,y-1));
+        float g=std::sqrt(gx*gx+gy*gy);
+        s[I(x,y,W)]=g; gmax=std::max(gmax,g);
     }
-    return cur;
+    for (float& v : s) v/=gmax;
+    return s;
 }
 
-// Douglas–Peucker simplification
-static inline float segdist2(const std::pair<float,float>& p,
-                             const std::pair<float,float>& a,
-                             const std::pair<float,float>& b) {
-    float vx = b.first - a.first, vy = b.second - a.second;
-    float wx = p.first - a.first, wy = p.second - a.second;
-    float c1 = vx*wx + vy*wy;
-    if (c1 <= 0) { float dx = p.first - a.first, dy = p.second - a.second; return dx*dx + dy*dy; }
-    float c2 = vx*vx + vy*vy;
-    if (c2 <= 0) { float dx = p.first - a.first, dy = p.second - a.second; return dx*dx + dy*dy; }
-    float t = c1 / c2;
-    float px = a.first + t*vx, py = a.second + t*vy;
-    float dx = p.first - px, dy = p.second - py;
-    return dx*dx + dy*dy;
-}
-static inline void dp_rec(const std::vector<std::pair<float,float>>& pts, int s, int e, float eps2, std::vector<char>& keep) {
-    if (e <= s + 1) return;
-    float maxd = 0; int best = -1;
-    for (int i = s + 1; i < e; ++i) {
-        float d = segdist2(pts[i], pts[s], pts[e]);
-        if (d > maxd) { maxd = d; best = i; }
-    }
-    if (maxd > eps2) {
-        keep[best] = 1;
-        dp_rec(pts, s, best, eps2, keep);
-        dp_rec(pts, best, e, eps2, keep);
-    }
-}
-static inline std::vector<std::pair<float,float>>
-douglas_peucker(const std::vector<std::pair<float,float>>& pts, float eps) {
-    if (pts.size() <= 2) return pts;
-    std::vector<char> keep(pts.size(), 0);
-    keep.front() = keep.back() = 1;
-    dp_rec(pts, 0, (int)pts.size()-1, eps*eps, keep);
-    std::vector<std::pair<float,float>> out; out.reserve(pts.size());
-    for (size_t i=0;i<pts.size();++i) if (keep[i]) out.push_back(pts[i]);
-    return out;
+// shape reminiscent of Tobler's hiking function: high cost on steep slopes,
+// slight preference for mild descent; returns multiplier >= 1
+inline float slope_cost(float s01){
+    // map [0,1] slope -> "speed" proxy like exp(-k*|m+0.05|)
+    // then invert to cost (1/speed). Constants chosen for gameplay feel.
+    float m = 1.8f*s01 - 0.9f;                 // crude gradient proxy ~[-0.9..0.9]
+    float speed = std::exp(-3.5f*std::fabs(m + 0.05f)); // cf. Tobler form
+    speed = std::max(0.15f, speed);            // clamp
+    return 1.0f / speed;                       // higher cost on steeper ground
 }
 
-// ----------------------------- A* (with h=0 → Dijkstra) -----------------------------
-
-struct Node { int x,y; float f,g; int parent; };
-struct NodeCmp { bool operator()(const Node& a, const Node& b) const { return a.f > b.f; } };
-
-// Find a shortest path from (sx,sy) to ANY cell with goalMask[i]==1.
-// Returns true and fills out_path (list of cell indices) on success.
-static inline bool astar_to_mask(
-    int W, int H,
-    int sx, int sy,
-    const std::vector<float>& step_cost,   // per-cell additive cost
-    const std::vector<uint8_t>& solidMask, // 1 = blocked
-    const std::vector<uint8_t>& goalMask,  // 1 = goal
-    bool eight_neighbors,
-    float diag_cost,
-    int bridge_max_run,
-    const std::vector<uint8_t>* waterMask, // optional, caps consecutive water
-    std::vector<int>& out_path)
+// build cost raster
+inline std::vector<float> build_cost(const std::vector<float>& h,int W,int H,
+                                     const std::vector<uint8_t>* waterMask,
+                                     const std::vector<uint32_t>* flowAccum,
+                                     const RoadParams& P,
+                                     std::vector<float>& outSlope01)
 {
-    const int N = W*H;
-    auto inb = [&](int x,int y){return in_bounds(x,y,W,H);};
-    auto id  = [&](int x,int y){return idx(x,y,W);};
+    outSlope01 = slope01(h,W,H);
+    std::vector<float> c((size_t)W*H, P.min_cell_cost);
+    for(int y=0;y<H;++y) for(int x=0;x<W;++x){
+        size_t i=I(x,y,W);
+        bool water = waterMask ? ((*waterMask)[i]!=0) : (h[i] <= P.sea_level);
+        float base = P.min_cell_cost + P.slope_weight * slope_cost(outSlope01[i]);
+        if (water) base += P.water_penalty;
+        if (flowAccum && (*flowAccum)[i] >= P.river_threshold) base += P.river_penalty;
+        c[i] = base;
+    }
+    return c;
+}
 
+// ----------------- A* on 8-neighborhood over a raster cost ------------------
+
+struct Node { int x,y; float f,g; int px,py; }; // px,py: parent
+struct NodeCmp { bool operator()(const Node&a,const Node&b) const { return a.f>b.f; } };
+
+inline bool astar(const std::vector<float>& cost,int W,int H,
+                  std::pair<int,int> s, std::pair<int,int> t,
+                  std::vector<std::pair<int,int>>& outPath,
+                  const RoadParams& P)
+{
+    auto Hidx=[&](int x,int y){ return cost[(size_t)I(x,y,W)]; };
+    static const int dx[8]={1,1,0,-1,-1,-1,0,1};
+    static const int dy[8]={0,1,1,1,0,-1,-1,-1};
+    static const float step[8]={1,1.41421356f,1,1.41421356f,1,1.41421356f,1,1.41421356f};
+
+    const size_t N=(size_t)W*H;
     std::vector<float> g(N, std::numeric_limits<float>::infinity());
-    std::vector<float> f(N, std::numeric_limits<float>::infinity());
-    std::vector<int> parent(N, -1);
-    std::vector<uint8_t> closed(N, 0);
+    std::vector<int>   parx(N,-1), pary(N,-1), openFlag(N,0), closed(N,0);
 
-    auto hfun = [&](int /*x*/,int /*y*/)->float { return 0.0f; }; // admissible; A*→Dijkstra
+    auto Hfun=[&](int x,int y){
+        float dx=(float)(t.first-x), dy=(float)(t.second-y);
+        float d=std::sqrt(dx*dx+dy*dy);
+        return d * P.min_cell_cost; // admissible lower bound
+    };
 
-    std::priority_queue<Node, std::vector<Node>, NodeCmp> open;
-    if (!inb(sx,sy) || solidMask[id(sx,sy)]) return false;
+    auto push=[&](int x,int y,float ng,int px,int py, std::priority_queue<Node,std::vector<Node>,NodeCmp>& pq){
+        size_t i=I(x,y,W);
+        g[i]=ng; parx[i]=px; pary[i]=py;
+        float f = ng + Hfun(x,y);
+        pq.push(Node{x,y,f,ng,px,py});
+        openFlag[i]=1;
+    };
 
-    int s = id(sx,sy);
-    g[s] = 0.0f; f[s] = hfun(sx,sy);
-    open.push({sx,sy,f[s],g[s],-1});
+    std::priority_queue<Node,std::vector<Node>,NodeCmp> pq;
+    push(s.first,s.second, 0.0f, -1,-1, pq);
 
-    const int DX8[8] = { 1, 1, 0,-1,-1,-1, 0, 1};
-    const int DY8[8] = { 0, 1, 1, 1, 0,-1,-1,-1};
-    const int DX4[4] = { 1, 0,-1, 0};
-    const int DY4[4] = { 0, 1, 0,-1};
-
-    while (!open.empty()) {
-        Node n = open.top(); open.pop();
-        int i = id(n.x,n.y);
-        if (closed[i]) continue;
-        closed[i] = 1; parent[i] = n.parent;
-
-        if (goalMask[i]) {
-            out_path.clear();
-            int cur = i;
-            while (cur != -1) { out_path.push_back(cur); cur = parent[cur]; }
-            std::reverse(out_path.begin(), out_path.end());
+    while(!pq.empty()){
+        Node n = pq.top(); pq.pop();
+        size_t ni=I(n.x,n.y,W);
+        if (closed[ni]) continue;
+        closed[ni]=1;
+        if (n.x==t.first && n.y==t.second){
+            // reconstruct
+            outPath.clear();
+            int cx=n.x, cy=n.y;
+            while (cx!=-1 && cy!=-1){
+                outPath.emplace_back(cx,cy);
+                size_t ci=I(cx,cy,W);
+                int nx=parx[ci], ny=pary[ci];
+                cx=nx; cy=ny;
+            }
+            std::reverse(outPath.begin(), outPath.end());
             return true;
         }
-
-        const int K = eight_neighbors ? 8 : 4;
-        for (int k=0;k<K;++k) {
-            int nx = n.x + (eight_neighbors?DX8[k]:DX4[k]);
-            int ny = n.y + (eight_neighbors?DY8[k]:DY4[k]);
-            if (!inb(nx,ny)) continue;
-            int j = id(nx,ny);
-            if (solidMask[j]) continue;
-
-            // Limit overly long water runs (approximate, backward-looking)
-            if (waterMask && (*waterMask)[j]) {
-                int run = 1;
-                int px = n.x, py = n.y;
-                while (inb(px,py) && waterMask && (*waterMask)[idx(px,py,W)]) {
-                    ++run;
-                    px -= (eight_neighbors?DX8[k]:DX4[k]);
-                    py -= (eight_neighbors?DY8[k]:DY4[k]);
-                    if (run > bridge_max_run) break;
-                }
-                if (run > bridge_max_run) continue;
-            }
-
-            float move = (eight_neighbors && (k%2==1 || k==3 || k==5 || k==7)) ? diag_cost : 1.0f;
-            float tentative = g[i] + move + step_cost[j];
-            if (tentative < g[j]) {
-                g[j] = tentative;
-                float fscore = tentative + hfun(nx,ny);
-                f[j] = fscore;
-                open.push({nx,ny,fscore,tentative,i});
-            }
+        for(int k=0;k<8;++k){
+            int nx=n.x+dx[k], ny=n.y+dy[k]; if(!inb(nx,ny,W,H)) continue;
+            float move = 0.5f*(Hidx(n.x,n.y)+Hidx(nx,ny)) * (k%2? P.diagonal_cost : 1.f);
+            float ng = n.g + move;
+            size_t ni2=I(nx,ny,W);
+            if (closed[ni2] || ng >= g[ni2]) continue;
+            push(nx,ny,ng, n.x,n.y,pq);
         }
     }
     return false;
 }
 
-// ----------------------------- Main API -----------------------------
+// --------------------------- Kruskal MST ------------------------------------
 
-// heightN: required, normalized [0..1]. Size = W*H.
-// waterMask: optional; 1 for water (discouraged/bridged), 0 for land.
-// softMask:  optional; 1 for “soft” terrain (forest, rough ground).
-// solidMask: optional; 1 blocks roads entirely (cliffs, buildings).
-inline RoadResult GenerateRoadNetwork(
-    const std::vector<float>& heightN,
-    int W, int H,
-    const std::vector<Terminal>& terminals,
+struct Edge { int a,b; float w; };
+struct DSU {
+    std::vector<int> p, r;
+    DSU(int n=0){ reset(n); }
+    void reset(int n){ p.resize(n); r.assign(n,0); std::iota(p.begin(),p.end(),0); }
+    int find(int x){ return p[x]==x?x:p[x]=find(p[x]); }
+    bool unite(int a,int b){ a=find(a); b=find(b); if(a==b) return false; if(r[a]<r[b]) std::swap(a,b); p[b]=a; if(r[a]==r[b]) r[a]++; return true; }
+};
+
+inline std::vector<Edge> kruskal(int n, std::vector<Edge> E){
+    std::sort(E.begin(),E.end(),[](const Edge&u,const Edge&v){return u.w<v.w;});
+    DSU d(n); std::vector<Edge> out; out.reserve(n? (size_t)n-1 : 0);
+    for(const auto& e: E) if (d.unite(e.a,e.b)) out.push_back(e);
+    return out;
+}
+
+} // namespace detail
+
+// ------------------------------- API ----------------------------------------
+
+inline RoadNetwork GenerateRoadNetwork(
+    const std::vector<float>& height01, int W, int H,
+    const std::vector<Settlement>& settlements,
     const RoadParams& P = {},
     const std::vector<uint8_t>* waterMask = nullptr,
-    const std::vector<uint8_t>* softMask  = nullptr,
-    const std::vector<uint8_t>* solidMask = nullptr)
+    const std::vector<uint8_t>* flowDirD8 = nullptr,        // optional (for tags)
+    const std::vector<uint32_t>* flowAccum = nullptr)        // optional (for tags)
 {
-    const int N = W*H;
-    RoadResult out;
-    out.width = W; out.height = H;
+    RoadNetwork out; out.width=W; out.height=H;
+    const size_t N=(size_t)W*H;
+    if (W<=1 || H<=1 || height01.size()!=N || settlements.empty()) return out;
 
-    if (W<=1 || H<=1 || (int)heightN.size()!=N || terminals.empty()) {
-        out.carved_height = heightN;
-        out.road_mask.assign(N,0);
-        out.bridge_mask.assign(N,0);
-        return out;
+    // 1) cost & slope
+    out.cost = detail::build_cost(height01, W,H, waterMask, flowAccum, P, out.slope01);
+
+    // 2) choose terminals we will connect
+    std::vector<int> idx; idx.reserve(settlements.size());
+    for(size_t i=0;i<settlements.size();++i){
+        if (P.connect_all) idx.push_back((int)i);
+        else if (settlements[i].kind != Settlement::OUTPOST) idx.push_back((int)i); // towns+hamlets
     }
+    if (idx.size()<2) return out;
 
-    // 1) Per-cell base cost from slope and masks
-    std::vector<float> base_cost(N, 0.0f);
-    auto Hs = [&](int x,int y)->float {
-        x = std::clamp(x,0,W-1); y = std::clamp(y,0,H-1);
-        return heightN[idx(x,y,W)];
-    };
-    for (int y=0;y<H;++y) for (int x=0;x<W;++x) {
-        int i = idx(x,y,W);
-        float gx = 0.5f * (Hs(x+1,y) - Hs(x-1,y));
-        float gy = 0.5f * (Hs(x,y+1) - Hs(x,y-1));
-        float slope = std::sqrt(gx*gx + gy*gy);
+    // 3) pairwise least-cost distances (A*); keep only matrix upper triangle
+    struct PairDist { int a,b; float w; std::vector<std::pair<int,int>> path; };
+    std::vector<PairDist> PD; PD.reserve(idx.size()*idx.size()/2);
 
-        float cost = P.slope_weight * slope;
-        if (slope > P.max_grade) cost += (slope - P.max_grade) * P.slope_weight * 8.0f;
-        if (waterMask && (*waterMask)[i]) cost += P.water_penalty;
-        if (softMask  && (*softMask)[i])  cost += P.soft_penalty;
-        base_cost[i] = cost;
+    for(size_t ia=0; ia<idx.size(); ++ia){
+        const auto& A = settlements[idx[ia]];
+        for(size_t ib=ia+1; ib<idx.size(); ++ib){
+            const auto& B = settlements[idx[ib]];
+            std::vector<std::pair<int,int>> path;
+            bool ok = detail::astar(out.cost, W,H, {A.x,A.y}, {B.x,B.y}, path, P);
+            if (!ok) continue; // disconnected domains shouldn't happen on maps, skip
+            // path cost = sum of moves we actually took
+            float g=0.f;
+            for(size_t k=1;k<path.size();++k){
+                auto [x0,y0]=path[k-1]; auto [x1,y1]=path[k];
+                float step = ((x0!=x1)&&(y0!=y1))? P.diagonal_cost:1.f;
+                float c = 0.5f*(out.cost[(size_t)detail::I(x0,y0,W)] + out.cost[(size_t)detail::I(x1,y1,W)]) * step;
+                g += c;
+            }
+            PD.push_back(PairDist{(int)ia,(int)ib,g, std::move(path)});
+        }
     }
+    if (PD.empty()) return out;
 
-    std::vector<uint8_t> solids(N, 0);
-    if (solidMask) solids = *solidMask;
+    // 4) Build MST on pairwise least-cost distances to get a minimal network
+    std::vector<detail::Edge> edges; edges.reserve(PD.size());
+    for (const auto& e : PD) edges.push_back({e.a, e.b, e.w});
+    auto mst = detail::kruskal((int)idx.size(), edges);
 
-    // 2) Connect terminals into a road tree (repeated shortest paths to the built network)
-    out.road_mask.assign(N,0);
-    out.bridge_mask.assign(N,0);
-    out.carved_height = heightN;
+    // 5) Emit roads for edges in MST (reuse the precomputed paths)
+    out.polylines.reserve(mst.size());
+    for (const auto& e : mst){
+        // find stored path
+        auto it = std::find_if(PD.begin(), PD.end(), [&](const PairDist& pd){ return pd.a==e.a && pd.b==e.b; });
+        if (it == PD.end()) continue;
+        out.polylines.push_back(it->path);
 
-    // Initialize with the first terminal as the root
-    std::vector<Terminal> T = terminals;
-    int rootx = std::clamp(T[0].x, 0, W-1);
-    int rooty = std::clamp(T[0].y, 0, H-1);
-    out.road_mask[idx(rootx,rooty,W)] = 1;
-
-    // Goal set = current road cells
-    std::vector<uint8_t> goalMask(N,0);
-    auto refresh_goals = [&](){
-        std::fill(goalMask.begin(), goalMask.end(), 0);
-        for (int i=0;i<N;++i) if (out.road_mask[i]) goalMask[i] = 1;
-    };
-    refresh_goals();
-
-    // Mutable step_cost adds a reuse discount near existing roads
-    std::vector<float> step_cost = base_cost;
-    auto apply_reuse_discount = [&](){
-        if (P.reuse_discount <= 0) return;
-        const int R = (int)std::round(P.near_road_bonus_radius);
-        for (int y=0;y<H;++y) for (int x=0;x<W;++x) {
-            int i = idx(x,y,W);
-            if (!out.road_mask[i]) continue;
-            for (int oy=-R; oy<=R; ++oy) for (int ox=-R; ox<=R; ++ox) {
-                int nx=x+ox, ny=y+oy; if (!in_bounds(nx,ny,W,H)) continue;
-                int j = idx(nx,ny,W);
-                step_cost[j] = std::max(0.0f, base_cost[j] * (1.0f - P.reuse_discount));
+        // scan for water runs to tag fords/bridges
+        int run=0; int sx=0, sy=0;
+        auto isWater=[&](int x,int y){
+            size_t i=detail::I(x,y,W);
+            bool w = waterMask ? ((*waterMask)[i]!=0) : (height01[i] <= P.sea_level);
+            if (!w) return false;
+            if (!flowAccum) return true;
+            return (*flowAccum)[i] >= P.river_threshold; // treat only river water for tags
+        };
+        for(size_t k=0;k<it->path.size();++k){
+            auto [x,y]=it->path[k];
+            if (isWater(x,y)){
+                if (run==0){ sx=x; sy=y; }
+                run++;
+            }else if (run>0){
+                Crossing C; C.x0=sx; C.y0=sy; C.x1=it->path[k-1].first; C.y1=it->path[k-1].second;
+                C.cells=run; C.type = (run<=P.ford_max_run)? Crossing::FORD : Crossing::BRIDGE;
+                out.crossings.push_back(C);
+                run=0;
             }
         }
-    };
-    apply_reuse_discount();
-
-    // Connect each remaining terminal
-    for (size_t ti=1; ti<T.size(); ++ti) {
-        int sx = std::clamp(T[ti].x, 0, W-1);
-        int sy = std::clamp(T[ti].y, 0, H-1);
-
-        std::vector<int> path;
-        bool ok = astar_to_mask(W,H, sx,sy, step_cost, solids, goalMask,
-                                P.eight_neighbors, P.diag_cost,
-                                P.bridge_max_len, waterMask, path);
-        if (!ok) continue; // unreachable → skip
-
-        // Mark path & tag bridges
-        for (int cell : path) {
-            out.road_mask[cell] = 1;
-            if (waterMask && (*waterMask)[cell]) out.bridge_mask[cell] = 1;
+        if (run>0){
+            auto [x,y]=it->path.back();
+            Crossing C; C.x0=sx; C.y0=sy; C.x1=x; C.y1=y; C.cells=run; C.type = (run<=P.ford_max_run)? Crossing::FORD : Crossing::BRIDGE;
+            out.crossings.push_back(C);
         }
-
-        // Save a polyline for rendering (smoothed & simplified)
-        std::vector<std::pair<float,float>> pl; pl.reserve(path.size());
-        for (int cell : path) { int x = cell%W, y = cell/W; pl.emplace_back((float)x,(float)y); }
-        if (P.smooth_iters > 0) pl = chaikin(pl, P.smooth_iters);
-        if (P.simplify_eps > 0) pl = douglas_peucker(pl, P.simplify_eps);
-        out.polylines.push_back(std::move(pl));
-
-        // Update costs & goals to encourage reuse in future connections
-        apply_reuse_discount();
-        refresh_goals();
-    }
-
-    out.roads_cells   = (int)std::count(out.road_mask.begin(), out.road_mask.end(), (uint8_t)1);
-    out.bridges_cells = (int)std::count(out.bridge_mask.begin(), out.bridge_mask.end(), (uint8_t)1);
-
-    // 3) Optional: carve a shallow roadbed into the terrain (visual/gameplay)
-    if (P.carve_roadbed) {
-        const int R = std::max(1, (int)std::round(P.bed_half_width));
-        for (int y=0;y<H;++y) for (int x=0;x<W;++x) {
-            int i = idx(x,y,W);
-            if (!out.road_mask[i]) continue;
-
-            float base = out.carved_height[i] - P.bed_depth;
-            out.carved_height[i] = std::max(P.clamp_min_height, base);
-
-            for (int r=1; r<=R; ++r) {
-                float d = P.bed_depth * std::pow(P.bed_falloff, (float)r);
-                for (int oy=-r; oy<=r; ++oy) for (int ox=-r; ox<=r; ++ox) {
-                    if (std::max(std::abs(ox), std::abs(oy)) != r) continue; // ring only
-                    int nx=x+ox, ny=y+oy; if (!in_bounds(nx,ny,W,H)) continue;
-                    int j = idx(nx,ny,W);
-                    out.carved_height[j] = std::max(P.clamp_min_height, out.carved_height[j] - d);
-                }
-            }
-        }
-        // keep water unchanged if provided
-        if (waterMask) for (int i=0;i<N;++i) if ((*waterMask)[i]) out.carved_height[i] = heightN[i];
     }
 
     return out;
 }
 
-// ----------------------------- Example -----------------------------
 /*
+------------------------------------ Usage ------------------------------------
+
 #include "procgen/RoadNetworkGenerator.hpp"
 
-void build_roads(MyWorld& world) {
-    int W = world.width(), H = world.height();
-    const std::vector<float>& heightN = world.heightNormalized();  // [0..1]
-    const std::vector<uint8_t>& water = world.waterMask();         // 0=land,1=water
-
-    std::vector<procgen::Terminal> T = {
-        { world.colonyX(), world.colonyY(), 0 },  // root/colony
-        { world.ironMineX(), world.ironMineY(), 1 },
-        { world.forestX(),   world.forestY(),   2 },
-        { world.ruinsX(),    world.ruinsY(),    3 }
-    };
-
+void build_roads(const std::vector<float>& height01, int W, int H,
+                 const std::vector<procgen::Settlement>& settlements,
+                 const std::vector<uint8_t>* waterMask,
+                 const std::vector<uint8_t>* flowDirD8,
+                 const std::vector<uint32_t>* flowAccum)
+{
     procgen::RoadParams P;
-    P.bridge_max_len = 12;  // prefer fords/switchbacks over long bridges
-    P.bed_depth      = 0.008f;
+    P.water_penalty = 80.f;       // strong aversion to water
+    P.river_threshold = 150;      // tune to your hydrology (accum cells)
+    P.ford_max_run = 2;           // <=2 cells → ford, else bridge
 
-    auto roads = procgen::GenerateRoadNetwork(heightN, W, H, T, P, &water);
+    procgen::RoadNetwork net = procgen::GenerateRoadNetwork(
+        height01, W, H, settlements, P, waterMask, flowDirD8, flowAccum);
 
-    world.applyHeight(roads.carved_height);
-    world.paintRoads(roads.road_mask, roads.bridge_mask, roads.polylines);
-    world.setMovementDiscount(roads.road_mask, /*mult=*/0.4f); // gameplay hook
+    // Render:
+    //  • Draw 'primary' for town↔town or town↔hamlet (thicker), 'secondary' otherwise
+    //  • Place bridge/ford props from net.crossings
+    //  • Optionally smooth polylines with Chaikin / Douglas–Peucker before meshing
 }
 */
 } // namespace procgen
