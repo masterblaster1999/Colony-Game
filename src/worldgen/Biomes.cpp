@@ -35,7 +35,7 @@ BiomeId classifyBiome(float tC, float pMM, float z,
     bool cold = (tC <  B.t_cold);
     bool cool = (tC >= B.t_cold && tC <  B.t_cool);
     bool warm = (tC >= B.t_cool && tC <  B.t_warm);
-    bool hot  = (tC >= B.t_warm);
+    [[maybe_unused]] const bool hot  = (tC >= B.t_warm);
 
     // Precip bands
     bool veryDry = (pMM <  B.p_dry);
