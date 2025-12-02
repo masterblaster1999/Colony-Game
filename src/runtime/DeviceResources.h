@@ -22,8 +22,16 @@
 // A very small exception helper for HRESULTs.
 struct DxException : public std::runtime_error {
   HRESULT hr;
-  DxException(HRESULT _hr, const char* file, int line, const char* msg = "")
-    : std::runtime_error(msg && *msg ? msg : "DxException"), hr(_hr) {}
+  DxException(HRESULT _hr,
+              [[maybe_unused]] const char* file,
+              [[maybe_unused]] int line,
+              const char* msg = "")
+    : std::runtime_error(msg && *msg ? msg : "DxException"), hr(_hr)
+  {
+    // Ensure parameters are "used" under all configs so /WX never trips (C4100).
+    (void)file;
+    (void)line;
+  }
 };
 
 #define DX_THROW_IF_FAILED(hrcall) do { HRESULT _hr=(hrcall); if(FAILED(_hr)) { throw DxException(_hr, __FILE__, __LINE__); } } while(0)
