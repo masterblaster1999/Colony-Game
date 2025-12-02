@@ -1,27 +1,32 @@
-#include "colony/platform/win/WinCommon.h"
+// src/platform/win/WinWindow.cpp
+#include "colony/platform/win/WinCommon.h"         // <-- include common Win header first
 #include "colony/platform/win/WinWindow.hpp"
 
 #include <string>
 #include <stdexcept>
+#include <memory>
 
 namespace colony::win {
 
-// The COMPLETE definition lives in the .cpp (private to this TU).
+// Private state for this TU only
 struct WinWindowState {
     HINSTANCE   hinst   = nullptr;
     HWND        hwnd    = nullptr;
     std::wstring className;
 };
 
-// Simple window procedure for this sample.
+// Simple window procedure
 static LRESULT CALLBACK WinWindowProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
     switch (msg) {
-    case WM_DESTROY: ::PostQuitMessage(0); return 0;
-    default:         return ::DefWindowProcW(hwnd, msg, wParam, lParam);
+        case WM_DESTROY:
+            ::PostQuitMessage(0);
+            return 0;
+        default:
+            return ::DefWindowProcW(hwnd, msg, wParam, lParam);
     }
 }
 
-// ----- Ctors/dtor/move: define OUT-OF-LINE so unique_ptr<WinWindowState> sees a complete type -----
+// ----- Ctors/dtor/move -----
 WinWindow::WinWindow() = default;
 WinWindow::~WinWindow() = default;
 WinWindow::WinWindow(WinWindow&&) noexcept = default;
@@ -32,21 +37,24 @@ bool WinWindow::create(const wchar_t* title, int width, int height, void* hInsta
     state_ = std::make_unique<WinWindowState>();
     state_->hinst = static_cast<HINSTANCE>(hInstance);
 
-    // Register class (per-instance; good enough for engine tools/games)
+    // Register class (ok to attempt every run; RegisterClassExW will fail if already exists)
     state_->className = L"ColonyWinWindowClass";
+
     WNDCLASSEXW wc{};
     wc.cbSize        = sizeof(wc);
     wc.style         = CS_HREDRAW | CS_VREDRAW | CS_OWNDC;
     wc.lpfnWndProc   = &WinWindowProc;
     wc.hInstance     = state_->hinst;
     wc.hCursor       = ::LoadCursorW(nullptr, IDC_ARROW);
-    wc.hbrBackground = (HBRUSH)(COLOR_WINDOW+1);
+    wc.hbrBackground = (HBRUSH)(COLOR_WINDOW + 1);
     wc.lpszClassName = state_->className.c_str();
+
     if (!::RegisterClassExW(&wc) && ::GetLastError() != ERROR_CLASS_ALREADY_EXISTS) {
         return false;
     }
 
-    // Create the actual window
+    // Compute window rect for requested client size;
+    // AdjustWindowRectEx is fine; consider AdjustWindowRectExForDpi if you enable per‑monitor DPI (see section 3).
     RECT r{ 0, 0, width, height };
     ::AdjustWindowRect(&r, WS_OVERLAPPEDWINDOW, FALSE);
 
@@ -57,9 +65,8 @@ bool WinWindow::create(const wchar_t* title, int width, int height, void* hInsta
         r.right - r.left, r.bottom - r.top,
         nullptr, nullptr, state_->hinst, nullptr);
 
-    if (!state_->hwnd) {
+    if (!state_->hwnd)
         return false;
-    }
 
     ::ShowWindow(state_->hwnd, nCmdShow);
     ::UpdateWindow(state_->hwnd);
