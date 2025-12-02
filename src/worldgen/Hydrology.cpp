@@ -198,7 +198,7 @@ static std::vector<int> distanceToCoast(const HeightField& H, float seaLevel)
         int i = q.front(); q.pop();
         int x = i % W, y = i / W;
         int di = dist[i];
-        for (int k=0;k<4;++k++){
+        for (int k=0;k<4;++k){
             int nx=x+d4x[k], ny=y+d4y[k];
             if (!inBounds(nx,ny,W,HH)) continue;
             int j = idx(nx,ny,W);
@@ -693,7 +693,7 @@ static void gaussianBlur1D(float* data, int W, int H, float sigma)
     }
     // Vertical
     for (int y=0;y<H;++y){
-        for (int x=0;x<W;++x]){
+        for (int x=0;x<W;++x){
             float s=0.0f;
             for (int i=-r;i<=r;++i){
                 int yy = clamp(y+i, 0, H-1);
