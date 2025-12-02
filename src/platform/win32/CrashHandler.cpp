@@ -17,7 +17,9 @@
 #ifndef NOMINMAX
   #define NOMINMAX
 #endif
-#define WIN32_LEAN_AND_MEAN
+#ifndef WIN32_LEAN_AND_MEAN
+  #define WIN32_LEAN_AND_MEAN
+#endif
 
 #include <windows.h>
 #include <winreg.h>
@@ -553,7 +555,9 @@ void InstallCrashHandler(const std::wstring& appName, const std::wstring& appVer
         SetUnhandledExceptionFilter(&Unhandled);
         _set_invalid_parameter_handler(&InvalidParamHandler);
         _set_purecall_handler(&PurecallHandler);
+#if defined(COLONY_USE_SE_TRANSLATOR)
         _set_se_translator(&SehTranslator);
+#endif
 
         // First-chance diagnostics (non-fatal)
         s_vectoredHandler = AddVectoredExceptionHandler(1 /* call first */, &FirstChanceVEH);
