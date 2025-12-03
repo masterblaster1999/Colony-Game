@@ -38,7 +38,14 @@ namespace worldgen {
 
 // ----------------------------- public types -----------------------------
 
-struct I2 { int x = 0, y = 0; };
+struct I2 {
+    int x = 0;
+    int y = 0;
+
+    // Patch A: make constructible so emplace_back(x, y) works cleanly
+    constexpr I2() = default;
+    constexpr I2(int x_, int y_) noexcept : x(x_), y(y_) {}
+};
 
 struct ConnectorParams {
     int   width  = 0;
