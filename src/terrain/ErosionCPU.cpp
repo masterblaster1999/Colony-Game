@@ -1,6 +1,7 @@
 #include "ErosionCPU.hpp"
 #include <cmath>
 #include <algorithm>
+#include <cstdint>  // for UINT64_C
 
 namespace colony::terrain {
 
@@ -18,7 +19,7 @@ void HydraulicErodeCPU(Heightfield& H, const HydraulicParams& p)
     std::vector<float> flux (N*4, 0.0f); // 0:+x(right),1:-x(left),2:-y(up),3:+y(down)
 
     // tiny dithering in rainfall to break symmetry, deterministic via PCG
-    PCG32 rng; rng.seed(p.seed ? p.seed : 0xC01OnyULL, 0x9E3779B97F4A7C15ULL);
+    PCG32 rng; rng.seed(p.seed ? p.seed : UINT64_C(0xC01), 0x9E3779B97F4A7C15ULL);
 
     auto height = [&](int x, int y)->float& { return H.at(x,y); };
     auto getHeight = [&](int x,int y)->float {
