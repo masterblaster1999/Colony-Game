@@ -38,8 +38,11 @@ file(GLOB_RECURSE SRC_ALL
   "${CMAKE_SOURCE_DIR}/platform/win/*.cpp" "${CMAKE_SOURCE_DIR}/platform/win/*.h"
 )
 
-# --- Minimal delta: keep app/ sources out of the core library ---
+# >>> PATCH (minimal delta): keep app/ and any stray entry points out of the core lib
 list(FILTER SRC_ALL EXCLUDE REGEX ".*/src/app/.*\\.(c|cc|cxx|cpp)$")
+list(FILTER SRC_ALL EXCLUDE REGEX ".*/src/(launcher|tools)/.*\\.(c|cc|cxx|cpp)$")
+list(FILTER SRC_ALL EXCLUDE REGEX ".*/(win32_main|VerticalSlice|main_win|EntryWinMain|WinMain|LauncherMain)\\.(c|cc|cxx|cpp)$")
+# (These use list(FILTER … REGEX …), per the CMake docs.)
 
 # Exclude vendored imgui sources if present
 list(FILTER SRC_ALL EXCLUDE REGEX ".*/third_party/imgui/.*")
@@ -76,6 +79,35 @@ endif()
 
 # Defensive de‑duplication (guards against glob/path aliases)
 list(REMOVE_DUPLICATES SRC_ALL)
+
+# ---------------------------- Guardrail: verify filters ----------------------------
+# Fail configure if any app/ or entry-point sources leaked into colony_core.
+set(_colony_disallow_regexes
+  ".*/src/app/.*\\.(c|cc|cxx|cpp)$"
+  ".*/src/(launcher|tools)/.*\\.(c|cc|cxx|cpp)$"
+  ".*/(win32_main|VerticalSlice|main_win|EntryWinMain|WinMain|LauncherMain)\\.(c|cc|cxx|cpp)$"
+  ".*/platform/win/(WinLauncher|WinMain|VerticalSlice|win32_main|main_win|LauncherMain|AppMain|win_entry)\\.(c|cc|cxx|cpp)$"
+  ".*/colonygame\\.(c|cc|cxx|cpp)$"
+)
+
+set(_colony_leaks "")
+foreach(_f IN LISTS SRC_ALL)                                # foreach over list items. :contentReference[oaicite:1]{index=1}
+  foreach(_rx IN LISTS _colony_disallow_regexes)
+    if(_f MATCHES "${_rx}")                                 # regex match test. :contentReference[oaicite:2]{index=2}
+      list(APPEND _colony_leaks "${_f}")
+      break()
+    endif()
+  endforeach()
+endforeach()
+list(REMOVE_DUPLICATES _colony_leaks)                       # ensure unique report. :contentReference[oaicite:3]{index=3}
+if(_colony_leaks)
+  list(JOIN _colony_leaks "\n  " _colony_leaks_joined)
+  message(FATAL_ERROR                                       # hard stop on violation. :contentReference[oaicite:4]{index=4}
+    "Guardrail: The following app/ or entrypoint sources leaked into colony_core:\n  ${_colony_leaks_joined}\n"
+    "Update the filters in src/CMakeLists.txt to exclude them."
+  )
+endif()
+# -------------------------------------------------------------------------------
 
 # ------------------------------ Core library -----------------------------
 add_library(colony_core STATIC ${SRC_ALL})
