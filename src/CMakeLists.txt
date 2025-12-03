@@ -89,7 +89,17 @@ else()
 endif()
 
 # -------------------------------------------------------------------------------------------------
-# Library: colony_core (engine + game code)
+# >>> PATCH: Ensure NO Windows entry points are compiled into colony_core <<<
+# (Keep all possible wWinMain/WinMain providers out of the core library.)
+# -------------------------------------------------------------------------------------------------
+list(FILTER SRC_ALL EXCLUDE REGEX ".*/platform/win/(WinLauncher|WinMain|VerticalSlice|win32_main|main_win|LauncherMain|AppMain|win_entry)\\.(c|cc|cxx|cpp)$")
+list(FILTER SRC_ALL EXCLUDE REGEX ".*/colonygame\\.(c|cc|cxx|cpp)$")
+
+# Defensive dedup in case any file matched more than once through different globs
+list(REMOVE_DUPLICATES SRC_ALL)
+
+# -------------------------------------------------------------------------------------------------
+# Library: colony_core (engine + game code) — NO entry points in this target
 # -------------------------------------------------------------------------------------------------
 add_library(colony_core STATIC ${SRC_ALL})
 
@@ -262,7 +272,7 @@ endif()
 
 # -------------------------------------------------------------------------------------------------
 # Executable: keep the game thin; it links the core lib.
-# (The actual entry point(s) are compiled into colony_core by design.)
+# (The entry point now lives **only** in this target.)
 # -------------------------------------------------------------------------------------------------
 add_executable(ColonyGame)
 
@@ -311,6 +321,23 @@ if(FRONTEND STREQUAL "sdl")
     target_link_libraries(ColonyGame PRIVATE SDL2::SDL2main)
   endif()
   target_link_libraries(ColonyGame PRIVATE SDL2::SDL2)
+endif()
+
+# >>> PATCH: Add exactly one Windows entry point to ColonyGame (non-SDL frontend) <<<
+if(WIN32 AND NOT (FRONTEND STREQUAL "sdl"))
+  set(_ENTRY_ADDED OFF)
+  foreach(_cand
+      "${CMAKE_SOURCE_DIR}/src/platform/win/WinLauncher.cpp"
+      "${CMAKE_SOURCE_DIR}/platform/win/WinLauncher.cpp")
+    if(EXISTS "${_cand}")
+      target_sources(ColonyGame PRIVATE "${_cand}")
+      set(_ENTRY_ADDED ON)
+      break()
+    endif()
+  endforeach()
+  if(NOT _ENTRY_ADDED)
+    message(FATAL_ERROR "WinLauncher.cpp not found. Provide a single Windows entry point and add it to ColonyGame.")
+  endif()
 endif()
 
 # Add Windows platform resources and helpers (manifest, version info, crash handler, GPU preference)
