@@ -299,9 +299,9 @@ endif()
 
 # --------------------------------- SHADERS --------------------------------
 if(CMAKE_GENERATOR MATCHES "Visual Studio")
-  set(HLSL_DIR "${CMAKE_SOURCE_DIR}/renderer/Shaders")
-  set(HLSL_INC_PRIMARY "${HLSL_DIR}/include")
-  set(HLSL_INC_ALT     "${CMAKE_SOURCE_DIR}/shaders/include")
+  set(HLSL_DIR  "${CMAKE_SOURCE_DIR}/renderer/Shaders")
+  set(HLSL_INC_PRIMARY  "${HLSL_DIR}/include")
+  set(HLSL_INC_ALT      "${CMAKE_SOURCE_DIR}/shaders/include")
   set(_VS_OUTDIR "$(OutDir)res\\shaders")
 
   # Vertex/Pixel always
@@ -309,6 +309,7 @@ if(CMAKE_GENERATOR MATCHES "Visual Studio")
     "${HLSL_DIR}/*_vs.hlsl"
     "${HLSL_DIR}/*_ps.hlsl"
   )
+
   # Compute only when enabled (prevents X3501 if CSMain isn’t present yet)
   file(GLOB_RECURSE HLSL_CS_ALL CONFIGURE_DEPENDS "${HLSL_DIR}/*_cs.hlsl")
   if(COLONY_ENABLE_COMPUTE_SHADERS)
@@ -336,61 +337,94 @@ if(CMAKE_GENERATOR MATCHES "Visual Studio")
   source_group("Shaders\\Library"  FILES ${HLSL_LIBRARY})
   source_group("Shaders\\Includes" FILES ${HLSL_INCLUDES})
 
-  set(_HLSL_INC_FLAGS "")
-  if(EXISTS "${HLSL_INC_PRIMARY}") string(APPEND _HLSL_INC_FLAGS " /I\"${HLSL_INC_PRIMARY}\"") endif()
-  if(EXISTS "${HLSL_INC_ALT}")     string(APPEND _HLSL_INC_FLAGS " /I\"${HLSL_INC_ALT}\"")     endif()
+  # Build a safe include flag string for FXC (avoid semicolons in VS_SHADER_FLAGS).
+  set(_HLSL_INC_FLAGS_LIST "")
+  if(EXISTS "${HLSL_INC_PRIMARY}")
+    list(APPEND _HLSL_INC_FLAGS_LIST "/I\"${HLSL_INC_PRIMARY}\"")
+  endif()
+  if(EXISTS "${HLSL_INC_ALT}")
+    list(APPEND _HLSL_INC_FLAGS_LIST "/I\"${HLSL_INC_ALT}\"")
+  endif()
+  if(_HLSL_INC_FLAGS_LIST)
+    string(JOIN " " _HLSL_INC_FLAGS_STR ${_HLSL_INC_FLAGS_LIST})
+  else()
+    set(_HLSL_INC_FLAGS_STR "")
+  endif()
 
   function(_configure_vs_shader _file)
     get_filename_component(_we "${_file}" NAME_WE)
-    set(_type "") ; set(_entry "")
-    if(_we MATCHES "_vs$")      ; set(_type "Vertex")  ; set(_entry "VSMain")
-    elseif(_we MATCHES "_ps$")  ; set(_type "Pixel")   ; set(_entry "PSMain")
-    elseif(_we MATCHES "_cs$")  ; set(_type "Compute") ; set(_entry "CSMain")
-    else() return() endif()
+    set(_type "")
+    set(_entry "")
+    if(_we MATCHES "_vs$")
+      set(_type "Vertex")
+      set(_entry "VSMain")
+    elseif(_we MATCHES "_ps$")
+      set(_type "Pixel")
+      set(_entry "PSMain")
+    elseif(_we MATCHES "_cs$")
+      set(_type "Compute")
+      set(_entry "CSMain")
+    else()
+      return()
+    endif()
+
+    # Use dedicated props for /Zi and /Od instead of stuffing them in VS_SHADER_FLAGS.
+    # (These exist since CMake 3.11; generator-expr support since 3.12.)
     set_source_files_properties("${_file}" PROPERTIES
-      VS_SHADER_TYPE              "${_type}"
-      VS_SHADER_MODEL             "5.0"
-      VS_SHADER_ENTRYPOINT        "${_entry}"          # per-file entry name
-      VS_SHADER_OBJECT_FILE_NAME  "${_VS_OUTDIR}\\%(Filename).cso"
-      VS_SHADER_FLAGS             "$<$<CONFIG:Debug>:/Od;/Zi>${_HLSL_INC_FLAGS}"
+      VS_SHADER_TYPE               "${_type}"                   # CMake 3.1+ :contentReference[oaicite:3]{index=3}
+      VS_SHADER_MODEL              "5.0"                        # CMake 3.1+ :contentReference[oaicite:4]{index=4}
+      VS_SHADER_ENTRYPOINT         "${_entry}"
+      VS_SHADER_OBJECT_FILE_NAME   "${_VS_OUTDIR}\\%(Filename).cso"
+      VS_SHADER_ENABLE_DEBUG       "$<CONFIG:Debug>"            # emits -Zi in Debug :contentReference[oaicite:5]{index=5}
+      VS_SHADER_DISABLE_OPTIMIZATIONS "$<CONFIG:Debug>"         # emits -Od in Debug :contentReference[oaicite:6]{index=6}
+      VS_SHADER_FLAGS              "${_HLSL_INC_FLAGS_STR}"     # only include paths here :contentReference[oaicite:7]{index=7}
     )
   endfunction()
 
-  foreach(_sh IN LISTS HLSL_SOURCES) _configure_vs_shader("${_sh}") endforeach()
+  foreach(_sh IN LISTS HLSL_SOURCES)
+    _configure_vs_shader("${_sh}")
+  endforeach()
 
 else()
   include(${CMAKE_SOURCE_DIR}/cmake/ColonyShaders.cmake OPTIONAL RESULT_VARIABLE _colony_shaders_included)
+
   set(_COLONY_MANIFEST "")
   if(EXISTS "${CMAKE_SOURCE_DIR}/renderer/Shaders/shaders.json")
     set(_COLONY_MANIFEST "${CMAKE_SOURCE_DIR}/renderer/Shaders/shaders.json")
   elseif(EXISTS "${CMAKE_SOURCE_DIR}/shaders/shaders.json")
     set(_COLONY_MANIFEST "${CMAKE_SOURCE_DIR}/shaders/shaders.json")
   endif()
+
   if(_COLONY_MANIFEST AND COMMAND colony_register_shaders)
     set(_COLONY_SHADER_OUT "${CMAKE_BINARY_DIR}/shaders")
     colony_register_shaders(
-      TARGET ColonyGame
-      MANIFEST "${_COLONY_MANIFEST}"
-      OUTPUT_DIR "${_COLONY_SHADER_OUT}"
+      TARGET       ColonyGame
+      MANIFEST     "${_COLONY_MANIFEST}"
+      OUTPUT_DIR   "${_COLONY_SHADER_OUT}"
       INCLUDE_DIRS
         "${CMAKE_SOURCE_DIR}/renderer/Shaders"
         "${CMAKE_SOURCE_DIR}/renderer/Shaders/include"
         "${CMAKE_SOURCE_DIR}/shaders"
         "${CMAKE_SOURCE_DIR}/shaders/include"
-      DXC_ARGS -nologo
+      DXC_ARGS     -nologo
     )
+
     if(COMMAND colony_install_shaders)
       colony_install_shaders(TARGET ColonyGame DESTINATION bin/shaders)
     endif()
+
     add_custom_command(TARGET ColonyGame POST_BUILD
-      COMMAND ${CMAKE_COMMAND} -E make_directory "${_RUNTIME_DIR}/res/shaders"
-      COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_BINARY_DIR}/shaders/$<CONFIG>" "${_RUNTIME_DIR}/res/shaders"
+      COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:ColonyGame>/res/shaders"
+      COMMAND ${CMAKE_COMMAND} -E copy_directory
+              "${CMAKE_BINARY_DIR}/shaders/$<CONFIG>"
+              "$<TARGET_FILE_DIR:ColonyGame>/res/shaders"
       VERBATIM
     )
   else()
     message(STATUS "No shaders.json manifest found; DXC shader registration skipped.")
   endif()
 endif()
+
 
 # ------------------------------- Install ----------------------------------
 install(TARGETS ColonyGame RUNTIME DESTINATION ".")
