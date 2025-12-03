@@ -38,6 +38,9 @@ file(GLOB_RECURSE SRC_ALL
   "${CMAKE_SOURCE_DIR}/platform/win/*.cpp" "${CMAKE_SOURCE_DIR}/platform/win/*.h"
 )
 
+# --- Minimal delta: keep app/ sources out of the core library ---
+list(FILTER SRC_ALL EXCLUDE REGEX ".*/src/app/.*\\.(c|cc|cxx|cpp)$")
+
 # Exclude vendored imgui sources if present
 list(FILTER SRC_ALL EXCLUDE REGEX ".*/third_party/imgui/.*")
 
