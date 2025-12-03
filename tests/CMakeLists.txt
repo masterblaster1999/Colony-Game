@@ -5,6 +5,11 @@ project(ColonyGameTests LANGUAGES CXX)
 include(FetchContent)
 
 # --------------------------------------------------------------------------------------
+# Use packaged doctest (vcpkg/CONFIG): provides target doctest::doctest
+# --------------------------------------------------------------------------------------
+find_package(doctest CONFIG REQUIRED)
+
+# --------------------------------------------------------------------------------------
 # PCG RNG: create a header-only INTERFACE target named 'pcg' (self-sufficient)
 # Try config package, then system include discovery, then FetchContent (imneme/pcg-cpp).
 # --------------------------------------------------------------------------------------
@@ -80,12 +85,12 @@ else()
 endif()
 
 # Include production headers (so tests can include repo headers directly)
-# + external/ so doctest is visible as <doctest/doctest.h>
 target_include_directories(colony_smoke PRIVATE
   ${CMAKE_SOURCE_DIR}/include
   ${CMAKE_SOURCE_DIR}/src
   ${CMAKE_SOURCE_DIR}/src/worldgen
-  ${CMAKE_SOURCE_DIR}/external      # provides <doctest/doctest.h>
+  # NOTE: intentionally NOT adding ${CMAKE_SOURCE_DIR}/external anymore:
+  # doctest comes from the imported target doctest::doctest
 )
 
 # If your repo defines common compile flags/defines in an interface target, pick it up (optional)
@@ -103,6 +108,9 @@ endif()
 
 # Link the (header-only) PCG target we created/discovered above
 target_link_libraries(colony_smoke PRIVATE pcg)
+
+# >>> Link doctest from the package (adds include paths & usage requirements)
+target_link_libraries(colony_smoke PRIVATE doctest::doctest)
 
 # --------------------------------------------------------------------------------------
 # CTest integration
