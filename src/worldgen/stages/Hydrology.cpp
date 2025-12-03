@@ -1,5 +1,6 @@
 // src/worldgen/stages/Hydrology.cpp
 #include "worldgen/WorldGen.hpp"
+#include "worldgen/WorldChunk.hpp"  // <-- FIX: bring full WorldChunk definition into this TU
 #include <algorithm>
 #include <utility>
 #include <vector>
@@ -9,10 +10,11 @@ namespace colony::worldgen {
 
 void HydrologyStage::generate(StageContext& ctx)
 {
+    // Initialize references at declaration time
     auto& H = ctx.out.height;
     auto& F = ctx.out.flow;
 
-    const int N = H.width();
+    const int N = H.width(); // If your grid lacks width(), use ctx.settings.cellsPerChunk
 
     // Process cells from high -> low so water always flows downhill deterministically
     std::vector<std::pair<int,int>> order;
