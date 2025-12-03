@@ -1,11 +1,8 @@
 #include "World.h"
 #include "Tags.h"
+#include "Destroy.h"          // ✅ Ensure comp::Destroy is a complete type before EnTT sees it
 #include <entt/entt.hpp>
 #include <cstddef> // std::size_t
-
-// If the Destroy tag isn't brought in by Tags.h, a forward declaration is
-// sufficient here because we only use it as a tag (no member access).
-namespace comp { struct Destroy; }
 
 using namespace ecs;
 
