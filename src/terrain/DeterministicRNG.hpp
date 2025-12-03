@@ -7,7 +7,7 @@
 // -----------------------------------------------------------------------------
 // Helper: two's-complement "negate" for unsigned types without using unary minus
 // This avoids MSVC warning C4146 ("unary minus applied to unsigned") while
-// keeping exact wraparound semantics for rotates, masks, etc. :contentReference[oaicite:1]{index=1}
+// keeping exact wraparound semantics for rotates, masks, etc.
 template <class UInt>
 [[nodiscard]] constexpr UInt neg_u(UInt x) noexcept {
     static_assert(std::is_unsigned_v<UInt>, "neg_u expects an unsigned type");
@@ -15,7 +15,7 @@ template <class UInt>
 }
 
 // Helper: 32-bit rotate-right. Prefer std::rotr if available (C++20 <bit>), else
-// fall back to a well-defined expression that uses neg_u for the left shift count. :contentReference[oaicite:2]{index=2}
+// fall back to a well-defined expression that uses neg_u for the left shift count.
 [[nodiscard]] constexpr std::uint32_t rotr32(std::uint32_t x, std::uint32_t r) noexcept {
 #if defined(__cpp_lib_bitops) && __cpp_lib_bitops >= 201907L
     return std::rotr(x, static_cast<int>(r)); // header <bit>
@@ -27,7 +27,7 @@ template <class UInt>
 
 // -----------------------------------------------------------------------------
 // Lightweight PCG32 (Melissa O'Neill). Deterministic across platforms with
-// fixed-width integers. See the PCG family paper and site. :contentReference[oaicite:3]{index=3}
+// fixed-width integers. See the PCG family paper and site.
 struct PCG32 {
     // Default stream & state used in the PCG reference examples.
     std::uint64_t state{ UINT64_C(0x853c49e6748fea9b) };
@@ -49,7 +49,7 @@ struct PCG32 {
         (void)next();
     }
 
-    // Core step: xorshift + rotate right by high bits of state. :contentReference[oaicite:4]{index=4}
+    // Core step: xorshift + rotate right by high bits of state.
     [[nodiscard]] std::uint32_t next() noexcept {
         const std::uint64_t oldstate = state;
         // LCG step (mod 2^64) with PCG multiplier
@@ -73,8 +73,9 @@ struct PCG32 {
 
     // Unbiased bounded integer in [0, bound) using rejection sampling.
     [[nodiscard]] std::uint32_t nextBounded(std::uint32_t bound) noexcept {
-        // From PCG "bounded rand" recipe.
-        const std::uint32_t threshold = static_cast<std::uint32_t>(-bound) % bound;
+        // From PCG "bounded rand" recipe: avoid bias by trimming the range.
+        // C4146-safe form: use neg_u instead of unary minus on an unsigned.
+        const std::uint32_t threshold = neg_u(bound) % bound;
         for (;;) {
             const std::uint32_t r = next();
             if (r >= threshold) return r % bound;
