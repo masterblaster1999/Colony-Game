@@ -4,6 +4,7 @@
 #include <DbgHelp.h>
 #include <cstdio>
 #include <ctime>
+#include <filesystem>   // <-- needed for std::filesystem::path/ops
 
 #pragma comment(lib, "Dbghelp.lib")
 
@@ -22,8 +23,8 @@ static LONG WINAPI UnhandledExceptionFilterFn(EXCEPTION_POINTERS* info) {
     GetModuleFileNameW(nullptr, exePath, MAX_PATH);
     std::filesystem::path base = std::filesystem::path(exePath).parent_path();
 
-    // If we stashed a dump dir in TLS, use it (set by InstallCrashHandler)
-    // Simple approach: read from process environment (set by InstallCrashHandler)
+    // If we stashed a dump dir in TLS, use it (set by InstallCrashHandler).
+    // Simple approach: read from process environment (set by InstallCrashHandler).
     wchar_t dumpDirBuf[MAX_PATH]{};
     DWORD n = GetEnvironmentVariableW(L"CG_DUMP_DIR", dumpDirBuf, MAX_PATH);
     std::filesystem::path outDir = (n > 0) ? std::filesystem::path(dumpDirBuf) : base;
@@ -39,9 +40,14 @@ static LONG WINAPI UnhandledExceptionFilterFn(EXCEPTION_POINTERS* info) {
     mei.ExceptionPointers = info;
     mei.ClientPointers = FALSE;
 
+    // Build a proper MINIDUMP_TYPE bitmask (fixes C2664).
+    const MINIDUMP_TYPE dumpType = static_cast<MINIDUMP_TYPE>(
+        MiniDumpWithIndirectlyReferencedMemory | MiniDumpScanMemory
+    );
+
     BOOL ok = MiniDumpWriteDump(
         GetCurrentProcess(), GetCurrentProcessId(), hFile,
-        MiniDumpWithIndirectlyReferencedMemory | MiniDumpScanMemory,
+        dumpType,
         info ? &mei : nullptr, nullptr, nullptr);
 
     CloseHandle(hFile);
@@ -54,7 +60,7 @@ static LONG WINAPI UnhandledExceptionFilterFn(EXCEPTION_POINTERS* info) {
 
 void InstallCrashHandler(const std::filesystem::path& dumpDir) {
     // Not strictly recommended to dump from within the crashing process,
-    // but widely used in practice; for full robustness, spawn a helper. :contentReference[oaicite:3]{index=3}
+    // but widely used in practice; for full robustness, spawn a helper.
     SetUnhandledExceptionFilter(&UnhandledExceptionFilterFn);
     // Stash dump dir in env for the filter
     SetEnvironmentVariableW(L"CG_DUMP_DIR", dumpDir.wstring().c_str());
