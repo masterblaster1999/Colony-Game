@@ -468,33 +468,7 @@ static std::vector<Vec2> poisson_disk(const U8Map& biomes, float radius, uint32_
 
 struct GraphResult { Outputs out; };
 
-static Outputs run_procedural_graph(const Params& P) {
-    // 1) base height
-    Map2D height = generate_height(P);
-
-    // 2) thermal erosion
-    thermal_erosion(height, P.thermal_iters, P.talus, P.thermal_strength);
-
-    // 3) flow & rivers
-    Map2D flow = flow_accumulation_D8(height);
-    carve_rivers(height, flow, P.river_threshold, P.river_depth);
-
-    // 4) climate & biomes
-    Map2D moisture = make_moisture(P);
-    Map2D temp     = make_temperature(P, height);
-    U8Map  biomes  = classify_biomes(temp, moisture, height, /*sea level in world units*/ 0.5f);
-
-    // 5) scattering (trees)
-    auto trees = poisson_disk(biomes, P.scatter_radius, P.seed ^ 0xBADCAFEu);
-
-    Outputs out;
-    out.height = std::move(height);
-    out.flow   = std::move(flow);
-    out.moisture = std::move(moisture);
-    out.temperature = std::move(temp);
-    out.biomes = std::move(biomes);
-    out.trees  = std::move(trees);
-    return out;
-}
+// Declaration only — definition moved to a .cpp to avoid C4505 under /WX
+Outputs run_procedural_graph(const Params& P);
 
 } // namespace pg
