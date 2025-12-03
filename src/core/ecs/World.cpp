@@ -1,8 +1,8 @@
+// src/core/ecs/World.cpp  -- fixed
 #include "World.h"
-#include "Tags.h"
-#include "Destroy.h"          // ✅ Ensure comp::Destroy is a complete type before EnTT sees it
+#include "Tags.h"                // comp::Destroy is fully defined here
 #include <entt/entt.hpp>
-#include <cstddef> // std::size_t
+#include <cstddef>               // std::size_t
 
 using namespace ecs;
 
@@ -19,9 +19,8 @@ World::World() {
     // Reserve some storage to avoid early reallocations (only if this EnTT supports it)
     try_reserve(reg_, 4096, 0);
 
-    // If you want to pre-reserve specific component pools instead (portable across EnTT):
+    // Alternatively, pre-reserve specific component pools:
     // reg_.storage<YourComponent>().reserve(4096);
-    // reg_.storage<AnotherComponent>().reserve(4096);
 }
 
 void World::begin_frame() {
@@ -38,6 +37,6 @@ void World::end_frame() {
 
     // Garbage: entities tagged for destruction
     if (auto view = reg_.view<comp::Destroy>()) {
-        reg_.destroy(view.begin(), view.end()); // range overload is concise & efficient
+        reg_.destroy(view.begin(), view.end());   // range destroy = idiomatic & efficient
     }
 }
