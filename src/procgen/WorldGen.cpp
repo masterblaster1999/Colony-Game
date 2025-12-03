@@ -3,6 +3,12 @@
 #include "procgen/Noise.h"
 #include "procgen/Poisson.h"
 #include "procgen/Erosion.h"
+
+// === New: worldgen connectors/siting/roads ===
+#include "worldgen/SettlementSitingGenerator.hpp"
+#include "worldgen/RoadNetworkGenerator.hpp"
+#include "worldgen/SettlementConnector.hpp"
+
 #include <random>
 #include <algorithm>
 #include <cmath>
@@ -183,6 +189,75 @@ WorldData generateWorld(const WorldParams& params) {
         // Taiga trees lighter density
         place(Biome::Taiga,      9.0f, ResourceType::Tree);
     }
+
+    // === New: Settlement siting + connectors to water + road network (drop‑in) ===
+    {
+        // Build a simple water mask (1 = water) from height and sea level.
+        std::vector<uint8_t> waterMask(out.height.size(), 0u);
+        for (int y=0; y<out.h; ++y){
+            for (int x=0; x<out.w; ++x){
+                size_t i = (size_t)id(x,y,out.w);
+                waterMask[i] = (out.height[i] <= params.seaLevel) ? 1u : 0u;
+            }
+        }
+
+        // 1) Choose good settlement sites
+        worldgen::SettlementParams SP;
+        SP.width  = out.w;
+        SP.height = out.h;
+        SP.cell_size_m = 10.0f;        // adjust to your world scale if you have it
+        SP.max_sites   = 6;
+        SP.min_site_spacing_cells = 70.0f;
+
+        worldgen::SettlementResult S =
+            worldgen::GenerateSettlementSites(
+                out.height, out.w, out.h, SP,
+                &waterMask,
+                /*flow_accum*/ nullptr,
+                /*fertility*/  nullptr,
+                /*road_mask*/  nullptr,
+                /*hand_m*/     nullptr);
+
+        // Collect centers as integer grid points
+        std::vector<worldgen::I2> centers;
+        centers.reserve(S.centers.size());
+        for (auto& c : S.centers) centers.push_back({c.x, c.y});
+
+        // 2) Auto‑connect each center to nearest shoreline, then into the road net
+        worldgen::ConnectorParams CP;
+        CP.width  = out.w;
+        CP.height = out.h;
+        CP.slope_weight = 6.5f;    // footpaths avoid steep slopes
+        CP.rdp_epsilon  = 0.75f;   // simplify short tracks
+
+        worldgen::RoadParams RP;
+        RP.width  = out.w;
+        RP.height = out.h;
+        RP.slope_weight = 7.5f;    // roads avoid steep slopes even more
+        RP.rdp_epsilon  = 1.2f;
+        RP.chaikin_refinements = 2;
+
+        worldgen::ConnectorResult CR =
+            worldgen::ConnectSettlementsToWaterAndRoads(
+                out.height, out.w, out.h,
+                /*water_mask*/        waterMask,
+                /*existing_road_mask*/nullptr,
+                /*river_order01*/     nullptr,
+                /*settlement_centers*/centers,
+                CP, RP);
+
+        // TODO: integrate CR results into your game's data model.
+        // For example, if WorldData gains fields like:
+        //   - std::vector<uint8_t> roadMask;
+        //   - std::vector<Polyline> roads;
+        // you could assign:
+        //   out.roadMask = CR.merged_path_mask;
+        //   out.roads    = CR.roads.roads;
+        // For now, silence unused-variable warnings:
+        (void)S;
+        (void)CR;
+    }
+    // === End of new connector/roads integration ===
 
     return out;
 }
