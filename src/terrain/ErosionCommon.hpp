@@ -15,7 +15,7 @@ struct HydraulicParams {
     float depositRate          = 0.30f;  // deposition rate when over capacity
     float friction             = 0.05f;  // damp flow velocity proxy
     float dt                   = 1.0f;   // simulation step
-    uint64_t seed              = 0xC01OnyULL;
+    uint64_t seed              = UINT64_C(0xC01);
 };
 
 struct ThermalParams {
