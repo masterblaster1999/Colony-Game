@@ -14,6 +14,7 @@
 
 #include "worldgen/Types.hpp"
 #include "worldgen/Common.hpp"
+#include "worldgen/detail/GridIndex.hpp"  // NEW: in-bounds & index helpers (inb, index3)
 
 namespace worldgen {
 
