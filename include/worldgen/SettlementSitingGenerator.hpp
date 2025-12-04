@@ -36,9 +36,10 @@
 #include <queue>
 #include <random>
 
-namespace worldgen {
+#include "worldgen/Types.hpp"   // unified I2 / Polyline definitions
+#include "worldgen/Common.hpp"  // index3, inb, clamp01
 
-struct I2 { int x=0, y=0; };
+namespace worldgen {
 
 struct SettlementParams {
     int   width = 0, height = 0;
@@ -69,13 +70,13 @@ struct SettlementParams {
     float slope_penalty_full01  = 0.70f;  // full penalty by here
 
     // Site picking (blue-noise-ish)
-    int   max_sites = 8;             // cap
+    int   max_sites = 8;                  // cap
     float min_site_spacing_cells = 60.0f; // Poisson min spacing
-    float min_score_to_seed = 0.55f; // absolute floor to consider as a site
+    float min_score_to_seed = 0.55f;      // absolute floor to consider as a site
     float footprint_radius_cells = 20.0f; // base circular footprint radius
 
     // RNG
-    uint64_t seed = 0x51TE517Eu;
+    uint64_t seed = 0x517E517Eu;          // valid unsigned literal (Windows/MSVC-safe)
 };
 
 struct SettlementCenter {
@@ -97,19 +98,19 @@ struct SettlementResult {
 
 namespace detail {
 
-inline size_t I(int x,int y,int W){ return (size_t)y*(size_t)W + (size_t)x; }
-inline bool inb(int x,int y,int W,int H){ return (unsigned)x<(unsigned)W && (unsigned)y<(unsigned)H; }
-inline float clamp01(float v){ return v<0.f?0.f:(v>1.f?1.f:v); }
-
 inline std::vector<float> slope01_from_height(const std::vector<float>& h,int W,int H){
     std::vector<float> s((size_t)W*H,0.f);
-    auto Hs=[&](int x,int y){ x=std::clamp(x,0,W-1); y=std::clamp(y,0,H-1); return h[I(x,y,W)]; };
+    auto Hs=[&](int x,int y){ 
+        x=std::clamp(x,0,W-1); 
+        y=std::clamp(y,0,H-1); 
+        return h[index3(x,y,W)]; 
+    };
     float gmax=1e-6f;
     for(int y=0;y<H;++y) for(int x=0;x<W;++x){
         float gx=0.5f*(Hs(x+1,y)-Hs(x-1,y));
         float gy=0.5f*(Hs(x,y+1)-Hs(x,y-1));
         float g=std::sqrt(gx*gx+gy*gy);
-        s[I(x,y,W)]=g; gmax=std::max(gmax,g);
+        s[index3(x,y,W)]=g; gmax=std::max(gmax,g);
     }
     for(float& v : s) v = (gmax>0.f)? v/gmax : 0.f;
     return s;
@@ -118,7 +119,7 @@ inline std::vector<float> slope01_from_height(const std::vector<float>& h,int W,
 // Integer 8-neigh BFS distance (cells) to a binary mask (1=candidate)
 inline std::vector<int> dist8_to_mask(const std::vector<uint8_t>& mask,int W,int H){
     const size_t N=(size_t)W*H;
-    std::vector<int> d(N, INT_MAX);
+    std::vector<int> d(N, std::numeric_limits<int>::max());
     std::queue<int> q;
     for(size_t i=0;i<N;++i){ if (mask[i]){ d[i]=0; q.push((int)i);} }
     static const int dx[8]={1,1,0,-1,-1,-1,0,1};
@@ -128,7 +129,7 @@ inline std::vector<int> dist8_to_mask(const std::vector<uint8_t>& mask,int W,int
         int x=v%W, y=v/W;
         for(int k=0;k<8;++k){
             int nx=x+dx[k], ny=y+dy[k]; if(!inb(nx,ny,W,H)) continue;
-            size_t j=I(nx,ny,W);
+            size_t j=index3(nx,ny,W);
             if (d[j] > d[(size_t)v]+1){ d[j]=d[(size_t)v]+1; q.push((int)j); }
         }
     }
@@ -139,6 +140,7 @@ inline float gauss_pref(float d_m, float ideal_m, float sigma_m){
     float z=(d_m-ideal_m)/std::max(1e-3f,sigma_m);
     return std::exp(-0.5f*z*z);
 }
+
 inline float slope_penalty(float s01,float start,float full){
     if (full<=start) return (s01<=start)? 0.f : 1.f;
     if (s01<=start) return 0.f;
@@ -150,7 +152,7 @@ inline float slope_penalty(float s01,float start,float full){
 inline std::vector<uint8_t> derive_water(const std::vector<float>& h,int W,int H,float sea){
     std::vector<uint8_t> m((size_t)W*H,0);
     for(int y=0;y<H;++y) for(int x=0;x<W;++x)
-        m[I(x,y,W)] = (h[I(x,y,W)] <= sea) ? 1u : 0u;
+        m[index3(x,y,W)] = (h[index3(x,y,W)] <= sea) ? 1u : 0u;
     return m;
 }
 
@@ -159,7 +161,11 @@ inline std::vector<uint8_t> derive_water(const std::vector<float>& h,int W,int H
 inline std::vector<float> confluence_strength(const std::vector<float>& flow01,int W,int H){
     if (flow01.empty()) return {};
     std::vector<float> c((size_t)W*H,0.f);
-    auto F=[&](int x,int y){ x=std::clamp(x,0,W-1); y=std::clamp(y,0,H-1); return flow01[I(x,y,W)]; };
+    auto F=[&](int x,int y){ 
+        x=std::clamp(x,0,W-1); 
+        y=std::clamp(y,0,H-1); 
+        return flow01[index3(x,y,W)]; 
+    };
     float mx=1e-6f;
     for(int y=0;y<H;++y) for(int x=0;x<W;++x){
         float here = F(x,y);
@@ -168,7 +174,7 @@ inline std::vector<float> confluence_strength(const std::vector<float>& flow01,i
         float incd = std::max(0.f, F(x+1,y+1)-here) + std::max(0.f, F(x-1,y-1)-here)
                    + std::max(0.f, F(x+1,y-1)-here) + std::max(0.f, F(x-1,y+1)-here);
         float v = 0.5f*(inc1+inc2) + 0.25f*incd;
-        c[I(x,y,W)] = v; mx=std::max(mx,v);
+        c[index3(x,y,W)] = v; mx=std::max(mx,v);
     }
     if (mx>0.f) for(float& v:c) v/=mx;
     return c;
@@ -182,7 +188,7 @@ struct RNG { std::mt19937_64 g; explicit RNG(uint64_t s):g(s){} float uf(){ retu
 
 inline SettlementResult GenerateSettlementSites(
     const std::vector<float>& height01, int W,int H,
-    const SettlementParams& P = {},
+    SettlementParams P = SettlementParams{},
     // Optional layers (W*H)
     const std::vector<uint8_t>* water_mask   = nullptr,
     const std::vector<float>*   flow_accum   = nullptr, // upstream cells (or any positive proxy)
@@ -223,7 +229,7 @@ inline SettlementResult GenerateSettlementSites(
 
     // 2) Score each cell (weighted overlay with penalties)
     for(int y=0;y<H;++y) for(int x=0;x<W;++x){
-        size_t i=detail::I(x,y,W);
+        size_t i=detail::index3(x,y,W);
         if (wmask[i]){ R.suitability01[i]=0.f; continue; } // no water cells
 
         // proximity to water, but not too close
@@ -282,7 +288,7 @@ inline SettlementResult GenerateSettlementSites(
         for(int oy=-Rcells;oy<=Rcells;++oy){
             for(int ox=-Rcells;ox<=Rcells;++ox){
                 int nx=x+ox, ny=y+oy; if(!detail::inb(nx,ny,W,H)) continue;
-                if (taken[detail::I(nx,ny,W)]) return false;
+                if (taken[detail::index3(nx,ny,W)]) return false;
             }
         }
         return true;
@@ -301,7 +307,7 @@ inline SettlementResult GenerateSettlementSites(
         for(int oy=-Rcells;oy<=Rcells;++oy){
             for(int ox=-Rcells;ox<=Rcells;++ox){
                 int nx=x+ox, ny=y+oy; if(!detail::inb(nx,ny,W,H)) continue;
-                if ((ox*ox + oy*oy) <= Rcells*Rcells) taken[detail::I(nx,ny,W)] = 1;
+                if ((ox*ox + oy*oy) <= Rcells*Rcells) taken[detail::index3(nx,ny,W)] = 1;
             }
         }
 
@@ -321,8 +327,8 @@ inline SettlementResult GenerateSettlementSites(
         for(int oy=-Rcells; oy<=Rcells; ++oy){
             for(int ox=-Rcells; ox<=Rcells; ++ox){
                 int nx=c.x+ox, ny=c.y+oy; if(!detail::inb(nx,ny,W,H)) continue;
-                if ((ox*ox + oy*oy) <= Rcells*Rcells && !wmask[detail::I(nx,ny,W)]){
-                    R.settlement_id[detail::I(nx,ny,W)] = sid;
+                if ((ox*ox + oy*oy) <= Rcells*Rcells && !wmask[detail::index3(nx,ny,W)]){
+                    R.settlement_id[detail::index3(nx,ny,W)] = sid;
                 }
             }
         }
