@@ -129,6 +129,26 @@ inline std::vector<I2> chaikin_open(const std::vector<I2>& in){
     return out;
 }
 
+// Remove consecutive duplicate cells (helps after smoothing)
+inline void dedupe_consecutive(std::vector<I2>& pts){
+    if (pts.empty()) return;
+    size_t w = 1;
+    for (size_t i=1;i<pts.size();++i){
+        if (pts[i].x!=pts[w-1].x || pts[i].y!=pts[w-1].y){
+            if (w!=i) pts[w]=pts[i];
+            ++w;
+        }
+    }
+    pts.resize(w);
+}
+
+// tiny deterministic hash for tie-breaking in A*
+inline uint32_t mixbits(uint32_t v){
+    v += 0x9e3779b9u; v ^= v >> 15; v *= 0x85ebca6bu;
+    v ^= v >> 13;     v *= 0xc2b2ae35u; v ^= v >> 16;
+    return v;
+}
+
 // A* to the nearest cell in a target mask (any 1-cell is a goal).
 struct Node { int x,y,dir; float f,g; };
 struct QCmp { bool operator()(const Node& a,const Node& b) const { return a.f>b.f; } };
@@ -171,7 +191,7 @@ inline bool astar_to_mask(const I2& start,
                 outPath.push_back(I2{x,y});
                 idx = came[(size_t)idx];
             }
-            std::reverse(outPath.begin(), outPath.end()); // two-iterator form. :contentReference[oaicite:1]{index=1}
+            std::reverse(outPath.begin(), outPath.end()); // two-iterator form
             return true;
         }
 
@@ -209,7 +229,12 @@ inline bool astar_to_mask(const I2& start,
                 g[ni] = tentative;
                 came[ni] = (int)ci;
                 cameDir[ni] = k;
-                const float f = tentative + Hfun(nx,ny);
+
+                // deterministic, tiny tie-breaker (stable expansions)
+                const uint32_t m = mixbits((uint32_t)(nx*73856093) ^ (uint32_t)(ny*19349663) ^ (uint32_t)P.seed);
+                const float tiebreak = (float)(m & 0xFFFFu) * (1.0f/65536.0f) * 1e-6f;
+
+                const float f = tentative + Hfun(nx,ny) + tiebreak;
                 open.push(Node{nx,ny,k,f,tentative});
             }
         }
@@ -259,24 +284,28 @@ inline RoadResult GenerateRoadNetwork(
         if (!ok) return; // unreachable; skip silently
 
         // Detect bridges/fords and update mask
-        bool inWater=false; int wlen=0; I2 entry{};
+        bool inWater=false; int wlen=0; I2 entry{}; size_t entryIdx=0;
         for (size_t i=0;i<path.size(); ++i){
             I2 p = path[i];
             size_t pi = detail::index3(p.x,p.y,W);
             R.road_mask[pi]=1u;
 
             bool water = (water_mask && (*water_mask)[pi]);
-            if (water && !inWater){ inWater=true; wlen=1; entry=p; }
+            if (water && !inWater){ inWater=true; wlen=1; entry=p; entryIdx=i; }
             else if (water && inWater){ ++wlen; }
             else if (!water && inWater){ // leaving water
                 inWater=false;
                 if (wlen >= P.min_bridge_len_cells){
                     I2 exit = p;
-                    I2 mid  = path[i - wlen/2];
+                    size_t midIdx = entryIdx + (size_t)(wlen/2);
+                    if (midIdx >= path.size()) midIdx = path.size()-1;
+                    I2 mid  = path[midIdx];
                     R.bridges.push_back(Bridge{entry, exit, mid, wlen, /*likely_ford*/ wlen <= 3});
                 }else if(P.mark_fords_when_short){
                     I2 exit = p;
-                    I2 mid  = path[i - std::max(1, wlen/2)];
+                    size_t midIdx = entryIdx + (size_t)std::max(1, wlen/2);
+                    if (midIdx >= path.size()) midIdx = path.size()-1;
+                    I2 mid  = path[midIdx];
                     R.bridges.push_back(Bridge{entry, exit, mid, wlen, /*likely_ford*/ true});
                 }
             }
@@ -288,6 +317,7 @@ inline RoadResult GenerateRoadNetwork(
             std::vector<I2> simp; detail::rdp(pl.pts, P.rdp_epsilon, simp); pl.pts.swap(simp);
         }
         for (int r=0; r<P.chaikin_refinements; ++r) pl.pts = detail::chaikin_open(pl.pts);
+        detail::dedupe_consecutive(pl.pts);
 
         R.roads.push_back(std::move(pl));
         // extend goal set with the new road cells
