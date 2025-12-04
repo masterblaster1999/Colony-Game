@@ -171,43 +171,45 @@ inline bool astar_to_mask(const I2& start,
                 outPath.push_back(I2{x,y});
                 idx = came[(size_t)idx];
             }
-            std::reverse(outPath.begin(), outPath.end()); // two-iterator form
+            std::reverse(outPath.begin(), outPath.end()); // two-iterator form. :contentReference[oaicite:1]{index=1}
             return true;
         }
+
+        // --- C4244-SAFE STEP COST (Option A) ---
+        auto step_cost = [&](int dir) -> float {
+            // diagonals are odd indices: 1,3,5,7
+            return (dir & 1) ? P.diagonal_cost : 1.0f;
+        };
 
         for(int k=0;k<8;++k){
             int nx=cur.x+dx[k], ny=cur.y+dy[k];
             if(!inb(nx,ny,W,H)) continue;
             size_t ni=index3(nx,ny,W);
 
-            // C4244-safe: compute the step cost as float without int->float conversions.
-            // Cardinals = 1.0f; diagonals use P.diagonal_cost.
-            const bool isDiagonal = (k & 1) != 0; // 1,3,5,7
-            float step = isDiagonal ? P.diagonal_cost : 1.0f;
-
-            float base = baseCost[ni];
+            const float step = step_cost(k);           // float by construction
+            const float base = baseCost[ni];
 
             // water penalty
-            float water = 0.f;
+            float water = 0.0f;
             if (waterMask && (*waterMask)[ni]) water += P.water_step_penalty;
 
             // river penalty (normalized 0..1)
-            float riv = (river01? (*river01)[ni] : 0.f) * P.river_step_weight;
+            const float riv = (river01? (*river01)[ni] : 0.0f) * P.river_step_weight;
 
             // turn penalty (prefer smooth roads)
-            float turn = 0.f;
+            float turn = 0.0f;
             if (cur.dir!=-1){
                 int d = std::abs(k - cur.dir); d = std::min(d, 8-d);
-                turn = P.turn_weight * float(d);
+                turn = P.turn_weight * static_cast<float>(d);
             }
 
-            float tentative = g[ci] + step + base + water + riv + turn;
+            const float tentative = g[ci] + step + base + water + riv + turn;
 
             if (tentative < g[ni]){
                 g[ni] = tentative;
                 came[ni] = (int)ci;
                 cameDir[ni] = k;
-                float f = tentative + Hfun(nx,ny);
+                const float f = tentative + Hfun(nx,ny);
                 open.push(Node{nx,ny,k,f,tentative});
             }
         }
@@ -282,7 +284,7 @@ inline RoadResult GenerateRoadNetwork(
 
         // 4) Simplify & smooth → store as road polyline
         Polyline pl; pl.pts = std::move(path); // <utility> enables this 1-arg move.
-        if (P.rdp_epsilon > 0.f){
+        if (P.rdp_epsilon > 0.0f){
             std::vector<I2> simp; detail::rdp(pl.pts, P.rdp_epsilon, simp); pl.pts.swap(simp);
         }
         for (int r=0; r<P.chaikin_refinements; ++r) pl.pts = detail::chaikin_open(pl.pts);
