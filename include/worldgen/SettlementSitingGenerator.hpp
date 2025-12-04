@@ -36,20 +36,12 @@
 #include <queue>
 #include <random>
 
-#include "worldgen/Types.hpp"   // unified I2 / Polyline definitions
-#include "worldgen/Common.hpp"  // index3, inb, clamp01
+#include "worldgen/Types.hpp"                // unified I2 / Polyline definitions
+#include "worldgen/Common.hpp"               // clamp01
+#include "worldgen/detail/GridIndex.hpp"     // unified grid helpers (inb, index2/index3)
 
-// --- Ensure helper declarations are visible before any use ---
-namespace worldgen { namespace detail {
-    // Forward declarations; definitions may live in Common.hpp or later.
-    size_t I(int x, int y, int W);
-    bool   inb(int x, int y, int W, int H);
-    float  clamp01(float v);
-    // Provide the missing 2D flat index helper used by call sites.
-    inline constexpr size_t index3(int x, int y, int W) noexcept {
-        return (static_cast<size_t>(y) * static_cast<size_t>(W)) + static_cast<size_t>(x);
-    }
-}}
+// NOTE: Removed duplicate local helpers (inb/index) to avoid ODR/constexpr clashes.
+//       All grid utilities now come from worldgen/detail/GridIndex.hpp.
 
 namespace worldgen {
 
@@ -112,17 +104,17 @@ namespace detail {
 
 inline std::vector<float> slope01_from_height(const std::vector<float>& h,int W,int H){
     std::vector<float> s((size_t)W*H,0.f);
-    auto Hs=[&](int x,int y){ 
-        x=std::clamp(x,0,W-1); 
-        y=std::clamp(y,0,H-1); 
-        return h[index3(x,y,W)]; 
+    auto Hs=[&](int x,int y){
+        x=std::clamp(x,0,W-1);
+        y=std::clamp(y,0,H-1);
+        return h[detail::index2(x,y,W)];
     };
     float gmax=1e-6f;
     for(int y=0;y<H;++y) for(int x=0;x<W;++x){
         float gx=0.5f*(Hs(x+1,y)-Hs(x-1,y));
         float gy=0.5f*(Hs(x,y+1)-Hs(x,y-1));
         float g=std::sqrt(gx*gx+gy*gy);
-        s[index3(x,y,W)]=g; gmax=std::max(gmax,g);
+        s[detail::index2(x,y,W)]=g; gmax=std::max(gmax,g);
     }
     for(float& v : s) v = (gmax>0.f)? v/gmax : 0.f;
     return s;
@@ -140,8 +132,8 @@ inline std::vector<int> dist8_to_mask(const std::vector<uint8_t>& mask,int W,int
         int v=q.front(); q.pop();
         int x=v%W, y=v/W;
         for(int k=0;k<8;++k){
-            int nx=x+dx[k], ny=y+dy[k]; if(!inb(nx,ny,W,H)) continue;
-            size_t j=index3(nx,ny,W);
+            int nx=x+dx[k], ny=y+dy[k]; if(!detail::inb(nx,ny,W,H)) continue;
+            size_t j=detail::index2(nx,ny,W);
             if (d[j] > d[(size_t)v]+1){ d[j]=d[(size_t)v]+1; q.push((int)j); }
         }
     }
@@ -164,7 +156,7 @@ inline float slope_penalty(float s01,float start,float full){
 inline std::vector<uint8_t> derive_water(const std::vector<float>& h,int W,int H,float sea){
     std::vector<uint8_t> m((size_t)W*H,0);
     for(int y=0;y<H;++y) for(int x=0;x<W;++x)
-        m[index3(x,y,W)] = (h[index3(x,y,W)] <= sea) ? 1u : 0u;
+        m[detail::index2(x,y,W)] = (h[detail::index2(x,y,W)] <= sea) ? 1u : 0u;
     return m;
 }
 
@@ -173,10 +165,10 @@ inline std::vector<uint8_t> derive_water(const std::vector<float>& h,int W,int H
 inline std::vector<float> confluence_strength(const std::vector<float>& flow01,int W,int H){
     if (flow01.empty()) return {};
     std::vector<float> c((size_t)W*H,0.f);
-    auto F=[&](int x,int y){ 
-        x=std::clamp(x,0,W-1); 
-        y=std::clamp(y,0,H-1); 
-        return flow01[index3(x,y,W)]; 
+    auto F=[&](int x,int y){
+        x=std::clamp(x,0,W-1);
+        y=std::clamp(y,0,H-1);
+        return flow01[detail::index2(x,y,W)];
     };
     float mx=1e-6f;
     for(int y=0;y<H;++y) for(int x=0;x<W;++x){
@@ -186,7 +178,7 @@ inline std::vector<float> confluence_strength(const std::vector<float>& flow01,i
         float incd = std::max(0.f, F(x+1,y+1)-here) + std::max(0.f, F(x-1,y-1)-here)
                    + std::max(0.f, F(x+1,y-1)-here) + std::max(0.f, F(x-1,y+1)-here);
         float v = 0.5f*(inc1+inc2) + 0.25f*incd;
-        c[index3(x,y,W)] = v; mx=std::max(mx,v);
+        c[detail::index2(x,y,W)] = v; mx=std::max(mx,v);
     }
     if (mx>0.f) for(float& v:c) v/=mx;
     return c;
@@ -241,7 +233,7 @@ inline SettlementResult GenerateSettlementSites(
 
     // 2) Score each cell (weighted overlay with penalties)
     for(int y=0;y<H;++y) for(int x=0;x<W;++x){
-        size_t i=detail::index3(x,y,W);
+        size_t i=detail::index2(x,y,W);
         if (wmask[i]){ R.suitability01[i]=0.f; continue; } // no water cells
 
         // proximity to water, but not too close
@@ -300,7 +292,7 @@ inline SettlementResult GenerateSettlementSites(
         for(int oy=-Rcells;oy<=Rcells;++oy){
             for(int ox=-Rcells;ox<=Rcells;++ox){
                 int nx=x+ox, ny=y+oy; if(!detail::inb(nx,ny,W,H)) continue;
-                if (taken[detail::index3(nx,ny,W)]) return false;
+                if (taken[detail::index2(nx,ny,W)]) return false;
             }
         }
         return true;
@@ -319,7 +311,7 @@ inline SettlementResult GenerateSettlementSites(
         for(int oy=-Rcells;oy<=Rcells;++oy){
             for(int ox=-Rcells;ox<=Rcells;++ox){
                 int nx=x+ox, ny=y+oy; if(!detail::inb(nx,ny,W,H)) continue;
-                if ((ox*ox + oy*oy) <= Rcells*Rcells) taken[detail::index3(nx,ny,W)] = 1;
+                if ((ox*ox + oy*oy) <= Rcells*Rcells) taken[detail::index2(nx,ny,W)] = 1;
             }
         }
 
@@ -339,8 +331,8 @@ inline SettlementResult GenerateSettlementSites(
         for(int oy=-Rcells; oy<=Rcells; ++oy){
             for(int ox=-Rcells; ox<=Rcells; ++ox){
                 int nx=c.x+ox, ny=c.y+oy; if(!detail::inb(nx,ny,W,H)) continue;
-                if ((ox*ox + oy*oy) <= Rcells*Rcells && !wmask[detail::index3(nx,ny,W)]){
-                    R.settlement_id[detail::index3(nx,ny,W)] = sid;
+                if ((ox*ox + oy*oy) <= Rcells*Rcells && !wmask[detail::index2(nx,ny,W)]){
+                    R.settlement_id[detail::index2(nx,ny,W)] = sid;
                 }
             }
         }
