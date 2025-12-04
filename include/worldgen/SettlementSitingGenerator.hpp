@@ -37,11 +37,8 @@
 #include <random>
 
 #include "worldgen/Types.hpp"                // unified I2 / Polyline definitions
-#include "worldgen/Common.hpp"               // clamp01
-#include "worldgen/detail/GridIndex.hpp"     // unified grid helpers (inb, index2/index3)
-
-// NOTE: Removed duplicate local helpers (inb/index) to avoid ODR/constexpr clashes.
-//       All grid utilities now come from worldgen/detail/GridIndex.hpp.
+#include "worldgen/Common.hpp"               // ::worldgen::clamp01
+#include "worldgen/detail/GridIndex.hpp"     // detail::inb, detail::index2/index3
 
 namespace worldgen {
 
@@ -150,7 +147,7 @@ inline float slope_penalty(float s01,float start,float full){
     if (s01<=start) return 0.f;
     if (s01>=full)  return 1.f;
     float t=(s01-start)/(full-start);
-    return detail::clamp01(t);
+    return ::worldgen::clamp01(t); // FIX: use worldgen::clamp01
 }
 
 inline std::vector<uint8_t> derive_water(const std::vector<float>& h,int W,int H,float sea){
@@ -208,7 +205,8 @@ inline SettlementResult GenerateSettlementSites(
     auto slope01 = detail::slope01_from_height(height01, W,H);
     R.suitability01.assign(N, 0.f);
     R.slope01.resize(N);
-    for(size_t i=0;i<N;++i) R.slope01[i] = (uint8_t)std::lround(detail::clamp01(slope01[i])*255.f);
+    for(size_t i=0;i<N;++i)
+        R.slope01[i] = (uint8_t)std::lround(::worldgen::clamp01(slope01[i])*255.f); // FIX
 
     // Water mask (derive from sea level if not provided)
     std::vector<uint8_t> wmask = water_mask ? *water_mask : detail::derive_water(height01, W,H, P.sea_level);
@@ -247,7 +245,7 @@ inline SettlementResult GenerateSettlementSites(
         float slope_pen = detail::slope_penalty(slope01[i], P.slope_penalty_start01, P.slope_penalty_full01);
 
         // soil/farming
-        float fert = fertility01 ? detail::clamp01((*fertility01)[i]) : 0.5f; // neutral if missing
+        float fert = fertility01 ? ::worldgen::clamp01((*fertility01)[i]) : 0.5f; // FIX
 
         // access to roads
         float access = 0.f;
@@ -264,7 +262,7 @@ inline SettlementResult GenerateSettlementSites(
         float flood = 0.f;
         if (hand_m && !hand_m->empty()){
             float h = std::max(0.f, (*hand_m)[i]); // meters above nearest drainage
-            flood = detail::clamp01(1.f - (h / std::max(1e-3f, P.hand_flood_full_m)));
+            flood = ::worldgen::clamp01(1.f - (h / std::max(1e-3f, P.hand_flood_full_m))); // FIX
         }
 
         float score = 0.f;
@@ -277,7 +275,7 @@ inline SettlementResult GenerateSettlementSites(
         score -= P.flood_penalty * flood;
         score -= P.water_too_close_penalty * too_close;
 
-        R.suitability01[i] = detail::clamp01(score);
+        R.suitability01[i] = ::worldgen::clamp01(score); // FIX
     }
 
     // 3) Pick well-spaced centers (greedy blue-noise over descending score)
@@ -316,7 +314,7 @@ inline SettlementResult GenerateSettlementSites(
         }
 
         // radius scales with local fertility/flatness (simple heuristic)
-        float fert = fertility01 ? detail::clamp01((*fertility01)[(size_t)idx]) : 0.5f;
+        float fert = fertility01 ? ::worldgen::clamp01((*fertility01)[(size_t)idx]) : 0.5f; // FIX
         float flat = 1.f - slope01[(size_t)idx];
         float rad  = P.footprint_radius_cells * (0.8f + 0.4f * 0.5f*(fert+flat));
 
