@@ -23,9 +23,9 @@
 #include <queue>
 #include <cstdint>
 #include <cmath>
-#include <algorithm>
+#include <algorithm>  // reverse
 #include <limits>
-#include <utility>
+#include <utility>    // std::move
 
 namespace worldgen {
 
@@ -35,20 +35,20 @@ struct RoadParams {
     int   width=0, height=0;
 
     // Cost surface controls
-    float slope_weight      = 8.0f;   // cost += slope01^2 * slope_weight
-    float diagonal_cost     = 1.41421356f; // √2 for 8-neigh
-    float water_step_penalty= 12.0f;  // entering water cell
-    float river_step_weight = 6.0f;   // multiplied by normalized river order/flow
-    float turn_weight       = 0.25f;  // penalty per (|Δdir| * π/4)
+    float slope_weight      = 8.0f;         // cost += slope01^2 * slope_weight
+    float diagonal_cost     = 1.41421356f;  // √2 for 8-neigh
+    float water_step_penalty= 12.0f;        // entering water cell
+    float river_step_weight = 6.0f;         // multiplied by normalized river order/flow
+    float turn_weight       = 0.25f;        // penalty per (|Δdir| * π/4)
 
     // Bridge detection (based on water mask)
-    int   min_bridge_len_cells = 2;   // contiguous water cells to count a bridge
+    int   min_bridge_len_cells = 2;         // contiguous water cells to count a bridge
     bool  mark_fords_when_short = true;
 
     // Post-processing
-    float rdp_epsilon       = 0.85f;  // cells; bigger → straighter roads
-    int   chaikin_refinements= 2;     // 0..3 is typical
-    bool  chaikin_open_paths = true;  // treat polylines as open
+    float rdp_epsilon       = 0.85f;        // cells; bigger → straighter roads
+    int   chaikin_refinements= 2;           // 0..3 is typical
+    bool  chaikin_open_paths = true;        // treat polylines as open
 
     // RNG (only used for minor tie-breaking)
     uint64_t seed = 0xA11E7EADu;
@@ -77,19 +77,24 @@ struct RoadResult {
 
 namespace detail {
 
-inline size_t I(int x,int y,int W){ return (size_t)y*(size_t)W + (size_t)x; }
+// Unambiguous 2D→1D index
+inline std::size_t index3(int x,int y,int W){
+    return static_cast<std::size_t>(y) * static_cast<std::size_t>(W)
+         + static_cast<std::size_t>(x);
+}
+
 inline bool inb(int x,int y,int W,int H){ return (unsigned)x<(unsigned)W && (unsigned)y<(unsigned)H; }
 inline float clamp01(float v){ return v<0.f?0.f:(v>1.f?1.f:v); }
 
 inline std::vector<float> slope01(const std::vector<float>& h,int W,int H){
     std::vector<float> s((size_t)W*H,0.f);
-    auto Hs=[&](int x,int y){ x=std::clamp(x,0,W-1); y=std::clamp(y,0,H-1); return h[I(x,y,W)]; };
+    auto Hs=[&](int x,int y){ x=std::clamp(x,0,W-1); y=std::clamp(y,0,H-1); return h[index3(x,y,W)]; };
     float gmax=1e-6f;
     for(int y=0;y<H;++y) for(int x=0;x<W;++x){
         float gx=0.5f*(Hs(x+1,y)-Hs(x-1,y));
         float gy=0.5f*(Hs(x,y+1)-Hs(x,y-1));
         float g=std::sqrt(gx*gx+gy*gy);
-        s[I(x,y,W)] = g; gmax = std::max(gmax, g);
+        s[index3(x,y,W)] = g; gmax = std::max(gmax, g);
     }
     for(float& v : s) v/=gmax;
     return s;
@@ -167,9 +172,7 @@ inline bool astar_to_mask(const I2& start,
     static const float stepC[8]={1,1.41421356f,1,1.41421356f,1,1.41421356f,1,1.41421356f};
 
     auto Hfun = [&](int x,int y)->float{
-        // admissible lower bound: grid distance to *nearest* possible goal ≈ 0
-        // Use simple distance to start to guide vaguely; or 0 to be safe. We'll use 0 for correctness.
-        (void)x; (void)y; return 0.0f;
+        (void)x; (void)y; return 0.0f; // admissible lower bound
     };
 
     const size_t N=(size_t)W*H;
@@ -178,13 +181,13 @@ inline bool astar_to_mask(const I2& start,
     std::vector<int>   cameDir(N, -1);
     std::priority_queue<Node,std::vector<Node>,QCmp> open;
 
-    size_t si=I(start.x,start.y,W);
+    size_t si=index3(start.x,start.y,W);
     g[si]=0.f;
     open.push(Node{start.x,start.y,-1, /*f*/0.f, /*g*/0.f});
 
     while(!open.empty()){
         Node cur = open.top(); open.pop();
-        size_t ci=I(cur.x,cur.y,W);
+        size_t ci=index3(cur.x,cur.y,W);
 
         if (goalMask[ci]){ // reconstruct
             outPath.clear();
@@ -194,14 +197,14 @@ inline bool astar_to_mask(const I2& start,
                 outPath.push_back(I2{x,y});
                 idx = came[(size_t)idx];
             }
-            std::reverse(outPath.begin(), outPath.end());
+            std::reverse(outPath.begin(), outPath.end()); // two-iterator form
             return true;
         }
 
         for(int k=0;k<8;++k){
             int nx=cur.x+dx[k], ny=cur.y+dy[k];
             if(!inb(nx,ny,W,H)) continue;
-            size_t ni=I(nx,ny,W);
+            size_t ni=index3(nx,ny,W);
 
             float step = stepC[k];
             float base = baseCost[ni];
@@ -269,7 +272,7 @@ inline RoadResult GenerateRoadNetwork(
 
     // 2) Seed the network mask with hubs (goals for the first routes)
     R.road_mask.assign(N, 0u);
-    auto mark = [&](const I2& p){ if(detail::inb(p.x,p.y,W,H)) R.road_mask[detail::I(p.x,p.y,W)] = 1u; };
+    auto mark = [&](const I2& p){ if(detail::inb(p.x,p.y,W,H)) R.road_mask[detail::index3(p.x,p.y,W)] = 1u; };
     for (auto h : sites.hubs) mark(h);
 
     // 3) Connect each target to the nearest existing network (A* to goal set)
@@ -282,7 +285,7 @@ inline RoadResult GenerateRoadNetwork(
         Bridge b{}; bool inWater=false; int wlen=0; I2 entry{};
         for (size_t i=0;i<path.size(); ++i){
             I2 p = path[i];
-            size_t pi = detail::I(p.x,p.y,W);
+            size_t pi = detail::index3(p.x,p.y,W);
             R.road_mask[pi]=1u;
 
             bool water = (water_mask && (*water_mask)[pi]);
@@ -311,7 +314,7 @@ inline RoadResult GenerateRoadNetwork(
 
         R.roads.push_back(std::move(pl));
         // extend goal set (network) with the new road cells
-        for (const auto& q : R.roads.back().pts) R.road_mask[detail::I(q.x,q.y,W)] = 1u;
+        for (const auto& q : R.roads.back().pts) R.road_mask[detail::index3(q.x,q.y,W)] = 1u;
     };
 
     // First ensure we have at least one hub; if not, treat first target as hub.
@@ -322,7 +325,7 @@ inline RoadResult GenerateRoadNetwork(
     // Greedy order: farther targets first tends to reduce redundant segments
     std::vector<I2> targets = sites.targets;
     auto sqrDistToAnyHub = [&](const I2& t){
-        long best = LONG_MAX;
+        long best = std::numeric_limits<long>::max();
         for (auto h : sites.hubs){ long dx=t.x-h.x, dy=t.y-h.y; best = std::min(best, dx*dx+dy*dy); }
         if (sites.hubs.empty()){ best = 0; }
         return best;
