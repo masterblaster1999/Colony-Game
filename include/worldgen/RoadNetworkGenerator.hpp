@@ -21,20 +21,20 @@ struct RoadParams {
     int   width=0, height=0;
 
     // Cost surface controls
-    float slope_weight      = 8.0f;         // cost += slope01^2 * slope_weight
-    float diagonal_cost     = 1.41421356f;  // √2 for 8-neigh
-    float water_step_penalty= 12.0f;        // entering water cell
-    float river_step_weight = 6.0f;         // multiplied by normalized river order/flow
-    float turn_weight       = 0.25f;        // penalty per (|Δdir| * π/4)
+    float slope_weight       = 8.0f;         // cost += slope01^2 * slope_weight
+    float diagonal_cost      = 1.41421356f;  // √2 for 8-neigh
+    float water_step_penalty = 12.0f;        // entering water cell
+    float river_step_weight  = 6.0f;         // multiplied by normalized river order/flow
+    float turn_weight        = 0.25f;        // penalty per (|Δdir| * π/4)
 
     // Bridge detection (based on water mask)
-    int   min_bridge_len_cells = 2;         // contiguous water cells to count a bridge
+    int   min_bridge_len_cells = 2;          // contiguous water cells to count a bridge
     bool  mark_fords_when_short = true;
 
     // Post-processing
-    float rdp_epsilon       = 0.85f;        // cells; bigger → straighter roads
-    int   chaikin_refinements= 2;           // 0..3 is typical
-    bool  chaikin_open_paths = true;        // treat polylines as open
+    float rdp_epsilon        = 0.85f;        // cells; bigger → straighter roads
+    int   chaikin_refinements= 2;            // 0..3 is typical
+    bool  chaikin_open_paths = true;         // treat polylines as open
 
     // RNG (only used for minor tie-breaking)
     uint64_t seed = 0xA11E7EADu;
@@ -49,11 +49,11 @@ struct Bridge {
 
 struct RoadResult {
     int W=0, H=0;
-    std::vector<uint8_t> road_mask;     // 1 on road cells
-    std::vector<Polyline> roads;        // simplified/smoothed
-    std::vector<Bridge> bridges;        // detected crossings
+    std::vector<uint8_t>  road_mask;   // 1 on road cells
+    std::vector<Polyline> roads;       // simplified/smoothed
+    std::vector<Bridge>   bridges;     // detected crossings
     // Debug helpers:
-    std::vector<float> cost_base;       // per-cell base cost (slope/water/river)
+    std::vector<float> cost_base;      // per-cell base cost (slope/water/river)
     std::vector<float> slope01;
 };
 
