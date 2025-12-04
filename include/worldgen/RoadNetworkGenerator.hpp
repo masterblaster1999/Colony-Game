@@ -144,9 +144,8 @@ inline bool astar_to_mask(const I2& start,
     const int W=P.width, H=P.height;
     if (!inb(start.x,start.y,W,H)) return false;
 
-    static const int dx[8]={1,1,0,-1,-1,-1,0,1};
-    static const int dy[8]={0,1,1,1,0,-1,-1,-1};
-    static const float stepC[8]={1,1.41421356f,1,1.41421356f,1,1.41421356f,1,1.41421356f};
+    static const int dx[8]={ 1, 1, 0,-1,-1,-1, 0, 1};
+    static const int dy[8]={ 0, 1, 1, 1, 0,-1,-1,-1};
 
     auto Hfun = [&](int, int)->float{ return 0.0f; }; // admissible lower bound
 
@@ -172,7 +171,7 @@ inline bool astar_to_mask(const I2& start,
                 outPath.push_back(I2{x,y});
                 idx = came[(size_t)idx];
             }
-            std::reverse(outPath.begin(), outPath.end()); // two-iterator form
+            std::reverse(outPath.begin(), outPath.end()); // two-iterator form. :contentReference[oaicite:3]{index=3}
             return true;
         }
 
@@ -181,7 +180,11 @@ inline bool astar_to_mask(const I2& start,
             if(!inb(nx,ny,W,H)) continue;
             size_t ni=index3(nx,ny,W);
 
-            float step = stepC[k];
+            // *** C4244-safe: compute the step cost without int->float implicit conversions.
+            // Cardinal directions have cost 1.0f; diagonals use P.diagonal_cost.
+            const bool isDiagonal = (k & 1) != 0; // 1,3,5,7
+            float step = isDiagonal ? P.diagonal_cost : 1.0f;
+
             float base = baseCost[ni];
 
             // water penalty
@@ -278,7 +281,7 @@ inline RoadResult GenerateRoadNetwork(
         }
 
         // 4) Simplify & smooth → store as road polyline
-        Polyline pl; pl.pts = std::move(path); // <utility> enables this 1-arg move
+        Polyline pl; pl.pts = std::move(path); // <utility> enables this 1-arg move. :contentReference[oaicite:4]{index=4}
         if (P.rdp_epsilon > 0.f){
             std::vector<I2> simp; detail::rdp(pl.pts, P.rdp_epsilon, simp); pl.pts.swap(simp);
         }
