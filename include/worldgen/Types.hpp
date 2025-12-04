@@ -1,18 +1,12 @@
 #pragma once
 #include <vector>
-#include <cstdint>
+#include <cstddef>
 
 namespace worldgen {
-
-// Small integer 2D coordinate used across worldgen
 struct I2 {
-    int x = 0;
-    int y = 0;
+    int x{0}, y{0};
+    constexpr I2() = default;
+    constexpr I2(int x_, int y_) noexcept : x(x_), y(y_) {}
 };
-
-// Basic polyline shared by road/settlement code
-struct Polyline {
-    std::vector<I2> pts;
-};
-
+struct Polyline { std::vector<I2> pts; };
 } // namespace worldgen
