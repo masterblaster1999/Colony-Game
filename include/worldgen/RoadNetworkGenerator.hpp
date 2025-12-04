@@ -66,7 +66,7 @@ inline std::vector<float> slope01(const std::vector<float>& h,int W,int H){
     auto Hs=[&](int x,int y){
         x=std::clamp(x,0,W-1);
         y=std::clamp(y,0,H-1);
-        return h[index3(x,y,W)];
+        return h[detail::index3(x,y,0, W,H)];
     };
     float gmax=1e-6f;
     for(int y=0;y<H;++y) for(int x=0;x<W;++x){
@@ -74,7 +74,7 @@ inline std::vector<float> slope01(const std::vector<float>& h,int W,int H){
         float gy=0.5f*(Hs(x,y+1)-Hs(x,y-1));
         // explicit cast keeps everything in float precision without warning
         float g = static_cast<float>(std::sqrt(gx*gx+gy*gy));
-        s[index3(x,y,W)] = g; gmax = std::max(gmax, g);
+        s[detail::index3(x,y,0, W,H)] = g; gmax = std::max(gmax, g);
     }
     for(float& v : s) v/=gmax;
     return s;
@@ -185,13 +185,13 @@ inline bool astar_to_mask(const I2& start,
     std::vector<int>   cameDir(N, -1);
     std::priority_queue<Node,std::vector<Node>,QCmp> open;
 
-    size_t si=index3(start.x,start.y,W);
+    size_t si=detail::index3(start.x,start.y,0, W,H);
     g[si]=0.f;
     open.push(Node{start.x,start.y,-1, /*f*/0.f, /*g*/0.f});
 
     while(!open.empty()){
         Node cur = open.top(); open.pop();
-        size_t ci=index3(cur.x,cur.y,W);
+        size_t ci=detail::index3(cur.x,cur.y,0, W,H);
 
         if (goalMask[ci]){ // reconstruct
             outPath.clear();
@@ -214,7 +214,7 @@ inline bool astar_to_mask(const I2& start,
         for(int k=0;k<8;++k){
             int nx=cur.x+dx[k], ny=cur.y+dy[k];
             if(!inb(nx,ny,W,H)) continue;
-            size_t ni=index3(nx,ny,W);
+            size_t ni=detail::index3(nx,ny,0, W,H);
 
             const float step = step_cost(k);           // float by construction
             const float base = baseCost[ni];
@@ -284,7 +284,7 @@ inline RoadResult GenerateRoadNetwork(
 
     // 2) Seed the network mask with hubs (goals for the first routes)
     R.road_mask.assign(N, 0u);
-    auto mark = [&](const I2& p){ if(detail::inb(p.x,p.y,W,H)) R.road_mask[detail::index3(p.x,p.y,W)] = 1u; };
+    auto mark = [&](const I2& p){ if(detail::inb(p.x,p.y,W,H)) R.road_mask[detail::index3(p.x,p.y,0, W,H)] = 1u; };
     for (auto h : sites.hubs) mark(h);
 
     // 3) Connect each target to the nearest existing network (A* to goal set)
@@ -297,7 +297,7 @@ inline RoadResult GenerateRoadNetwork(
         bool inWater=false; int wlen=0; I2 entry{}; size_t entryIdx=0;
         for (size_t i=0;i<path.size(); ++i){
             I2 p = path[i];
-            size_t pi = detail::index3(p.x,p.y,W);
+            size_t pi = detail::index3(p.x,p.y,0, W,H);
             R.road_mask[pi]=1u;
 
             bool water = (water_mask && (*water_mask)[pi]);
@@ -331,7 +331,7 @@ inline RoadResult GenerateRoadNetwork(
 
         R.roads.push_back(std::move(pl));
         // extend goal set with the new road cells
-        for (const auto& q : R.roads.back().pts) R.road_mask[detail::index3(q.x,q.y,W)] = 1u;
+        for (const auto& q : R.roads.back().pts) R.road_mask[detail::index3(q.x,q.y,0, W,H)] = 1u;
     };
 
     // If no hub, seed with first target
