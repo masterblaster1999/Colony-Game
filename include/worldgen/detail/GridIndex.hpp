@@ -1,54 +1,91 @@
-// include/worldgen/detail/GridIndex.hpp
 #pragma once
-#include <cstddef>
-#include <array>
+// ============================================================================
+// GridIndex.hpp — in-bounds checks & row-major linear indexing helpers
+// For Colony-Game | Windows / MSVC | C++17
+//
+// Provides:
+//   - [[nodiscard]] bool inb(x,y,W,H)
+//   - [[nodiscard]] bool inb3(x,y,z,W,H,D)
+//   - std::size_t index3(x,y,z,W,H)            // 5-arg (z is a slab index)
+//   - std::size_t index3(x,y,z,W,H,D)          // 6-arg with full 3D check
+//   - std::size_t index3_clamped(x,y,z,W,H,D)  // clamps coords into bounds
+//
+// Notes:
+//   * Row-major flattening: i = x + y*W + z*W*H
+//   * Debug builds assert preconditions for non-clamped variants.
+//   * Release builds keep code branch-free and fast.
+// ============================================================================
+
+#include <cstddef>    // std::size_t
+#include <cassert>    // assert
+#include <algorithm>  // std::clamp
 #include <type_traits>
 
 namespace worldgen::detail {
 
-// --- in-bounds checks --------------------------------------------------------
+// ---- Bounds predicates -------------------------------------------------
 
-template <class T>
-[[nodiscard]] constexpr bool inb(T v, T lo, T hi) noexcept {
-    static_assert(std::is_arithmetic_v<T>, "inb requires arithmetic type");
-    return v >= lo && v < hi;
+// 2D in-bounds check (row-major grids). Marked nodiscard so you don't
+// accidentally ignore the result in calling code.
+[[nodiscard]] constexpr inline bool inb(int x, int y, int W, int H) noexcept {
+    return (x >= 0 && x < W) && (y >= 0 && y < H);
 }
 
-// Common short form: [0, hi)
-template <class T>
-[[nodiscard]] constexpr bool inb(T v, T hi) noexcept {
-    static_assert(std::is_arithmetic_v<T>, "inb requires arithmetic type");
-    return v >= T{0} && v < hi;
+// 3D in-bounds check (row-major order: X fastest, then Y, then Z)
+[[nodiscard]] constexpr inline bool inb3(int x, int y, int z,
+                                         int W, int H, int D) noexcept {
+    return inb(x,y,W,H) && (z >= 0 && z < D);
 }
 
-// 2D overload (x in [0,w), y in [0,h))
-template <class T>
-[[nodiscard]] constexpr bool inb(T x, T y, T w, T h) noexcept {
-    return inb(x, w) && inb(y, h);
+// ---- Linear indexers (row-major) --------------------------------------
+// Reference formula (row-major):
+//    idx = x + y*W + z*W*H
+// This generalizes the familiar 2D x + y*W to 3D by adding a z-slab stride.
+// (See: Row/column-major order.)  // NOLINT: docs-only
+// -----------------------------------------------------------------------
+
+// 5-arg variant used heavily in world-gen code paths where z is a slab id.
+// Preconditions (debug-checked): W>0, H>0, inb(x,y,W,H), z>=0.
+constexpr inline std::size_t index3(int x, int y, int z,
+                                    int W, int H) noexcept {
+    assert(W > 0 && H > 0);
+    assert(inb(x,y,W,H));
+    assert(z >= 0); // caller guarantees valid slab if used
+
+    return static_cast<std::size_t>(x)
+         + static_cast<std::size_t>(y) * static_cast<std::size_t>(W)
+         + static_cast<std::size_t>(z) * static_cast<std::size_t>(W)
+                                     * static_cast<std::size_t>(H);
 }
 
-// 3D overload (x in [0,sx), y in [0,sy), z in [0,sz))
-template <class T>
-[[nodiscard]] constexpr bool inb(T x, T y, T z, T sx, T sy, T sz) noexcept {
-    return inb(x, sx) && inb(y, sy) && inb(z, sz);
+// 6-arg overload with full 3D precondition checks in debug builds.
+// D is not needed for the calculation itself but enables assert(z in [0..D)).
+constexpr inline std::size_t index3(int x, int y, int z,
+                                    int W, int H, int D) noexcept {
+    assert(W > 0 && H > 0 && D > 0);
+    assert(inb3(x,y,z,W,H,D));
+
+    (void)D; // silence unused warning; not required for row-major flattening
+    return static_cast<std::size_t>(x)
+         + static_cast<std::size_t>(y) * static_cast<std::size_t>(W)
+         + static_cast<std::size_t>(z) * static_cast<std::size_t>(W)
+                                     * static_cast<std::size_t>(H);
 }
 
-// --- 3D->1D indexing ---------------------------------------------------------
+// Clamp-to-bounds variant: always returns a valid index, even if any of
+// (x,y,z) are outside. Ideal for gradient sampling at edges without branches.
+constexpr inline std::size_t index3_clamped(int x, int y, int z,
+                                            int W, int H, int D) noexcept {
+    assert(W > 0 && H > 0 && D > 0);
 
-// Row-major: fastest-changing X, then Y, then Z.
-// Layout = (z * sy + y) * sx + x
-[[nodiscard]] constexpr std::size_t
-index3(std::size_t x, std::size_t y, std::size_t z,
-       std::size_t sx, std::size_t sy, std::size_t /*sz*/) noexcept
-{
-    // caller must ensure inb(x,y,z,sx,sy,sz)
-    return (z * sy + y) * sx + x;
-}
+    x = std::clamp(x, 0, W - 1);
+    y = std::clamp(y, 0, H - 1);
+    z = std::clamp(z, 0, D - 1);
 
-[[nodiscard]] constexpr std::size_t
-index3(std::array<std::size_t,3> p, std::array<std::size_t,3> s) noexcept
-{
-    return index3(p[0], p[1], p[2], s[0], s[1], s[2]);
+    return static_cast<std::size_t>(x)
+         + static_cast<std::size_t>(y) * static_cast<std::size_t>(W)
+         + static_cast<std::size_t>(z) * static_cast<std::size_t>(W)
+                                     * static_cast<std::size_t>(H);
 }
 
 } // namespace worldgen::detail
