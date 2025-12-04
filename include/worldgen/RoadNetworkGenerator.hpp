@@ -8,13 +8,13 @@
 #include <queue>
 #include <cstdint>
 #include <cmath>
-#include <algorithm>  // reverse, sort
+#include <algorithm>  // reverse, sort, clamp
 #include <limits>
 #include <utility>    // std::move
 
 #include "worldgen/Types.hpp"
 #include "worldgen/Common.hpp"
-#include "worldgen/detail/GridIndex.hpp"  // NEW: in-bounds & index helpers (inb, index3)
+#include "worldgen/detail/GridIndex.hpp"  // in-bounds & index helpers (inb, index3)
 
 namespace worldgen {
 
@@ -61,22 +61,23 @@ struct RoadResult {
 // ------------------------------ internals ------------------------------
 namespace detail {
 
+// Central-difference slope magnitude, normalized to [0,1]
 inline std::vector<float> slope01(const std::vector<float>& h,int W,int H){
-    std::vector<float> s((size_t)W*H,0.f);
+    std::vector<float> s(static_cast<size_t>(W)*static_cast<size_t>(H), 0.f);
     auto Hs=[&](int x,int y){
-        x=std::clamp(x,0,W-1);
-        y=std::clamp(y,0,H-1);
+        x = std::clamp(x,0,W-1);
+        y = std::clamp(y,0,H-1);
         return h[detail::index3(x,y,0, W,H)];
     };
     float gmax=1e-6f;
     for(int y=0;y<H;++y) for(int x=0;x<W;++x){
-        float gx=0.5f*(Hs(x+1,y)-Hs(x-1,y));
-        float gy=0.5f*(Hs(x,y+1)-Hs(x,y-1));
-        // explicit cast keeps everything in float precision without warning
-        float g = static_cast<float>(std::sqrt(gx*gx+gy*gy));
-        s[detail::index3(x,y,0, W,H)] = g; gmax = std::max(gmax, g);
+        const float gx = 0.5f * (Hs(x+1,y) - Hs(x-1,y));
+        const float gy = 0.5f * (Hs(x,y+1) - Hs(x,y-1));
+        const float g  = static_cast<float>(std::sqrt(gx*gx + gy*gy));
+        s[detail::index3(x,y,0, W,H)] = g;
+        gmax = std::max(gmax, g);
     }
-    for(float& v : s) v/=gmax;
+    for(float& v : s) v /= gmax;
     return s;
 }
 
@@ -110,7 +111,7 @@ inline void rdp(const std::vector<I2>& in, float eps, std::vector<I2>& out){
         auto [a,b] = stack.back(); stack.pop_back();
         float maxd=-1.f; int m=-1;
         for(int i=a+1;i<b;++i){
-            float d=dist(in[i], in[a], in[b]);
+            const float d=dist(in[(size_t)i], in[(size_t)a], in[(size_t)b]);
             if (d>maxd){ maxd=d; m=i; }
         }
         if (maxd>eps){
@@ -163,7 +164,7 @@ inline uint32_t mixbits(uint32_t v){
 struct Node { int x,y,dir; float f,g; };
 struct QCmp { bool operator()(const Node& a,const Node& b) const { return a.f>b.f; } };
 
-inline bool astar_to_mask(const I2& start,
+[[nodiscard]] inline bool astar_to_mask(const I2& start,
                           const std::vector<uint8_t>& goalMask,
                           const std::vector<float>& baseCost,
                           const std::vector<uint8_t>* waterMask,
@@ -179,45 +180,49 @@ inline bool astar_to_mask(const I2& start,
 
     auto Hfun = [&](int, int)->float{ return 0.0f; }; // admissible lower bound
 
-    const size_t N=(size_t)W*H;
+    const size_t N = static_cast<size_t>(W)*static_cast<size_t>(H);
     std::vector<float> g(N, std::numeric_limits<float>::infinity());
     std::vector<int>   came(N, -1);
     std::vector<int>   cameDir(N, -1);
     std::priority_queue<Node,std::vector<Node>,QCmp> open;
 
-    size_t si=detail::index3(start.x,start.y,0, W,H);
+    const size_t si = detail::index3(start.x,start.y,0, W,H);
     g[si]=0.f;
     open.push(Node{start.x,start.y,-1, /*f*/0.f, /*g*/0.f});
 
     while(!open.empty()){
         Node cur = open.top(); open.pop();
-        size_t ci=detail::index3(cur.x,cur.y,0, W,H);
+        const size_t ci = detail::index3(cur.x,cur.y,0, W,H);
+
+        // NEW: skip stale entries (dominance check)
+        if (cur.g > g[ci]) continue;
 
         if (goalMask[ci]){ // reconstruct
             outPath.clear();
-            int idx = (int)ci;
+            // Reconstruct length isn't known; simple backtrack
+            int idx = static_cast<int>(ci);
             while (idx!=-1){
-                int x = idx%W, y=idx/W;
+                int x = idx % W;
+                int y = idx / W;
                 outPath.push_back(I2{x,y});
                 idx = came[(size_t)idx];
             }
-            std::reverse(outPath.begin(), outPath.end()); // two-iterator form
+            std::reverse(outPath.begin(), outPath.end());
             return true;
         }
 
-        // --- C4244-SAFE STEP COST (Option A) ---
+        // Step cost: diagonals cost √2, cardinals cost 1
         auto step_cost = [&](int dir) -> float {
-            // diagonals are odd indices: 1,3,5,7
             return (dir & 1) ? P.diagonal_cost : 1.0f;
         };
 
         for(int k=0;k<8;++k){
-            int nx=cur.x+dx[k], ny=cur.y+dy[k];
+            const int nx=cur.x+dx[k], ny=cur.y+dy[k];
             if(!inb(nx,ny,W,H)) continue;
-            size_t ni=detail::index3(nx,ny,0, W,H);
+            const size_t ni = detail::index3(nx,ny,0, W,H);
 
-            const float step = step_cost(k);           // float by construction
-            const float base = baseCost[ni];
+            const float step  = step_cost(k);
+            const float base  = baseCost[ni];
 
             // water penalty
             float water = 0.0f;
@@ -237,11 +242,13 @@ inline bool astar_to_mask(const I2& start,
 
             if (tentative < g[ni]){
                 g[ni] = tentative;
-                came[ni] = (int)ci;
+                came[ni] = static_cast<int>(ci);
                 cameDir[ni] = k;
 
                 // deterministic, tiny tie-breaker (stable expansions)
-                const uint32_t m = mixbits((uint32_t)(nx*73856093) ^ (uint32_t)(ny*19349663) ^ (uint32_t)P.seed);
+                const uint32_t m = mixbits(static_cast<uint32_t>(nx*73856093)
+                                          ^static_cast<uint32_t>(ny*19349663)
+                                          ^static_cast<uint32_t>(P.seed));
                 const float tiebreak = static_cast<float>(m & 0xFFFFu) * (1.0f/65536.0f) * 1e-6f;
 
                 const float f = tentative + Hfun(nx,ny) + tiebreak;
@@ -269,53 +276,56 @@ inline RoadResult GenerateRoadNetwork(
 {
     RoadParams P = P_in; P.width=W; P.height=H;
     RoadResult R; R.W=W; R.H=H;
-    const size_t N=(size_t)W*H;
-    if ((int)height01.size()!=W*H || W<2 || H<2) return R;
+    const size_t N = static_cast<size_t>(W)*static_cast<size_t>(H);
+    if (static_cast<int>(height01.size())!=W*H || W<2 || H<2) return R;
 
     // 1) Terrain → slope → base cost
     R.slope01 = detail::slope01(height01, W,H);
     R.cost_base.assign(N, 1.0f);
     for(size_t i=0;i<N;++i){
-        float s = R.slope01[i];
+        const float s = R.slope01[i];
         R.cost_base[i] += P.slope_weight * (s*s);
         if (water_mask && (*water_mask)[i]) R.cost_base[i] += 0.0f; // keep water penalty separate
-        if (river_order01) R.cost_base[i] += 0.0f; // river penalty applied per-step
+        if (river_order01)                   R.cost_base[i] += 0.0f; // river penalty applied per-step
     }
 
     // 2) Seed the network mask with hubs (goals for the first routes)
     R.road_mask.assign(N, 0u);
-    auto mark = [&](const I2& p){ if(detail::inb(p.x,p.y,W,H)) R.road_mask[detail::index3(p.x,p.y,0, W,H)] = 1u; };
+    auto mark = [&](const I2& p){
+        if(detail::inb(p.x,p.y,W,H))
+            R.road_mask[detail::index3(p.x,p.y,0, W,H)] = 1u;
+    };
     for (auto h : sites.hubs) mark(h);
 
     // 3) Connect each target to the nearest existing network (A* to goal set)
     auto connect_one = [&](const I2& start){
         std::vector<I2> path;
-        bool ok = detail::astar_to_mask(start, R.road_mask, R.cost_base, water_mask, river_order01, P, path);
+        const bool ok = detail::astar_to_mask(start, R.road_mask, R.cost_base, water_mask, river_order01, P, path);
         if (!ok) return; // unreachable; skip silently
 
         // Detect bridges/fords and update mask
         bool inWater=false; int wlen=0; I2 entry{}; size_t entryIdx=0;
         for (size_t i=0;i<path.size(); ++i){
-            I2 p = path[i];
-            size_t pi = detail::index3(p.x,p.y,0, W,H);
+            const I2 p = path[i];
+            const size_t pi = detail::index3(p.x,p.y,0, W,H);
             R.road_mask[pi]=1u;
 
-            bool water = (water_mask && (*water_mask)[pi]);
+            const bool water = (water_mask && (*water_mask)[pi]);
             if (water && !inWater){ inWater=true; wlen=1; entry=p; entryIdx=i; }
             else if (water && inWater){ ++wlen; }
             else if (!water && inWater){ // leaving water
                 inWater=false;
                 if (wlen >= P.min_bridge_len_cells){
-                    I2 exit = p;
-                    size_t midIdx = entryIdx + (size_t)(wlen/2);
+                    const I2 exit = p;
+                    size_t midIdx = entryIdx + static_cast<size_t>(wlen/2);
                     if (midIdx >= path.size()) midIdx = path.size()-1;
-                    I2 mid  = path[midIdx];
+                    const I2 mid  = path[midIdx];
                     R.bridges.push_back(Bridge{entry, exit, mid, wlen, /*likely_ford*/ wlen <= 3});
                 }else if(P.mark_fords_when_short){
-                    I2 exit = p;
-                    size_t midIdx = entryIdx + (size_t)std::max(1, wlen/2);
+                    const I2 exit = p;
+                    size_t midIdx = entryIdx + static_cast<size_t>(std::max(1, wlen/2));
                     if (midIdx >= path.size()) midIdx = path.size()-1;
-                    I2 mid  = path[midIdx];
+                    const I2 mid  = path[midIdx];
                     R.bridges.push_back(Bridge{entry, exit, mid, wlen, /*likely_ford*/ true});
                 }
             }
@@ -326,12 +336,14 @@ inline RoadResult GenerateRoadNetwork(
         if (P.rdp_epsilon > 0.0f){
             std::vector<I2> simp; detail::rdp(pl.pts, P.rdp_epsilon, simp); pl.pts.swap(simp);
         }
-        for (int r=0; r<P.chaikin_refinements; ++r) pl.pts = detail::chaikin_open(pl.pts);
+        for (int r=0; r<P.chaikin_refinements; ++r)
+            pl.pts = detail::chaikin_open(pl.pts);
         detail::dedupe_consecutive(pl.pts);
 
         R.roads.push_back(std::move(pl));
         // extend goal set with the new road cells
-        for (const auto& q : R.roads.back().pts) R.road_mask[detail::index3(q.x,q.y,0, W,H)] = 1u;
+        for (const auto& q : R.roads.back().pts)
+            R.road_mask[detail::index3(q.x,q.y,0, W,H)] = 1u;
     };
 
     // If no hub, seed with first target
@@ -343,7 +355,10 @@ inline RoadResult GenerateRoadNetwork(
     std::vector<I2> targets = sites.targets;
     auto sqrDistToAnyHub = [&](const I2& t){
         long best = std::numeric_limits<long>::max();
-        for (auto h : sites.hubs){ long dx=t.x-h.x, dy=t.y-h.y; best = std::min(best, dx*dx+dy*dy); }
+        for (auto h : sites.hubs){
+            const long dx=t.x-h.x, dy=t.y-h.y;
+            best = std::min(best, dx*dx+dy*dy);
+        }
         if (sites.hubs.empty()){ best = 0; }
         return best;
     };
