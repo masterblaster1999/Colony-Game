@@ -39,6 +39,18 @@
 #include "worldgen/Types.hpp"   // unified I2 / Polyline definitions
 #include "worldgen/Common.hpp"  // index3, inb, clamp01
 
+// --- Ensure helper declarations are visible before any use ---
+namespace worldgen { namespace detail {
+    // Forward declarations; definitions may live in Common.hpp or later.
+    size_t I(int x, int y, int W);
+    bool   inb(int x, int y, int W, int H);
+    float  clamp01(float v);
+    // Provide the missing 2D flat index helper used by call sites.
+    inline constexpr size_t index3(int x, int y, int W) noexcept {
+        return (static_cast<size_t>(y) * static_cast<size_t>(W)) + static_cast<size_t>(x);
+    }
+}}
+
 namespace worldgen {
 
 struct SettlementParams {
