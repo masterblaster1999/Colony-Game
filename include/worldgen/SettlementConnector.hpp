@@ -4,20 +4,20 @@
 //  → nearest water access (shoreline) and into RoadNetworkGenerator.
 // ============================================================================
 //
-// Windows macro hygiene (prevents min/max/ERROR macro breakage in consumers)
+// Windows macro hygiene
 #if defined(_WIN32)
   #ifndef WIN32_LEAN_AND_MEAN
   #define WIN32_LEAN_AND_MEAN
   #endif
   #ifndef NOMINMAX
-  #define NOMINMAX          // keep std::min/std::max usable
+  #define NOMINMAX
   #endif
   #ifndef NOGDI
-  #define NOGDI             // avoid GDI's ERROR macro collisions
+  #define NOGDI
   #endif
 #endif
 
-// Self-contained STL includes (keep the header independent of PCH order)
+// STL
 #include <algorithm>
 #include <array>
 #include <cstdint>
@@ -30,12 +30,11 @@
 #include <utility>
 #include <vector>
 
-// Shared worldgen types & utilities (single source of truth)
+// Shared types/utilities
 #include "worldgen/Types.hpp"          // I2, Polyline
 #include "worldgen/Common.hpp"         // index3, inb, clamp01
 
-// If you export types from the road generator in the public API,
-// keep this include; otherwise forward-declare in a small fwd header.
+// Road generator API surface (RoadParams, RoadResult)
 #include "worldgen/RoadNetworkGenerator.hpp"
 
 namespace worldgen {
@@ -81,14 +80,9 @@ struct ConnectorResult {
     std::vector<std::uint8_t> merged_path_mask;  // W*H
 };
 
-// ----------------------------- public API --------------------------------
-//
-// NOTE: This header is declaration-only to avoid header-emitted function
-// bodies triggering /WX warnings (e.g., C4505) in non-caller translation units.
-// The implementation lives in src/worldgen/SettlementConnector.cpp.
-//
-// Compute tracks from each settlement center to nearest shoreline, then
-// route centers into the global road network using your RoadNetworkGenerator.
+// -----------------------------------------------------------------------
+// Canonical API (centers appear before optionals; defaults only at the end)
+// -----------------------------------------------------------------------
 ConnectorResult ConnectSettlementsToWaterAndRoads(
     // terrain & masks
     const std::vector<float>&          height01,            // size W*H, 0..1
@@ -99,13 +93,38 @@ ConnectorResult ConnectSettlementsToWaterAndRoads(
     // settlements
     const std::vector<I2>&             settlement_centers,
 
-    // optional layers (no defaults here to satisfy default-argument ordering)
-    const std::vector<std::uint8_t>*   existing_road_mask,  // optional (may be nullptr)
-    const std::vector<float>*          river_order01,       // optional (0..1, may be nullptr)
+    // optionals
+    const std::vector<std::uint8_t>*   existing_road_mask = nullptr, // may be nullptr
+    const std::vector<float>*          river_order01      = nullptr, // may be nullptr
 
-    // params (defaults appear at the end only)
+    // params (defaults trail the list)
     const ConnectorParams&             CP_in = {},
     const RoadParams&                  RP_in = {}
 );
+
+// -----------------------------------------------------------------------
+// Back-compat overload (old order): optionals before centers.
+// This tiny inline wrapper forwards to the canonical signature.
+// -----------------------------------------------------------------------
+inline ConnectorResult ConnectSettlementsToWaterAndRoads(
+    const std::vector<float>&          height01,
+    int                                W,
+    int                                H,
+    const std::vector<std::uint8_t>&   water_mask,
+    const std::vector<std::uint8_t>*   existing_road_mask,
+    const std::vector<float>*          river_order01,
+    const std::vector<I2>&             settlement_centers,
+    const ConnectorParams&             CP_in = {},
+    const RoadParams&                  RP_in = {}
+){
+    // Forward to the canonical overload
+    return ConnectSettlementsToWaterAndRoads(
+        height01, W, H, water_mask,
+        settlement_centers,
+        existing_road_mask,
+        river_order01,
+        CP_in, RP_in
+    );
+}
 
 } // namespace worldgen
