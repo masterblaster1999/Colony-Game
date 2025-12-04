@@ -71,7 +71,8 @@ inline std::vector<float> slope01(const std::vector<float>& h,int W,int H){
     for(int y=0;y<H;++y) for(int x=0;x<W;++x){
         float gx=0.5f*(Hs(x+1,y)-Hs(x-1,y));
         float gy=0.5f*(Hs(x,y+1)-Hs(x,y-1));
-        float g=std::sqrt(gx*gx+gy*gy);
+        // explicit cast keeps everything in float precision without warning
+        float g = static_cast<float>(std::sqrt(gx*gx+gy*gy));
         s[index3(x,y,W)] = g; gmax = std::max(gmax, g);
     }
     for(float& v : s) v/=gmax;
@@ -86,13 +87,21 @@ inline void rdp(const std::vector<I2>& in, float eps, std::vector<I2>& out){
     keep.front() = keep.back() = 1;
 
     auto dist = [&](const I2& p, const I2& a, const I2& b)->float{
-        float x=p.x, y=p.y, x1=a.x, y1=a.y, x2=b.x, y2=b.y;
-        float A=x-x1, B=y-y1, C=x2-x1, D=y2-y1;
-        float dot = A*C + B*D;
-        float len2 = C*C + D*D;
-        float t = len2? std::clamp(dot/len2, 0.f, 1.f) : 0.f;
-        float dx = x1 + t*C - x, dy = y1 + t*D - y;
-        return std::sqrt(dx*dx+dy*dy);
+        // Make all int->float conversions explicit to avoid C4244
+        const float x  = static_cast<float>(p.x);
+        const float y  = static_cast<float>(p.y);
+        const float x1 = static_cast<float>(a.x);
+        const float y1 = static_cast<float>(a.y);
+        const float x2 = static_cast<float>(b.x);
+        const float y2 = static_cast<float>(b.y);
+
+        const float A=x-x1, B=y-y1, C=x2-x1, D=y2-y1;
+        const float dot = A*C + B*D;
+        const float len2 = C*C + D*D;
+        const float t = len2? std::clamp(dot/len2, 0.0f, 1.0f) : 0.0f;
+        const float dx = x1 + t*C - x, dy = y1 + t*D - y;
+
+        return static_cast<float>(std::sqrt(dx*dx+dy*dy));
     };
 
     std::vector<Seg> stack; stack.push_back({0,(int)in.size()-1});
@@ -232,7 +241,7 @@ inline bool astar_to_mask(const I2& start,
 
                 // deterministic, tiny tie-breaker (stable expansions)
                 const uint32_t m = mixbits((uint32_t)(nx*73856093) ^ (uint32_t)(ny*19349663) ^ (uint32_t)P.seed);
-                const float tiebreak = (float)(m & 0xFFFFu) * (1.0f/65536.0f) * 1e-6f;
+                const float tiebreak = static_cast<float>(m & 0xFFFFu) * (1.0f/65536.0f) * 1e-6f;
 
                 const float f = tentative + Hfun(nx,ny) + tiebreak;
                 open.push(Node{nx,ny,k,f,tentative});
