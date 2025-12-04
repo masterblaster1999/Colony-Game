@@ -62,10 +62,10 @@ namespace detail {
 
 inline std::vector<float> slope01(const std::vector<float>& h,int W,int H){
     std::vector<float> s((size_t)W*H,0.f);
-    auto Hs=[&](int x,int y){ 
-        x=std::clamp(x,0,W-1); 
-        y=std::clamp(y,0,H-1); 
-        return h[index3(x,y,W)]; 
+    auto Hs=[&](int x,int y){
+        x=std::clamp(x,0,W-1);
+        y=std::clamp(y,0,H-1);
+        return h[index3(x,y,W)];
     };
     float gmax=1e-6f;
     for(int y=0;y<H;++y) for(int x=0;x<W;++x){
@@ -171,7 +171,7 @@ inline bool astar_to_mask(const I2& start,
                 outPath.push_back(I2{x,y});
                 idx = came[(size_t)idx];
             }
-            std::reverse(outPath.begin(), outPath.end()); // two-iterator form. :contentReference[oaicite:3]{index=3}
+            std::reverse(outPath.begin(), outPath.end()); // two-iterator form
             return true;
         }
 
@@ -180,8 +180,8 @@ inline bool astar_to_mask(const I2& start,
             if(!inb(nx,ny,W,H)) continue;
             size_t ni=index3(nx,ny,W);
 
-            // *** C4244-safe: compute the step cost without int->float implicit conversions.
-            // Cardinal directions have cost 1.0f; diagonals use P.diagonal_cost.
+            // C4244-safe: compute the step cost as float without int->float conversions.
+            // Cardinals = 1.0f; diagonals use P.diagonal_cost.
             const bool isDiagonal = (k & 1) != 0; // 1,3,5,7
             float step = isDiagonal ? P.diagonal_cost : 1.0f;
 
@@ -281,7 +281,7 @@ inline RoadResult GenerateRoadNetwork(
         }
 
         // 4) Simplify & smooth → store as road polyline
-        Polyline pl; pl.pts = std::move(path); // <utility> enables this 1-arg move. :contentReference[oaicite:4]{index=4}
+        Polyline pl; pl.pts = std::move(path); // <utility> enables this 1-arg move.
         if (P.rdp_epsilon > 0.f){
             std::vector<I2> simp; detail::rdp(pl.pts, P.rdp_epsilon, simp); pl.pts.swap(simp);
         }
