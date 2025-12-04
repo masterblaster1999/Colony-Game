@@ -30,6 +30,10 @@
 #include <utility>
 #include <vector>
 
+// Shared worldgen types & utilities (single source of truth)
+#include "worldgen/Types.hpp"          // I2, Polyline
+#include "worldgen/Common.hpp"         // index3, inb, clamp01
+
 // If you export types from the road generator in the public API,
 // keep this include; otherwise forward-declare in a small fwd header.
 #include "worldgen/RoadNetworkGenerator.hpp"
@@ -37,15 +41,6 @@
 namespace worldgen {
 
 // ----------------------------- public types -----------------------------
-
-struct I2 {
-    int x = 0;
-    int y = 0;
-
-    // Patch A: make constructible so emplace_back(x, y) works cleanly
-    constexpr I2() = default;
-    constexpr I2(int x_, int y_) noexcept : x(x_), y(y_) {}
-};
 
 struct ConnectorParams {
     int   width  = 0;
@@ -64,13 +59,11 @@ struct ConnectorParams {
     int   road_hub_stride     = 8;           // pick every Nth road cell as a hub
 };
 
-struct Polyline { std::vector<I2> pts; };
-
 struct WaterAccess {
-    I2   landing        {0,0}; // land cell adjacent to water that path touches
-    I2   nearest_shore  {0,0};
-    int  path_len_cells = 0;
-    Polyline path;              // center → landing
+    I2       landing{};        // land cell adjacent to water that path touches
+    I2       nearest_shore{};  // nearest water-adjacent land cell
+    int      path_len_cells = 0;
+    Polyline path;             // center → landing
 };
 
 struct ConnectorResult {
@@ -102,13 +95,15 @@ ConnectorResult ConnectSettlementsToWaterAndRoads(
     int                                W,
     int                                H,
     const std::vector<std::uint8_t>&   water_mask,          // size W*H, 1=water
-    const std::vector<std::uint8_t>*   existing_road_mask = nullptr, // optional
-    const std::vector<float>*          river_order01      = nullptr, // optional (0..1)
 
     // settlements
     const std::vector<I2>&             settlement_centers,
 
-    // params
+    // optional layers (no defaults here to satisfy default-argument ordering)
+    const std::vector<std::uint8_t>*   existing_road_mask,  // optional (may be nullptr)
+    const std::vector<float>*          river_order01,       // optional (0..1, may be nullptr)
+
+    // params (defaults appear at the end only)
     const ConnectorParams&             CP_in = {},
     const RoadParams&                  RP_in = {}
 );
