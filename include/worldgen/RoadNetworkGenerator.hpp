@@ -2,34 +2,20 @@
 // ============================================================================
 // RoadNetworkGenerator.hpp — terrain-aware road & trail generator
 // For Colony-Game | C++17 / STL-only
-//
-// What it does
-//   • Builds roads/trails that connect colony hubs to resource sites
-//   • Minimizes a cost surface: slope + water/river penalties + turn costs
-//   • Connects each site to the nearest existing network (Steiner-like growth)
-//   • Detects & records water crossings (bridges/fords)
-//   • Outputs polylines + road mask + bridge metadata
-//   • Post-process: Ramer–Douglas–Peucker simplification + Chaikin smoothing
-//
-// References (concepts/algorithms used):
-//   - Least-cost path routing on rasters / cost surfaces (common GIS workflow). [ArcGIS docs] 
-//   - A* search (Hart–Nilsson–Raphael, 1968). 
-//   - Ramer–Douglas–Peucker (polyline simplification). 
-//   - Chaikin's corner cutting (curve smoothing). 
-//   - Optional: penalize big rivers by Strahler order if you have one.
 // ============================================================================
 
 #include <vector>
 #include <queue>
 #include <cstdint>
 #include <cmath>
-#include <algorithm>  // reverse
+#include <algorithm>  // reverse, sort
 #include <limits>
 #include <utility>    // std::move
 
-namespace worldgen {
+#include "worldgen/Types.hpp"
+#include "worldgen/Common.hpp"
 
-struct I2 { int x=0, y=0; };
+namespace worldgen {
 
 struct RoadParams {
     int   width=0, height=0;
@@ -61,8 +47,6 @@ struct Bridge {
     bool likely_ford=false; // true if short crossing
 };
 
-struct Polyline { std::vector<I2> pts; };
-
 struct RoadResult {
     int W=0, H=0;
     std::vector<uint8_t> road_mask;     // 1 on road cells
@@ -74,21 +58,15 @@ struct RoadResult {
 };
 
 // ------------------------------ internals ------------------------------
-
 namespace detail {
-
-// Unambiguous 2D→1D index
-inline std::size_t index3(int x,int y,int W){
-    return static_cast<std::size_t>(y) * static_cast<std::size_t>(W)
-         + static_cast<std::size_t>(x);
-}
-
-inline bool inb(int x,int y,int W,int H){ return (unsigned)x<(unsigned)W && (unsigned)y<(unsigned)H; }
-inline float clamp01(float v){ return v<0.f?0.f:(v>1.f?1.f:v); }
 
 inline std::vector<float> slope01(const std::vector<float>& h,int W,int H){
     std::vector<float> s((size_t)W*H,0.f);
-    auto Hs=[&](int x,int y){ x=std::clamp(x,0,W-1); y=std::clamp(y,0,H-1); return h[index3(x,y,W)]; };
+    auto Hs=[&](int x,int y){ 
+        x=std::clamp(x,0,W-1); 
+        y=std::clamp(y,0,H-1); 
+        return h[index3(x,y,W)]; 
+    };
     float gmax=1e-6f;
     for(int y=0;y<H;++y) for(int x=0;x<W;++x){
         float gx=0.5f*(Hs(x+1,y)-Hs(x-1,y));
@@ -151,8 +129,7 @@ inline std::vector<I2> chaikin_open(const std::vector<I2>& in){
     return out;
 }
 
-// A* to the nearest cell in a target mask (any 1-cell is a goal). 
-// Heuristic = Euclidean distance; 8-neighborhood.
+// A* to the nearest cell in a target mask (any 1-cell is a goal).
 struct Node { int x,y,dir; float f,g; };
 struct QCmp { bool operator()(const Node& a,const Node& b) const { return a.f>b.f; } };
 
@@ -171,9 +148,7 @@ inline bool astar_to_mask(const I2& start,
     static const int dy[8]={0,1,1,1,0,-1,-1,-1};
     static const float stepC[8]={1,1.41421356f,1,1.41421356f,1,1.41421356f,1,1.41421356f};
 
-    auto Hfun = [&](int x,int y)->float{
-        (void)x; (void)y; return 0.0f; // admissible lower bound
-    };
+    auto Hfun = [&](int, int)->float{ return 0.0f; }; // admissible lower bound
 
     const size_t N=(size_t)W*H;
     std::vector<float> g(N, std::numeric_limits<float>::infinity());
@@ -219,9 +194,8 @@ inline bool astar_to_mask(const I2& start,
             // turn penalty (prefer smooth roads)
             float turn = 0.f;
             if (cur.dir!=-1){
-                // minimal angular difference between directions (units of 45°)
                 int d = std::abs(k - cur.dir); d = std::min(d, 8-d);
-                turn = P.turn_weight * float(d); // (d * π/4) scaled into a linear weight
+                turn = P.turn_weight * float(d);
             }
 
             float tentative = g[ci] + step + base + water + riv + turn;
@@ -247,8 +221,6 @@ struct RoadSites {
     std::vector<I2> targets;  // resources / POIs to connect
 };
 
-// height01: normalized height [0..1]
-// Optional masks must be W*H (0 or 1). river_order01 is a 0..1 scalar (e.g., normalized Strahler or flow).
 inline RoadResult GenerateRoadNetwork(
     const std::vector<float>& height01, int W, int H,
     const RoadSites& sites, const RoadParams& P_in = {},
@@ -266,8 +238,8 @@ inline RoadResult GenerateRoadNetwork(
     for(size_t i=0;i<N;++i){
         float s = R.slope01[i];
         R.cost_base[i] += P.slope_weight * (s*s);
-        if (water_mask && (*water_mask)[i]) R.cost_base[i] += 0.0f; // keep water penalty separate (per-step)
-        if (river_order01) R.cost_base[i] += 0.0f; // river penalty applied per-step, too
+        if (water_mask && (*water_mask)[i]) R.cost_base[i] += 0.0f; // keep water penalty separate
+        if (river_order01) R.cost_base[i] += 0.0f; // river penalty applied per-step
     }
 
     // 2) Seed the network mask with hubs (goals for the first routes)
@@ -282,7 +254,7 @@ inline RoadResult GenerateRoadNetwork(
         if (!ok) return; // unreachable; skip silently
 
         // Detect bridges/fords and update mask
-        Bridge b{}; bool inWater=false; int wlen=0; I2 entry{};
+        bool inWater=false; int wlen=0; I2 entry{};
         for (size_t i=0;i<path.size(); ++i){
             I2 p = path[i];
             size_t pi = detail::index3(p.x,p.y,W);
@@ -306,23 +278,23 @@ inline RoadResult GenerateRoadNetwork(
         }
 
         // 4) Simplify & smooth → store as road polyline
-        Polyline pl; pl.pts = std::move(path);
+        Polyline pl; pl.pts = std::move(path); // <utility> enables this 1-arg move
         if (P.rdp_epsilon > 0.f){
             std::vector<I2> simp; detail::rdp(pl.pts, P.rdp_epsilon, simp); pl.pts.swap(simp);
         }
         for (int r=0; r<P.chaikin_refinements; ++r) pl.pts = detail::chaikin_open(pl.pts);
 
         R.roads.push_back(std::move(pl));
-        // extend goal set (network) with the new road cells
+        // extend goal set with the new road cells
         for (const auto& q : R.roads.back().pts) R.road_mask[detail::index3(q.x,q.y,W)] = 1u;
     };
 
-    // First ensure we have at least one hub; if not, treat first target as hub.
+    // If no hub, seed with first target
     if (sites.hubs.empty() && !sites.targets.empty()){
         mark(sites.targets.front());
     }
 
-    // Greedy order: farther targets first tends to reduce redundant segments
+    // Greedy order: farther targets first reduces redundant segments
     std::vector<I2> targets = sites.targets;
     auto sqrDistToAnyHub = [&](const I2& t){
         long best = std::numeric_limits<long>::max();
@@ -330,45 +302,12 @@ inline RoadResult GenerateRoadNetwork(
         if (sites.hubs.empty()){ best = 0; }
         return best;
     };
-    std::sort(targets.begin(), targets.end(), [&](const I2& a,const I2& b){
-        return sqrDistToAnyHub(a) > sqrDistToAnyHub(b);
-    });
+    std::sort(targets.begin(), targets.end(),
+              [&](const I2& a,const I2& b){ return sqrDistToAnyHub(a) > sqrDistToAnyHub(b); });
 
     for (const auto& t : targets) connect_one(t);
 
     return R;
 }
 
-/*
--------------------------------- Usage --------------------------------
-
-#include "worldgen/RoadNetworkGenerator.hpp"
-
-// Example:
-//   - height01 is your world height grid (0..1)
-//   - waterMask: 1 on lakes/ocean/rivers (optional)
-//   - river01  : 0..1 proxy (e.g., normalized Strahler order or flow accumulation) (optional)
-
-void place_roads(const std::vector<float>& height01, int W, int H,
-                 const std::vector<uint8_t>* waterMask,
-                 const std::vector<float>*   river01)
-{
-    worldgen::RoadSites S;
-    S.hubs    = { {W/2, H/2} };                // colony center
-    S.targets = { {W/4, H/4}, {3*W/4,H/3}, {W/5, 3*H/4} }; // resources
-
-    worldgen::RoadParams P; P.width=W; P.height=H;
-    P.slope_weight = 7.5f;          // higher = avoid steep slopes
-    P.rdp_epsilon  = 1.2f;          // stronger simplification
-    P.chaikin_refinements = 2;
-
-    worldgen::RoadResult R = worldgen::GenerateRoadNetwork(
-        height01, W, H, S, P, waterMask, river01);
-
-    // Render hooks:
-    //  • Draw R.roads polylines as splines/meshes; use R.bridges for bridge meshes/fords.
-    //  • R.road_mask can bias AI walk speeds or building placement.
-    //  • Visualize R.cost_base to debug slope penalties.
-}
-*/
 } // namespace worldgen
