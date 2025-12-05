@@ -66,11 +66,22 @@
 #pragma comment(lib, "Ole32.lib")
 
 // Prefer the high‑performance GPU on hybrid systems (NVIDIA/AMD).
-// The display drivers look for these exported data symbols on process start.
+// When building the full project with Option B, these are exported exactly once
+// from src/platform/win/GpuPreference.cpp (added ONLY to the final EXE).
+// For the single‑file build of this stub, keep a fallback export here that is
+// compiled ONLY if COLONY_HAS_GPU_PREFERENCE_TU is NOT defined.
+//
+// Docs:
+//  - NVIDIA Optimus (NvOptimusEnablement, DWORD; Release 302+):
+//      https://docs.nvidia.com/gameworks/content/technologies/desktop/optimus.htm
+//  - AMD Hybrid Graphics (AmdPowerXpressRequestHighPerformance, DWORD):
+//      https://gpuopen.com/learn/amdpowerxpressrequesthighperformance/
+#if !defined(COLONY_HAS_GPU_PREFERENCE_TU)
 extern "C" {
-__declspec(dllexport) DWORD NvOptimusEnablement = 0x00000001;   // Prefer dGPU on Optimus
-__declspec(dllexport) int   AmdPowerXpressRequestHighPerformance = 1; // Prefer dGPU on PowerXpress/Enduro
+__declspec(dllexport) DWORD NvOptimusEnablement = 0x00000001;          // Prefer dGPU on Optimus
+__declspec(dllexport) DWORD AmdPowerXpressRequestHighPerformance = 0x00000001; // Prefer dGPU on PowerXpress/Enduro
 }
+#endif
 
 // Enable v6 Common Controls visual styles without a .manifest
 #pragma comment(linker,"\"/manifestdependency:type='win32' \
