@@ -2,7 +2,14 @@
 // Windows-only helpers for locating user-facing folders used by Colony-Game.
 // Provides: winpath::saved_games_dir()
 
-#define WIN32_LEAN_AND_MEAN
+// Respect project-wide definitions from CMake; don't redefine unguarded.
+#ifndef WIN32_LEAN_AND_MEAN
+#  define WIN32_LEAN_AND_MEAN
+#endif
+#ifndef NOMINMAX
+#  define NOMINMAX
+#endif
+
 #include <windows.h>
 #include <shlobj_core.h>   // SHGetKnownFolderPath
 #include <knownfolders.h>  // FOLDERID_*
