@@ -1,6 +1,7 @@
 #include "pathfinding/Jps.hpp"
 #include <cassert>
 #include <iostream>
+#include <doctest/doctest.h>
 
 using namespace colony::path;
 
