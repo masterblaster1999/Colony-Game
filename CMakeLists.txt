@@ -1,4 +1,4 @@
-cmake_minimum_required(VERSION 3.27...3.31 FATAL_ERROR)
+cmake_minimum_required(VERSION 3.27...3.31 FATAL_ERROR) 
 
 # ------------------------------------------------------------------------------
 # Windows-only: hard-fail on non-Windows platforms
@@ -460,7 +460,7 @@ if(TARGET colony_core)
 endif()
 
 # ------------------------------------------------------------------------------
-# Generate the final game target, install rules, tests, summary
+# Generate the final game target, install rules
 # ------------------------------------------------------------------------------
 include(CGGameTarget)   # your cmake/CGGameTarget.cmake
 
@@ -573,18 +573,28 @@ if(WIN32)
 endif()
 
 # ------------------------------------------------------------------------------
-# Tests wiring (single-runner subdirectory) — added by patch
+# Tests wiring (single-runner; add only once) — PATCHED ORDER & GUARDS
 # ------------------------------------------------------------------------------
+# 1) Let CGTests add tests/ first; it will set COLONY_TESTS_ADDED=ON (CACHE INTERNAL)
+if(EXISTS "${CMAKE_SOURCE_DIR}/cmake/CGTests.cmake")
+  include(CGTests)
+endif()
+
+# 2) If CGTests didn't add the tests/ directory, add it here exactly once with an explicit binary dir.
 if(COLONY_BUILD_TESTS AND EXISTS "${CMAKE_SOURCE_DIR}/tests/CMakeLists.txt")
-  # Avoid duplicate definition if CGTests also declares the same targets
-  if(NOT TARGET colony_smoke)
-    add_subdirectory(tests)
+  if(NOT DEFINED COLONY_TESTS_ADDED)
+    add_subdirectory("${CMAKE_SOURCE_DIR}/tests" "${CMAKE_BINARY_DIR}/tests")
+    set(COLONY_TESTS_ADDED ON CACHE INTERNAL "tests/ added by root")
   endif()
 endif()
 
-include(CGStageInstall) # your cmake/CGStageInstall.cmake
-include(CGTests)        # your cmake/CGTests.cmake
-include(CGSummary)      # your cmake/CGSummary.cmake
+# Optional other stage/install/summary modules (include only if present)
+if(EXISTS "${CMAKE_SOURCE_DIR}/cmake/CGStageInstall.cmake")
+  include(CGStageInstall)
+endif()
+if(EXISTS "${CMAKE_SOURCE_DIR}/cmake/CGSummary.cmake")
+  include(CGSummary)
+endif()
 
 # ------------------------------------------------------------------------------
 # Enforce link warnings-as-errors on all executable targets (MSVC)
