@@ -1,6 +1,9 @@
 #include "pathfinding/Jps.hpp"
 #include <queue>
 #include <array>
+#include <vector>
+#include <limits>
+#include <utility>
 #include <cmath>
 #include <algorithm>
 #include <cassert>
