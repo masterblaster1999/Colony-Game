@@ -1,5 +1,15 @@
 #include "HPAStar.h"
 
+#include <array>
+#include <vector>
+#include <unordered_set>
+#include <unordered_map>
+#include <queue>
+#include <algorithm>
+#include <limits>
+#include <cmath>
+#include <utility>
+
 namespace hpa {
 
 // ------------------------ Small utilities ------------------------
@@ -400,12 +410,12 @@ bool HPAStar::localSearch(const Rect& bounds, Point s, Point g, float& outCost, 
     std::vector<NodeRec> parent(W*H);
     std::priority_queue<PQItem,std::vector<PQItem>,PQCmp> pq;
 
-    auto push = [&](int x,int y, float g, float f, int px,int py){
+    auto push = [&](int x,int y, float gval, float fval, int px,int py){
         int id = idx(x,y);
-        if (g < G[id]) {
-            G[id] = g;
-            parent[id] = NodeRec{x,y,g,f,px,py};
-            pq.push(PQItem{f,x,y});
+        if (gval < G[id]) {
+            G[id] = gval;
+            parent[id] = NodeRec{x,y,gval,fval,px,py};
+            pq.push(PQItem{fval,x,y});
         }
     };
     auto h = [&](int x,int y){ return heuristicGrid(Point{x,y}, g); };
@@ -418,7 +428,23 @@ bool HPAStar::localSearch(const Rect& bounds, Point s, Point g, float& outCost, 
     static const std::array<std::pair<int,int>,4> K4 {{
         {+1,0},{-1,0},{0,+1},{0,-1}
     }};
-    const auto& K = P.allowDiagonal ? K8 : K4;
+
+    auto consider = [&](int x, int y, int dx, int dy) {
+        const int nx = x + dx, ny = y + dy;
+        if (!bounds.contains(nx,ny) || !m_grid.passable(nx,ny)) return;
+
+        // forbid "corner cutting" when diagonal
+        if (P.allowDiagonal && dx!=0 && dy!=0) {
+            if (!m_grid.passable(x+dx,y) || !m_grid.passable(x,y+dy)) return;
+        }
+
+        float step = (dx==0 || dy==0) ? 1.0f : 1.41421356237f;
+        // weight entering the next cell
+        step *= m_grid.cost(nx,ny);
+        const int id = idx(x,y);
+        float ng = G[id] + step;
+        push(nx,ny, ng, ng + h(nx,ny), x,y);
+    };
 
     while (!pq.empty()) {
         PQItem cur = pq.top(); pq.pop();
@@ -443,20 +469,14 @@ bool HPAStar::localSearch(const Rect& bounds, Point s, Point g, float& outCost, 
             return true;
         }
 
-        for (auto [dx,dy] : K) {
-            int nx=x+dx, ny=y+dy;
-            if (!bounds.contains(nx,ny) || !m_grid.passable(nx,ny)) continue;
-
-            // forbid "corner cutting" when diagonal
-            if (P.allowDiagonal && dx!=0 && dy!=0) {
-                if (!m_grid.passable(x+dx,y) || !m_grid.passable(x,y+dy)) continue;
+        if (P.allowDiagonal) {
+            for (auto [dx,dy] : K8) {
+                consider(x, y, dx, dy);
             }
-
-            float step = (dx==0 || dy==0) ? 1.0f : 1.41421356237f;
-            // weight entering the next cell
-            step *= m_grid.cost(nx,ny);
-            float ng = G[id] + step;
-            push(nx,ny, ng, ng + h(nx,ny), x,y);
+        } else {
+            for (auto [dx,dy] : K4) {
+                consider(x, y, dx, dy);
+            }
         }
     }
     return false;
