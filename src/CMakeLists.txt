@@ -156,8 +156,10 @@ foreach(_cand
 )
   if(EXISTS "${_cand}")
     get_target_property(_core_srcs colony_core SOURCES)
-    list(FILTER _core_srcs EXCLUDE REGEX ".*/DeviceResources\\.(c|cc|cxx|cpp)$")
-    set_property(TARGET colony_core PROPERTY SOURCES "${_core_srcs}")
+    if(_core_srcs)
+      list(FILTER _core_srcs EXCLUDE REGEX ".*/DeviceResources\\.(c|cc|cxx|cpp)$")
+      set_property(TARGET colony_core PROPERTY SOURCES "${_core_srcs}")
+    endif()
     target_sources(colony_core PRIVATE "${_cand}")
     break()
   endif()
@@ -359,7 +361,7 @@ if(WIN32 AND COLONY_BUILD_LAUNCHER AND NOT (FRONTEND STREQUAL "sdl"))
     "${CMAKE_SOURCE_DIR}/src/platform/win/WinLauncher.cpp"
     "${CMAKE_SOURCE_DIR}/platform/win/WinLauncher.cpp"
   )
-    if(EXISTS "${_cand"})
+    if(EXISTS "${_cand}")
       target_sources(ColonyLauncher PRIVATE "${_cand}")
       set(_LAUNCHER_ENTRY_ADDED ON)
       break()
@@ -472,27 +474,42 @@ if(CMAKE_GENERATOR MATCHES "Visual Studio")
     set(_HLSL_INC_FLAGS_STR "")
   endif()
 
+  # Patch B: auto-detect entrypoint per file; fall back to 'main' if *Main is absent
   function(_configure_vs_shader _file)
     get_filename_component(_we "${_file}" NAME_WE)
     set(_type "")
-    set(_entry "")
     if(_we MATCHES "_vs$")
       set(_type "Vertex")
-      set(_entry "VSMain")
     elseif(_we MATCHES "_ps$")
       set(_type "Pixel")
-      set(_entry "PSMain")
     elseif(_we MATCHES "_cs$")
       set(_type "Compute")
-      set(_entry "CSMain")
     else()
       return()
     endif()
 
-    # Configure Visual Studio's HLSL properties for this file.
-    # Using documented CMake per-source VS_SHADER_* properties.
+    # Read the shader file to detect whether VSMain/PSMain/CSMain exist.
+    file(READ "${_file}" _hlsl_src)
+    set(_entry "main")
+    if(_type STREQUAL "Vertex")
+      string(FIND "${_hlsl_src}" "VSMain(" _hit)
+      if(NOT _hit EQUAL -1)
+        set(_entry "VSMain")
+      endif()
+    elseif(_type STREQUAL "Pixel")
+      string(FIND "${_hlsl_src}" "PSMain(" _hit)
+      if(NOT _hit EQUAL -1)
+        set(_entry "PSMain")
+      endif()
+    elseif(_type STREQUAL "Compute")
+      string(FIND "${_hlsl_src}" "CSMain(" _hit)
+      if(NOT _hit EQUAL -1)
+        set(_entry "CSMain")
+      endif()
+    endif()
+
     set_source_files_properties("${_file}" PROPERTIES
-      VS_SHADER_TYPE                  "${_type}"          # CMake property for HLSL shader type
+      VS_SHADER_TYPE                  "${_type}"
       VS_SHADER_MODEL                 "5.0"
       VS_SHADER_ENTRYPOINT            "${_entry}"
       VS_SHADER_OBJECT_FILE_NAME      "${_VS_OUTDIR}\\%(Filename).cso"
