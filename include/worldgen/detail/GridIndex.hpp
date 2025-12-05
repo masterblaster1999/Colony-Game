@@ -4,6 +4,7 @@
 // For Colony-Game | Windows / MSVC | C++17
 //
 // Provides:
+//   - [[nodiscard]] bool inb(i,N)               // 1D convenience
 //   - [[nodiscard]] bool inb(x,y,W,H)
 //   - [[nodiscard]] bool inb3(x,y,z,W,H,D)
 //   - std::size_t index2(x,y,W)
@@ -25,13 +26,20 @@ namespace worldgen::detail {
 
 // ---- Bounds predicates -------------------------------------------------
 
+// 1D: i in [0, N)
+[[nodiscard]] inline bool inb(int i, int N) noexcept {
+    return i >= 0 && i < N;
+}
+
+// 2D: (x, y) in [0,W) x [0,H)
 [[nodiscard]] inline bool inb(int x, int y, int W, int H) noexcept {
     return (x >= 0 && x < W) && (y >= 0 && y < H);
 }
 
+// 3D: (x, y, z) in [0,W) x [0,H) x [0,D)
 [[nodiscard]] inline bool inb3(int x, int y, int z,
                                int W, int H, int D) noexcept {
-    return inb(x,y,W,H) && (z >= 0 && z < D);
+    return inb(x, y, W, H) && inb(z, D);
 }
 
 // ---- Linear indexers (row-major) --------------------------------------
