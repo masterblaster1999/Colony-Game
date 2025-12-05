@@ -5,9 +5,42 @@ project(ColonyGameTests LANGUAGES CXX)
 include(FetchContent)
 
 # --------------------------------------------------------------------------------------
-# Use packaged doctest (vcpkg/CONFIG): provides target doctest::doctest
+# doctest (header-only) — declare a single INTERFACE target 'doctest'
+# Prefer a packaged target if present; fall back to vendored header or FetchContent.
 # --------------------------------------------------------------------------------------
-find_package(doctest CONFIG REQUIRED)
+if(NOT TARGET doctest)
+  # Try config package first (provides doctest::doctest)
+  find_package(doctest CONFIG QUIET)
+  if(TARGET doctest::doctest)
+    add_library(doctest INTERFACE)
+    target_link_libraries(doctest INTERFACE doctest::doctest)
+  else()
+    # Try common local/vendor paths or system includes
+    set(_DOCTEST_HINTS
+      "${CMAKE_SOURCE_DIR}/external/doctest"
+      "${CMAKE_SOURCE_DIR}/third_party/doctest"
+    )
+    find_path(DOCTEST_INCLUDE_DIR
+      NAMES doctest/doctest.h doctest.h
+      HINTS ${_DOCTEST_HINTS})
+    if(DOCTEST_INCLUDE_DIR)
+      add_library(doctest INTERFACE)
+      target_include_directories(doctest INTERFACE "${DOCTEST_INCLUDE_DIR}")
+    else()
+      # FetchContent fallback: upstream header-only repository
+      set(FETCHCONTENT_UPDATES_DISCONNECTED ON)
+      FetchContent_Declare(doctest_upstream
+        GIT_REPOSITORY https://github.com/doctest/doctest.git
+        GIT_TAG        v2.4.11
+        GIT_SHALLOW    TRUE
+      )
+      FetchContent_MakeAvailable(doctest_upstream)
+      add_library(doctest INTERFACE)
+      # The header lives at <repo-root>/doctest/doctest.h, so expose the repo root
+      target_include_directories(doctest INTERFACE "${doctest_upstream_SOURCE_DIR}")
+    endif()
+  endif()
+endif()
 
 # --------------------------------------------------------------------------------------
 # PCG RNG: create a header-only INTERFACE target named 'pcg' (self-sufficient)
@@ -90,7 +123,7 @@ target_include_directories(colony_smoke PRIVATE
   ${CMAKE_SOURCE_DIR}/src
   ${CMAKE_SOURCE_DIR}/src/worldgen
   # NOTE: intentionally NOT adding ${CMAKE_SOURCE_DIR}/external anymore:
-  # doctest comes from the imported target doctest::doctest
+  # doctest comes from the INTERFACE target 'doctest'
 )
 
 # If your repo defines common compile flags/defines in an interface target, pick it up (optional)
@@ -109,8 +142,8 @@ endif()
 # Link the (header-only) PCG target we created/discovered above
 target_link_libraries(colony_smoke PRIVATE pcg)
 
-# >>> Link doctest from the package (adds include paths & usage requirements)
-target_link_libraries(colony_smoke PRIVATE doctest::doctest)
+# >>> Link doctest via the INTERFACE target declared above
+target_link_libraries(colony_smoke PRIVATE doctest)
 
 # --------------------------------------------------------------------------------------
 # CTest integration
