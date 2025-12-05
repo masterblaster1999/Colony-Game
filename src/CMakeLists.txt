@@ -123,6 +123,14 @@ endif()
 # ------------------------------ Core library -----------------------------
 add_library(colony_core STATIC ${SRC_ALL})
 
+# Explicitly control unity (jumbo) builds to avoid accidental ODR/duplicate merges.
+# Keep OFF by default for the core; allow opt-in via COLONY_UNITY_BUILD.
+if(COLONY_UNITY_BUILD)
+  set_target_properties(colony_core PROPERTIES UNITY_BUILD ON)
+else()
+  set_target_properties(colony_core PROPERTIES UNITY_BUILD OFF)
+endif()
+
 if(WIN32)
   target_compile_definitions(colony_core PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX)
 endif()
@@ -351,7 +359,7 @@ if(WIN32 AND COLONY_BUILD_LAUNCHER AND NOT (FRONTEND STREQUAL "sdl"))
     "${CMAKE_SOURCE_DIR}/src/platform/win/WinLauncher.cpp"
     "${CMAKE_SOURCE_DIR}/platform/win/WinLauncher.cpp"
   )
-    if(EXISTS "${_cand}")
+    if(EXISTS "${_cand"})
       target_sources(ColonyLauncher PRIVATE "${_cand}")
       set(_LAUNCHER_ENTRY_ADDED ON)
       break()
@@ -417,7 +425,7 @@ if(CMAKE_GENERATOR MATCHES "Visual Studio")
   set(HLSL_INC_ALT      "${CMAKE_SOURCE_DIR}/shaders/include")
   set(_VS_OUTDIR "$(OutDir)res\\shaders")
 
-  # Vertex/Pixel always
+  # Vertex/Pixel always — only compile real entrypoint files by suffix
   file(GLOB_RECURSE HLSL_SOURCES CONFIGURE_DEPENDS
     "${HLSL_DIR}/*_vs.hlsl"
     "${HLSL_DIR}/*_ps.hlsl"
@@ -484,13 +492,13 @@ if(CMAKE_GENERATOR MATCHES "Visual Studio")
     # Configure Visual Studio's HLSL properties for this file.
     # Using documented CMake per-source VS_SHADER_* properties.
     set_source_files_properties("${_file}" PROPERTIES
-      VS_SHADER_TYPE                 "${_type}"          # CMake property for HLSL shader type
-      VS_SHADER_MODEL                "5.0"
-      VS_SHADER_ENTRYPOINT           "${_entry}"
-      VS_SHADER_OBJECT_FILE_NAME     "${_VS_OUTDIR}\\%(Filename).cso"
-      VS_SHADER_ENABLE_DEBUG         "$<CONFIG:Debug>"
+      VS_SHADER_TYPE                  "${_type}"          # CMake property for HLSL shader type
+      VS_SHADER_MODEL                 "5.0"
+      VS_SHADER_ENTRYPOINT            "${_entry}"
+      VS_SHADER_OBJECT_FILE_NAME      "${_VS_OUTDIR}\\%(Filename).cso"
+      VS_SHADER_ENABLE_DEBUG          "$<CONFIG:Debug>"
       VS_SHADER_DISABLE_OPTIMIZATIONS "$<CONFIG:Debug>"
-      VS_SHADER_FLAGS                "${_HLSL_INC_FLAGS_STR}"
+      VS_SHADER_FLAGS                 "${_HLSL_INC_FLAGS_STR}"
     )
   endfunction()
 
