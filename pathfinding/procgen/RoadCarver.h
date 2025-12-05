@@ -4,6 +4,7 @@
 #include <queue>
 #include <cmath>
 #include <cstdint>
+#include <cstddef>
 #include <limits>
 #include <algorithm>
 #include "PoissonDisk.h"
@@ -12,18 +13,25 @@ namespace colony::pathfinding::procgen {
 
 struct GridView {
     int w, h;
-    const std::vector<uint8_t>* obstacle;     // 1 = blocked, 0 = free
+    const std::vector<uint8_t>*  obstacle;    // 1 = blocked, 0 = free
     const std::vector<uint16_t>* cost;        // >=1
 };
 
 struct GridEdit {
     int w, h;
-    std::vector<uint8_t>* obstacle;           // edit in-place
+    std::vector<uint8_t>*  obstacle;          // edit in-place
     std::vector<uint16_t>* cost;
 };
 
-inline size_t I(int x, int y, int w) { return static_cast<size_t>(y) * static_cast<size_t>(w) + static_cast<size_t>(x); }
-inline bool inBounds(int x, int y, int w, int h) { return (x >= 0 && y >= 0 && x < w && y < h); }
+// Single, ODR-safe index helper (header-inline)
+inline constexpr std::size_t I(int x, int y, int w) noexcept {
+    return static_cast<std::size_t>(y) * static_cast<std::size_t>(w)
+         + static_cast<std::size_t>(x);
+}
+
+inline bool inBounds(int x, int y, int w, int h) {
+    return (x >= 0 && y >= 0 && x < w && y < h);
+}
 
 inline float hDist(int x1, int y1, int x2, int y2) { // Manhattan heuristic (4-neighborhood)
     return static_cast<float>(std::abs(x1 - x2) + std::abs(y1 - y2));
@@ -40,8 +48,8 @@ inline std::vector<Int2> astarPath(const GridView& grid, Int2 start, Int2 goal, 
 {
     const int w = grid.w, h = grid.h;
     const float INF = std::numeric_limits<float>::infinity();
-    std::vector<float> gScore(static_cast<size_t>(w) * h, INF);
-    std::vector<Int2> parent(static_cast<size_t>(w) * h, Int2{ -1, -1 });
+    std::vector<float> gScore(static_cast<std::size_t>(w) * static_cast<std::size_t>(h), INF);
+    std::vector<Int2> parent(static_cast<std::size_t>(w) * static_cast<std::size_t>(h), Int2{ -1, -1 });
     std::priority_queue<Node, std::vector<Node>, NodeCmp> open;
 
     auto push = [&](int x, int y, float g, float f, int px, int py) {
@@ -66,7 +74,7 @@ inline std::vector<Int2> astarPath(const GridView& grid, Int2 start, Int2 goal, 
             if ((*grid.obstacle)[I(nx, ny, w)]) step += obstaclePenalty; // still traversable, just very expensive
             float ng = n.g + std::max(1.0f, step);
 
-            size_t ni = I(nx, ny, w);
+            std::size_t ni = I(nx, ny, w);
             if (ng < gScore[ni]) {
                 gScore[ni] = ng;
                 parent[ni] = Int2{ n.x, n.y };
@@ -79,7 +87,7 @@ inline std::vector<Int2> astarPath(const GridView& grid, Int2 start, Int2 goal, 
     // Reconstruct
     std::vector<Int2> path;
     Int2 cur = goal;
-    size_t ci = I(cur.x, cur.y, w);
+    std::size_t ci = I(cur.x, cur.y, w);
     if (std::isinf(gScore[ci])) return path; // no path
     while (!(cur.x == -1 && cur.y == -1)) {
         path.push_back(cur);
@@ -96,9 +104,9 @@ inline void carveRoads(GridEdit edit, const std::vector<Int2>& pois, uint16_t ro
 {
     if (pois.size() < 2) return;
     const int n = static_cast<int>(pois.size());
-    std::vector<int> parent(n, -1);
+    std::vector<int>   parent(n, -1);
     std::vector<float> key(n, std::numeric_limits<float>::infinity());
-    std::vector<char> inMST(n, 0);
+    std::vector<char>  inMST(n, 0);
 
     auto dist = [&](int i, int j) {
         float dx = float(pois[i].x - pois[j].x), dy = float(pois[i].y - pois[j].y);
