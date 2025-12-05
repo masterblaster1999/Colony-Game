@@ -22,6 +22,10 @@ endif()
 if(POLICY CMP0092)
   cmake_policy(SET CMP0092 NEW)  # Do not add /W3 implicitly for MSVC
 endif()
+# Use first-class MSVC runtime selection (controls /MT, /MD, etc.)
+if(POLICY CMP0091)
+  cmake_policy(SET CMP0091 NEW)
+endif()
 
 # ------------------------------------------------------------------------------
 # Make project-local modules discoverable
@@ -60,7 +64,7 @@ if(DEFINED CG_ENABLE_UNITY AND NOT DEFINED COLONY_UNITY_BUILD)
 endif()
 
 # ------------------------------------------------------------------------------
-# 11.1: ASan, PCH, and clang-tidy toggles (Windows-first)
+# Build options added by patch
 # ------------------------------------------------------------------------------
 if(NOT DEFINED COLONY_USE_PCH)
   option(COLONY_USE_PCH "Enable precompiled headers" ON)
@@ -73,6 +77,13 @@ option(COLONY_SEH_CRASHDUMP "Compile CrashDumpWin.cpp with /EHa while keeping /E
 
 # NEW: Make Tracy optional (OFF by default)
 option(COLONY_ENABLE_TRACY "Build with Tracy profiler instrumentation (vcpkg port 'tracy')" OFF)
+
+# Added by patch: tests & CRT toggles and optional game target name
+option(COLONY_BUILD_TESTS "Build unit tests in tests/ subdir (single-runner pattern)" ON)
+option(COLONY_RELEASE_STATIC_CRT
+  "Use static MSVC runtime (/MT) in Release; keep dynamic (/MDd) in Debug" OFF)
+set(COLONY_GAME_TARGET "" CACHE STRING
+  "Name of the game's main executable target (if different from 'ColonyGame') to link with colony_path")
 
 # ------------------------------------------------------------------------------
 # clang-tidy
@@ -128,10 +139,30 @@ if(MSVC)
     /MP
   )
 
+  # (PATCH) Generate full PDBs and cl debug info in Debug/RelWithDebInfo
+  add_compile_options($<$<OR:$<CONFIG:Debug>,$<CONFIG:RelWithDebInfo>>:/Zi>)
+  add_link_options($<$<OR:$<CONFIG:Debug>,$<CONFIG:RelWithDebInfo>>:/DEBUG:FULL>)
+
   # Use the supported abstraction instead of editing flags
   # (CMake >= 3.15; default is MultiThreadedDLL in Release, MultiThreadedDebugDLL in Debug)
   set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>DLL")
 endif()
+
+# Helper to apply our CRT policy per-target (handles "Release static; Debug dynamic").
+function(colony_apply_msvc_runtime tgt)
+  if(MSVC AND TARGET "${tgt}")
+    if(COLONY_RELEASE_STATIC_CRT)
+      # Debug  -> MDd
+      # Release-> MT
+      # Others (RelWithDebInfo/MinSizeRel)-> MD
+      set(_rt "$<IF:$<CONFIG:Debug>,MultiThreadedDebugDLL,$<IF:$<CONFIG:Release>,MultiThreaded,MultiThreadedDLL>>")
+    else()
+      # Dynamic CRT everywhere (MD/MDd).
+      set(_rt "MultiThreaded$<$<CONFIG:Debug>:Debug>DLL")
+    endif()
+    set_property(TARGET "${tgt}" PROPERTY MSVC_RUNTIME_LIBRARY "${_rt}")
+  endif()
+endfunction()
 
 # ------------------------------------------------------------------------------
 # Project modules
@@ -325,6 +356,27 @@ if(NOT COLONY_SPDLOG_TARGET)
 endif()
 
 # ------------------------------------------------------------------------------
+# (PATCH) Pathfinding library for the game (JPS/HPA) — adds colony_path target
+# ------------------------------------------------------------------------------
+file(GLOB_RECURSE COLONY_PATH_SOURCES
+     "${CMAKE_SOURCE_DIR}/pathfinding/*.cpp"
+     "${CMAKE_SOURCE_DIR}/hpa/*.cpp")
+
+if(COLONY_PATH_SOURCES)
+  add_library(colony_path STATIC ${COLONY_PATH_SOURCES})
+  add_library(colony::path ALIAS colony_path)
+
+  target_include_directories(colony_path PUBLIC
+    "${CMAKE_SOURCE_DIR}"
+    "${CMAKE_SOURCE_DIR}/include"
+    "${CMAKE_SOURCE_DIR}/pathfinding"
+    "${CMAKE_SOURCE_DIR}/hpa")
+
+  target_compile_features(colony_path PUBLIC cxx_std_20)
+  colony_apply_msvc_runtime(colony_path)
+endif()
+
+# ------------------------------------------------------------------------------
 # Core game source tree
 # ------------------------------------------------------------------------------
 if(EXISTS "${CMAKE_SOURCE_DIR}/src/CMakeLists.txt")
@@ -365,6 +417,11 @@ if(TARGET colony_core)
     target_link_options(colony_core PRIVATE /WX)
   endif()
 
+  # (PATCH) Link the pathfinding library into the core if available
+  if(TARGET colony_path)
+    target_link_libraries(colony_core PRIVATE colony::path)
+  endif()
+
   # --------------------------------------------------------------------------
   # Compile CrashDumpWin.cpp with /EHa (Structured Exception Handling)
   # --------------------------------------------------------------------------
@@ -378,6 +435,9 @@ if(TARGET colony_core)
       endforeach()
     endif()
   endif()
+
+  # Apply CRT policy
+  colony_apply_msvc_runtime(colony_core)
 endif()
 
 # ------------------------------------------------------------------------------
@@ -392,6 +452,7 @@ add_library(procgen
   src/procgen/SettlementGen.cpp
 )
 target_include_directories(procgen PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
+colony_apply_msvc_runtime(procgen)
 
 # Link the add-ons into the core/game target if it exists
 if(TARGET colony_core)
@@ -406,6 +467,22 @@ include(CGGameTarget)   # your cmake/CGGameTarget.cmake
 # If the main game executable exists, link SDL2main there (never in the core lib)
 if(TARGET ColonyGame AND TARGET SDL2::SDL2main)
   target_link_libraries(ColonyGame PRIVATE SDL2::SDL2main)
+endif()
+
+# (PATCH) Link colony_path into the main game exe (if present)
+if(TARGET ColonyGame AND TARGET colony_path)
+  target_link_libraries(ColonyGame PRIVATE colony::path)
+endif()
+if(COLONY_GAME_TARGET AND TARGET "${COLONY_GAME_TARGET}" AND TARGET colony_path)
+  target_link_libraries("${COLONY_GAME_TARGET}" PRIVATE colony::path)
+endif()
+
+# Apply CRT policy to executables if they exist
+if(TARGET ColonyGame)
+  colony_apply_msvc_runtime(ColonyGame)
+endif()
+if(COLONY_GAME_TARGET AND TARGET "${COLONY_GAME_TARGET}")
+  colony_apply_msvc_runtime("${COLONY_GAME_TARGET}")
 endif()
 
 # ------------------------------------------------------------------------------
@@ -491,6 +568,18 @@ if(WIN32)
     gdi32
     comdlg32
   )
+
+  colony_apply_msvc_runtime(ColonyMapViewer)
+endif()
+
+# ------------------------------------------------------------------------------
+# Tests wiring (single-runner subdirectory) — added by patch
+# ------------------------------------------------------------------------------
+if(COLONY_BUILD_TESTS AND EXISTS "${CMAKE_SOURCE_DIR}/tests/CMakeLists.txt")
+  # Avoid duplicate definition if CGTests also declares the same targets
+  if(NOT TARGET colony_smoke)
+    add_subdirectory(tests)
+  endif()
 endif()
 
 include(CGStageInstall) # your cmake/CGStageInstall.cmake
