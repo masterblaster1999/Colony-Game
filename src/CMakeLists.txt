@@ -80,6 +80,9 @@ if(WIN32)
   # IMPORTANT: never compile CrashDumpStub on Windows (prevents LNK4006)
   list(FILTER SRC_ALL EXCLUDE REGEX ".*/platform/win/CrashDumpStub\\.(c|cc|cxx|cpp)$")
 
+  # Exclude real crash handler implementations from the core lib; add to EXE later
+  list(FILTER SRC_ALL EXCLUDE REGEX ".*/platform/win/(CrashDumpWin|CrashHandlerWin|WinIntegration)\\.(c|cc|cxx|cpp)$")
+
   # Ensure GPU preference exports live only in the final EXE (avoid duplicates)
   list(FILTER SRC_ALL EXCLUDE REGEX ".*/src/platform/win/GpuPreference\\.(c|cc|cxx|cpp)$")
 endif()
@@ -94,6 +97,7 @@ set(_colony_disallow_regexes
   ".*/src/(launcher|tools)/.*\\.(c|cc|cxx|cpp)$"
   ".*/(win32_main|VerticalSlice|main_win|EntryWinMain|WinMain|LauncherMain)\\.(c|cc|cxx|cpp)$"
   ".*/platform/win/(WinLauncher|WinMain|VerticalSlice|win32_main|main_win|LauncherMain|AppMain|win_entry)\\.(c|cc|cxx|cpp)$"
+  ".*/platform/win/(CrashDumpWin|CrashHandlerWin|WinIntegration|CrashDumpStub)\\.(c|cc|cxx|cpp)$"
   ".*/colonygame\\.(c|cc|cxx|cpp)$"
 )
 
@@ -174,6 +178,8 @@ target_compile_definitions(colony_core
 
 if(MSVC)
   target_compile_options(colony_core PRIVATE /permissive- /Zc:preprocessor /Zc:__cplusplus /utf-8 /W4 /MP)
+  # Treat link warnings as errors to prevent duplicate symbol regressions
+  target_link_options(colony_core PRIVATE /WX)
 endif()
 
 if(WIN32)
@@ -262,6 +268,7 @@ target_include_directories(ColonyGame PRIVATE
 
 if(MSVC)
   target_compile_options(ColonyGame PRIVATE /permissive- /Zc:preprocessor /Zc:__cplusplus /utf-8 /W4 /MP)
+  target_link_options(ColonyGame PRIVATE /WX)
 endif()
 
 target_link_libraries(ColonyGame PRIVATE colony_core colony_build_options)
@@ -292,6 +299,7 @@ if(WIN32)
   if(EXISTS "${CMAKE_SOURCE_DIR}/platform/win/Manifest.rc")
     target_sources(ColonyGame PRIVATE "${CMAKE_SOURCE_DIR}/platform/win/Manifest.rc")
   endif()
+
   # GPU preference exports belong in the final game EXE ONLY
   foreach(_f IN ITEMS
     "${CMAKE_SOURCE_DIR}/src/platform/win/GpuPreference.cpp"
@@ -300,6 +308,19 @@ if(WIN32)
       target_sources(ColonyGame PRIVATE "${_f}")
     endif()
   endforeach()
+
+  # Add crash integration to the EXE (kept out of the core lib)
+  foreach(_f IN ITEMS
+    "${CMAKE_SOURCE_DIR}/src/platform/win/CrashHandlerWin.cpp"
+    "${CMAKE_SOURCE_DIR}/platform/win/CrashHandlerWin.cpp"
+    "${CMAKE_SOURCE_DIR}/src/platform/win/CrashDumpWin.cpp"
+    "${CMAKE_SOURCE_DIR}/platform/win/CrashDumpWin.cpp"
+  )
+    if(EXISTS "${_f}")
+      target_sources(ColonyGame PRIVATE "${_f}")
+    endif()
+  endforeach()
+
   target_link_libraries(ColonyGame PRIVATE dbghelp)
 endif()
 
@@ -320,6 +341,7 @@ if(WIN32 AND COLONY_BUILD_LAUNCHER AND NOT (FRONTEND STREQUAL "sdl"))
   )
   if(MSVC)
     target_compile_options(ColonyLauncher PRIVATE /permissive- /Zc:preprocessor /Zc:__cplusplus /utf-8 /W4 /MP)
+    target_link_options(ColonyLauncher PRIVATE /WX)
   endif()
   target_link_libraries(ColonyLauncher PRIVATE colony_core colony_build_options shell32 ole32)
 
