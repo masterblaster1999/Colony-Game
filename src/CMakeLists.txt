@@ -13,12 +13,15 @@ else()
   option(ENABLE_IMGUI OFF)
   option(ENABLE_TRACY OFF)
 endif()
-option(SHOW_CONSOLE        "Show console for the Win32 executable" OFF)
+option(SHOW_CONSOLE        "Show console for the Win32 executable(s)" OFF)
 option(COLONY_USE_PCH      "Enable precompiled headers" ON)
 option(COLONY_UNITY_BUILD  "Enable CMake Unity builds (jumbo)" OFF)
 
 # Gate compute shaders to avoid FXC X3501 until all *_cs.hlsl have CSMain
 option(COLONY_ENABLE_COMPUTE_SHADERS "Compile compute shaders (*_cs.hlsl) if they define CSMain" OFF)
+
+# Option B: build a separate launcher EXE that can spawn the game EXE
+option(COLONY_BUILD_LAUNCHER "Build native Windows launcher (separate EXE)" ON)
 
 set(COLONY_PCH_HEADER "" CACHE STRING "Path to a shared PCH header (relative to source root)")
 
@@ -38,16 +41,15 @@ file(GLOB_RECURSE SRC_ALL
   "${CMAKE_SOURCE_DIR}/platform/win/*.cpp" "${CMAKE_SOURCE_DIR}/platform/win/*.h"
 )
 
-# >>> PATCH (minimal delta): keep app/ and any stray entry points out of the core lib
+# Keep app/ and any entry points out of the core lib
 list(FILTER SRC_ALL EXCLUDE REGEX ".*/src/app/.*\\.(c|cc|cxx|cpp)$")
 list(FILTER SRC_ALL EXCLUDE REGEX ".*/src/(launcher|tools)/.*\\.(c|cc|cxx|cpp)$")
 list(FILTER SRC_ALL EXCLUDE REGEX ".*/(win32_main|VerticalSlice|main_win|EntryWinMain|WinMain|LauncherMain)\\.(c|cc|cxx|cpp)$")
-# (These use list(FILTER … REGEX …), per the CMake docs.)
 
 # Exclude vendored imgui sources if present
 list(FILTER SRC_ALL EXCLUDE REGEX ".*/third_party/imgui/.*")
 
-# Legacy / tool mains not for the core lib
+# Legacy/tool mains not for the core lib
 list(FILTER SRC_ALL EXCLUDE REGEX ".*/src/main\\.cpp$")
 list(FILTER SRC_ALL EXCLUDE REGEX ".*/src/tools/ColonyMapViewerMain\\.cpp$")
 
@@ -60,14 +62,13 @@ else()
   list(FILTER SRC_ALL EXCLUDE REGEX ".*/SDL.*\\.(c|cpp)$")
 endif()
 
-# ----- CRITICAL: keep all possible Windows entrypoints OUT of the core lib -----
-# (We will add exactly one of them to the ColonyGame executable later.)
+# ----- Keep all possible Windows entrypoints OUT of the core lib -----
 list(FILTER SRC_ALL EXCLUDE REGEX ".*/platform/win/(WinLauncher|WinMain|VerticalSlice|win32_main|main_win|LauncherMain|AppMain|win_entry)\\.(c|cc|cxx|cpp)$")
 list(FILTER SRC_ALL EXCLUDE REGEX ".*/colonygame\\.(c|cc|cxx|cpp)$")
 
 # Windows-specific duplicate‑symbol hot spots: prefer one implementation
 if(WIN32)
-  # Keep AtomicFileWin on Windows; drop cross‑platform AtomicFile.cpp to avoid dupes
+  # Prefer AtomicFileWin on Windows; drop cross‑platform AtomicFile.cpp to avoid dupes
   list(FILTER SRC_ALL EXCLUDE REGEX ".*/AtomicFile\\.cpp$")
 
   # If both case-variants of the D3D11 device exist, keep PascalCase and drop snake_case
@@ -75,9 +76,15 @@ if(WIN32)
 
   # If a generic CrashDump.cpp exists alongside CrashDumpWin.cpp, drop the generic TU
   list(FILTER SRC_ALL EXCLUDE REGEX ".*/CrashDump\\.cpp$")
+
+  # IMPORTANT: never compile CrashDumpStub on Windows (prevents LNK4006)
+  list(FILTER SRC_ALL EXCLUDE REGEX ".*/platform/win/CrashDumpStub\\.(c|cc|cxx|cpp)$")
+
+  # Ensure GPU preference exports live only in the final EXE (avoid duplicates)
+  list(FILTER SRC_ALL EXCLUDE REGEX ".*/src/platform/win/GpuPreference\\.(c|cc|cxx|cpp)$")
 endif()
 
-# Defensive de‑duplication (guards against glob/path aliases)
+# Defensive de‑duplication
 list(REMOVE_DUPLICATES SRC_ALL)
 
 # ---------------------------- Guardrail: verify filters ----------------------------
@@ -91,18 +98,18 @@ set(_colony_disallow_regexes
 )
 
 set(_colony_leaks "")
-foreach(_f IN LISTS SRC_ALL)                                # foreach over list items. :contentReference[oaicite:1]{index=1}
+foreach(_f IN LISTS SRC_ALL)
   foreach(_rx IN LISTS _colony_disallow_regexes)
-    if(_f MATCHES "${_rx}")                                 # regex match test. :contentReference[oaicite:2]{index=2}
+    if(_f MATCHES "${_rx}")
       list(APPEND _colony_leaks "${_f}")
       break()
     endif()
   endforeach()
 endforeach()
-list(REMOVE_DUPLICATES _colony_leaks)                       # ensure unique report. :contentReference[oaicite:3]{index=3}
+list(REMOVE_DUPLICATES _colony_leaks)
 if(_colony_leaks)
   list(JOIN _colony_leaks "\n  " _colony_leaks_joined)
-  message(FATAL_ERROR                                       # hard stop on violation. :contentReference[oaicite:4]{index=4}
+  message(FATAL_ERROR
     "Guardrail: The following app/ or entrypoint sources leaked into colony_core:\n  ${_colony_leaks_joined}\n"
     "Update the filters in src/CMakeLists.txt to exclude them."
   )
@@ -136,7 +143,6 @@ foreach(_cand
   "${CMAKE_SOURCE_DIR}/platform/win/DeviceResources.cpp"
 )
   if(EXISTS "${_cand}")
-    # Remove any DeviceResources.* picked by globs, then add one canonical file
     get_target_property(_core_srcs colony_core SOURCES)
     list(FILTER _core_srcs EXCLUDE REGEX ".*/DeviceResources\\.(c|cc|cxx|cpp)$")
     set_property(TARGET colony_core PROPERTY SOURCES "${_core_srcs}")
@@ -234,7 +240,7 @@ if(NOT taskflow_FOUND)
   target_include_directories(colony_core PUBLIC "${TASKFLOW_INCLUDE_DIR}")
 endif()
 
-# =============================== Executable ===============================
+# =============================== Game EXE ===============================
 add_executable(ColonyGame)
 
 if(WIN32)
@@ -260,25 +266,25 @@ endif()
 
 target_link_libraries(ColonyGame PRIVATE colony_core colony_build_options)
 
-# --- Add exactly one Windows entry point to the EXE (non‑SDL) ---
+# --- Add exactly one Windows game entry point to ColonyGame ---
 if(WIN32 AND NOT (FRONTEND STREQUAL "sdl"))
-  set(_ENTRY_ADDED OFF)
+  set(_APP_ENTRY_ADDED OFF)
   foreach(_cand
-    "${CMAKE_SOURCE_DIR}/src/platform/win/WinLauncher.cpp"
-    "${CMAKE_SOURCE_DIR}/platform/win/WinLauncher.cpp"
+    "${CMAKE_SOURCE_DIR}/src/AppMain.cpp"
+    "${CMAKE_SOURCE_DIR}/src/platform/win/AppMain.cpp"
   )
     if(EXISTS "${_cand}")
       target_sources(ColonyGame PRIVATE "${_cand}")
-      set(_ENTRY_ADDED ON)
+      set(_APP_ENTRY_ADDED ON)
       break()
     endif()
   endforeach()
-  if(NOT _ENTRY_ADDED)
-    message(FATAL_ERROR "WinLauncher.cpp not found – provide a single Windows entry point and add it to ColonyGame.")
+  if(NOT _APP_ENTRY_ADDED)
+    message(FATAL_ERROR "AppMain.cpp not found – provide a single Windows game entry point and add it to ColonyGame.")
   endif()
 endif()
 
-# Windows resources & helpers
+# Windows resources & helpers for the game
 if(WIN32)
   if(EXISTS "${CMAKE_BINARY_DIR}/generated/Version.rc")
     target_sources(ColonyGame PRIVATE "${CMAKE_BINARY_DIR}/generated/Version.rc")
@@ -286,8 +292,8 @@ if(WIN32)
   if(EXISTS "${CMAKE_SOURCE_DIR}/platform/win/Manifest.rc")
     target_sources(ColonyGame PRIVATE "${CMAKE_SOURCE_DIR}/platform/win/Manifest.rc")
   endif()
+  # GPU preference exports belong in the final game EXE ONLY
   foreach(_f IN ITEMS
-    "${CMAKE_SOURCE_DIR}/platform/win/CrashHandler.cpp"
     "${CMAKE_SOURCE_DIR}/src/platform/win/GpuPreference.cpp"
   )
     if(EXISTS "${_f}")
@@ -297,17 +303,67 @@ if(WIN32)
   target_link_libraries(ColonyGame PRIVATE dbghelp)
 endif()
 
-# VS startup project
-set_property(DIRECTORY "${CMAKE_SOURCE_DIR}" PROPERTY VS_STARTUP_PROJECT ColonyGame)
+# ============================== Launcher EXE ==============================
+if(WIN32 AND COLONY_BUILD_LAUNCHER AND NOT (FRONTEND STREQUAL "sdl"))
+  add_executable(ColonyLauncher)
+  target_compile_definitions(ColonyLauncher PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX)
+  if(NOT SHOW_CONSOLE)
+    set_target_properties(ColonyLauncher PROPERTIES WIN32_EXECUTABLE YES)
+  endif()
+  if(CMAKE_VERSION VERSION_LESS 3.21)
+    target_compile_features(ColonyLauncher PRIVATE cxx_std_20)
+  else()
+    target_compile_features(ColonyLauncher PRIVATE cxx_std_23)
+  endif()
+  target_include_directories(ColonyLauncher PRIVATE
+    "${CMAKE_SOURCE_DIR}/src" "${CMAKE_SOURCE_DIR}/include" "${CMAKE_SOURCE_DIR}" "${CMAKE_BINARY_DIR}/generated"
+  )
+  if(MSVC)
+    target_compile_options(ColonyLauncher PRIVATE /permissive- /Zc:preprocessor /Zc:__cplusplus /utf-8 /W4 /MP)
+  endif()
+  target_link_libraries(ColonyLauncher PRIVATE colony_core colony_build_options shell32 ole32)
+
+  # Add exactly one launcher entry point (WinLauncher.cpp)
+  set(_LAUNCHER_ENTRY_ADDED OFF)
+  foreach(_cand
+    "${CMAKE_SOURCE_DIR}/src/platform/win/WinLauncher.cpp"
+    "${CMAKE_SOURCE_DIR}/platform/win/WinLauncher.cpp"
+  )
+    if(EXISTS "${_cand}")
+      target_sources(ColonyLauncher PRIVATE "${_cand}")
+      set(_LAUNCHER_ENTRY_ADDED ON)
+      break()
+    endif()
+  endforeach()
+  if(NOT _LAUNCHER_ENTRY_ADDED)
+    message(FATAL_ERROR "WinLauncher.cpp not found – provide a single Windows launcher entry point and add it to ColonyLauncher.")
+  endif()
+
+  # (Optional) Windows resources for the launcher
+  if(EXISTS "${CMAKE_SOURCE_DIR}/platform/win/Manifest.rc")
+    target_sources(ColonyLauncher PRIVATE "${CMAKE_SOURCE_DIR}/platform/win/Manifest.rc")
+  endif()
+
+  # Set startup project to the game by default; switch to the launcher if you prefer
+  set_property(DIRECTORY "${CMAKE_SOURCE_DIR}" PROPERTY VS_STARTUP_PROJECT ColonyGame)
+else()
+  set_property(DIRECTORY "${CMAKE_SOURCE_DIR}" PROPERTY VS_STARTUP_PROJECT ColonyGame)
+endif()
 
 # Output (multi/single config)
 if(CMAKE_CONFIGURATION_TYPES)
   foreach(cfg IN LISTS CMAKE_CONFIGURATION_TYPES)
     string(TOUPPER "${cfg}" CFGU)
-    set_target_properties(ColonyGame PROPERTIES RUNTIME_OUTPUT_DIRECTORY_${CFGU} "${CMAKE_BINARY_DIR}/bin/${cfg}")
+    set_target_properties(ColonyGame     PROPERTIES RUNTIME_OUTPUT_DIRECTORY_${CFGU} "${CMAKE_BINARY_DIR}/bin/${cfg}")
+    if(TARGET ColonyLauncher)
+      set_target_properties(ColonyLauncher PROPERTIES RUNTIME_OUTPUT_DIRECTORY_${CFGU} "${CMAKE_BINARY_DIR}/bin/${cfg}")
+    endif()
   endforeach()
 else()
-  set_target_properties(ColonyGame PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
+  set_target_properties(ColonyGame     PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
+  if(TARGET ColonyLauncher)
+    set_target_properties(ColonyLauncher PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
+  endif()
 endif()
 
 # Runtime dir variable
@@ -403,16 +459,16 @@ if(CMAKE_GENERATOR MATCHES "Visual Studio")
       return()
     endif()
 
-    # Use dedicated props for /Zi and /Od instead of stuffing them in VS_SHADER_FLAGS.
-    # (These exist since CMake 3.11; generator-expr support since 3.12.)
+    # Configure Visual Studio's HLSL properties for this file.
+    # Using documented CMake per-source VS_SHADER_* properties.
     set_source_files_properties("${_file}" PROPERTIES
-      VS_SHADER_TYPE               "${_type}"                   # CMake 3.1+ :contentReference[oaicite:3]{index=3}
-      VS_SHADER_MODEL              "5.0"                        # CMake 3.1+ :contentReference[oaicite:4]{index=4}
-      VS_SHADER_ENTRYPOINT         "${_entry}"
-      VS_SHADER_OBJECT_FILE_NAME   "${_VS_OUTDIR}\\%(Filename).cso"
-      VS_SHADER_ENABLE_DEBUG       "$<CONFIG:Debug>"            # emits -Zi in Debug :contentReference[oaicite:5]{index=5}
-      VS_SHADER_DISABLE_OPTIMIZATIONS "$<CONFIG:Debug>"         # emits -Od in Debug :contentReference[oaicite:6]{index=6}
-      VS_SHADER_FLAGS              "${_HLSL_INC_FLAGS_STR}"     # only include paths here :contentReference[oaicite:7]{index=7}
+      VS_SHADER_TYPE                 "${_type}"          # CMake property for HLSL shader type
+      VS_SHADER_MODEL                "5.0"
+      VS_SHADER_ENTRYPOINT           "${_entry}"
+      VS_SHADER_OBJECT_FILE_NAME     "${_VS_OUTDIR}\\%(Filename).cso"
+      VS_SHADER_ENABLE_DEBUG         "$<CONFIG:Debug>"
+      VS_SHADER_DISABLE_OPTIMIZATIONS "$<CONFIG:Debug>"
+      VS_SHADER_FLAGS                "${_HLSL_INC_FLAGS_STR}"
     )
   endfunction()
 
@@ -460,9 +516,11 @@ else()
   endif()
 endif()
 
-
 # ------------------------------- Install ----------------------------------
 install(TARGETS ColonyGame RUNTIME DESTINATION ".")
+if(TARGET ColonyLauncher)
+  install(TARGETS ColonyLauncher RUNTIME DESTINATION ".")
+endif()
 install(DIRECTORY "${CMAKE_SOURCE_DIR}/assets/"  DESTINATION "assets")
 install(DIRECTORY "${CMAKE_SOURCE_DIR}/res/"     DESTINATION "res")
 install(DIRECTORY "${CMAKE_SOURCE_DIR}/Content/" DESTINATION "Content")
