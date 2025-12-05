@@ -335,9 +335,9 @@ endif()
 # Link third-party dependencies
 # ------------------------------------------------------------------------------
 if(TARGET colony_core)
+  # Hygiene: link SDL2 itself to the core, but never SDL2main (entry-point shim).
   target_link_libraries(colony_core PRIVATE
     SDL2::SDL2
-    SDL2::SDL2main
     imgui::imgui
     ${COLONY_SPDLOG_TARGET}
   )
@@ -359,6 +359,11 @@ if(TARGET colony_core)
   target_compile_definitions(colony_core PRIVATE
     SPDLOG_ACTIVE_LEVEL=$<IF:$<CONFIG:Debug>,SPDLOG_LEVEL_TRACE,SPDLOG_LEVEL_INFO>
   )
+
+  # Treat linker warnings as errors on the core lib too (catches duplicate symbols early)
+  if(MSVC)
+    target_link_options(colony_core PRIVATE /WX)
+  endif()
 
   # --------------------------------------------------------------------------
   # Compile CrashDumpWin.cpp with /EHa (Structured Exception Handling)
@@ -397,6 +402,11 @@ endif()
 # Generate the final game target, install rules, tests, summary
 # ------------------------------------------------------------------------------
 include(CGGameTarget)   # your cmake/CGGameTarget.cmake
+
+# If the main game executable exists, link SDL2main there (never in the core lib)
+if(TARGET ColonyGame AND TARGET SDL2::SDL2main)
+  target_link_libraries(ColonyGame PRIVATE SDL2::SDL2main)
+endif()
 
 # ------------------------------------------------------------------------------
 # (PATCH) After the executable exists, link/copy compiled shaders next to it
@@ -471,6 +481,7 @@ if(WIN32)
 
   if(MSVC)
     target_compile_definitions(ColonyMapViewer PRIVATE UNICODE _UNICODE)
+    target_link_options(ColonyMapViewer PRIVATE /WX) # treat link warnings as errors
   endif()
 
   # Link against world-gen (procgen) and Win32 GUI libs
@@ -485,3 +496,24 @@ endif()
 include(CGStageInstall) # your cmake/CGStageInstall.cmake
 include(CGTests)        # your cmake/CGTests.cmake
 include(CGSummary)      # your cmake/CGSummary.cmake
+
+# ------------------------------------------------------------------------------
+# Enforce link warnings-as-errors on all executable targets (MSVC)
+# (Catches duplicate entry points, COMDAT collisions, etc.)
+# ------------------------------------------------------------------------------
+if(MSVC)
+  function(_cg_apply_link_wx start_dir)
+    get_property(_tgts DIRECTORY "${start_dir}" PROPERTY BUILDSYSTEM_TARGETS)
+    foreach(_t IN LISTS _tgts)
+      get_target_property(_type "${_t}" TYPE)
+      if(_type STREQUAL "EXECUTABLE")
+        target_link_options(${_t} PRIVATE /WX)
+      endif()
+    endforeach()
+    get_property(_subs DIRECTORY "${start_dir}" PROPERTY SUBDIRECTORIES)
+    foreach(_sd IN LISTS _subs)
+      _cg_apply_link_wx("${_sd}")
+    endforeach()
+  endfunction()
+  _cg_apply_link_wx("${CMAKE_SOURCE_DIR}")
+endif()
