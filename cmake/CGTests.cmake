@@ -1,54 +1,22 @@
-# cmake/CGTests.cmake
-include_guard(GLOBAL)
-include(CTest)
+# cmake/CGTests.cmake  (idempotent)
+# Add tests/ once and advertise via a cache flag other scripts can see.
 
-if(NOT BUILD_TESTING)
+# If someone already added the tests, bail out early.
+if(DEFINED COLONY_TESTS_ADDED)
+  message(STATUS "CGTests: tests/ already added (COLONY_TESTS_ADDED). Skipping.")
   return()
 endif()
 
-# FIX: removed extra '}' at end of the line
+# Respect the project-wide toggle (default ON in your root)
+if(NOT COLONY_BUILD_TESTS)
+  message(STATUS "CGTests: COLONY_BUILD_TESTS=OFF; skipping tests/")
+  return()
+endif()
+
+# Add tests/ with an explicit binary dir to make intent obvious.
 if(EXISTS "${CMAKE_SOURCE_DIR}/tests/CMakeLists.txt")
-  add_subdirectory(tests)
-
-elseif(EXISTS "${CMAKE_SOURCE_DIR}/tests")
-  file(GLOB TEST_SRCS CONFIGURE_DEPENDS
-       "${CMAKE_SOURCE_DIR}/tests/*.cpp" "${CMAKE_SOURCE_DIR}/tests/*.cxx")
-
-  set(_TEST_MAIN "")
-  foreach(_cand IN LISTS TEST_SRCS)
-    if(_cand MATCHES "test_main\\.(cpp|cxx)$")
-      set(_TEST_MAIN "${_cand}")
-    endif()
-  endforeach()
-
-  if(_TEST_MAIN)
-    list(REMOVE_ITEM TEST_SRCS "${_TEST_MAIN}")
-    add_executable(colony_tests ${_TEST_MAIN} ${TEST_SRCS})
-  else()
-    add_executable(colony_tests ${TEST_SRCS})
-  endif()
-
-  foreach(_lib colony_core colony_platform_win pcg Factions colony_build_options)
-    if(TARGET ${_lib})
-      target_link_libraries(colony_tests PRIVATE ${_lib})
-    endif()
-  endforeach()
-
-  target_include_directories(colony_tests PRIVATE
-    "${CMAKE_SOURCE_DIR}/src" "${CMAKE_SOURCE_DIR}/include")
-
-  if(COLONY_USE_PCH)
-    foreach(_pch IN ITEMS
-      src/common/pch_core.hpp
-      src/pch_core.hpp
-      src/common/pch.hpp)
-      if(EXISTS "${CMAKE_SOURCE_DIR}/${_pch}")
-        target_precompile_headers(colony_tests PRIVATE "${_pch}")
-        break()
-      endif()
-    endforeach()
-  endif()
-
-  add_test(NAME colony_tests COMMAND colony_tests)
-  set_property(TARGET colony_tests PROPERTY FOLDER "tests")
+  add_subdirectory("${CMAKE_SOURCE_DIR}/tests" "${CMAKE_BINARY_DIR}/tests")
+  set(COLONY_TESTS_ADDED ON CACHE INTERNAL "tests/ added by CGTests")
+else()
+  message(WARNING "CGTests: tests/CMakeLists.txt not found; skipping.")
 endif()
