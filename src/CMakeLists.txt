@@ -165,6 +165,22 @@ foreach(_cand
   endif()
 endforeach()
 
+# --- Ensure WinPath TU is present exactly once (so tests link on Windows) ---
+foreach(_cand
+  "${CMAKE_SOURCE_DIR}/src/platform/win/WinPath.cpp"
+  "${CMAKE_SOURCE_DIR}/platform/win/WinPath.cpp"
+)
+  if(EXISTS "${_cand}")
+    get_target_property(_core_srcs colony_core SOURCES)
+    if(_core_srcs)
+      list(FILTER _core_srcs EXCLUDE REGEX ".*/WinPath\\.(c|cc|cxx|cpp)$")
+      set_property(TARGET colony_core PROPERTY SOURCES "${_core_srcs}")
+    endif()
+    target_sources(colony_core PRIVATE "${_cand}")
+    break()
+  endif()
+endforeach()
+
 # PCH
 set(_PCH_HEADER "")
 if(DEFINED COLONY_PCH_HEADER AND EXISTS "${CMAKE_SOURCE_DIR}/${COLONY_PCH_HEADER}")
