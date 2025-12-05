@@ -5,6 +5,7 @@
 #include <mutex>
 #include <type_traits>
 #include <cassert>
+#include <utility> // for std::forward
 
 namespace colony::memory {
 
@@ -37,7 +38,9 @@ public:
     ObjectPool(const ObjectPool&) = delete;
     ObjectPool& operator=(const ObjectPool&) = delete;
 
-    template <class... Args>
+    // Accept lvalues/rvalues uniformly in the constraint (fixes Args={int&} case)
+    template <class... Args,
+              std::enable_if_t<std::is_constructible_v<T, std::decay_t<Args>...>, int> = 0>
     T* create(Args&&... args) {
         if constexpr (ThreadSafe) lock_.lock();
         if (!free_) allocate_chunk_();
