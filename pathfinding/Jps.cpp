@@ -203,14 +203,13 @@ std::vector<Cell> jps_find_path(const IGrid& grid, Cell start, Cell goal, const 
 {
     const int W = grid.width();
     const int H = grid.height();
-    (void)H; // H is not used directly, but kept for clarity / future guards
 
-    if (W <= 0) return {};
+    if (W <= 0 || H <= 0) return {};
     if (!passable(grid, start.x, start.y)) return {};
     if (!passable(grid, goal.x, goal.y))   return {};
     if (start.x == goal.x && start.y == goal.y) return {start};
 
-    std::vector<Node> nodes(static_cast<size_t>(W) * static_cast<size_t>(grid.height()));
+    std::vector<Node> nodes(static_cast<size_t>(W) * static_cast<size_t>(H));
 
     auto push_open = [&](std::priority_queue<PQItem>& open, int i, float f) {
         open.push(PQItem{i, f});
@@ -285,3 +284,4 @@ std::vector<Cell> jps_find_path(const IGrid& grid, Cell start, Cell goal, const 
 }
 
 } // namespace colony::path
+
