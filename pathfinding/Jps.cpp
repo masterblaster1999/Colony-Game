@@ -7,7 +7,6 @@
 #include <utility>
 #include <cmath>
 #include <algorithm>
-#include <cassert>
 
 namespace colony::path {
 
