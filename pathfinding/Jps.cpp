@@ -24,7 +24,7 @@ struct Node {
 };
 
 struct PQItem {
-    int index;   // y*W + x
+    int   index;  // y*W + x
     float f;
     // min-heap by f
     bool operator<(const PQItem& o) const { return f > o.f; }
@@ -205,7 +205,7 @@ std::vector<Cell> jps_find_path(const IGrid& grid, Cell start, Cell goal, const 
 {
     const int W = grid.width();
     const int H = grid.height();
-    (void)H; // retained for clarity / future guards
+    (void)H;
 
     if (W <= 0) return {};
     if (!passable(grid, start.x, start.y)) return {};
