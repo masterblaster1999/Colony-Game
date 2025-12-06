@@ -1,13 +1,13 @@
 // pathfinding/Jps.cpp
 #include "pathfinding/Jps.hpp"
 
-#include <queue>
 #include <array>
-#include <vector>
-#include <limits>
-#include <utility>
-#include <cmath>
 #include <algorithm>
+#include <cmath>
+#include <limits>
+#include <queue>
+#include <utility>
+#include <vector>
 
 namespace colony::path {
 
@@ -17,17 +17,16 @@ struct Node {
     int   x = 0, y = 0;
     float g = std::numeric_limits<float>::infinity();
     float f = std::numeric_limits<float>::infinity();
-    int   parent = -1;     // index in flat grid (y*W + x)
-    int   px = 0, py = 0;  // parent coordinates
+    int   parent = -1;     // parent index in flat grid (y*W + x)
+    int   px = 0, py = 0;  // parent coordinates (for direction)
     bool  opened = false;
     bool  closed = false;
 };
 
 struct PQItem {
-    int   index;  // y*W + x
+    int index;   // y*W + x
     float f;
-    // min-heap by f
-    bool operator<(const PQItem& o) const { return f > o.f; }
+    bool operator<(const PQItem& o) const { return f > o.f; } // min-heap
 };
 
 inline int idx(int x, int y, int W) { return y * W + x; }
@@ -44,7 +43,7 @@ inline bool can_step(const IGrid& g, int x, int y, int dx, int dy, const JpsOpti
     const int nx = x + dx, ny = y + dy;
     if (!passable(g, nx, ny)) return false;
     if (o.allowDiagonal && o.dontCrossCorners && dx != 0 && dy != 0) {
-        // forbid cutting across corners
+        // Forbid cutting across corners
         if (!passable(g, x + dx, y) || !passable(g, x, y + dy)) return false;
     }
     return true;
@@ -75,7 +74,7 @@ inline float tiebreak(int x, int y, int sx, int sy, int gx, int gy) {
     return std::abs(vx1 * vy2 - vy1 * vx2) * 1e-3f;
 }
 
-// Forced-neighbor checks per classic JPS
+// Forced-neighbor tests for straight moves
 inline bool has_forced_neighbors_straight(const IGrid& g, int x, int y, int dx, int dy) {
     if (dx != 0 && dy == 0) {
         // moving horizontally
@@ -89,8 +88,8 @@ inline bool has_forced_neighbors_straight(const IGrid& g, int x, int y, int dx, 
     return false;
 }
 
+// Forced-neighbor tests for diagonal moves
 inline bool has_forced_neighbors_diag(const IGrid& g, int x, int y, int dx, int dy) {
-    // diagonal: check the two forced-neighbor patterns
     if (!passable(g, x - dx, y) && passable(g, x - dx, y + dy)) return true;
     if (!passable(g, x, y - dy) && passable(g, x + dx, y - dy)) return true;
     return false;
@@ -101,11 +100,13 @@ static void pruned_dirs(const IGrid& g, int x, int y, int px, int py,
                         const JpsOptions& o, std::vector<std::pair<int,int>>& out)
 {
     out.clear();
-    if (px == x && py == y) { // no parent: return all legal dirs
-        static const std::array<std::pair<int,int>,8> dirs8{{
+
+    // No parent: return all legal directions
+    if (px == x && py == y) {
+        static const std::array<std::pair<int,int>,8> dirs8 {{
             {+1,0},{-1,0},{0,+1},{0,-1},{+1,+1},{+1,-1},{-1,+1},{-1,-1}
         }};
-        static const std::array<std::pair<int,int>,4> dirs4{{
+        static const std::array<std::pair<int,int>,4> dirs4 {{
             {+1,0},{-1,0},{0,+1},{0,-1}
         }};
         if (o.allowDiagonal) {
@@ -138,14 +139,13 @@ static void pruned_dirs(const IGrid& g, int x, int y, int px, int py,
     }
 }
 
-// Core JPS "jump"
+// Core JPS "jump" expansion
 static bool jump(const IGrid& g, int x, int y, int dx, int dy,
                  int gx, int gy, const JpsOptions& o, int& outx, int& outy)
 {
     while (true) {
-        const int nx = x + dx, ny = y + dy;
         if (!can_step(g, x, y, dx, dy, o)) return false;
-        x = nx; y = ny;
+        x += dx; y += dy;
 
         if (x == gx && y == gy) { outx = x; outy = y; return true; }
 
@@ -205,14 +205,14 @@ std::vector<Cell> jps_find_path(const IGrid& grid, Cell start, Cell goal, const 
 {
     const int W = grid.width();
     const int H = grid.height();
-    (void)H;
+    (void)H; // reserved for additional guards
 
     if (W <= 0) return {};
     if (!passable(grid, start.x, start.y)) return {};
     if (!passable(grid, goal.x, goal.y))   return {};
     if (start.x == goal.x && start.y == goal.y) return {start};
 
-    std::vector<Node> nodes(static_cast<size_t>(W) * static_cast<size_t>(grid.height()));
+    std::vector<Node> nodes(static_cast<std::size_t>(W) * static_cast<std::size_t>(grid.height()));
 
     auto push_open = [&](std::priority_queue<PQItem>& open, int i, float f) {
         open.push(PQItem{i, f});
@@ -241,11 +241,11 @@ std::vector<Cell> jps_find_path(const IGrid& grid, Cell start, Cell goal, const 
         if (curr_i == idx(goal.x, goal.y, W)) {
             auto path = reconstruct_path(nodes, curr_i, W);
             if (opt.smoothPath && path.size() > 2) {
-                // greedily pull strings
+                // Greedily pull strings
                 std::vector<Cell> smooth; smooth.push_back(path.front());
-                size_t j = 1;
+                std::size_t j = 1;
                 while (j < path.size()) {
-                    size_t k = j;
+                    std::size_t k = j;
                     while (k+1 < path.size() &&
                            los_supercover(grid, smooth.back().x, smooth.back().y, path[k+1].x, path[k+1].y, opt)) {
                         ++k;
