@@ -1,3 +1,4 @@
+// pathfinding/Jps.cpp
 #include "pathfinding/Jps.hpp"
 
 #include <queue>
@@ -16,8 +17,8 @@ struct Node {
     int   x = 0, y = 0;
     float g = std::numeric_limits<float>::infinity();
     float f = std::numeric_limits<float>::infinity();
-    int   parent = -1;     // parent index in flat grid (y*W+x)
-    int   px = 0, py = 0;  // parent coordinates (for direction)
+    int   parent = -1;     // index in flat grid (y*W + x)
+    int   px = 0, py = 0;  // parent coordinates
     bool  opened = false;
     bool  closed = false;
 };
@@ -25,7 +26,8 @@ struct Node {
 struct PQItem {
     int index;   // y*W + x
     float f;
-    bool operator<(const PQItem& o) const { return f > o.f; } // min-heap
+    // min-heap by f
+    bool operator<(const PQItem& o) const { return f > o.f; }
 };
 
 inline int idx(int x, int y, int W) { return y * W + x; }
@@ -73,7 +75,7 @@ inline float tiebreak(int x, int y, int sx, int sy, int gx, int gy) {
     return std::abs(vx1 * vy2 - vy1 * vx2) * 1e-3f;
 }
 
-// Forced-neighbor tests per JPS
+// Forced-neighbor checks per classic JPS
 inline bool has_forced_neighbors_straight(const IGrid& g, int x, int y, int dx, int dy) {
     if (dx != 0 && dy == 0) {
         // moving horizontally
@@ -100,12 +102,12 @@ static void pruned_dirs(const IGrid& g, int x, int y, int px, int py,
 {
     out.clear();
     if (px == x && py == y) { // no parent: return all legal dirs
-        static const std::array<std::pair<int,int>,8> dirs8 { {
+        static const std::array<std::pair<int,int>,8> dirs8{{
             {+1,0},{-1,0},{0,+1},{0,-1},{+1,+1},{+1,-1},{-1,+1},{-1,-1}
-        } };
-        static const std::array<std::pair<int,int>,4> dirs4 { {
+        }};
+        static const std::array<std::pair<int,int>,4> dirs4{{
             {+1,0},{-1,0},{0,+1},{0,-1}
-        } };
+        }};
         if (o.allowDiagonal) {
             for (auto [dx,dy] : dirs8) if (can_step(g,x,y,dx,dy,o)) out.emplace_back(dx,dy);
         } else {
@@ -203,13 +205,14 @@ std::vector<Cell> jps_find_path(const IGrid& grid, Cell start, Cell goal, const 
 {
     const int W = grid.width();
     const int H = grid.height();
+    (void)H; // retained for clarity / future guards
 
-    if (W <= 0 || H <= 0) return {};
+    if (W <= 0) return {};
     if (!passable(grid, start.x, start.y)) return {};
     if (!passable(grid, goal.x, goal.y))   return {};
     if (start.x == goal.x && start.y == goal.y) return {start};
 
-    std::vector<Node> nodes(static_cast<size_t>(W) * static_cast<size_t>(H));
+    std::vector<Node> nodes(static_cast<size_t>(W) * static_cast<size_t>(grid.height()));
 
     auto push_open = [&](std::priority_queue<PQItem>& open, int i, float f) {
         open.push(PQItem{i, f});
@@ -284,4 +287,3 @@ std::vector<Cell> jps_find_path(const IGrid& grid, Cell start, Cell goal, const 
 }
 
 } // namespace colony::path
-
