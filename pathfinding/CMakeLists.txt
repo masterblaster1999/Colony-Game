@@ -9,8 +9,29 @@ add_library(colony_pathfinding STATIC
 )
 target_include_directories(colony_pathfinding PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
 target_compile_features(colony_pathfinding PUBLIC cxx_std_20)
+
+# -------- Windows-only MSVC hygiene: strict conformance, clear diagnostics --------
 if (MSVC)
-  target_compile_options(colony_pathfinding PUBLIC /W4 /permissive- /EHsc)
+  # Consolidated options & defs so we can reuse them across targets.
+  set(COLONY_MSVC_OPTS
+      /permissive-        # standards-conforming mode
+      /W4                 # strong warnings (prefer over /Wall)
+      /MP                 # parallel file compilation
+      /utf-8              # UTF-8 source/execution charset
+      /Zc:__cplusplus     # correct __cplusplus value
+      /Zc:preprocessor    # standards-conforming preprocessor
+      /EHsc               # C++ exceptions model
+  )
+  set(COLONY_MSVC_DEFS
+      WIN32_LEAN_AND_MEAN # trim <Windows.h>
+      NOMINMAX            # avoid macro-clobbering std::min/max
+  )
+
+  target_compile_options(colony_pathfinding PRIVATE ${COLONY_MSVC_OPTS})
+  target_compile_definitions(colony_pathfinding PRIVATE ${COLONY_MSVC_DEFS})
+
+  # Optional: precompiled headers for faster iteration (uncomment and provide your PCH)
+  # target_precompile_headers(colony_pathfinding PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/include/pch.hpp")
 endif()
 
 # -------- Tests (GoogleTest) ----------
@@ -32,6 +53,12 @@ if (COLONY_PF_BUILD_TESTS)
       tests/test_integration.cpp
     )
     target_link_libraries(pathfinding_tests PRIVATE colony_pathfinding GTest::gtest_main)
+
+    if (MSVC)
+      target_compile_options(pathfinding_tests PRIVATE ${COLONY_MSVC_OPTS})
+      target_compile_definitions(pathfinding_tests PRIVATE ${COLONY_MSVC_DEFS})
+    endif()
+
     include(GoogleTest)
     gtest_discover_tests(pathfinding_tests)
   endif()
@@ -50,4 +77,9 @@ if (COLONY_PF_BUILD_BENCH)
 
   add_executable(pathfinding_bench bench/bench_pathfinding.cpp)
   target_link_libraries(pathfinding_bench PRIVATE colony_pathfinding benchmark::benchmark)
+
+  if (MSVC)
+    target_compile_options(pathfinding_bench PRIVATE ${COLONY_MSVC_OPTS})
+    target_compile_definitions(pathfinding_bench PRIVATE ${COLONY_MSVC_DEFS})
+  endif()
 endif()
