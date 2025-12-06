@@ -8,8 +8,6 @@
 
 namespace colony::pathfinding::procgen {
 
-static inline size_t I(int x, int y, int w) { return static_cast<size_t>(y) * static_cast<size_t>(w) + static_cast<size_t>(x); }
-
 ProcGenOutputs GeneratePathfindingFields(const ProcGenSettings& cfg)
 {
     const int W = cfg.width, H = cfg.height;
