@@ -1,7 +1,7 @@
 // pathfinding/Jps.cpp
 // Include the public API FIRST so helper definitions can call IGrid methods:
-#include "Jps.hpp"       // defines IGrid, Cell, JpsOptions, jps_find_path
-#include "JpsCore.hpp"   // tiny shim: helper declarations only
+#include <pathfinding/Jps.hpp>  // defines IGrid, Cell, JpsOptions, jps_find_path
+#include "JpsCore.hpp"          // tiny shim: helper declarations only
 
 #include <queue>
 #include <vector>
@@ -9,12 +9,6 @@
 #include <utility>
 #include <cmath>
 #include <algorithm>
-#include <cstddef> // size_t
-
-// Optional safety valve: bound main-loop pops (0 => disabled)
-#ifndef COLONY_PF_MAX_ITERS
-#  define COLONY_PF_MAX_ITERS 0
-#endif
 
 namespace colony::path {
 namespace detail {
@@ -59,36 +53,20 @@ struct ScopedQpc {
 };
 #endif // COLONY_PF_TIMERS
 
-// ========= Local work types kept private to this TU =========
-struct Node {
-    int   x = 0, y = 0;
-    float g = std::numeric_limits<float>::infinity();
-    float f = std::numeric_limits<float>::infinity();
-    int   parent = -1;     // parent index (y*W + x)
-    int   px = 0, py = 0;  // parent coords (direction)
-    bool  opened = false;
-    bool  closed = false;
-};
-
-struct PQItem {
-    int   index = -1; // y*W + x
-    float f     = std::numeric_limits<float>::infinity();
-    // std::priority_queue is a max-heap; invert to get min-heap on f
-    bool operator<(const PQItem& o) const { return f > o.f; }
-};
-
 // ========= Small utilities (private) =========
-inline int idx(int x, int y, int W) { return y * W + x; }
+// (Node and PQItem come from JpsCore.hpp; don't redefine them here.)
 
-inline bool in_bounds(const IGrid& g, int x, int y) {
+int idx(int x, int y, int W) { return y * W + x; }
+
+bool in_bounds(const IGrid& g, int x, int y) {
     return (x >= 0 && y >= 0 && x < g.width() && y < g.height());
 }
 
-inline bool passable(const IGrid& g, int x, int y) {
+bool passable(const IGrid& g, int x, int y) {
     return in_bounds(g, x, y) && g.walkable(x, y);
 }
 
-inline bool can_step(const IGrid& g, int x, int y, int dx, int dy, const JpsOptions& o) {
+bool can_step(const IGrid& g, int x, int y, int dx, int dy, const JpsOptions& o) {
     const int nx = x + dx, ny = y + dy;
     if (!passable(g, nx, ny)) return false;
     if (o.allowDiagonal && o.dontCrossCorners && dx != 0 && dy != 0) {
@@ -99,7 +77,7 @@ inline bool can_step(const IGrid& g, int x, int y, int dx, int dy, const JpsOpti
 }
 
 // Octile (diagonals) or Manhattan (orthogonal) heuristic for grids.
-inline float heuristic(int x0, int y0, int x1, int y1, const JpsOptions& o) {
+float heuristic(int x0, int y0, int x1, int y1, const JpsOptions& o) {
     const int dx = std::abs(x0 - x1);
     const int dy = std::abs(y0 - y1);
     if (!o.allowDiagonal) return static_cast<float>(dx + dy) * o.costStraight;
@@ -108,7 +86,7 @@ inline float heuristic(int x0, int y0, int x1, int y1, const JpsOptions& o) {
     return dmin * o.costDiagonal + (dmax - dmin) * o.costStraight;
 }
 
-inline float dist_cost(int x0, int y0, int x1, int y1, const JpsOptions& o) {
+float dist_cost(int x0, int y0, int x1, int y1, const JpsOptions& o) {
     const int dx = std::abs(x0 - x1);
     const int dy = std::abs(y0 - y1);
     const int dmin = std::min(dx, dy);
@@ -116,15 +94,14 @@ inline float dist_cost(int x0, int y0, int x1, int y1, const JpsOptions& o) {
     return dmin * o.costDiagonal + (dmax - dmin) * o.costStraight;
 }
 
-// Slight tie‑breaker so straighter paths win ties (cross product magnitude). 
-// Add a tiny bias; keeps optimality on uniform-cost grids. 
-inline float tiebreak(int x, int y, int sx, int sy, int gx, int gy) {
+// Slight tie‑breaker so straighter paths win ties.
+float tiebreak(int x, int y, int sx, int sy, int gx, int gy) {
     const float vx1 = static_cast<float>(x - gx), vy1 = static_cast<float>(y - gy);
     const float vx2 = static_cast<float>(sx - gx), vy2 = static_cast<float>(sy - gy);
-    return std::abs(vx1 * vy2 - vy1 * vx2) * 1e-3f; // see Red Blob tie-break notes / JPS practice
+    return std::abs(vx1 * vy2 - vy1 * vx2) * 1e-3f;
 }
 
-inline bool has_forced_neighbors_straight(const IGrid& g, int x, int y, int dx, int dy) {
+bool has_forced_neighbors_straight(const IGrid& g, int x, int y, int dx, int dy) {
     if (dx != 0 && dy == 0) { // horizontal
         if (!passable(g, x, y + 1) && passable(g, x + dx, y + 1)) return true;
         if (!passable(g, x, y - 1) && passable(g, x + dx, y - 1)) return true;
@@ -135,15 +112,15 @@ inline bool has_forced_neighbors_straight(const IGrid& g, int x, int y, int dx, 
     return false;
 }
 
-inline bool has_forced_neighbors_diag(const IGrid& g, int x, int y, int dx, int dy) {
+bool has_forced_neighbors_diag(const IGrid& g, int x, int y, int dx, int dy) {
     // diagonal patterns
     if (!passable(g, x - dx, y) && passable(g, x - dx, y + dy)) return true;
     if (!passable(g, x, y - dy) && passable(g, x + dx, y - dy)) return true;
     return false;
 }
 
-inline void pruned_dirs(const IGrid& g, int x, int y, int px, int py,
-                        const JpsOptions& o, std::vector<std::pair<int,int>>& out)
+void pruned_dirs(const IGrid& g, int x, int y, int px, int py,
+                 const JpsOptions& o, std::vector<std::pair<int,int>>& out)
 {
     out.clear();
     if (px == x && py == y) { // no parent: expose all legal directions
@@ -184,8 +161,8 @@ inline void pruned_dirs(const IGrid& g, int x, int y, int px, int py,
     }
 }
 
-inline bool jump(const IGrid& g, int x, int y, int dx, int dy,
-                 int gx, int gy, const JpsOptions& o, int& outx, int& outy)
+bool jump(const IGrid& g, int x, int y, int dx, int dy,
+          int gx, int gy, const JpsOptions& o, int& outx, int& outy)
 {
 #ifdef COLONY_PF_TIMERS
     ScopedQpc _jt(g_jps_timers.jump_ns);
@@ -211,7 +188,7 @@ inline bool jump(const IGrid& g, int x, int y, int dx, int dy,
 
 // LOS "supercover" — checks every touched cell (great for path smoothing).
 // (Supercover variants are commonly used to ensure no corner is “cut”.) 
-inline bool los_supercover(const IGrid& g, int x0, int y0, int x1, int y1, const JpsOptions& o)
+bool los_supercover(const IGrid& g, int x0, int y0, int x1, int y1, const JpsOptions& o)
 {
     int dx = std::abs(x1 - x0), sx = (x0 < x1) ? 1 : -1;
     int dy = std::abs(y1 - y0), sy = (y0 < y1) ? 1 : -1;
@@ -238,7 +215,7 @@ inline bool los_supercover(const IGrid& g, int x0, int y0, int x1, int y1, const
     }
 }
 
-inline std::vector<Cell> reconstruct_path(const std::vector<Node>& nodes, int i, int W) {
+static std::vector<Cell> reconstruct_path(const std::vector<Node>& nodes, int i, int W) {
     std::vector<Cell> path;
     while (i != -1) {
         const int x = i % W, y = i / W;
@@ -252,24 +229,20 @@ inline std::vector<Cell> reconstruct_path(const std::vector<Node>& nodes, int i,
 } // namespace detail
 
 // ========= Public entry: JPS (A* + jump pruning) =========
-// (See JPS papers for the algorithmic idea.) 
+// (See original JPS paper for the algorithmic idea.) 
 std::vector<Cell> jps_find_path(const IGrid& grid, Cell start, Cell goal, const JpsOptions& opt)
 {
     using namespace detail;
 
     const int W = grid.width();
-    const int H = grid.height();
+    const int H = grid.height(); (void)H;
 
-    if (W <= 0 || H <= 0) return {};
+    if (W <= 0) return {};
     if (!passable(grid, start.x, start.y)) return {};
     if (!passable(grid, goal.x, goal.y))   return {};
     if (start.x == goal.x && start.y == goal.y) return std::vector<Cell>{start};
 
-    // overflow guard for W*H
-    const size_t total = static_cast<size_t>(W) * static_cast<size_t>(H);
-    if (W != 0 && total / static_cast<size_t>(W) != static_cast<size_t>(H)) return {};
-
-    std::vector<Node> nodes(total);
+    std::vector<Node> nodes(static_cast<size_t>(W) * static_cast<size_t>(grid.height()));
 
     auto push_open = [&](std::priority_queue<PQItem>& open, int i, float f) {
         open.push(PQItem{i, f});
@@ -291,8 +264,6 @@ std::vector<Cell> jps_find_path(const IGrid& grid, Cell start, Cell goal, const 
     std::vector<std::pair<int,int>> dirs;
     dirs.reserve(8);
 
-    size_t pop_count = 0;
-
     while (!open.empty()) {
 #ifdef COLONY_PF_TIMERS
         LARGE_INTEGER _t0, _t1; QueryPerformanceCounter(&_t0);
@@ -302,14 +273,6 @@ std::vector<Cell> jps_find_path(const IGrid& grid, Cell start, Cell goal, const 
         QueryPerformanceCounter(&_t1);
         g_jps_timers.pop_ns += Qpc::instance().to_ns(_t1.QuadPart - _t0.QuadPart);
         ++g_jps_timers.pops;
-#endif
-        ++pop_count;
-
-#if COLONY_PF_MAX_ITERS > 0
-        if (pop_count >= static_cast<size_t>(COLONY_PF_MAX_ITERS)) {
-            // Safety valve (disabled by default)
-            return {};
-        }
 #endif
 
         Node& n = nodes[static_cast<size_t>(curr_i)];
@@ -323,16 +286,12 @@ std::vector<Cell> jps_find_path(const IGrid& grid, Cell start, Cell goal, const 
                 ScopedQpc _st(g_jps_timers.smooth_ns);
 #endif
                 // greedily pull strings with LOS supercover
-                std::vector<Cell> smooth;
-                smooth.reserve(path.size());
-                smooth.push_back(path.front());
+                std::vector<Cell> smooth; smooth.push_back(path.front());
                 size_t j = 1;
                 while (j < path.size()) {
                     size_t k = j;
-                    while (k + 1 < path.size() &&
-                           los_supercover(grid,
-                                          smooth.back().x, smooth.back().y,
-                                          path[k+1].x, path[k+1].y, opt)) {
+                    while (k+1 < path.size() &&
+                           los_supercover(grid, smooth.back().x, smooth.back().y, path[k+1].x, path[k+1].y, opt)) {
                         ++k;
                     }
                     smooth.push_back(path[k]);
@@ -360,7 +319,6 @@ std::vector<Cell> jps_find_path(const IGrid& grid, Cell start, Cell goal, const 
                 m.x = jx; m.y = jy;
                 m.g = tentative_g;
                 const float h = heuristic(jx, jy, goal.x, goal.y, opt) * opt.heuristicWeight;
-                // ***** minimal-patch fix: initialize f here and call 6-arg tiebreak *****
                 const float f = tentative_g + h
                               + (opt.tieBreakCross
                                  ? tiebreak(jx, jy, start.x, start.y, goal.x, goal.y)
