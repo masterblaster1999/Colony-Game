@@ -5,14 +5,16 @@
 
 namespace colony::path {
 
-struct IGrid;      // from Jps.hpp
-struct JpsOptions; // from Jps.hpp
-struct Cell;       // from Jps.hpp
+// Public API types come from Jps.hpp; we only forward-declare here.
+struct IGrid;
+struct JpsOptions;
+struct Cell;
 
 namespace detail {
 
-// ---- Declarations only; definitions live in Jps.cpp ----
+// ---- Helper declarations (definitions live in Jps.cpp) ----
 int   idx(int x, int y, int W);
+
 bool  in_bounds(const IGrid& g, int x, int y);
 bool  passable (const IGrid& g, int x, int y);
 bool  can_step (const IGrid& g, int x, int y, int dx, int dy, const JpsOptions& o);
