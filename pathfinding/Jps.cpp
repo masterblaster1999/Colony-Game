@@ -144,6 +144,8 @@ void pruned_dirs(const IGrid& g, int x, int y, int px, int py,
 bool jump(const IGrid& g, int x, int y, int dx, int dy,
           int gx, int gy, const JpsOptions& o, int& outx, int& outy)
 {
+    JPS_SCOPED_TIMER("jps.jump"); // ---- timing: each jump recursion step
+
     while (true) {
         const int nx = x + dx, ny = y + dy;
         if (!can_step(g, x, y, dx, dy, o)) return false;
@@ -208,6 +210,8 @@ static std::vector<Cell> reconstruct_path(const std::vector<Node>& nodes, int i,
 // Algorithmically, this is JPS over A* search with octile/Manhattan costs, as in Harabor & Grastien. :contentReference[oaicite:2]{index=2}
 std::vector<Cell> jps_find_path(const IGrid& grid, Cell start, Cell goal, const JpsOptions& opt)
 {
+    JPS_SCOPED_TIMER("jps.find_path"); // ---- timing: whole call
+
     using namespace detail;
 
     const int W = grid.width();
@@ -243,6 +247,8 @@ std::vector<Cell> jps_find_path(const IGrid& grid, Cell start, Cell goal, const 
 
     while (!open.empty()) {
         const int curr_i = open.top().index; open.pop();
+        JPS_SCOPED_TIMER("jps.expand_from_open"); // ---- timing: one expansion after pop
+
         Node& n = nodes[static_cast<size_t>(curr_i)];
         if (n.closed) continue;
         n.closed = true;
@@ -250,6 +256,7 @@ std::vector<Cell> jps_find_path(const IGrid& grid, Cell start, Cell goal, const 
         if (curr_i == idx(goal.x, goal.y, W)) {
             auto path = reconstruct_path(nodes, curr_i, W);
             if (opt.smoothPath && path.size() > 2) {
+                JPS_SCOPED_TIMER("jps.smooth_pull_strings"); // ---- timing: smoothing phase
                 // greedily pull strings
                 std::vector<Cell> smooth; smooth.push_back(path.front());
                 size_t j = 1;
