@@ -1,6 +1,6 @@
 // pathfinding/Jps.cpp
-#include "Jps.hpp"        // public API: IGrid, Cell, JpsOptions, jps_find_path
-#include "JpsCore.hpp"    // declarations for internal helpers
+#include "JpsCore.hpp"   // minimal shim; pulls in Jps.hpp public API
+#include "Jps.hpp"       // public API: IGrid, Cell, JpsOptions, jps_find_path
 
 #include <queue>
 #include <array>
@@ -13,7 +13,7 @@
 namespace colony::path {
 namespace detail {
 
-// -------- Small utilities & local types (defined only in this .cpp) -----
+// ===== Local work types kept private to this TU =====
 
 struct Node {
     int   x = 0, y = 0;
@@ -31,6 +31,8 @@ struct PQItem {
     // priority_queue is a max-heap; invert comparison to get a min-heap on 'f'
     bool operator<(const PQItem& o) const { return f > o.f; }
 };
+
+// ===== Small utilities (private) =====
 
 int idx(int x, int y, int W) { return y * W + x; }
 
@@ -53,6 +55,7 @@ bool can_step(const IGrid& g, int x, int y, int dx, int dy, const JpsOptions& o)
 }
 
 // Octile heuristic (or Manhattan if diagonals are disabled)
+// Good heuristic choices and octile metric are standard for grid A*. :contentReference[oaicite:1]{index=1}
 float heuristic(int x0, int y0, int x1, int y1, const JpsOptions& o) {
     const int dx = std::abs(x0 - x1);
     const int dy = std::abs(y0 - y1);
@@ -70,7 +73,7 @@ float dist_cost(int x0, int y0, int x1, int y1, const JpsOptions& o) {
     return dmin * o.costDiagonal + (dmax - dmin) * o.costStraight;
 }
 
-// Slight tie‑breaker so straight-ish paths win ties
+// Slight tie‑breaker so straighter paths win ties
 float tiebreak(int x, int y, int sx, int sy, int gx, int gy) {
     const float vx1 = static_cast<float>(x - gx), vy1 = static_cast<float>(y - gy);
     const float vx2 = static_cast<float>(sx - gx), vy2 = static_cast<float>(sy - gy);
@@ -159,6 +162,7 @@ bool jump(const IGrid& g, int x, int y, int dx, int dy,
     }
 }
 
+// LOS "supercover" so diagonals obey don't-cross-corners when requested
 bool los_supercover(const IGrid& g, int x0, int y0, int x1, int y1, const JpsOptions& o)
 {
     int dx = std::abs(x1 - x0), sx = (x0 < x1) ? 1 : -1;
@@ -199,8 +203,9 @@ static std::vector<Cell> reconstruct_path(const std::vector<Node>& nodes, int i,
 
 } // namespace detail
 
-// -------- Public entry: JPS A* driver --------------------------------
+// ===== Public entry: JPS A* driver =====
 
+// Algorithmically, this is JPS over A* search with octile/Manhattan costs, as in Harabor & Grastien. :contentReference[oaicite:2]{index=2}
 std::vector<Cell> jps_find_path(const IGrid& grid, Cell start, Cell goal, const JpsOptions& opt)
 {
     using namespace detail;
