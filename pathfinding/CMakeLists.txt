@@ -30,6 +30,21 @@ if (MSVC)
   target_compile_options(colony_pathfinding PRIVATE ${COLONY_MSVC_OPTS})
   target_compile_definitions(colony_pathfinding PRIVATE ${COLONY_MSVC_DEFS})
 
+  # ---- Timers & profiling switches for JPS (Windows-only) ----
+  # Enable timing in Debug and RelWithDebInfo; allow quiet Release by default.
+  target_compile_definitions(colony_pathfinding PRIVATE
+    $<$<CONFIG:Debug>:JPS_PROFILE=1;JPS_PROFILE_LOG=1>
+    $<$<CONFIG:RelWithDebInfo>:JPS_PROFILE=1>
+  )
+
+  # Extra Release-only codegen/link optimization (safe no-ops for other configs)
+  target_compile_options(colony_pathfinding PRIVATE
+    $<$<CONFIG:Release>:/O2 /Oi /Ot /GL /Gw /Gy>
+  )
+  target_link_options(colony_pathfinding PRIVATE
+    $<$<CONFIG:Release>:/LTCG /OPT:REF /OPT:ICF>
+  )
+
   # Optional: precompiled headers for faster iteration (uncomment and provide your PCH)
   # target_precompile_headers(colony_pathfinding PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/include/pch.hpp")
 endif()
