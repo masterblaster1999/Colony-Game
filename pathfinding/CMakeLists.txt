@@ -1,14 +1,16 @@
+# CMakeLists.txt
 cmake_minimum_required(VERSION 3.20)
 project(colony_pathfinding LANGUAGES CXX)
 
 option(COLONY_PF_BUILD_TESTS "Build pathfinding unit tests" ON)
 option(COLONY_PF_BUILD_BENCH "Build pathfinding microbenchmarks" ON)
 
-add_library(colony_pathfinding STATIC
+# ---- Library ----
+add_library(colony_path STATIC
     src/GridMap.cpp
 )
-target_include_directories(colony_pathfinding PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
-target_compile_features(colony_pathfinding PUBLIC cxx_std_20)
+target_include_directories(colony_path PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
+target_compile_features(colony_path PUBLIC cxx_std_20)
 
 # -------- Windows-only MSVC hygiene: strict conformance, clear diagnostics --------
 if (MSVC)
@@ -27,26 +29,26 @@ if (MSVC)
       NOMINMAX            # avoid macro-clobbering std::min/max
   )
 
-  target_compile_options(colony_pathfinding PRIVATE ${COLONY_MSVC_OPTS})
-  target_compile_definitions(colony_pathfinding PRIVATE ${COLONY_MSVC_DEFS})
+  target_compile_options(colony_path PRIVATE ${COLONY_MSVC_OPTS})
+  target_compile_definitions(colony_path PRIVATE ${COLONY_MSVC_DEFS})
 
   # ---- Timers & profiling switches for JPS (Windows-only) ----
   # Enable timing in Debug and RelWithDebInfo; allow quiet Release by default.
-  target_compile_definitions(colony_pathfinding PRIVATE
-    $<$<CONFIG:Debug>:JPS_PROFILE=1;JPS_PROFILE_LOG=1>
-    $<$<CONFIG:RelWithDebInfo>:JPS_PROFILE=1>
+  target_compile_definitions(colony_path PRIVATE
+    $<$<CONFIG:Debug>:JPS_PROFILE=1;JPS_PROFILE_LOG=1;COLONY_PF_TIMERS=1>
+    $<$<CONFIG:RelWithDebInfo>:JPS_PROFILE=1;COLONY_PF_TIMERS=1>
   )
 
   # Extra Release-only codegen/link optimization (safe no-ops for other configs)
-  target_compile_options(colony_pathfinding PRIVATE
+  target_compile_options(colony_path PRIVATE
     $<$<CONFIG:Release>:/O2 /Oi /Ot /GL /Gw /Gy>
   )
-  target_link_options(colony_pathfinding PRIVATE
+  target_link_options(colony_path PRIVATE
     $<$<CONFIG:Release>:/LTCG /OPT:REF /OPT:ICF>
   )
 
   # Optional: precompiled headers for faster iteration (uncomment and provide your PCH)
-  # target_precompile_headers(colony_pathfinding PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/include/pch.hpp")
+  # target_precompile_headers(colony_path PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/include/pch.hpp")
 endif()
 
 # -------- Tests (GoogleTest) ----------
@@ -67,7 +69,7 @@ if (COLONY_PF_BUILD_TESTS)
       tests/test_jps.cpp
       tests/test_integration.cpp
     )
-    target_link_libraries(pathfinding_tests PRIVATE colony_pathfinding GTest::gtest_main)
+    target_link_libraries(pathfinding_tests PRIVATE colony_path GTest::gtest_main)
 
     if (MSVC)
       target_compile_options(pathfinding_tests PRIVATE ${COLONY_MSVC_OPTS})
@@ -91,7 +93,7 @@ if (COLONY_PF_BUILD_BENCH)
   FetchContent_MakeAvailable(googlebenchmark)
 
   add_executable(pathfinding_bench bench/bench_pathfinding.cpp)
-  target_link_libraries(pathfinding_bench PRIVATE colony_pathfinding benchmark::benchmark)
+  target_link_libraries(pathfinding_bench PRIVATE colony_path benchmark::benchmark)
 
   if (MSVC)
     target_compile_options(pathfinding_bench PRIVATE ${COLONY_MSVC_OPTS})
