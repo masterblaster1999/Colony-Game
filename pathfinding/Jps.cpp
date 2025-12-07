@@ -1,6 +1,7 @@
 // pathfinding/Jps.cpp
-#include "JpsCore.hpp"   // tiny shim (decls only)
-#include "Jps.hpp"       // public API: IGrid, Cell, JpsOptions, jps_find_path
+// Include the public API FIRST so helper definitions can call IGrid methods:
+#include "Jps.hpp"       // defines IGrid, Cell, JpsOptions, jps_find_path
+#include "JpsCore.hpp"   // tiny shim: helper declarations only
 
 #include <queue>
 #include <array>
@@ -9,25 +10,57 @@
 #include <utility>
 #include <cmath>
 #include <algorithm>
-#include <cstdint>
-#include <chrono>
-
-#if defined(_WIN32) && defined(JPS_PROFILE_LOG)
-  #define NOMINMAX
-  #include <windows.h>
-#endif
 
 namespace colony::path {
 namespace detail {
 
-// ======== local types (hidden in this TU) ========
+// ========= Windows-only lightweight timing (opt-in) =========
+#ifdef COLONY_PF_TIMERS
+#ifndef NOMINMAX
+#  define NOMINMAX
+#endif
+#ifndef WIN32_LEAN_AND_MEAN
+#  define WIN32_LEAN_AND_MEAN
+#endif
+#include <windows.h>
 
+struct JpsTimers {
+    long long pop_ns    = 0;
+    long long jump_ns   = 0;
+    long long smooth_ns = 0;
+    int        pops     = 0;
+    int        jumps    = 0;
+};
+static thread_local JpsTimers g_jps_timers;
+
+struct Qpc {
+    LARGE_INTEGER freq{};
+    Qpc() { QueryPerformanceFrequency(&freq); }
+    long long to_ns(LONGLONG ticks) const {
+        return (ticks * 1000000000LL) / freq.QuadPart;
+    }
+    static const Qpc& instance() { static Qpc q; return q; }
+};
+
+struct ScopedQpc {
+    long long& acc;
+    LARGE_INTEGER start{};
+    ScopedQpc(long long& dst) : acc(dst) { QueryPerformanceCounter(&start); }
+    ~ScopedQpc() {
+        LARGE_INTEGER end{};
+        QueryPerformanceCounter(&end);
+        acc += Qpc::instance().to_ns(end.QuadPart - start.QuadPart);
+    }
+};
+#endif // COLONY_PF_TIMERS
+
+// ========= Local work types kept private to this TU =========
 struct Node {
     int   x = 0, y = 0;
     float g = std::numeric_limits<float>::infinity();
     float f = std::numeric_limits<float>::infinity();
     int   parent = -1;     // parent index (y*W + x)
-    int   px = 0, py = 0;  // parent coordinates (for direction inference)
+    int   px = 0, py = 0;  // parent coords (direction)
     bool  opened = false;
     bool  closed = false;
 };
@@ -39,35 +72,7 @@ struct PQItem {
     bool operator<(const PQItem& o) const { return f > o.f; }
 };
 
-// ======== optional profiling ========
-
-#ifdef JPS_PROFILE
-struct JpsProfile {
-    std::uint64_t open_pop_ns = 0;
-    std::uint64_t jump_ns     = 0;
-    std::uint64_t smooth_ns   = 0;
-    std::uint64_t open_pops   = 0;
-    std::uint64_t jump_calls  = 0;
-};
-static thread_local JpsProfile g_prof;
-
-struct ScopeTimer {
-    using clock = std::chrono::high_resolution_clock;
-    std::uint64_t* acc = nullptr;
-    clock::time_point t0;
-    explicit ScopeTimer(std::uint64_t* dst) noexcept
-        : acc(dst), t0(clock::now()) {}
-    ~ScopeTimer() {
-        if (!acc) return;
-        using namespace std::chrono;
-        *acc += static_cast<std::uint64_t>(
-            duration_cast<nanoseconds>(clock::now() - t0).count());
-    }
-};
-#endif // JPS_PROFILE
-
-// ======== helpers (definitions live here as intended) ========
-
+// ========= Small utilities (private) =========
 int idx(int x, int y, int W) { return y * W + x; }
 
 bool in_bounds(const IGrid& g, int x, int y) {
@@ -88,7 +93,7 @@ bool can_step(const IGrid& g, int x, int y, int dx, int dy, const JpsOptions& o)
     return true;
 }
 
-// Octile heuristic (or Manhattan when diagonals disabled)
+// Octile (diagonals) or Manhattan (orthogonal) heuristic for grids.
 float heuristic(int x0, int y0, int x1, int y1, const JpsOptions& o) {
     const int dx = std::abs(x0 - x1);
     const int dy = std::abs(y0 - y1);
@@ -106,7 +111,7 @@ float dist_cost(int x0, int y0, int x1, int y1, const JpsOptions& o) {
     return dmin * o.costDiagonal + (dmax - dmin) * o.costStraight;
 }
 
-// Slight tie‑breaker so straighter paths win ties
+// Slight tie‑breaker so straighter paths win ties.
 float tiebreak(int x, int y, int sx, int sy, int gx, int gy) {
     const float vx1 = static_cast<float>(x - gx), vy1 = static_cast<float>(y - gy);
     const float vx2 = static_cast<float>(sx - gx), vy2 = static_cast<float>(sy - gy);
@@ -114,12 +119,10 @@ float tiebreak(int x, int y, int sx, int sy, int gx, int gy) {
 }
 
 bool has_forced_neighbors_straight(const IGrid& g, int x, int y, int dx, int dy) {
-    if (dx != 0 && dy == 0) {
-        // horizontal
+    if (dx != 0 && dy == 0) { // horizontal
         if (!passable(g, x, y + 1) && passable(g, x + dx, y + 1)) return true;
         if (!passable(g, x, y - 1) && passable(g, x + dx, y - 1)) return true;
-    } else if (dx == 0 && dy != 0) {
-        // vertical
+    } else if (dx == 0 && dy != 0) { // vertical
         if (!passable(g, x + 1, y) && passable(g, x + 1, y + dy)) return true;
         if (!passable(g, x - 1, y) && passable(g, x - 1, y + dy)) return true;
     }
@@ -138,11 +141,12 @@ void pruned_dirs(const IGrid& g, int x, int y, int px, int py,
 {
     out.clear();
     if (px == x && py == y) { // no parent: expose all legal directions
-        static constexpr std::pair<int,int> dirs8[] = {
-            {+1,0},{-1,0},{0,+1},{0,-1},{+1,+1},{+1,-1},{-1,+1},{-1,-1}
+        static constexpr std::pair<int,int> dirs8[] {
+            std::pair{+1,0}, std::pair{-1,0}, std::pair{0,+1}, std::pair{0,-1},
+            std::pair{+1,+1}, std::pair{+1,-1}, std::pair{-1,+1}, std::pair{-1,-1}
         };
-        static constexpr std::pair<int,int> dirs4[] = {
-            {+1,0},{-1,0},{0,+1},{0,-1}
+        static constexpr std::pair<int,int> dirs4[] {
+            std::pair{+1,0}, std::pair{-1,0}, std::pair{0,+1}, std::pair{0,-1}
         };
         if (o.allowDiagonal) {
             for (auto [dx,dy] : dirs8) if (can_step(g,x,y,dx,dy,o)) out.emplace_back(dx,dy);
@@ -177,9 +181,9 @@ void pruned_dirs(const IGrid& g, int x, int y, int px, int py,
 bool jump(const IGrid& g, int x, int y, int dx, int dy,
           int gx, int gy, const JpsOptions& o, int& outx, int& outy)
 {
-#ifdef JPS_PROFILE
-    ++g_prof.jump_calls;
-    ScopeTimer _t(&g_prof.jump_ns);
+#ifdef COLONY_PF_TIMERS
+    ScopedQpc _jt(g_jps_timers.jump_ns);
+    ++g_jps_timers.jumps;
 #endif
     while (true) {
         const int nx = x + dx, ny = y + dy;
@@ -199,7 +203,8 @@ bool jump(const IGrid& g, int x, int y, int dx, int dy,
     }
 }
 
-// LOS "supercover" so diagonals obey don't-cross-corners when requested
+// LOS "supercover" — checks every touched cell (great for path smoothing).
+// (Supercover variants are commonly used to ensure no corner is “cut”.) 
 bool los_supercover(const IGrid& g, int x0, int y0, int x1, int y1, const JpsOptions& o)
 {
     int dx = std::abs(x1 - x0), sx = (x0 < x1) ? 1 : -1;
@@ -240,19 +245,14 @@ static std::vector<Cell> reconstruct_path(const std::vector<Node>& nodes, int i,
 
 } // namespace detail
 
-// ======== public driver ========
-
+// ========= Public entry: JPS (A* + jump pruning) =========
+// (See original JPS paper for the algorithmic idea.) 
 std::vector<Cell> jps_find_path(const IGrid& grid, Cell start, Cell goal, const JpsOptions& opt)
 {
     using namespace detail;
 
-#ifdef JPS_PROFILE
-    g_prof = {}; // reset per-call
-#endif
-
     const int W = grid.width();
-    const int H = grid.height();
-    (void)H;
+    const int H = grid.height(); (void)H;
 
     if (W <= 0) return {};
     if (!passable(grid, start.x, start.y)) return {};
@@ -282,91 +282,16 @@ std::vector<Cell> jps_find_path(const IGrid& grid, Cell start, Cell goal, const 
     dirs.reserve(8);
 
     while (!open.empty()) {
-
-#ifdef JPS_PROFILE
-        {
-            ++g_prof.open_pops;
-            ScopeTimer _t(&g_prof.open_pop_ns);
-            // measure only the pop
-            const int curr_i = open.top().index; open.pop();
-            Node& n = nodes[static_cast<size_t>(curr_i)];
-            if (n.closed) continue;
-            n.closed = true;
-
-            if (curr_i == idx(goal.x, goal.y, W)) {
-                auto path = reconstruct_path(nodes, curr_i, W);
-                if (opt.smoothPath && path.size() > 2) {
-#ifdef JPS_PROFILE
-                    ScopeTimer _ts(&g_prof.smooth_ns);
+#ifdef COLONY_PF_TIMERS
+        LARGE_INTEGER _t0, _t1; QueryPerformanceCounter(&_t0);
 #endif
-                    // greedily pull strings
-                    std::vector<Cell> smooth; smooth.push_back(path.front());
-                    size_t j = 1;
-                    while (j < path.size()) {
-                        size_t k = j;
-                        while (k+1 < path.size() &&
-                               los_supercover(grid, smooth.back().x, smooth.back().y, path[k+1].x, path[k+1].y, opt)) {
-                            ++k;
-                        }
-                        smooth.push_back(path[k]);
-                        j = k + 1;
-                    }
-#if defined(_WIN32) && defined(JPS_PROFILE_LOG)
-                    char buf[256];
-                    sprintf_s(buf,
-                              "JPS: pops=%llu (%.3fms) jumps=%llu (%.3fms) smooth=%.3fms\n",
-                              static_cast<unsigned long long>(g_prof.open_pops),
-                              g_prof.open_pop_ns / 1.0e6,
-                              static_cast<unsigned long long>(g_prof.jump_calls),
-                              g_prof.jump_ns / 1.0e6,
-                              g_prof.smooth_ns / 1.0e6);
-                    ::OutputDebugStringA(buf);
-#endif
-                    return smooth;
-                }
-#if defined(_WIN32) && defined(JPS_PROFILE_LOG)
-                {
-                    char buf[256];
-                    sprintf_s(buf,
-                              "JPS: pops=%llu (%.3fms) jumps=%llu (%.3fms) smooth=0.000ms\n",
-                              static_cast<unsigned long long>(g_prof.open_pops),
-                              g_prof.open_pop_ns / 1.0e6,
-                              static_cast<unsigned long long>(g_prof.jump_calls),
-                              g_prof.jump_ns / 1.0e6);
-                    ::OutputDebugStringA(buf);
-                }
-#endif
-                return path;
-            }
-
-            // Expand with JPS
-            const int cx = n.x, cy = n.y;
-            pruned_dirs(grid, cx, cy, n.px, n.py, opt, dirs);
-
-            for (auto [dx,dy] : dirs) {
-                int jx = 0, jy = 0;
-                if (!jump(grid, cx, cy, dx, dy, goal.x, goal.y, opt, jx, jy))
-                    continue;
-
-                const int ji = idx(jx, jy, W);
-                const float tentative_g = n.g + dist_cost(cx, cy, jx, jy, opt);
-
-                Node& m = nodes[static_cast<size_t>(ji)];
-                if (!m.opened || tentative_g < m.g) {
-                    m.x = jx; m.y = jy;
-                    m.g = tentative_g;
-                    const float h = heuristic(jx, jy, goal.x, goal.y, opt) * opt.heuristicWeight;
-                    const float f = tentative_g + h + (opt.tieBreakCross ? tiebreak(jx, jy, start.x, start.y, goal.x, goal.y) : 0.0f);
-                    m.f = f;
-                    m.parent = curr_i;
-                    m.px = cx; m.py = cy;
-                    push_open(open, ji, f);
-                }
-            }
-        }
-#else
-        // ---- normal (non-profiled) path ----
         const int curr_i = open.top().index; open.pop();
+#ifdef COLONY_PF_TIMERS
+        QueryPerformanceCounter(&_t1);
+        g_jps_timers.pop_ns += Qpc::instance().to_ns(_t1.QuadPart - _t0.QuadPart);
+        ++g_jps_timers.pops;
+#endif
+
         Node& n = nodes[static_cast<size_t>(curr_i)];
         if (n.closed) continue;
         n.closed = true;
@@ -374,7 +299,10 @@ std::vector<Cell> jps_find_path(const IGrid& grid, Cell start, Cell goal, const 
         if (curr_i == idx(goal.x, goal.y, W)) {
             auto path = reconstruct_path(nodes, curr_i, W);
             if (opt.smoothPath && path.size() > 2) {
-                // greedily pull strings
+#ifdef COLONY_PF_TIMERS
+                ScopedQpc _st(g_jps_timers.smooth_ns);
+#endif
+                // greedily pull strings with LOS supercover
                 std::vector<Cell> smooth; smooth.push_back(path.front());
                 size_t j = 1;
                 while (j < path.size()) {
@@ -415,7 +343,6 @@ std::vector<Cell> jps_find_path(const IGrid& grid, Cell start, Cell goal, const 
                 push_open(open, ji, f);
             }
         }
-#endif // JPS_PROFILE
     }
     return {}; // no path
 }
