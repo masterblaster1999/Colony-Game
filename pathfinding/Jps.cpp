@@ -1,6 +1,6 @@
 // pathfinding/Jps.cpp
-#include "JpsCore.hpp"   // declarations (this file provides the definitions)
-#include "Jps.hpp"       // public API: IGrid, Cell, JpsOptions, jps_find_path
+#include "Jps.hpp"        // public API: IGrid, Cell, JpsOptions, jps_find_path
+#include "JpsCore.hpp"    // declarations for internal helpers
 
 #include <queue>
 #include <array>
