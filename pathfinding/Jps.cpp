@@ -13,7 +13,24 @@
 namespace colony::path {
 namespace detail {
 
-// -------- Small utilities (now defined in the .cpp) -----------------
+// -------- Small utilities & local types (defined only in this .cpp) -----
+
+struct Node {
+    int   x = 0, y = 0;
+    float g = std::numeric_limits<float>::infinity();
+    float f = std::numeric_limits<float>::infinity();
+    int   parent = -1;     // parent index in flat grid (y*W + x)
+    int   px = 0, py = 0;  // parent coordinates (for direction)
+    bool  opened = false;
+    bool  closed = false;
+};
+
+struct PQItem {
+    int index = -1;   // y*W + x
+    float f = std::numeric_limits<float>::infinity();
+    // priority_queue is a max-heap; invert comparison to get a min-heap on 'f'
+    bool operator<(const PQItem& o) const { return f > o.f; }
+};
 
 int idx(int x, int y, int W) { return y * W + x; }
 
@@ -173,7 +190,7 @@ static std::vector<Cell> reconstruct_path(const std::vector<Node>& nodes, int i,
     std::vector<Cell> path;
     while (i != -1) {
         const int x = i % W, y = i / W;
-        path.push_back({x,y});
+        path.push_back(Cell{x, y});
         i = nodes[static_cast<size_t>(i)].parent;
     }
     std::reverse(path.begin(), path.end());
@@ -195,7 +212,7 @@ std::vector<Cell> jps_find_path(const IGrid& grid, Cell start, Cell goal, const 
     if (W <= 0) return {};
     if (!passable(grid, start.x, start.y)) return {};
     if (!passable(grid, goal.x, goal.y))   return {};
-    if (start.x == goal.x && start.y == goal.y) return {start};
+    if (start.x == goal.x && start.y == goal.y) return std::vector<Cell>{start};
 
     std::vector<Node> nodes(static_cast<size_t>(W) * static_cast<size_t>(grid.height()));
 
@@ -206,14 +223,15 @@ std::vector<Cell> jps_find_path(const IGrid& grid, Cell start, Cell goal, const 
 
     // init start
     const int sidx = idx(start.x, start.y, W);
-    nodes[static_cast<size_t>(sidx)].x = start.x; nodes[static_cast<size_t>(sidx)].y = start.y;
-    nodes[static_cast<size_t>(sidx)].g = 0.0f;
-    nodes[static_cast<size_t>(sidx)].f = opt.heuristicWeight * heuristic(start.x, start.y, goal.x, goal.y, opt);
-    nodes[static_cast<size_t>(sidx)].parent = -1;
-    nodes[static_cast<size_t>(sidx)].px = start.x; nodes[static_cast<size_t>(sidx)].py = start.y;
+    Node& s = nodes[static_cast<size_t>(sidx)];
+    s.x = start.x; s.y = start.y;
+    s.g = 0.0f;
+    s.f = opt.heuristicWeight * heuristic(start.x, start.y, goal.x, goal.y, opt);
+    s.parent = -1;
+    s.px = start.x; s.py = start.y;
 
     std::priority_queue<PQItem> open;
-    push_open(open, sidx, nodes[static_cast<size_t>(sidx)].f);
+    push_open(open, sidx, s.f);
 
     std::vector<std::pair<int,int>> dirs;
     dirs.reserve(8);
