@@ -143,6 +143,10 @@ if(MSVC)
   add_compile_options($<$<OR:$<CONFIG:Debug>,$<CONFIG:RelWithDebInfo>>:/Zi>)
   add_link_options($<$<OR:$<CONFIG:Debug>,$<CONFIG:RelWithDebInfo>>:/DEBUG:FULL>)
 
+  # (PATCH) Link-time code generation for Release
+  add_compile_options($<$<CONFIG:Release>:/GL>)
+  add_link_options($<$<CONFIG:Release>:/LTCG>)
+
   # Use the supported abstraction instead of editing flags
   # (CMake >= 3.15; default is MultiThreadedDLL in Release, MultiThreadedDebugDLL in Debug)
   set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>DLL")
@@ -372,7 +376,14 @@ if(COLONY_PATH_SOURCES)
     "${CMAKE_SOURCE_DIR}/pathfinding"
     "${CMAKE_SOURCE_DIR}/hpa")
 
-  target_compile_features(colony_path PUBLIC cxx_std_20)
+  # Match top-level standard; require at least C++23 features
+  target_compile_features(colony_path PUBLIC cxx_std_23)
+
+  # PCH for faster rebuilds when you split JPS into multiple .cpp files
+  if(COLONY_USE_PCH)
+    target_precompile_headers(colony_path PRIVATE "${COLONY_PCH_HEADER}")
+  endif()
+
   colony_apply_msvc_runtime(colony_path)
 endif()
 
@@ -422,9 +433,7 @@ if(TARGET colony_core)
     target_link_libraries(colony_core PRIVATE colony::path)
   endif()
 
-  # --------------------------------------------------------------------------
   # Compile CrashDumpWin.cpp with /EHa (Structured Exception Handling)
-  # --------------------------------------------------------------------------
   if(MSVC AND COLONY_SEH_CRASHDUMP)
     get_target_property(_core_srcs colony_core SOURCES)
     if(_core_srcs)
@@ -434,6 +443,11 @@ if(TARGET colony_core)
         endif()
       endforeach()
     endif()
+  endif()
+
+  # PCH for core library as well
+  if(COLONY_USE_PCH)
+    target_precompile_headers(colony_core PRIVATE "${COLONY_PCH_HEADER}")
   endif()
 
   # Apply CRT policy
