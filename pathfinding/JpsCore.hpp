@@ -1,30 +1,44 @@
 // pathfinding/JpsCore.hpp
 #pragma once
 
+// Make this header self-contained: ensure IGrid/JpsOptions/Cell are COMPLETE here.
+// Prefer the public API header; fall back to JpsTypes if your tree still uses it.
+#if __has_include(<pathfinding/Jps.hpp>)
+  #include <pathfinding/Jps.hpp>   // defines colony::path::{IGrid, Cell, JpsOptions}
+#elif __has_include("pathfinding/Jps.hpp")
+  #include "pathfinding/Jps.hpp"
+#elif __has_include("pathfinding/JpsTypes.hpp")
+  #include "pathfinding/JpsTypes.hpp"
+#elif __has_include(<pathfinding/JpsTypes.hpp>)
+  #include <pathfinding/JpsTypes.hpp>
+#else
+  #error "JpsCore.hpp requires pathfinding/Jps.hpp (or legacy pathfinding/JpsTypes.hpp)."
+#endif
+
 #include <vector>
 #include <utility>
 #include <queue>
 #include <limits>
-#include <cstddef>              // size_t
-#include <pathfinding/Jps.hpp>  // brings in colony::path::{IGrid, Cell, JpsOptions}
+#include <cstddef> // size_t
 
 namespace colony::path {
 namespace detail {
 
+// Per-cell bookkeeping for the JPS/A* search.
 struct Node {
-    int   x = 0, y = 0;                       // grid coords
+    int   x = 0, y = 0;                       // grid coordinates
     float g = std::numeric_limits<float>::infinity();
     float f = std::numeric_limits<float>::infinity();
-    int   parent = -1;                        // parent node index (-1 = none)
-    int   px = 0,   py = 0;                   // parent's coordinates (for dir pruning)
+    int   parent = -1;                        // parent node index (-1 = start)
+    int   px = 0,   py = 0;                   // parent's coordinates (for pruning)
     bool  opened = false;
     bool  closed = false;
 };
 
+// priority_queue is a max-heap; invert comparison for min-heap on f.
 struct PQItem {
     int   index = -1;
     float f     = 0.0f;
-    // priority_queue is a max-heap by default; invert for min-heap on f
     bool operator<(const PQItem& rhs) const noexcept { return f > rhs.f; }
 };
 
