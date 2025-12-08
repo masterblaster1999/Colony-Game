@@ -1,4 +1,4 @@
-cmake_minimum_required(VERSION 3.27...3.31 FATAL_ERROR) 
+cmake_minimum_required(VERSION 3.27...3.31 FATAL_ERROR)
 
 # ------------------------------------------------------------------------------
 # Windows-only: hard-fail on non-Windows platforms
