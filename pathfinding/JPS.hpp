@@ -1,4 +1,4 @@
-// pathfinding/jps.hpp
+// include/pathfinding/Jps.hpp
 // Minimal, production-friendly Jump Point Search for uniform-cost grids.
 // MSVC /std:c++20; header-only for easy drop-in.
 
@@ -12,6 +12,10 @@
 #include <cmath>
 #include <functional>
 
+// Compile-time: ensure floats are IEEE-754 (IEC 559). This is true on MSVC.
+static_assert(std::numeric_limits<float>::is_iec559,
+              "IEEE754 floats expected (std::numeric_limits<float>::is_iec559 == false)");
+
 namespace colony::pf {
 
 struct Point { int x{}, y{}; };
@@ -21,6 +25,10 @@ struct JpsParams {
     bool forbid_corner_cutting = true;  // typical JPS assumption
     int  D  = 10;  // straight step cost (use 1 if you like)
     int  D2 = 14;  // diagonal step cost (≈ D*sqrt(2) without FP)
+
+    // Heuristic weight:
+    // This implementation implicitly uses 1.0 (classic A*/JPS optimality).
+    // If you want Weighted A* (bounded-suboptimal search), fold w>1 into h_octile().
 };
 
 // Lightweight grid view: user supplies passability and bounds.
@@ -204,7 +212,7 @@ struct OpenCmp {
 // static storage for comparator
 inline std::vector<NodeRec> OpenCmp::nodes;
 
-Path FindPathJPS(const GridView& grid, const Point& start, const Point& goal, const JpsParams& prm)
+inline Path FindPathJPS(const GridView& grid, const Point& start, const Point& goal, const JpsParams& prm)
 {
     if (!grid.walkable(start.x, start.y) || !grid.walkable(goal.x, goal.y)) return {};
 
@@ -221,7 +229,7 @@ Path FindPathJPS(const GridView& grid, const Point& start, const Point& goal, co
         if (n.f == std::numeric_limits<int>::max() || g < n.g) {
             n.p = {x,y};
             n.g = g;
-            n.f = g + h_octile(n.p, goalPt, p);
+            n.f = g + h_octile(n.p, goalPt, p);  // weight implicitly 1.0 (optimal A*)
             n.parent_idx = parent_idx;
             n.dir = inDir;
             open.push(i);
@@ -262,8 +270,8 @@ Path FindPathJPS(const GridView& grid, const Point& start, const Point& goal, co
             int d = dirs[k], dx = dx_of(d), dy = dy_of(d);
             if (auto jp = jump(grid, cur.p, dx, dy, goal, prm)) {
                 // cost to jump point = straight/diag steps * D/D2
-                int steps = std::max(std::abs(jp->x - cur.p.x), std::abs(jp->y - cur.p.y));
-                int diag = std::min(std::abs(jp->x - cur.p.x), std::abs(jp->y - cur.p.y));
+                int steps    = std::max(std::abs(jp->x - cur.p.x), std::abs(jp->y - cur.p.y));
+                int diag     = std::min(std::abs(jp->x - cur.p.x), std::abs(jp->y - cur.p.y));
                 int straight = steps - diag;
                 int cost = cur.g + diag*prm.D2 + straight*prm.D;
                 push_or_update(jp->x, jp->y, cost, ci, d, open, goal, prm);
