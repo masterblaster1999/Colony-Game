@@ -66,6 +66,11 @@ endif()
 # ------------------------------------------------------------------------------
 # Build options added by patch
 # ------------------------------------------------------------------------------
+# Patch 1 adds global Windows-centric toggles:
+option(COLONY_WERROR         "Treat warnings as errors on MSVC" OFF)
+option(COLONY_UNITY          "Enable Unity/Jumbo builds for project targets" ON)
+option(COLONY_STATIC_RUNTIME "Link static MSVC runtime (/MT) instead of DLL" OFF)
+
 if(NOT DEFINED COLONY_USE_PCH)
   option(COLONY_USE_PCH "Enable precompiled headers" ON)
 endif()
@@ -84,6 +89,12 @@ option(COLONY_RELEASE_STATIC_CRT
   "Use static MSVC runtime (/MT) in Release; keep dynamic (/MDd) in Debug" OFF)
 set(COLONY_GAME_TARGET "" CACHE STRING
   "Name of the game's main executable target (if different from 'ColonyGame') to link with colony_path")
+
+# Patch 1: Enable Unity/Jumbo builds project-wide (can still disable per-target)
+if(COLONY_UNITY)
+  set(CMAKE_UNITY_BUILD ON)
+  set(CMAKE_UNITY_BUILD_BATCH_SIZE 8)
+endif()
 
 # ------------------------------------------------------------------------------
 # clang-tidy
@@ -120,7 +131,7 @@ if(COLONY_ENABLE_ASAN)
 endif()
 
 # ------------------------------------------------------------------------------
-# Windows macros and compiler hygiene
+# Windows macros and compiler hygiene (Patch 1 extends this block)
 # ------------------------------------------------------------------------------
 if(MSVC)
   add_compile_definitions(
@@ -128,33 +139,59 @@ if(MSVC)
     NOMINMAX
     _CRT_SECURE_NO_WARNINGS
   )
+
+  # Patch 1: Modern MSVC conformance & diagnostics (project-wide)
   add_compile_options(
-    /W4           # high warning level
-    /WX           # treat warnings as errors (non-optional)
-    /permissive-  # strict C++ conformance
+    /permissive-              # strict C++ conformance
+    /W4                       # high warning level
+    /MP                       # parallel compile
+    /utf-8                    # UTF-8 source & execution charset
     /Zc:__cplusplus
     /Zc:preprocessor
+    /Zc:inline
+    /Zc:throwingNew
     /EHsc
-    /utf-8
-    /MP
+    $<$<CONFIG:Debug>:/RTC1>  # runtime checks in Debug
+    $<$<BOOL:${COLONY_WERROR}>:/WX> # optional warnings-as-errors toggle
   )
 
-  # (PATCH) Generate full PDBs and cl debug info in Debug/RelWithDebInfo
+  # Keep PDBs in Debug/RelWithDebInfo
   add_compile_options($<$<OR:$<CONFIG:Debug>,$<CONFIG:RelWithDebInfo>>:/Zi>)
-  add_link_options($<$<OR:$<CONFIG:Debug>,$<CONFIG:RelWithDebInfo>>:/DEBUG:FULL>)
+  add_link_options(   $<$<OR:$<CONFIG:Debug>,$<CONFIG:RelWithDebInfo>>:/DEBUG:FULL>)
 
-  # (PATCH) Link-time code generation for Release
-  add_compile_options($<$<CONFIG:Release>:/GL>)
-  add_link_options($<$<CONFIG:Release>:/LTCG>)
+  # Patch 1: Release codegen & link-time opts
+  add_compile_options($<$<CONFIG:Release>:/O2 /Oi /Ot /GL /Gw /Gy>)
+  add_link_options(   $<$<CONFIG:Release>:/LTCG /OPT:REF /OPT:ICF>)
 
-  # Use the supported abstraction instead of editing flags
-  # (CMake >= 3.15; default is MultiThreadedDLL in Release, MultiThreadedDebugDLL in Debug)
-  set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>DLL")
+  # Patch 1: First-class runtime selection
+  if(COLONY_STATIC_RUNTIME)
+    # /MT in Release, /MTd in Debug
+    set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+  else()
+    # /MD in Release, /MDd in Debug
+    set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>DLL")
+  endif()
 endif()
+
+# Patch 1: helper to opt-in PCH from subdirectories without hard-coding here.
+# Usage: colony_enable_pch(<target> <PUBLIC|PRIVATE|INTERFACE> <header...>)
+function(colony_enable_pch tgt)
+  if(NOT COLONY_USE_PCH)
+    return()
+  endif()
+  if(ARGC LESS 2)
+    message(FATAL_ERROR "colony_enable_pch(<target> <PUBLIC|PRIVATE|INTERFACE> <header...>)")
+  endif()
+  target_precompile_headers(${tgt} ${ARGN})
+endfunction()
 
 # Helper to apply our CRT policy per-target (handles "Release static; Debug dynamic").
 function(colony_apply_msvc_runtime tgt)
   if(MSVC AND TARGET "${tgt}")
+    # If global static runtime was requested via Patch 1, do not override per-target.
+    if(COLONY_STATIC_RUNTIME)
+      return()
+    endif()
     if(COLONY_RELEASE_STATIC_CRT)
       # Debug  -> MDd
       # Release-> MT
