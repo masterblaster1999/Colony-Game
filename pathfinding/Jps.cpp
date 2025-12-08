@@ -9,6 +9,7 @@
 #include <utility>
 #include <cmath>
 #include <algorithm>
+#include <cassert>
 
 namespace colony::path {
 namespace detail {
@@ -238,6 +239,14 @@ std::vector<Cell> jps_find_path(const IGrid& grid, Cell start, Cell goal, const 
 
     const int W = grid.width();
     const int H = grid.height(); (void)H;
+
+#ifndef NDEBUG
+    // For strict optimality guarantees (classic A* / JPS), the heuristic must be
+    // admissible/consistent. A weight w>1 (Weighted A*) trades optimality for speed.
+    const float w = opt.heuristicWeight;
+    assert(std::abs(w - 1.0f) < 1e-6f &&
+           "heuristicWeight must be 1.0 for JPS/A* optimality (w>1 => bounded-suboptimal)");
+#endif
 
     if (W <= 0) return {};
     if (!passable(grid, start.x, start.y)) return {};
