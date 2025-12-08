@@ -1,8 +1,19 @@
 // pathfinding/JpsCore.hpp
 #pragma once
 
-// Option A: include the public types header so IGrid/JpsOptions/Cell are available here.
-#include "pathfinding/JpsTypes.hpp"
+// Make this header self-contained: ensure IGrid/JpsOptions/Cell are COMPLETE here.
+// Prefer the public API header; fall back to JpsTypes if your tree still uses it.
+#if __has_include(<pathfinding/Jps.hpp>)
+  #include <pathfinding/Jps.hpp>   // defines colony::path::{IGrid, Cell, JpsOptions}
+#elif __has_include("pathfinding/Jps.hpp")
+  #include "pathfinding/Jps.hpp"
+#elif __has_include("pathfinding/JpsTypes.hpp")
+  #include "pathfinding/JpsTypes.hpp"
+#elif __has_include(<pathfinding/JpsTypes.hpp>)
+  #include <pathfinding/JpsTypes.hpp>
+#else
+  #error "JpsCore.hpp requires pathfinding/Jps.hpp (or legacy pathfinding/JpsTypes.hpp)."
+#endif
 
 #include <vector>
 #include <utility>
