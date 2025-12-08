@@ -1,6 +1,17 @@
 // pathfinding/Jps.cpp
 // Include the public API FIRST so helper definitions can call IGrid methods:
-#include <pathfinding/Jps.hpp>  // defines IGrid, Cell, JpsOptions, jps_find_path
+#if __has_include(<pathfinding/Jps.hpp>)
+  #include <pathfinding/Jps.hpp>  // defines IGrid, Cell, JpsOptions, jps_find_path
+#elif __has_include("pathfinding/Jps.hpp")
+  #include "pathfinding/Jps.hpp"
+#elif __has_include("pathfinding/JpsTypes.hpp")
+  #include "pathfinding/JpsTypes.hpp"
+#elif __has_include(<pathfinding/JpsTypes.hpp>)
+  #include <pathfinding/JpsTypes.hpp>
+#else
+  #error "Jps.cpp requires pathfinding/Jps.hpp (or legacy pathfinding/JpsTypes.hpp)."
+#endif
+
 #include "JpsCore.hpp"          // helper declarations + Node/PQItem
 
 #include <queue>
@@ -232,7 +243,6 @@ static std::vector<Cell> reconstruct_path(const std::vector<Node>& nodes, int i,
 } // namespace detail
 
 // ========= Public entry: JPS (A* + jump pruning) =========
-// Harabor & Grastien 2011/2014. :contentReference[oaicite:2]{index=2}
 std::vector<Cell> jps_find_path(const IGrid& grid, Cell start, Cell goal, const JpsOptions& opt)
 {
     using namespace detail;
