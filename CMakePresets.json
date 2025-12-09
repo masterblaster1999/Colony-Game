@@ -1,23 +1,17 @@
 {
   "version": 6,
-  "cmakeMinimumRequired": { "major": 3, "minor": 25 },
   "configurePresets": [
     {
       "name": "windows-msvc-x64",
-      "displayName": "Windows MSVC x64 (Release+Debug)",
       "generator": "Ninja",
       "binaryDir": "${sourceDir}/out/build/${presetName}",
       "cacheVariables": {
-        "CMAKE_CXX_STANDARD": "20",
-        "CMAKE_MSVC_RUNTIME_LIBRARY": "MultiThreaded$<$<CONFIG:Debug>:Debug>",
+        "CMAKE_CXX_STANDARD": "23",
+        "CMAKE_MSVC_RUNTIME_LIBRARY": "MultiThreaded$<$<CONFIG:Debug>:Debug>DLL",
         "USE_PIX": "ON",
         "USE_RAWINPUT": "ON"
       },
-      "vendor": { "microsoft.com/VisualStudioSettings/CMake/1.0": { "hostOS": [ "Windows" ] } }
+      "vendor": { "microsoft.com/VisualStudioSettings/CMake/1.0": { "hostOS": ["Windows"] } }
     }
-  ],
-  "buildPresets": [
-    { "name": "build-debug",   "configurePreset": "windows-msvc-x64", "configuration": "Debug" },
-    { "name": "build-release", "configurePreset": "windows-msvc-x64", "configuration": "Release" }
   ]
 }
