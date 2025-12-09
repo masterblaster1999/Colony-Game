@@ -1,83 +1,79 @@
-// pathfinding/JpsCore.hpp
 #pragma once
+// JpsCore.hpp — minimal, self-contained Jump Point Search interface for MSVC
 
-// Make this header self-contained: ensure IGrid/JpsOptions/Cell are COMPLETE here.
-#if __has_include(<pathfinding/Jps.hpp>)
-  #include <pathfinding/Jps.hpp>   // defines colony::path::{IGrid, Cell, JpsOptions}
-#elif __has_include("pathfinding/Jps.hpp")
-  #include "pathfinding/Jps.hpp"
-#elif __has_include("pathfinding/JpsTypes.hpp")
-  #include "pathfinding/JpsTypes.hpp"
-#elif __has_include(<pathfinding/JpsTypes.hpp>)
-  #include <pathfinding/JpsTypes.hpp>
-#else
-  #error "JpsCore.hpp requires pathfinding/Jps.hpp (or legacy pathfinding/JpsTypes.hpp)."
-#endif
-
-#include <vector>
+#include <cstdint>
+#include <functional>
+#include <optional>
 #include <utility>
+#include <vector>
 #include <queue>
+#include <unordered_map>
 #include <limits>
-#include <cstddef>
-#include <type_traits>
+#include <cmath>
 
-// Notes (Windows/MSVC):
-// - C4430 “missing type specifier – int assumed” typically means a type used in a
-//   declaration wasn’t visible; making this header self-contained prevents that. :contentReference[oaicite:0]{index=0}
-// - MSVC supports __has_include since VS 2017 15.3, which we use above. :contentReference[oaicite:1]{index=1}
-// - [[nodiscard]] is a C++17 attribute; MSVC warns if results are discarded. :contentReference[oaicite:2]{index=2}
+namespace colony::path
+{
+    // Lightweight view into a grid. You provide dimensions and a callback that
+    // returns true for blocked cells (walls) and false for free cells.
+    struct GridView
+    {
+        int width  = 0;
+        int height = 0;
+        std::function<bool(int /*x*/, int /*y*/)> isBlocked;
 
-namespace colony::path {
-namespace detail {
+        bool inBounds(int x, int y) const noexcept
+        {
+            return (x >= 0 && x < width && y >= 0 && y < height);
+        }
+        bool passable(int x, int y) const noexcept
+        {
+            return inBounds(x, y) && !isBlocked(x, y);
+        }
+    };
 
-// Compile-time sanity checks for the platform/toolchain used.
-static_assert(sizeof(int) >= 4, "colony::path requires int to be at least 32 bits.");
-// Node is intended to be trivially copyable for fast vector movement.
-struct Node;
-static_assert(std::is_trivially_copyable_v<int>, "int must be trivially copyable (sanity).");
+    // Node used for A* frontier; stores parent to reconstruct the path.
+    struct Node
+    {
+        int x = 0, y = 0;
+        float g = 0.f, h = 0.f; // cost-so-far and heuristic
+        int px = -1, py = -1;   // parent
+    };
 
-// A conventional sentinel for “no parent”.
-inline constexpr int kNoParent = -1;
+    // Public API: Find a grid path from (sx,sy) to (gx,gy).
+    // Returns a polyline of (x,y) tiles including start and goal.
+    // Set allowDiagonal=false to restrict to 4-neighborhood.
+    std::vector<std::pair<int,int>>
+    FindPathJPS(const GridView& grid,
+                int sx, int sy,
+                int gx, int gy,
+                bool allowDiagonal = true);
 
-// Per-cell bookkeeping for the JPS/A* search.
-struct Node {
-    int   x = 0, y = 0;                       // grid coordinates
-    float g = std::numeric_limits<float>::infinity();
-    float f = std::numeric_limits<float>::infinity();
-    int   parent = kNoParent;                 // parent node index
-    int   px = 0,   py = 0;                   // parent's coordinates (for pruning)
-    bool  opened = false;
-    bool  closed = false;
-};
+    // ---- Internals (exposed for unit tests, but you can keep them header-only
+    // to help MSVC optimize) ----
 
-// priority_queue is a max-heap; invert comparison for min-heap on f.
-struct PQItem {
-    int   index = -1;
-    float f     = 0.0f;
-    bool operator<(const PQItem& rhs) const noexcept { return f > rhs.f; }
-};
+    // Heuristic: octile distance (works for 8-connected grids; reduces to
+    // Manhattan if allowDiagonal is false).
+    float Octile(int x0, int y0, int x1, int y1, bool allowDiagonal) noexcept;
 
-// ---- Helper declarations (definitions live in Jps.cpp) ----
-[[nodiscard]] int   idx(int x, int y, int W);
-[[nodiscard]] bool  in_bounds(const IGrid& g, int x, int y);
-[[nodiscard]] bool  passable (const IGrid& g, int x, int y);
-[[nodiscard]] bool  can_step (const IGrid& g, int x, int y, int dx, int dy, const JpsOptions& o);
+    // Jump in direction (dx,dy) starting from (x,y). Returns the next "jump
+    // point" (forced neighbor, or goal) or std::nullopt if blocked.
+    std::optional<std::pair<int,int>>
+    Jump(const GridView& grid, int x, int y, int dx, int dy,
+         int goalX, int goalY, bool allowDiagonal);
 
-[[nodiscard]] float heuristic (int x0, int y0, int x1, int y1, const JpsOptions& o);   // use octile for 8-neigh
-[[nodiscard]] float dist_cost (int x0, int y0, int x1, int y1, const JpsOptions& o);
-[[nodiscard]] float tiebreak  (int x, int y, int sx, int sy, int gx, int gy);          // small ε-bias to goal
+    // Generate pruned neighbors for JPS given the parent direction (dx,dy).
+    void PruneNeighbors(const GridView& grid, int x, int y,
+                        int dx, int dy, bool allowDiagonal,
+                        std::vector<std::pair<int,int>>& outDirs);
 
-[[nodiscard]] bool  has_forced_neighbors_straight(const IGrid& g, int x, int y, int dx, int dy);
-[[nodiscard]] bool  has_forced_neighbors_diag   (const IGrid& g, int x, int y, int dx, int dy);
+    // Utility to reconstruct final path from came-from map.
+    std::vector<std::pair<int,int>>
+    Reconstruct(const std::unordered_map<std::uint64_t, std::pair<int,int>>& parent,
+                int sx, int sy, int gx, int gy);
 
-void  pruned_dirs(const IGrid& g, int x, int y, int px, int py,
-                  const JpsOptions& o, std::vector<std::pair<int,int>>& out);
-
-[[nodiscard]] bool  jump(const IGrid& g, int x, int y, int dx, int dy,
-                         int gx, int gy, const JpsOptions& o, int& outx, int& outy);
-
-[[nodiscard]] bool  los_supercover(const IGrid& g, int x0, int y0, int x1, int y1,
-                                   const JpsOptions& o);
-
-} // namespace detail
+    // Small helpers for keying (x,y) into unordered_map
+    inline std::uint64_t Pack(int x, int y) noexcept
+    {
+        return (std::uint64_t(std::uint32_t(x)) << 32) | std::uint32_t(y);
+    }
 } // namespace colony::path
