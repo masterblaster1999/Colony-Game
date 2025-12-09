@@ -538,6 +538,67 @@ if(COMMAND colony_fixup_sources)
 endif()
 
 # ------------------------------------------------------------------------------
+# NEW: Prune duplicate/forbidden sources after targets exist (Windows)
+# - Keep entry points out of libraries (e.g., colony_core)
+# - Resolve duplicate platform files (e.g., CrashHandlerWin.cpp)
+# - Deduplicate any repeated source entries
+# ------------------------------------------------------------------------------
+function(colony_prune_sources tgt)
+  if(NOT TARGET ${tgt})
+    return()
+  endif()
+  get_target_property(_srcs ${tgt} SOURCES)
+  if(NOT _srcs)
+    return()
+  endif()
+
+  set(_keep "")
+  foreach(_s IN LISTS _srcs)
+    # 1) Never allow process entry-points inside the core library.
+    if(${tgt} STREQUAL "colony_core")
+      if(_s MATCHES "/(WinLauncher|AppMain|EntryWinMain)\\.cpp$")
+        # Skip: entry points must live only in EXE targets
+        continue()
+      endif()
+    endif()
+
+    # 2) Resolve MSB8027-style duplicate object names:
+    # Prefer the 'src/platform/win' CrashHandler over the top-level duplicate.
+    if(_s MATCHES "/platform/win/CrashHandlerWin\\.cpp$")
+      if(EXISTS "${CMAKE_SOURCE_DIR}/src/platform/win/CrashHandlerWin.cpp")
+        if(_s MATCHES "^${CMAKE_SOURCE_DIR}/platform/win/CrashHandlerWin\\.cpp$")
+          continue() # drop the top-level duplicate
+        endif()
+      endif()
+    endif()
+
+    list(APPEND _keep "${_s}")
+  endforeach()
+
+  # Extra safety: remove accidental repeats.
+  list(REMOVE_DUPLICATES _keep)
+  set_property(TARGET ${tgt} PROPERTY SOURCES "${_keep}")
+endfunction()
+
+# Apply the pruning to common targets (only those that exist)
+foreach(_t colony_core ColonyGame ColonyLauncher ColonyMapViewer)
+  if(TARGET ${_t})
+    colony_prune_sources(${_t})
+  endif()
+endforeach()
+
+# Ensure public headers (e.g., include/CrashHandler.h) are visible to users
+if(TARGET colony_core)
+  target_include_directories(colony_core PUBLIC "${CMAKE_SOURCE_DIR}/include")
+endif()
+if(TARGET ColonyGame)
+  target_include_directories(ColonyGame PUBLIC "${CMAKE_SOURCE_DIR}/include")
+endif()
+if(TARGET ColonyLauncher)
+  target_include_directories(ColonyLauncher PUBLIC "${CMAKE_SOURCE_DIR}/include")
+endif()
+
+# ------------------------------------------------------------------------------
 # Local Unity guard for CI offenders
 # ------------------------------------------------------------------------------
 if(TARGET procgen)
