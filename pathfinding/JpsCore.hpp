@@ -2,7 +2,6 @@
 #pragma once
 
 // Make this header self-contained: ensure IGrid/JpsOptions/Cell are COMPLETE here.
-// Prefer the public API header; fall back to JpsTypes if your tree still uses it.
 #if __has_include(<pathfinding/Jps.hpp>)
   #include <pathfinding/Jps.hpp>   // defines colony::path::{IGrid, Cell, JpsOptions}
 #elif __has_include("pathfinding/Jps.hpp")
@@ -19,23 +18,21 @@
 #include <utility>
 #include <queue>
 #include <limits>
-#include <cstddef> // size_t
+#include <cstddef>
 
 namespace colony::path {
 namespace detail {
 
-// Per-cell bookkeeping for the JPS/A* search.
 struct Node {
-    int   x = 0, y = 0;                       // grid coordinates
+    int   x = 0, y = 0;
     float g = std::numeric_limits<float>::infinity();
     float f = std::numeric_limits<float>::infinity();
-    int   parent = -1;                        // parent node index (-1 = start)
-    int   px = 0,   py = 0;                   // parent's coordinates (for pruning)
+    int   parent = -1;
+    int   px = 0,   py = 0;
     bool  opened = false;
     bool  closed = false;
 };
 
-// priority_queue is a max-heap; invert comparison for min-heap on f.
 struct PQItem {
     int   index = -1;
     float f     = 0.0f;
@@ -48,9 +45,9 @@ bool  in_bounds(const IGrid& g, int x, int y);
 bool  passable (const IGrid& g, int x, int y);
 bool  can_step (const IGrid& g, int x, int y, int dx, int dy, const JpsOptions& o);
 
-float heuristic (int x0, int y0, int x1, int y1, const JpsOptions& o);
+float heuristic (int x0, int y0, int x1, int y1, const JpsOptions& o);   // use octile for 8-neigh
 float dist_cost (int x0, int y0, int x1, int y1, const JpsOptions& o);
-float tiebreak  (int x, int y, int sx, int sy, int gx, int gy);
+float tiebreak  (int x, int y, int sx, int sy, int gx, int gy);          // small ε-bias to goal
 
 bool  has_forced_neighbors_straight(const IGrid& g, int x, int y, int dx, int dy);
 bool  has_forced_neighbors_diag   (const IGrid& g, int x, int y, int dx, int dy);
