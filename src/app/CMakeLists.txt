@@ -1,11 +1,25 @@
-# src/app/CMakeLists.txt
+# src/app/CMakeLists.txt  (append)
 
-add_executable(colony_game
-    # app sources...
-)
+# Choose whichever executable target exists.
+set(_game_targets)
+if(TARGET colony_game)
+    list(APPEND _game_targets colony_game)
+endif()
+if(TARGET ColonyGame)
+    list(APPEND _game_targets ColonyGame)
+endif()
 
-# Link to the namespaced aliases (not the private *_lib names)
-target_link_libraries(colony_game
-    PRIVATE colony::core
-            colony::renderer
-)
+foreach(tgt IN LISTS _game_targets)
+    # Ensure the Windows crash handler implementation is compiled into the EXE.
+    target_sources(${tgt} PRIVATE
+        ${CMAKE_SOURCE_DIR}/platform/win/CrashHandlerWin.cpp
+    )
+
+    # Make the repo root visible to the compiler in case any headers use root-anchored includes.
+    target_include_directories(${tgt} PRIVATE ${CMAKE_SOURCE_DIR})
+
+    # Link against DbgHelp (MiniDumpWriteDump) and friends.
+    if(MSVC)
+        target_link_libraries(${tgt} PRIVATE dbghelp)
+    endif()
+endforeach()
