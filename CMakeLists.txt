@@ -40,6 +40,9 @@ include(CGToolchain)  # your cmake/CGToolchain.cmake (e.g., vcpkg toolchain)
 
 project(ColonyGame LANGUAGES CXX)
 
+# --- PATCH ADD: central Windows flags (optional include, non-fatal if missing) ---
+include(cmake/WindowsFlags.cmake OPTIONAL)
+
 # Configure HLSL shader entrypoints for Visual Studio generator
 # (see cmake/ShaderEntryPoints.cmake)
 include("${CMAKE_SOURCE_DIR}/cmake/ShaderEntryPoints.cmake")
@@ -645,6 +648,16 @@ if(EXISTS "${CMAKE_SOURCE_DIR}/cmake/CGStageInstall.cmake")
 endif()
 if(EXISTS "${CMAKE_SOURCE_DIR}/cmake/CGSummary.cmake")
   include(CGSummary)
+endif()
+
+# ------------------------------------------------------------------------------
+# Local Unity guard for CI offenders (disable Unity on fragile targets)
+# ------------------------------------------------------------------------------
+if(TARGET procgen)
+  set_target_properties(procgen PROPERTIES UNITY_BUILD OFF)
+endif()
+if(TARGET colony_path)
+  set_target_properties(colony_path PROPERTIES UNITY_BUILD OFF)
 endif()
 
 # ------------------------------------------------------------------------------
