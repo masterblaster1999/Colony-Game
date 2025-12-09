@@ -536,6 +536,18 @@ if(EXISTS "${CMAKE_SOURCE_DIR}/cmake/CGSummary.cmake")
 endif()
 
 # ------------------------------------------------------------------------------
+# Guard: verify no compile flags/genex slipped into target SOURCES
+# (add after targets are created)
+# ------------------------------------------------------------------------------
+include(cmake/NoFlagsInSources.cmake)
+
+if(TARGET colony_path)      colony_verify_no_flags_in_sources(colony_path)      endif()
+if(TARGET procgen)          colony_verify_no_flags_in_sources(procgen)          endif()
+if(TARGET colony_core)      colony_verify_no_flags_in_sources(colony_core)      endif()
+if(TARGET ColonyGame)       colony_verify_no_flags_in_sources(ColonyGame)       endif()
+if(TARGET ColonyMapViewer)  colony_verify_no_flags_in_sources(ColonyMapViewer)  endif()
+
+# ------------------------------------------------------------------------------
 # Local Unity guard for CI offenders
 # ------------------------------------------------------------------------------
 if(TARGET procgen)
