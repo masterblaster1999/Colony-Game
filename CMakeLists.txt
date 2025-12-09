@@ -40,7 +40,7 @@ include(CGToolchain)  # your cmake/CGToolchain.cmake (e.g., vcpkg toolchain)
 
 project(ColonyGame LANGUAGES CXX)
 
-# --- PATCH ADD: central Windows flags (optional include, non-fatal if missing) ---
+# --- central Windows flags (optional include, non-fatal if missing) ---
 include(cmake/WindowsFlags.cmake OPTIONAL)
 
 # Configure HLSL shader entrypoints for Visual Studio generator
@@ -67,9 +67,8 @@ if(DEFINED CG_ENABLE_UNITY AND NOT DEFINED COLONY_UNITY_BUILD)
 endif()
 
 # ------------------------------------------------------------------------------
-# Build options added by patch
+# Build options
 # ------------------------------------------------------------------------------
-# Patch 1 adds global Windows-centric toggles:
 option(COLONY_WERROR         "Treat warnings as errors on MSVC" OFF)
 option(COLONY_UNITY          "Enable Unity/Jumbo builds for project targets" ON)
 option(COLONY_STATIC_RUNTIME "Link static MSVC runtime (/MT) instead of DLL" OFF)
@@ -83,17 +82,14 @@ option(COLONY_ENABLE_TIDY "Run clang-tidy static analysis during build (may slow
 option(COLONY_ENABLE_ASAN "Enable AddressSanitizer for supported compilers/configs" OFF)
 option(COLONY_SEH_CRASHDUMP "Compile CrashDumpWin.cpp with /EHa while keeping /EHsc globally" ON)
 
-# NEW: Make Tracy optional (OFF by default)
 option(COLONY_ENABLE_TRACY "Build with Tracy profiler instrumentation (vcpkg port 'tracy')" OFF)
 
-# Added by patch: tests & CRT toggles and optional game target name
 option(COLONY_BUILD_TESTS "Build unit tests in tests/ subdir (single-runner pattern)" ON)
 option(COLONY_RELEASE_STATIC_CRT
   "Use static MSVC runtime (/MT) in Release; keep dynamic (/MDd) in Debug" OFF)
 set(COLONY_GAME_TARGET "" CACHE STRING
   "Name of the game's main executable target (if different from 'ColonyGame') to link with colony_path")
 
-# Patch 1: Enable Unity/Jumbo builds project-wide (can still disable per-target)
 if(COLONY_UNITY)
   set(CMAKE_UNITY_BUILD ON)
   set(CMAKE_UNITY_BUILD_BATCH_SIZE 8)
@@ -120,7 +116,6 @@ if(COLONY_ENABLE_ASAN)
       $<$<OR:$<CONFIG:Debug>,$<CONFIG:RelWithDebInfo>>:/fsanitize=address>
       $<$<OR:$<CONFIG:Debug>,$<CONFIG:RelWithDebInfo>>:/Zi>
     )
-    # ASan is not compatible with incremental linking: explicitly disable it.
     add_link_options(
       $<$<OR:$<CONFIG:Debug>,$<CONFIG:RelWithDebInfo>>:/fsanitize=address>
       $<$<OR:$<CONFIG:Debug>,$<CONFIG:RelWithDebInfo>>:/INCREMENTAL:NO>
@@ -134,7 +129,7 @@ if(COLONY_ENABLE_ASAN)
 endif()
 
 # ------------------------------------------------------------------------------
-# Windows macros and compiler hygiene (Patch 1 extends this block)
+# Windows macros and compiler hygiene
 # ------------------------------------------------------------------------------
 if(MSVC)
   add_compile_definitions(
@@ -143,41 +138,55 @@ if(MSVC)
     _CRT_SECURE_NO_WARNINGS
   )
 
-  # Patch 1: Modern MSVC conformance & diagnostics (project-wide)
+  # Modern MSVC conformance & diagnostics (project-wide)
   add_compile_options(
-    /permissive-              # strict C++ conformance
-    /W4                       # high warning level
-    /MP                       # parallel compile
-    /utf-8                    # UTF-8 source & execution charset
+    /permissive-
+    /W4
+    /MP
+    /utf-8
     /Zc:__cplusplus
     /Zc:preprocessor
     /Zc:inline
     /Zc:throwingNew
     /EHsc
-    $<$<CONFIG:Debug>:/RTC1>  # runtime checks in Debug
-    $<$<BOOL:${COLONY_WERROR}>:/WX> # optional warnings-as-errors toggle
+    # NOTE: /RTC1 removed from here to avoid D8016 with /O2; will be added per-target in Debug only.
+    $<$<BOOL:${COLONY_WERROR}>:/WX>
   )
 
-  # Keep PDBs in Debug/RelWithDebInfo
+  # PDBs in Debug/RelWithDebInfo
   add_compile_options($<$<OR:$<CONFIG:Debug>,$<CONFIG:RelWithDebInfo>>:/Zi>)
   add_link_options(   $<$<OR:$<CONFIG:Debug>,$<CONFIG:RelWithDebInfo>>:/DEBUG:FULL>)
 
-  # Patch 1: Release codegen & link-time opts
+  # Release codegen & link-time opts
   add_compile_options($<$<CONFIG:Release>:/O2 /Oi /Ot /GL /Gw /Gy>)
   add_link_options(   $<$<CONFIG:Release>:/LTCG /OPT:REF /OPT:ICF>)
 
-  # Patch 1: First-class runtime selection
+  # First-class runtime selection (CMP0091)
   if(COLONY_STATIC_RUNTIME)
-    # /MT in Release, /MTd in Debug
     set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
   else()
-    # /MD in Release, /MDd in Debug
     set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>DLL")
   endif()
 endif()
 
-# Patch 1: helper to opt-in PCH from subdirectories without hard-coding here.
-# Usage: colony_enable_pch(<target> <PUBLIC|PRIVATE|INTERFACE> <header...>)
+# ---- Defensive cleanup: strip any stray /RTC* from non-Debug toolchain vars ----
+if(MSVC)
+  foreach(_CFG RELEASE RELWITHDEBINFO MINSIZEREL)
+    foreach(_LANG C CXX)
+      string(TOUPPER "${_CFG}" _CFG_UP)
+      set(_VAR "CMAKE_${_LANG}_FLAGS_${_CFG_UP}")
+      if(DEFINED ${_VAR} AND NOT "${${_VAR}}" STREQUAL "")
+        string(REGEX REPLACE "(/RTC1|/RTCs|/RTCu|/RTCc)" "" _FILTERED "${${_VAR}}")
+        if(NOT _FILTERED STREQUAL "${${_VAR}}")
+          set(${_VAR} "${_FILTERED}" CACHE STRING "" FORCE)
+        endif()
+      endif()
+    endforeach()
+  endforeach()
+endif()
+
+# ---- Helpers ------------------------------------------------------------------
+# PCH helper
 function(colony_enable_pch tgt)
   if(NOT COLONY_USE_PCH)
     return()
@@ -188,23 +197,25 @@ function(colony_enable_pch tgt)
   target_precompile_headers(${tgt} ${ARGN})
 endfunction()
 
-# Helper to apply our CRT policy per-target (handles "Release static; Debug dynamic").
+# CRT policy helper
 function(colony_apply_msvc_runtime tgt)
   if(MSVC AND TARGET "${tgt}")
-    # If global static runtime was requested via Patch 1, do not override per-target.
     if(COLONY_STATIC_RUNTIME)
       return()
     endif()
     if(COLONY_RELEASE_STATIC_CRT)
-      # Debug  -> MDd
-      # Release-> MT
-      # Others (RelWithDebInfo/MinSizeRel)-> MD
       set(_rt "$<IF:$<CONFIG:Debug>,MultiThreadedDebugDLL,$<IF:$<CONFIG:Release>,MultiThreaded,MultiThreadedDLL>>")
     else()
-      # Dynamic CRT everywhere (MD/MDd).
       set(_rt "MultiThreaded$<$<CONFIG:Debug>:Debug>DLL")
     endif()
     set_property(TARGET "${tgt}" PROPERTY MSVC_RUNTIME_LIBRARY "${_rt}")
+  endif()
+endfunction()
+
+# NEW: Debug-only runtime checks helper (prevents /RTC* leaking into Release)
+function(colony_apply_debug_runtime_checks tgt)
+  if(MSVC AND TARGET "${tgt}")
+    target_compile_options(${tgt} PRIVATE $<$<CONFIG:Debug>:/RTC1>)
   endif()
 endfunction()
 
@@ -213,139 +224,53 @@ endfunction()
 # ------------------------------------------------------------------------------
 include(CGOptions)     # your cmake/CGOptions.cmake
 include(CGThirdParty)  # your cmake/CGThirdParty.cmake
-include(CGShaders)     # your cmake/CGShaders.cmake (defines cg_compile_hlsl, cg_link_shaders_to_target)
+include(CGShaders)     # your cmake/CGShaders.cmake
 
 # ------------------------------------------------------------------------------
 # (PATCH) Wire shader compilation (Windows-only) — explicit list, no GLOB
 # ------------------------------------------------------------------------------
 if(WIN32)
-
-  # Explicit list of HLSL files that actually contain entry points.
-  # Add to this list as you create new shaders. Do NOT add helper-only
-  # .hlsl/.hlsli files that are only intended to be #include'd.
   set(COLONY_HLSL
-    # Fullscreen / raster shaders
     "${CMAKE_SOURCE_DIR}/shaders/raster/FullScreen.vs.hlsl"
     "${CMAKE_SOURCE_DIR}/shaders/raster/ToneMap.ps.hlsl"
-
-    # World / terrain shaders
     "${CMAKE_SOURCE_DIR}/shaders/Terrain.hlsl"
-    # NOTE: TerrainSplatExample is now an include-only .hlsli helper and is
-    # intentionally not listed here.
-
-    # Thermal erosion compute shaders (legacy)
     "${CMAKE_SOURCE_DIR}/shaders/ThermalOutflowCS.hlsl"
     "${CMAKE_SOURCE_DIR}/shaders/ThermalApplyCS.hlsl"
-
-    # Renderer shaders (engine-side)
     "${CMAKE_SOURCE_DIR}/renderer/Shaders/AtmosphereSky.hlsl"
     "${CMAKE_SOURCE_DIR}/renderer/Shaders/VolumetricClouds.hlsl"
     "${CMAKE_SOURCE_DIR}/renderer/Shaders/Batch2D_ps.hlsl"
     "${CMAKE_SOURCE_DIR}/renderer/Shaders/Common/FullScreenTriangleVS.hlsl"
     "${CMAKE_SOURCE_DIR}/renderer/Shaders/WaterGerstner.hlsl"
     "${CMAKE_SOURCE_DIR}/renderer/Shaders/TerrainGen.compute.hlsl"
-
-    # Voxel/isosurface compute shaders
     "${CMAKE_SOURCE_DIR}/renderer/Shaders/VoxelIso_MT.compute.hlsl"
     "${CMAKE_SOURCE_DIR}/renderer/Shaders/VoxelIso_MT_Materials.compute.hlsl"
-
-    # New GPU thermal erosion compute shaders
     "${CMAKE_SOURCE_DIR}/renderer/Shaders/erosion_thermal_flow_cs.hlsl"
     "${CMAKE_SOURCE_DIR}/renderer/Shaders/erosion_thermal_apply_cs.hlsl"
   )
 
   if(COLONY_HLSL)
-
-    # Per-file shader metadata for shaders whose entry point is NOT 'main'.
-    # These were already in your project; we keep them unchanged, but bump
-    # profiles to Shader Model 6.0 to avoid DXC upgrade warnings.
     if(COMMAND cg_set_hlsl_properties)
-      # Atmosphere & sky rendering (fullscreen PS entry)
-      cg_set_hlsl_properties(
-        "${CMAKE_SOURCE_DIR}/renderer/Shaders/AtmosphereSky.hlsl"
-        ENTRY   "PSMain"
-        PROFILE "ps_6_0"
-      )
-
-      # Volumetric clouds (fullscreen PS entry)
-      cg_set_hlsl_properties(
-        "${CMAKE_SOURCE_DIR}/renderer/Shaders/VolumetricClouds.hlsl"
-        ENTRY   "PSMain"
-        PROFILE "ps_6_0"
-      )
-
-      # Voxel isosurface compute shaders
-      cg_set_hlsl_properties(
-        "${CMAKE_SOURCE_DIR}/renderer/Shaders/VoxelIso_MT.compute.hlsl"
-        ENTRY   "CSMain"
-        PROFILE "cs_6_0"
-      )
-
-      cg_set_hlsl_properties(
-        "${CMAKE_SOURCE_DIR}/renderer/Shaders/VoxelIso_MT_Materials.compute.hlsl"
-        ENTRY   "CSMain"
-        PROFILE "cs_6_0"
-      )
-
-      # GPU thermal erosion compute shaders under renderer/Shaders
-      cg_set_hlsl_properties(
-        "${CMAKE_SOURCE_DIR}/renderer/Shaders/erosion_thermal_flow_cs.hlsl"
-        ENTRY   "CSMain"
-        PROFILE "cs_6_0"
-      )
-
-      cg_set_hlsl_properties(
-        "${CMAKE_SOURCE_DIR}/renderer/Shaders/erosion_thermal_apply_cs.hlsl"
-        ENTRY   "CSMain"
-        PROFILE "cs_6_0"
-      )
-
-      # Legacy thermal erosion compute shaders under /shaders
-      cg_set_hlsl_properties(
-        "${CMAKE_SOURCE_DIR}/shaders/ThermalOutflowCS.hlsl"
-        ENTRY   "CSMain"
-        PROFILE "cs_6_0"
-      )
-
-      cg_set_hlsl_properties(
-        "${CMAKE_SOURCE_DIR}/shaders/ThermalApplyCS.hlsl"
-        ENTRY   "CSMain"
-        PROFILE "cs_6_0"
-      )
-
-      # Terrain pixel shader – uses PSMain in Terrain.hlsl
-      cg_set_hlsl_properties(
-        "${CMAKE_SOURCE_DIR}/shaders/Terrain.hlsl"
-        ENTRY   "PSMain"
-        PROFILE "ps_6_0"
-      )
-
-      # Tone mapping pixel shader – uses PSMain in ToneMap.ps.hlsl
-      cg_set_hlsl_properties(
-        "${CMAKE_SOURCE_DIR}/shaders/raster/ToneMap.ps.hlsl"
-        ENTRY   "PSMain"
-        PROFILE "ps_6_0"
-      )
-
-      # 2D batch pixel shader – uses PSMain in Batch2D_ps.hlsl
-      cg_set_hlsl_properties(
-        "${CMAKE_SOURCE_DIR}/renderer/Shaders/Batch2D_ps.hlsl"
-        ENTRY   "PSMain"
-        PROFILE "ps_6_0"
-      )
+      cg_set_hlsl_properties("${CMAKE_SOURCE_DIR}/renderer/Shaders/AtmosphereSky.hlsl"       ENTRY "PSMain" PROFILE "ps_6_0")
+      cg_set_hlsl_properties("${CMAKE_SOURCE_DIR}/renderer/Shaders/VolumetricClouds.hlsl"     ENTRY "PSMain" PROFILE "ps_6_0")
+      cg_set_hlsl_properties("${CMAKE_SOURCE_DIR}/renderer/Shaders/VoxelIso_MT.compute.hlsl"  ENTRY "CSMain" PROFILE "cs_6_0")
+      cg_set_hlsl_properties("${CMAKE_SOURCE_DIR}/renderer/Shaders/VoxelIso_MT_Materials.compute.hlsl" ENTRY "CSMain" PROFILE "cs_6_0")
+      cg_set_hlsl_properties("${CMAKE_SOURCE_DIR}/renderer/Shaders/erosion_thermal_flow_cs.hlsl" ENTRY "CSMain" PROFILE "cs_6_0")
+      cg_set_hlsl_properties("${CMAKE_SOURCE_DIR}/renderer/Shaders/erosion_thermal_apply_cs.hlsl" ENTRY "CSMain" PROFILE "cs_6_0")
+      cg_set_hlsl_properties("${CMAKE_SOURCE_DIR}/shaders/ThermalOutflowCS.hlsl"              ENTRY "CSMain" PROFILE "cs_6_0")
+      cg_set_hlsl_properties("${CMAKE_SOURCE_DIR}/shaders/ThermalApplyCS.hlsl"                ENTRY "CSMain" PROFILE "cs_6_0")
+      cg_set_hlsl_properties("${CMAKE_SOURCE_DIR}/shaders/Terrain.hlsl"                       ENTRY "PSMain" PROFILE "ps_6_0")
+      cg_set_hlsl_properties("${CMAKE_SOURCE_DIR}/shaders/raster/ToneMap.ps.hlsl"             ENTRY "PSMain" PROFILE "ps_6_0")
+      cg_set_hlsl_properties("${CMAKE_SOURCE_DIR}/renderer/Shaders/Batch2D_ps.hlsl"           ENTRY "PSMain" PROFILE "ps_6_0")
     endif()
 
-    # Compile shaders into a dedicated target; we'll link/copy them to the exe later
     cg_compile_hlsl(ColonyShaders
       SHADERS      ${COLONY_HLSL}
       INCLUDE_DIRS
         "${CMAKE_SOURCE_DIR}/renderer/Shaders"
         "${CMAKE_SOURCE_DIR}/shaders"
         "${CMAKE_SOURCE_DIR}/shaders/include"
-      # 1 in Debug, 0 otherwise — expand at build time so multi-config IDEs work
       DEFINES      "COLONY_DEBUG=$<IF:$<CONFIG:Debug>,1,0>"
     )
-    # Stash the shader target name globally so we can attach it to the final exe once it exists
     set_property(GLOBAL PROPERTY COLONY_SHADERS_TARGET ColonyShaders)
   endif()
 endif()
@@ -355,40 +280,28 @@ endif()
 # ------------------------------------------------------------------------------
 find_package(SDL2 CONFIG REQUIRED)
 find_package(imgui CONFIG REQUIRED)
-find_package(spdlog CONFIG REQUIRED) # logging
+find_package(spdlog CONFIG REQUIRED)
 
-# Tracy wiring (optional)
-# Prefer the lowercase 'tracy' package name (vcpkg port name), but accept 'Tracy' too.
-# When COLONY_ENABLE_TRACY=ON, we require it; otherwise we try quietly and skip if absent.
+# Tracy optional
 set(_CG_TRACY_REQUEST_MODE QUIET)
 if(COLONY_ENABLE_TRACY)
   set(_CG_TRACY_REQUEST_MODE REQUIRED)
 endif()
-
-# Try lowercase first (vcpkg port name)
 find_package(tracy CONFIG ${_CG_TRACY_REQUEST_MODE})
-# Fallback to capitalized package name if not found
 if(NOT tracy_FOUND)
   find_package(Tracy CONFIG ${_CG_TRACY_REQUEST_MODE})
 endif()
-
-# Normalize the imported target name if present
 set(COLONY_TRACY_TARGET "")
 if(TARGET tracy::TracyClient)
   set(COLONY_TRACY_TARGET tracy::TracyClient)
 elseif(TARGET Tracy::TracyClient)
   set(COLONY_TRACY_TARGET Tracy::TracyClient)
 endif()
-
-# If the option is ON but no client target was found, fail early
 if(COLONY_ENABLE_TRACY AND NOT COLONY_TRACY_TARGET)
-  message(FATAL_ERROR
-    "COLONY_ENABLE_TRACY=ON but Tracy client target was not found.\n"
-    "Install the vcpkg port 'tracy' (manifest mode recommended) or vendor Tracy.\n"
-    "See: https://vcpkg.io/en/package/tracy")
+  message(FATAL_ERROR "COLONY_ENABLE_TRACY=ON but Tracy client target was not found.")
 endif()
 
-# Choose spdlog target (static/compiled vs header-only)
+# Choose spdlog target
 set(COLONY_SPDLOG_TARGET "")
 if(TARGET spdlog::spdlog)
   set(COLONY_SPDLOG_TARGET spdlog::spdlog)
@@ -396,11 +309,11 @@ elseif(TARGET spdlog::spdlog_header_only)
   set(COLONY_SPDLOG_TARGET spdlog::spdlog_header_only)
 endif()
 if(NOT COLONY_SPDLOG_TARGET)
-  message(FATAL_ERROR "spdlog was found, but exported targets are missing. Expecting spdlog::spdlog or spdlog::spdlog_header_only.")
+  message(FATAL_ERROR "spdlog was found, but exported targets are missing.")
 endif()
 
 # ------------------------------------------------------------------------------
-# (PATCH) Pathfinding library for the game (JPS/HPA) — adds colony_path target
+# (PATCH) Pathfinding library
 # ------------------------------------------------------------------------------
 file(GLOB_RECURSE COLONY_PATH_SOURCES
      "${CMAKE_SOURCE_DIR}/pathfinding/*.cpp"
@@ -416,15 +329,14 @@ if(COLONY_PATH_SOURCES)
     "${CMAKE_SOURCE_DIR}/pathfinding"
     "${CMAKE_SOURCE_DIR}/hpa")
 
-  # Match top-level standard; require at least C++23 features
   target_compile_features(colony_path PUBLIC cxx_std_23)
 
-  # PCH for faster rebuilds when you split JPS into multiple .cpp files
   if(COLONY_USE_PCH)
     target_precompile_headers(colony_path PRIVATE "${COLONY_PCH_HEADER}")
   endif()
 
   colony_apply_msvc_runtime(colony_path)
+  colony_apply_debug_runtime_checks(colony_path) # Debug-only /RTC1
 endif()
 
 # ------------------------------------------------------------------------------
@@ -435,63 +347,53 @@ if(EXISTS "${CMAKE_SOURCE_DIR}/src/CMakeLists.txt")
 endif()
 
 # ------------------------------------------------------------------------------
-# Link third-party dependencies
+# Link third-party deps to core
 # ------------------------------------------------------------------------------
 if(TARGET colony_core)
-  # Hygiene: link SDL2 itself to the core, but never SDL2main (entry-point shim).
   target_link_libraries(colony_core PRIVATE
     SDL2::SDL2
     imgui::imgui
     ${COLONY_SPDLOG_TARGET}
   )
 
-  # Link Tracy only when enabled and available
-  if(COLONY_TRACY_TARGET)
-    if(COLONY_ENABLE_TRACY)
-      target_link_libraries(colony_core PRIVATE ${COLONY_TRACY_TARGET})
-      target_compile_definitions(colony_core PRIVATE TRACY_ENABLE=1)
-      # Ensure include directories from the imported target are visible, just in case
-      get_target_property(_TRACY_INC ${COLONY_TRACY_TARGET} INTERFACE_INCLUDE_DIRECTORIES)
-      if(_TRACY_INC)
-        target_include_directories(colony_core PRIVATE ${_TRACY_INC})
-      endif()
+  if(COLONY_TRACY_TARGET AND COLONY_ENABLE_TRACY)
+    target_link_libraries(colony_core PRIVATE ${COLONY_TRACY_TARGET})
+    target_compile_definitions(colony_core PRIVATE TRACY_ENABLE=1)
+    get_target_property(_TRACY_INC ${COLONY_TRACY_TARGET} INTERFACE_INCLUDE_DIRECTORIES)
+    if(_TRACY_INC)
+      target_include_directories(colony_core PRIVATE ${_TRACY_INC})
     endif()
   endif()
 
-  # Optional: spdlog runtime log level (trace in Debug, info otherwise)
   target_compile_definitions(colony_core PRIVATE
     SPDLOG_ACTIVE_LEVEL=$<IF:$<CONFIG:Debug>,SPDLOG_LEVEL_TRACE,SPDLOG_LEVEL_INFO>
   )
 
-  # Treat linker warnings as errors on the core lib too (catches duplicate symbols early)
   if(MSVC)
     target_link_options(colony_core PRIVATE /WX)
   endif()
 
-  # (PATCH) Link the pathfinding library into the core if available
   if(TARGET colony_path)
     target_link_libraries(colony_core PRIVATE colony::path)
   endif()
 
-  # Compile CrashDumpWin.cpp with /EHa (Structured Exception Handling)
   if(MSVC AND COLONY_SEH_CRASHDUMP)
     get_target_property(_core_srcs colony_core SOURCES)
     if(_core_srcs)
       foreach(_src IN LISTS _core_srcs)
-        if(_src MATCHES "CrashDumpWin\\.cpp$")  # exact filename match
+        if(_src MATCHES "CrashDumpWin\\.cpp$")
           set_source_files_properties(${_src} PROPERTIES COMPILE_OPTIONS "/EHa")
         endif()
       endforeach()
     endif()
   endif()
 
-  # PCH for core library as well
   if(COLONY_USE_PCH)
     target_precompile_headers(colony_core PRIVATE "${COLONY_PCH_HEADER}")
   endif()
 
-  # Apply CRT policy
   colony_apply_msvc_runtime(colony_core)
+  colony_apply_debug_runtime_checks(colony_core) # Debug-only /RTC1
 endif()
 
 # ------------------------------------------------------------------------------
@@ -507,23 +409,21 @@ add_library(procgen
 )
 target_include_directories(procgen PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
 colony_apply_msvc_runtime(procgen)
+colony_apply_debug_runtime_checks(procgen) # Debug-only /RTC1
 
-# Link the add-ons into the core/game target if it exists
 if(TARGET colony_core)
   target_link_libraries(colony_core PRIVATE procgen)
 endif()
 
 # ------------------------------------------------------------------------------
-# Generate the final game target, install rules
+# Final game target, install rules
 # ------------------------------------------------------------------------------
 include(CGGameTarget)   # your cmake/CGGameTarget.cmake
 
-# If the main game executable exists, link SDL2main there (never in the core lib)
 if(TARGET ColonyGame AND TARGET SDL2::SDL2main)
   target_link_libraries(ColonyGame PRIVATE SDL2::SDL2main)
 endif()
 
-# (PATCH) Link colony_path into the main game exe (if present)
 if(TARGET ColonyGame AND TARGET colony_path)
   target_link_libraries(ColonyGame PRIVATE colony::path)
 endif()
@@ -531,20 +431,19 @@ if(COLONY_GAME_TARGET AND TARGET "${COLONY_GAME_TARGET}" AND TARGET colony_path)
   target_link_libraries("${COLONY_GAME_TARGET}" PRIVATE colony::path)
 endif()
 
-# Apply CRT policy to executables if they exist
 if(TARGET ColonyGame)
   colony_apply_msvc_runtime(ColonyGame)
+  colony_apply_debug_runtime_checks(ColonyGame) # Debug-only /RTC1
 endif()
 if(COLONY_GAME_TARGET AND TARGET "${COLONY_GAME_TARGET}")
   colony_apply_msvc_runtime("${COLONY_GAME_TARGET}")
+  colony_apply_debug_runtime_checks("${COLONY_GAME_TARGET}") # Debug-only /RTC1
 endif()
 
 # ------------------------------------------------------------------------------
-# (PATCH) After the executable exists, link/copy compiled shaders next to it
+# Link/copy compiled shaders next to the exe
 # ------------------------------------------------------------------------------
-# Helper: recursively discover the first EXECUTABLE target starting at a dir
 function(_cg_first_exe_in_dir out_var start_dir)
-  # Targets defined directly in this directory
   get_property(_tgts DIRECTORY "${start_dir}" PROPERTY BUILDSYSTEM_TARGETS)
   foreach(_t IN LISTS _tgts)
     get_target_property(_type "${_t}" TYPE)
@@ -553,8 +452,6 @@ function(_cg_first_exe_in_dir out_var start_dir)
       return()
     endif()
   endforeach()
-
-  # Recurse into processed subdirectories
   get_property(_subs DIRECTORY "${start_dir}" PROPERTY SUBDIRECTORIES)
   foreach(_sd IN LISTS _subs)
     _cg_first_exe_in_dir(_found "${_sd}")
@@ -566,38 +463,27 @@ function(_cg_first_exe_in_dir out_var start_dir)
   set(${out_var} "" PARENT_SCOPE)
 endfunction()
 
-# ------------------------------------------------------------------------------
-# (PATCH A) Job System — add directly to the main executable target
-# ------------------------------------------------------------------------------
-# This attaches the tiny Job System to your first executable target and exposes
-# the public headers under ${CMAKE_SOURCE_DIR}/include. If you haven't created
-# the files yet, you'll see a friendly warning.
+# Job System attachment (optional)
 _cg_first_exe_in_dir(_CG_EXE_TGT_JOBS "${CMAKE_SOURCE_DIR}")
 if(_CG_EXE_TGT_JOBS)
   if(EXISTS "${CMAKE_SOURCE_DIR}/src/core/JobSystem.cpp")
-    target_sources(${_CG_EXE_TGT_JOBS} PRIVATE
-      src/core/JobSystem.cpp
-    )
-    target_include_directories(${_CG_EXE_TGT_JOBS} PRIVATE
-      ${CMAKE_CURRENT_SOURCE_DIR}/include
-    )
+    target_sources(${_CG_EXE_TGT_JOBS} PRIVATE src/core/JobSystem.cpp)
+    target_include_directories(${_CG_EXE_TGT_JOBS} PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
   else()
-    message(WARNING "JobSystem: src/core/JobSystem.cpp not found. Create it (and include/core/JobSystem.h) to enable the tiny job system.")
+    message(WARNING "JobSystem: src/core/JobSystem.cpp not found.")
   endif()
 else()
   message(WARNING "JobSystem: No executable target found; cannot attach JobSystem.cpp.")
 endif()
 
 if(WIN32)
-  # Retrieve the shader target we created earlier (if any)
   get_property(_CG_SHADER_TGT GLOBAL PROPERTY COLONY_SHADERS_TARGET)
   if(_CG_SHADER_TGT)
-    # Find an executable target to attach shaders to (walk from top-level ".")
     _cg_first_exe_in_dir(_CG_EXE_TGT "${CMAKE_SOURCE_DIR}")
     if(_CG_EXE_TGT)
       cg_link_shaders_to_target(${_CG_SHADER_TGT} ${_CG_EXE_TGT})
     else()
-      message(WARNING "CGShaders: No executable target found to link shaders to; compiled shaders will not be copied.")
+      message(WARNING "CGShaders: No executable target found to link shaders to.")
     endif()
   endif()
 endif()
@@ -609,40 +495,34 @@ if(WIN32)
   add_executable(ColonyMapViewer WIN32
     tools/map_viewer/MapViewerWin.cpp
   )
-
   if(MSVC)
     target_compile_definitions(ColonyMapViewer PRIVATE UNICODE _UNICODE)
-    target_link_options(ColonyMapViewer PRIVATE /WX) # treat link warnings as errors
+    target_link_options(ColonyMapViewer PRIVATE /WX)
   endif()
-
-  # Link against world-gen (procgen) and Win32 GUI libs
   target_link_libraries(ColonyMapViewer PRIVATE
     procgen
     user32
     gdi32
     comdlg32
   )
-
   colony_apply_msvc_runtime(ColonyMapViewer)
+  colony_apply_debug_runtime_checks(ColonyMapViewer) # Debug-only /RTC1
 endif()
 
 # ------------------------------------------------------------------------------
-# Tests wiring (single-runner; add only once) — PATCHED ORDER & GUARDS
+# Tests wiring (single-runner; add only once)
 # ------------------------------------------------------------------------------
-# 1) Let CGTests add tests/ first; it will set COLONY_TESTS_ADDED=ON (CACHE INTERNAL)
 if(EXISTS "${CMAKE_SOURCE_DIR}/cmake/CGTests.cmake")
   include(CGTests)
 endif()
 
-# 2) If CGTests didn't add the tests/ directory, add it here exactly once with an explicit binary dir.
-if(COLONY_BUILD_TESTS AND EXISTS "${CMAKE_SOURCE_DIR}/tests/CMakeLists.txt")
+if(COLONY_BUILD_TESTS AND EXISTS "${CMAKE_SOURCE_DIR}/tests/CMakeLists.txt}")
   if(NOT DEFINED COLONY_TESTS_ADDED)
     add_subdirectory("${CMAKE_SOURCE_DIR}/tests" "${CMAKE_BINARY_DIR}/tests")
     set(COLONY_TESTS_ADDED ON CACHE INTERNAL "tests/ added by root")
   endif()
 endif()
 
-# Optional other stage/install/summary modules (include only if present)
 if(EXISTS "${CMAKE_SOURCE_DIR}/cmake/CGStageInstall.cmake")
   include(CGStageInstall)
 endif()
@@ -651,7 +531,7 @@ if(EXISTS "${CMAKE_SOURCE_DIR}/cmake/CGSummary.cmake")
 endif()
 
 # ------------------------------------------------------------------------------
-# Local Unity guard for CI offenders (disable Unity on fragile targets)
+# Local Unity guard for CI offenders
 # ------------------------------------------------------------------------------
 if(TARGET procgen)
   set_target_properties(procgen PROPERTIES UNITY_BUILD OFF)
@@ -662,7 +542,6 @@ endif()
 
 # ------------------------------------------------------------------------------
 # Enforce link warnings-as-errors on all executable targets (MSVC)
-# (Catches duplicate entry points, COMDAT collisions, etc.)
 # ------------------------------------------------------------------------------
 if(MSVC)
   function(_cg_apply_link_wx start_dir)
