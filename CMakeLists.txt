@@ -7,22 +7,19 @@ if(NOT WIN32)
   message(FATAL_ERROR "Colony-Game currently only supports Windows.")
 endif()
 
-# Use modern policy behavior for predictable parsing & variable expansion
-# (cmake_minimum_required sets policy defaults; these ensure key ones are NEW
-# even if older bootstrap tools are used.)
+# Modern policy behavior
 if(POLICY CMP0053)
-  cmake_policy(SET CMP0053 NEW)  # Simpler variable/escape rules ($ENV{}, backslashes)
+  cmake_policy(SET CMP0053 NEW)
 endif()
 if(POLICY CMP0054)
-  cmake_policy(SET CMP0054 NEW)  # Only unquoted if() args act as vars/keywords
+  cmake_policy(SET CMP0054 NEW)
 endif()
 if(POLICY CMP0077)
-  cmake_policy(SET CMP0077 NEW)  # option() honors normal variables
+  cmake_policy(SET CMP0077 NEW)
 endif()
 if(POLICY CMP0092)
-  cmake_policy(SET CMP0092 NEW)  # Do not add /W3 implicitly for MSVC
+  cmake_policy(SET CMP0092 NEW)
 endif()
-# Use first-class MSVC runtime selection (controls /MT, /MD, etc.)
 if(POLICY CMP0091)
   cmake_policy(SET CMP0091 NEW)
 endif()
@@ -33,21 +30,19 @@ endif()
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_SOURCE_DIR}/cmake")
 
 # ------------------------------------------------------------------------------
-# Policies & vcpkg toolchain must be configured before project()/language enable
+# Toolchain & policies before project()
 # ------------------------------------------------------------------------------
-include(CGPolicies)   # your cmake/CGPolicies.cmake
-include(CGToolchain)  # your cmake/CGToolchain.cmake (e.g., vcpkg toolchain)
+include(CGPolicies)
+include(CGToolchain)
 
 project(ColonyGame LANGUAGES CXX)
 
-# --- central Windows flags (optional include, non-fatal if missing) ---
+# --- central Windows flags (optional include) ---
 include(cmake/WindowsFlags.cmake OPTIONAL)
 
-# Configure HLSL shader entrypoints for Visual Studio generator
-# (see cmake/ShaderEntryPoints.cmake)
+# Shader entrypoints for VS generator
 include("${CMAKE_SOURCE_DIR}/cmake/ShaderEntryPoints.cmake")
 
-# Helpful for IDE tooling (JSON compile commands) and folder organization
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 set_property(GLOBAL PROPERTY USE_FOLDERS ON)
 
@@ -58,7 +53,6 @@ set(CMAKE_CXX_STANDARD 23 CACHE STRING "C++ standard" FORCE)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
-# Map legacy options (safe to remove later)
 if(DEFINED CG_ENABLE_PCH AND NOT DEFINED COLONY_USE_PCH)
   set(COLONY_USE_PCH "${CG_ENABLE_PCH}" CACHE BOOL "Enable precompiled headers" FORCE)
 endif()
@@ -78,15 +72,14 @@ if(NOT DEFINED COLONY_USE_PCH)
 endif()
 set(COLONY_PCH_HEADER "src/pch.hpp" CACHE STRING "Path to the common precompiled header used by game targets")
 
-option(COLONY_ENABLE_TIDY "Run clang-tidy static analysis during build (may slow builds)" OFF)
+option(COLONY_ENABLE_TIDY "Run clang-tidy static analysis during build" OFF)
 option(COLONY_ENABLE_ASAN "Enable AddressSanitizer for supported compilers/configs" OFF)
 option(COLONY_SEH_CRASHDUMP "Compile CrashDumpWin.cpp with /EHa while keeping /EHsc globally" ON)
-
 option(COLONY_ENABLE_TRACY "Build with Tracy profiler instrumentation (vcpkg port 'tracy')" OFF)
 
-option(COLONY_BUILD_TESTS "Build unit tests in tests/ subdir (single-runner pattern)" ON)
-option(COLONY_RELEASE_STATIC_CRT
-  "Use static MSVC runtime (/MT) in Release; keep dynamic (/MDd) in Debug" OFF)
+option(COLONY_BUILD_TESTS "Build unit tests" ON)
+option(COLONY_RELEASE_STATIC_CRT "Use static runtime (/MT) in Release; dynamic in Debug" OFF)
+
 set(COLONY_GAME_TARGET "" CACHE STRING
   "Name of the game's main executable target (if different from 'ColonyGame') to link with colony_path")
 
@@ -108,7 +101,7 @@ if(COLONY_ENABLE_TIDY)
 endif()
 
 # ------------------------------------------------------------------------------
-# AddressSanitizer (MSVC & clang-cl)
+# AddressSanitizer
 # ------------------------------------------------------------------------------
 if(COLONY_ENABLE_ASAN)
   if(MSVC)
@@ -116,7 +109,6 @@ if(COLONY_ENABLE_ASAN)
       $<$<OR:$<CONFIG:Debug>,$<CONFIG:RelWithDebInfo>>:/fsanitize=address>
       $<$<OR:$<CONFIG:Debug>,$<CONFIG:RelWithDebInfo>>:/Zi>
     )
-    # ASan is not compatible with incremental linking: explicitly disable it.
     add_link_options(
       $<$<OR:$<CONFIG:Debug>,$<CONFIG:RelWithDebInfo>>:/fsanitize=address>
       $<$<OR:$<CONFIG:Debug>,$<CONFIG:RelWithDebInfo>>:/INCREMENTAL:NO>
@@ -130,7 +122,7 @@ if(COLONY_ENABLE_ASAN)
 endif()
 
 # ------------------------------------------------------------------------------
-# Windows macros and compiler hygiene
+# Windows macros & compiler hygiene
 # ------------------------------------------------------------------------------
 if(MSVC)
   add_compile_definitions(
@@ -139,7 +131,6 @@ if(MSVC)
     _CRT_SECURE_NO_WARNINGS
   )
 
-  # Modern MSVC conformance & diagnostics (project-wide)
   add_compile_options(
     /permissive-
     /W4
@@ -150,7 +141,6 @@ if(MSVC)
     /Zc:inline
     /Zc:throwingNew
     /EHsc
-    # NOTE: /RTC1 is NOT added here (avoids D8016 with /O2); we add it per-target for Debug only.
     $<$<BOOL:${COLONY_WERROR}>:/WX>
   )
 
@@ -158,11 +148,18 @@ if(MSVC)
   add_compile_options($<$<OR:$<CONFIG:Debug>,$<CONFIG:RelWithDebInfo>>:/Zi>)
   add_link_options(   $<$<OR:$<CONFIG:Debug>,$<CONFIG:RelWithDebInfo>>:/DEBUG:FULL>)
 
-  # Release codegen & link-time opts
-  add_compile_options($<$<CONFIG:Release>:/O2 /Oi /Ot /GL /Gw /Gy>)
-  add_link_options(   $<$<CONFIG:Release>:/LTCG /OPT:REF /OPT:ICF>)
+  # Release codegen & link-time opts (ONE FLAG PER GENEX)
+  add_compile_options(
+    $<$<CONFIG:Release>:/O2>
+    $<$<CONFIG:Release>:/Oi>
+    $<$<CONFIG:Release>:/Ot>
+    $<$<CONFIG:Release>:/GL>
+    $<$<CONFIG:Release>:/Gw>
+    $<$<CONFIG:Release>:/Gy>
+  )
+  add_link_options(   $<$<CONFIG:Release>:/LTCG> $<$<CONFIG:Release>:/OPT:REF> $<$<CONFIG:Release>:/OPT:ICF>)
 
-  # First-class runtime selection (CMP0091)
+  # First-class runtime selection
   if(COLONY_STATIC_RUNTIME)
     set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
   else()
@@ -187,7 +184,6 @@ if(MSVC)
 endif()
 
 # ---- Helpers ------------------------------------------------------------------
-# PCH helper
 function(colony_enable_pch tgt)
   if(NOT COLONY_USE_PCH)
     return()
@@ -198,24 +194,20 @@ function(colony_enable_pch tgt)
   target_precompile_headers(${tgt} ${ARGN})
 endfunction()
 
-# CRT policy helper
 function(colony_apply_msvc_runtime tgt)
   if(MSVC AND TARGET "${tgt}")
     if(COLONY_STATIC_RUNTIME)
       return()
     endif()
     if(COLONY_RELEASE_STATIC_CRT)
-      # Debug -> MDd, Release -> MT, others -> MD
       set(_rt "$<IF:$<CONFIG:Debug>,MultiThreadedDebugDLL,$<IF:$<CONFIG:Release>,MultiThreaded,MultiThreadedDLL>>")
     else()
-      # Dynamic CRT everywhere
       set(_rt "MultiThreaded$<$<CONFIG:Debug>:Debug>DLL")
     endif()
     set_property(TARGET "${tgt}" PROPERTY MSVC_RUNTIME_LIBRARY "${_rt}")
   endif()
 endfunction()
 
-# NEW: Debug-only runtime checks helper (prevents /RTC* leaking into Release)
 function(colony_apply_debug_runtime_checks tgt)
   if(MSVC AND TARGET "${tgt}")
     target_compile_options(${tgt} PRIVATE $<$<CONFIG:Debug>:/RTC1>)
@@ -225,12 +217,12 @@ endfunction()
 # ------------------------------------------------------------------------------
 # Project modules
 # ------------------------------------------------------------------------------
-include(CGOptions)     # your cmake/CGOptions.cmake
-include(CGThirdParty)  # your cmake/CGThirdParty.cmake
-include(CGShaders)     # your cmake/CGShaders.cmake
+include(CGOptions)
+include(CGThirdParty)
+include(CGShaders)
 
 # ------------------------------------------------------------------------------
-# (PATCH) Wire shader compilation (Windows-only) — explicit list, no GLOB
+# Shaders: explicit list (Windows-only)
 # ------------------------------------------------------------------------------
 if(WIN32)
   set(COLONY_HLSL
@@ -316,7 +308,7 @@ if(NOT COLONY_SPDLOG_TARGET)
 endif()
 
 # ------------------------------------------------------------------------------
-# (PATCH) Pathfinding library
+# Pathfinding library
 # ------------------------------------------------------------------------------
 file(GLOB_RECURSE COLONY_PATH_SOURCES
      "${CMAKE_SOURCE_DIR}/pathfinding/*.cpp"
@@ -339,7 +331,7 @@ if(COLONY_PATH_SOURCES)
   endif()
 
   colony_apply_msvc_runtime(colony_path)
-  colony_apply_debug_runtime_checks(colony_path) # Debug-only /RTC1
+  colony_apply_debug_runtime_checks(colony_path)
 endif()
 
 # ------------------------------------------------------------------------------
@@ -396,7 +388,7 @@ if(TARGET colony_core)
   endif()
 
   colony_apply_msvc_runtime(colony_core)
-  colony_apply_debug_runtime_checks(colony_core) # Debug-only /RTC1
+  colony_apply_debug_runtime_checks(colony_core)
 endif()
 
 # ------------------------------------------------------------------------------
@@ -412,16 +404,16 @@ add_library(procgen
 )
 target_include_directories(procgen PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
 colony_apply_msvc_runtime(procgen)
-colony_apply_debug_runtime_checks(procgen) # Debug-only /RTC1
+colony_apply_debug_runtime_checks(procgen)
 
 if(TARGET colony_core)
   target_link_libraries(colony_core PRIVATE procgen)
 endif()
 
 # ------------------------------------------------------------------------------
-# Final game target, install rules
+# Final game target
 # ------------------------------------------------------------------------------
-include(CGGameTarget)   # your cmake/CGGameTarget.cmake
+include(CGGameTarget)
 
 if(TARGET ColonyGame AND TARGET SDL2::SDL2main)
   target_link_libraries(ColonyGame PRIVATE SDL2::SDL2main)
@@ -436,11 +428,11 @@ endif()
 
 if(TARGET ColonyGame)
   colony_apply_msvc_runtime(ColonyGame)
-  colony_apply_debug_runtime_checks(ColonyGame) # Debug-only /RTC1
+  colony_apply_debug_runtime_checks(ColonyGame)
 endif()
 if(COLONY_GAME_TARGET AND TARGET "${COLONY_GAME_TARGET}")
   colony_apply_msvc_runtime("${COLONY_GAME_TARGET}")
-  colony_apply_debug_runtime_checks("${COLONY_GAME_TARGET}") # Debug-only /RTC1
+  colony_apply_debug_runtime_checks("${COLONY_GAME_TARGET}")
 endif()
 
 # ------------------------------------------------------------------------------
@@ -455,7 +447,6 @@ function(_cg_first_exe_in_dir out_var start_dir)
       return()
     endif()
   endforeach()
-
   get_property(_subs DIRECTORY "${start_dir}" PROPERTY SUBDIRECTORIES)
   foreach(_sd IN LISTS _subs)
     _cg_first_exe_in_dir(_found "${_sd}")
@@ -510,7 +501,7 @@ if(WIN32)
     comdlg32
   )
   colony_apply_msvc_runtime(ColonyMapViewer)
-  colony_apply_debug_runtime_checks(ColonyMapViewer) # Debug-only /RTC1
+  colony_apply_debug_runtime_checks(ColonyMapViewer)
 endif()
 
 # ------------------------------------------------------------------------------
@@ -520,7 +511,6 @@ if(EXISTS "${CMAKE_SOURCE_DIR}/cmake/CGTests.cmake")
   include(CGTests)
 endif()
 
-# (fixed stray brace in path check)
 if(COLONY_BUILD_TESTS AND EXISTS "${CMAKE_SOURCE_DIR}/tests/CMakeLists.txt")
   if(NOT DEFINED COLONY_TESTS_ADDED)
     add_subdirectory("${CMAKE_SOURCE_DIR}/tests" "${CMAKE_BINARY_DIR}/tests")
@@ -536,16 +526,16 @@ if(EXISTS "${CMAKE_SOURCE_DIR}/cmake/CGSummary.cmake")
 endif()
 
 # ------------------------------------------------------------------------------
-# Guard: verify no compile flags/genex slipped into target SOURCES
-# (add after targets are created)
+# Guard & auto-fix: ensure no flags/genex slipped into SOURCES (after targets)
 # ------------------------------------------------------------------------------
-include(cmake/NoFlagsInSources.cmake)
-
-foreach(_t colony_path procgen colony_core ColonyGame ColonyMapViewer)
-  if(TARGET ${_t})
-    colony_verify_no_flags_in_sources(${_t})
-  endif()
-endforeach()
+include(cmake/NoFlagsInSources.cmake OPTIONAL)
+if(COMMAND colony_fixup_sources)
+  foreach(_t colony_path procgen colony_core ColonyGame ColonyMapViewer)
+    if(TARGET ${_t})
+      colony_fixup_sources(${_t})
+    endif()
+  endforeach()
+endif()
 
 # ------------------------------------------------------------------------------
 # Local Unity guard for CI offenders
