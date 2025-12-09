@@ -13,10 +13,13 @@ endif()
 
 # Allow MSVC debug format to be controlled via CMAKE_MSVC_DEBUG_INFORMATION_FORMAT
 if(POLICY CMP0141)
-  cmake_policy(SET CMP0141 NEW)
-  set(CMAKE_MSVC_DEBUG_INFORMATION_FORMAT
-      "$<$<CONFIG:Debug,RelWithDebInfo>:ProgramDatabase>")
+    cmake_policy(SET CMP0141 NEW)
+    # ProgramDatabase PDBs in Debug and RelWithDebInfo
+    set(CMAKE_MSVC_DEBUG_INFORMATION_FORMAT
+        "$<$<CONFIG:Debug,RelWithDebInfo>:ProgramDatabase>"
+    )
 endif()
+
 
 # Prefer config packages (vcpkg-style)
 set(CMAKE_FIND_PACKAGE_PREFER_CONFIG ON)
