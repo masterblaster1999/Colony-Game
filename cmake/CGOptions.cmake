@@ -42,13 +42,18 @@ option(COLONY_WARNINGS_AS_ERRORS "Treat warnings as errors"                     
 # CRT selection (CMP0091)
 option(COLONY_STATIC_CRT   "Link MSVC runtime statically (/MT,/MTd)" OFF)
 if(MSVC)
-  if(COLONY_STATIC_CRT)
-    set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")          # /MT, /MTd
-    set(_crt_kind "static (/MT,/MTd)")
-  else()
-    set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>DLL")       # /MD, /MDd
-    set(_crt_kind "dynamic (/MD,/MDd)")
-  endif()
+    if(COLONY_STATIC_CRT)
+        # /MT in Release, /MTd in Debug
+        set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+    else()
+        # /MD in Release, /MDd in Debug
+        set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>DLL")
+    endif()
+
+    message(STATUS "MSVC runtime: ${CMAKE_MSVC_RUNTIME_LIBRARY} "
+                   "[${COLONY_STATIC_CRT} ? static : dynamic]")
+endif()
+
   message(STATUS "MSVC runtime: ${CMAKE_MSVC_RUNTIME_LIBRARY}  [${_crt_kind}]")
 endif()
 
