@@ -116,6 +116,7 @@ if(COLONY_ENABLE_ASAN)
       $<$<OR:$<CONFIG:Debug>,$<CONFIG:RelWithDebInfo>>:/fsanitize=address>
       $<$<OR:$<CONFIG:Debug>,$<CONFIG:RelWithDebInfo>>:/Zi>
     )
+    # ASan is not compatible with incremental linking: explicitly disable it.
     add_link_options(
       $<$<OR:$<CONFIG:Debug>,$<CONFIG:RelWithDebInfo>>:/fsanitize=address>
       $<$<OR:$<CONFIG:Debug>,$<CONFIG:RelWithDebInfo>>:/INCREMENTAL:NO>
@@ -149,7 +150,7 @@ if(MSVC)
     /Zc:inline
     /Zc:throwingNew
     /EHsc
-    # NOTE: /RTC1 removed from here to avoid D8016 with /O2; will be added per-target in Debug only.
+    # NOTE: /RTC1 is NOT added here (avoids D8016 with /O2); we add it per-target for Debug only.
     $<$<BOOL:${COLONY_WERROR}>:/WX>
   )
 
@@ -204,8 +205,10 @@ function(colony_apply_msvc_runtime tgt)
       return()
     endif()
     if(COLONY_RELEASE_STATIC_CRT)
+      # Debug -> MDd, Release -> MT, others -> MD
       set(_rt "$<IF:$<CONFIG:Debug>,MultiThreadedDebugDLL,$<IF:$<CONFIG:Release>,MultiThreaded,MultiThreadedDLL>>")
     else()
+      # Dynamic CRT everywhere
       set(_rt "MultiThreaded$<$<CONFIG:Debug>:Debug>DLL")
     endif()
     set_property(TARGET "${tgt}" PROPERTY MSVC_RUNTIME_LIBRARY "${_rt}")
@@ -250,17 +253,17 @@ if(WIN32)
 
   if(COLONY_HLSL)
     if(COMMAND cg_set_hlsl_properties)
-      cg_set_hlsl_properties("${CMAKE_SOURCE_DIR}/renderer/Shaders/AtmosphereSky.hlsl"       ENTRY "PSMain" PROFILE "ps_6_0")
-      cg_set_hlsl_properties("${CMAKE_SOURCE_DIR}/renderer/Shaders/VolumetricClouds.hlsl"     ENTRY "PSMain" PROFILE "ps_6_0")
-      cg_set_hlsl_properties("${CMAKE_SOURCE_DIR}/renderer/Shaders/VoxelIso_MT.compute.hlsl"  ENTRY "CSMain" PROFILE "cs_6_0")
+      cg_set_hlsl_properties("${CMAKE_SOURCE_DIR}/renderer/Shaders/AtmosphereSky.hlsl"              ENTRY "PSMain" PROFILE "ps_6_0")
+      cg_set_hlsl_properties("${CMAKE_SOURCE_DIR}/renderer/Shaders/VolumetricClouds.hlsl"            ENTRY "PSMain" PROFILE "ps_6_0")
+      cg_set_hlsl_properties("${CMAKE_SOURCE_DIR}/renderer/Shaders/VoxelIso_MT.compute.hlsl"         ENTRY "CSMain" PROFILE "cs_6_0")
       cg_set_hlsl_properties("${CMAKE_SOURCE_DIR}/renderer/Shaders/VoxelIso_MT_Materials.compute.hlsl" ENTRY "CSMain" PROFILE "cs_6_0")
-      cg_set_hlsl_properties("${CMAKE_SOURCE_DIR}/renderer/Shaders/erosion_thermal_flow_cs.hlsl" ENTRY "CSMain" PROFILE "cs_6_0")
-      cg_set_hlsl_properties("${CMAKE_SOURCE_DIR}/renderer/Shaders/erosion_thermal_apply_cs.hlsl" ENTRY "CSMain" PROFILE "cs_6_0")
-      cg_set_hlsl_properties("${CMAKE_SOURCE_DIR}/shaders/ThermalOutflowCS.hlsl"              ENTRY "CSMain" PROFILE "cs_6_0")
-      cg_set_hlsl_properties("${CMAKE_SOURCE_DIR}/shaders/ThermalApplyCS.hlsl"                ENTRY "CSMain" PROFILE "cs_6_0")
-      cg_set_hlsl_properties("${CMAKE_SOURCE_DIR}/shaders/Terrain.hlsl"                       ENTRY "PSMain" PROFILE "ps_6_0")
-      cg_set_hlsl_properties("${CMAKE_SOURCE_DIR}/shaders/raster/ToneMap.ps.hlsl"             ENTRY "PSMain" PROFILE "ps_6_0")
-      cg_set_hlsl_properties("${CMAKE_SOURCE_DIR}/renderer/Shaders/Batch2D_ps.hlsl"           ENTRY "PSMain" PROFILE "ps_6_0")
+      cg_set_hlsl_properties("${CMAKE_SOURCE_DIR}/renderer/Shaders/erosion_thermal_flow_cs.hlsl"     ENTRY "CSMain" PROFILE "cs_6_0")
+      cg_set_hlsl_properties("${CMAKE_SOURCE_DIR}/renderer/Shaders/erosion_thermal_apply_cs.hlsl"    ENTRY "CSMain" PROFILE "cs_6_0")
+      cg_set_hlsl_properties("${CMAKE_SOURCE_DIR}/shaders/ThermalOutflowCS.hlsl"                     ENTRY "CSMain" PROFILE "cs_6_0")
+      cg_set_hlsl_properties("${CMAKE_SOURCE_DIR}/shaders/ThermalApplyCS.hlsl"                       ENTRY "CSMain" PROFILE "cs_6_0")
+      cg_set_hlsl_properties("${CMAKE_SOURCE_DIR}/shaders/Terrain.hlsl"                              ENTRY "PSMain" PROFILE "ps_6_0")
+      cg_set_hlsl_properties("${CMAKE_SOURCE_DIR}/shaders/raster/ToneMap.ps.hlsl"                    ENTRY "PSMain" PROFILE "ps_6_0")
+      cg_set_hlsl_properties("${CMAKE_SOURCE_DIR}/renderer/Shaders/Batch2D_ps.hlsl"                  ENTRY "PSMain" PROFILE "ps_6_0")
     endif()
 
     cg_compile_hlsl(ColonyShaders
@@ -452,6 +455,7 @@ function(_cg_first_exe_in_dir out_var start_dir)
       return()
     endif()
   endforeach()
+
   get_property(_subs DIRECTORY "${start_dir}" PROPERTY SUBDIRECTORIES)
   foreach(_sd IN LISTS _subs)
     _cg_first_exe_in_dir(_found "${_sd}")
@@ -516,7 +520,8 @@ if(EXISTS "${CMAKE_SOURCE_DIR}/cmake/CGTests.cmake")
   include(CGTests)
 endif()
 
-if(COLONY_BUILD_TESTS AND EXISTS "${CMAKE_SOURCE_DIR}/tests/CMakeLists.txt}")
+# (fixed stray brace in path check)
+if(COLONY_BUILD_TESTS AND EXISTS "${CMAKE_SOURCE_DIR}/tests/CMakeLists.txt")
   if(NOT DEFINED COLONY_TESTS_ADDED)
     add_subdirectory("${CMAKE_SOURCE_DIR}/tests" "${CMAKE_BINARY_DIR}/tests")
     set(COLONY_TESTS_ADDED ON CACHE INTERNAL "tests/ added by root")
