@@ -5,9 +5,13 @@ include_guard(GLOBAL)
 if(NOT WIN32)
   message(FATAL_ERROR "This project is configured for Windows/MSVC only.")
 endif()
+# multi-line arguments (CMake concatenates these)
 if(CMAKE_SIZEOF_VOID_P EQUAL 4)
-  message(FATAL_ERROR "32-bit builds are not supported. Please build x64.")
+  message(FATAL_ERROR
+    "32-bit builds are not supported.\n"
+    "Please build x64.")
 endif()
+
 
 # Language standard (global)
 set(CMAKE_CXX_STANDARD 23)
