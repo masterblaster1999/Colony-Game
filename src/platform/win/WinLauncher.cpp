@@ -1,5 +1,10 @@
-#define WIN32_LEAN_AND_MEAN
-#include <windows.h>
+// src/platform/win/WinLauncher.cpp
+#include "platform/win/WinCommon.h"
+#include <shellapi.h>
+#include <string>
+
+// (rest of the file unchanged)
+
 #include <shellapi.h>
 #include <shlwapi.h>
 #include <string>
