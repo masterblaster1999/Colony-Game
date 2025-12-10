@@ -153,8 +153,8 @@ target_include_directories(colony_core
     "${CMAKE_BINARY_DIR}/generated"
 )
 
-# NOTE (Patch A): Do NOT compile DeviceResources.cpp into colony_core.
-# It must be owned by a single Windows platform lib and linked at the EXE.
+# NOTE: Keep platform/entry-only sources out of the core.
+# If DeviceResources.cpp is platform-coupled in your tree, ensure it's not added here.
 
 # PCH
 set(_PCH_HEADER "")
@@ -265,6 +265,13 @@ if(WIN32)
   endif()
 endif()
 
+# Explicitly control unity for the EXE as well (opt-in)
+if(COLONY_UNITY_BUILD)
+  set_target_properties(ColonyGame PROPERTIES UNITY_BUILD ON UNITY_BUILD_UNIQUE_ID "COLONY")
+else()
+  set_target_properties(ColonyGame PROPERTIES UNITY_BUILD OFF)
+endif()
+
 if(CMAKE_VERSION VERSION_LESS 3.21)
   target_compile_features(ColonyGame PRIVATE cxx_std_20)
 else()
@@ -290,21 +297,27 @@ if(TARGET Colony::WinPlatform)
   target_link_libraries(ColonyGame PRIVATE Colony::WinPlatform)
 endif()
 
-# --- Patch B: Game owns AppMain.cpp (only one GUI entry in this exe) ---
+# --- Windows GUI entry point (single). Prefer EntryWinMain.cpp that calls GameMain() ---
 if(WIN32 AND NOT (FRONTEND STREQUAL "sdl"))
-  set(_APP_ENTRY_ADDED OFF)
+  set(_ENTRY_ADDED OFF)
   foreach(_cand
+    "${CMAKE_SOURCE_DIR}/src/app/EntryWinMain.cpp"
+    "${CMAKE_SOURCE_DIR}/src/EntryWinMain.cpp"
+    "${CMAKE_SOURCE_DIR}/src/platform/win/EntryWinMain.cpp"
+    # Fallbacks if repo still has legacy main-in-AppMain.cpp:
     "${CMAKE_SOURCE_DIR}/src/AppMain.cpp"
     "${CMAKE_SOURCE_DIR}/src/platform/win/AppMain.cpp"
   )
     if(EXISTS "${_cand}")
       target_sources(ColonyGame PRIVATE "${_cand}")
-      set(_APP_ENTRY_ADDED ON)
+      # Entry / globals should not be combined in unity builds
+      set_source_files_properties("${_cand}" PROPERTIES SKIP_UNITY_BUILD_INCLUSION ON)
+      set(_ENTRY_ADDED ON)
       break()
     endif()
   endforeach()
-  if(NOT _APP_ENTRY_ADDED)
-    message(FATAL_ERROR "AppMain.cpp not found – provide a single Windows game entry point and add it to ColonyGame.")
+  if(NOT _ENTRY_ADDED)
+    message(FATAL_ERROR "No Windows entry point found. Provide src/app/EntryWinMain.cpp (that calls GameMain).")
   endif()
 endif()
 
@@ -331,9 +344,11 @@ if(WIN32)
   # GPU preference exports belong in the final game EXE ONLY
   foreach(_f IN ITEMS
     "${CMAKE_SOURCE_DIR}/src/platform/win/GpuPreference.cpp"
+    "${CMAKE_SOURCE_DIR}/src/platform/win/HighPerfGPU.cpp" # alt name if present
   )
     if(EXISTS "${_f}")
       target_sources(ColonyGame PRIVATE "${_f}")
+      set_source_files_properties("${_f}" PROPERTIES SKIP_UNITY_BUILD_INCLUSION ON)
     endif()
   endforeach()
 
@@ -346,10 +361,12 @@ if(WIN32)
   )
     if(EXISTS "${_f}")
       target_sources(ColonyGame PRIVATE "${_f}")
+      set_source_files_properties("${_f}" PROPERTIES SKIP_UNITY_BUILD_INCLUSION ON)
     endif()
   endforeach()
 
-  target_link_libraries(ColonyGame PRIVATE dbghelp)
+  # Link DbgHelp for MiniDumpWriteDump (in EXE only)
+  target_link_libraries(ColonyGame PRIVATE dbghelp) # MiniDumpWriteDump etc.
 endif()
 
 # ============================== Launcher EXE ==============================
@@ -381,7 +398,7 @@ if(WIN32 AND COLONY_BUILD_LAUNCHER AND NOT (FRONTEND STREQUAL "sdl"))
     target_link_libraries(ColonyLauncher PRIVATE Colony::WinPlatform)
   endif()
 
-  # --- Patch B revised: Launcher owns WinLauncher.cpp (NOT EntryWinMain) ---
+  # Launcher entry point (WinLauncher.cpp); exclude from unity if found
   set(_LAUNCHER_ENTRY_ADDED OFF)
   foreach(_cand
     "${CMAKE_SOURCE_DIR}/src/platform/win/WinLauncher.cpp"
@@ -389,6 +406,7 @@ if(WIN32 AND COLONY_BUILD_LAUNCHER AND NOT (FRONTEND STREQUAL "sdl"))
   )
     if(EXISTS "${_cand}")
       target_sources(ColonyLauncher PRIVATE "${_cand}")
+      set_source_files_properties("${_cand}" PROPERTIES SKIP_UNITY_BUILD_INCLUSION ON)
       set(_LAUNCHER_ENTRY_ADDED ON)
       break()
     endif()
@@ -404,6 +422,7 @@ if(WIN32 AND COLONY_BUILD_LAUNCHER AND NOT (FRONTEND STREQUAL "sdl"))
   )
     if(EXISTS "${_f}")
       target_sources(ColonyLauncher PRIVATE "${_f}")
+      set_source_files_properties("${_f}" PROPERTIES SKIP_UNITY_BUILD_INCLUSION ON)
     endif()
   endforeach()
 
