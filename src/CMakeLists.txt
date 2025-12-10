@@ -315,6 +315,14 @@ if(WIN32 AND NOT (FRONTEND STREQUAL "sdl"))
   if(NOT _APP_ENTRY_ADDED)
     message(FATAL_ERROR "AppMain.cpp not found – provide a single Windows game entry point and add it to ColonyGame.")
   endif()
+
+  # --- Patch B1: ensure EntryWinMain.cpp is NOT compiled into ColonyGame ---
+  foreach(_maybe_entry "${CMAKE_SOURCE_DIR}/src/app/EntryWinMain.cpp" "${CMAKE_SOURCE_DIR}/src/EntryWinMain.cpp")
+    if(EXISTS "${_maybe_entry}")
+      # Mark as header-only for this target so it cannot be compiled here.
+      set_source_files_properties("${_maybe_entry}" PROPERTIES HEADER_FILE_ONLY ON)
+    endif()
+  endforeach()
 endif()
 
 # Windows resources & helpers for the game
@@ -371,11 +379,11 @@ if(WIN32 AND COLONY_BUILD_LAUNCHER AND NOT (FRONTEND STREQUAL "sdl"))
   endif()
   target_link_libraries(ColonyLauncher PRIVATE colony_core colony_build_options shell32 ole32)
 
-  # Add exactly one launcher entry point (WinLauncher.cpp)
+  # --- Patch B1: Make the launcher own EntryWinMain.cpp (prefer it); if absent, fall back to WinLauncher.cpp ---
   set(_LAUNCHER_ENTRY_ADDED OFF)
   foreach(_cand
-    "${CMAKE_SOURCE_DIR}/src/platform/win/WinLauncher.cpp"
-    "${CMAKE_SOURCE_DIR}/platform/win/WinLauncher.cpp"
+    "${CMAKE_SOURCE_DIR}/src/app/EntryWinMain.cpp"
+    "${CMAKE_SOURCE_DIR}/src/EntryWinMain.cpp"
   )
     if(EXISTS "${_cand}")
       target_sources(ColonyLauncher PRIVATE "${_cand}")
@@ -384,8 +392,27 @@ if(WIN32 AND COLONY_BUILD_LAUNCHER AND NOT (FRONTEND STREQUAL "sdl"))
     endif()
   endforeach()
   if(NOT _LAUNCHER_ENTRY_ADDED)
-    message(FATAL_ERROR "WinLauncher.cpp not found – provide a single Windows launcher entry point and add it to ColonyLauncher.")
+    foreach(_fallback
+      "${CMAKE_SOURCE_DIR}/src/platform/win/WinLauncher.cpp"
+      "${CMAKE_SOURCE_DIR}/platform/win/WinLauncher.cpp"
+    )
+      if(EXISTS "${_fallback}")
+        target_sources(ColonyLauncher PRIVATE "${_fallback}")
+        set(_LAUNCHER_ENTRY_ADDED ON)
+        break()
+      endif()
+    endforeach()
   endif()
+  if(NOT _LAUNCHER_ENTRY_ADDED)
+    message(FATAL_ERROR "No launcher entry point found – expected EntryWinMain.cpp (preferred) or WinLauncher.cpp.")
+  endif()
+
+  # Make sure AppMain.cpp is NOT compiled into the launcher (avoid two wWinMain)
+  foreach(_maybe_appmain "${CMAKE_SOURCE_DIR}/src/AppMain.cpp" "${CMAKE_SOURCE_DIR}/src/platform/win/AppMain.cpp")
+    if(EXISTS "${_maybe_appmain}")
+      set_source_files_properties("${_maybe_appmain}" PROPERTIES HEADER_FILE_ONLY ON)
+    endif()
+  endforeach()
 
   # (Optional) Windows resources for the launcher
   if(EXISTS "${CMAKE_SOURCE_DIR}/platform/win/Manifest.rc")
