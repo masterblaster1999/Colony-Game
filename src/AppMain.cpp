@@ -74,13 +74,17 @@ void NameMainThread()
 } // anonymous namespace
 // -----------------------------------------------------------------------------
 
-int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int nCmdShow)
+// Renamed from wWinMain to a normal function so that EntryWinMain.cpp
+// can be the sole Windows entry point and delegate to this function.
+int GameMain(HINSTANCE hInstance, PWSTR cmdLine, int nCmdShow)
 {
+    UNREFERENCED_PARAMETER(cmdLine);
+
     // Safer DLL search path (mitigates DLL preloading issues).
     HardenDllSearch(); // ok to call even if not present on older systems. 
 
     // DPI fallback (manifest is preferred). Must be before any HWND creation.
-    ApplyDpiAwareness(); // PMv2 when available; falls back to system DPI aware. :contentReference[oaicite:5]{index=5}
+    ApplyDpiAwareness(); // PMv2 when available; falls back to system DPI aware.
 
     // Crash dumps for postmortem debugging (your existing facility).
     InstallCrashHandler(L"ColonyGame");
