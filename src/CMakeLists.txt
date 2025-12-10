@@ -81,13 +81,13 @@ if(WIN32)
   list(FILTER SRC_ALL EXCLUDE REGEX ".*/platform/win/CrashDumpStub\\.(c|cc|cxx|cpp)$")
 
   # Exclude real crash handler implementations from the core lib; add to EXE later
-  list(FILTER SRC_ALL EXCLUDE REGEX ".*/platform/win/(CrashDumpWin|CrashHandlerWin|WinIntegration)\\.(c|cc|cxx|cpp)$")
+  list(FILTER SRC_ALL EXCLUDE REGEX ".*/platform/win/(CrashDumpWin|CrashHandlerWin|WinIntegration|CrashInitBridge)\\.(c|cc|cxx|cpp)$")
 
   # Keep app/bootstrapy code out of the core; add to EXE(s) instead
   list(FILTER SRC_ALL EXCLUDE REGEX ".*/src/(Bootstrap|GraphicsInit|Game)\\.(c|cc|cxx|cpp)$")
 
   # Ensure GPU preference exports live only in the final EXE (avoid duplicates)
-  list(FILTER SRC_ALL EXCLUDE REGEX ".*/src/platform/win/GpuPreference\\.(c|cc|cxx|cpp)$")
+  list(FILTER SRC_ALL EXCLUDE REGEX ".*/src/platform/win/(GpuPreference|HighPerfGPU)\\.(c|cc|cxx|cpp)$")
 endif()
 
 # Defensive de‑duplication
@@ -364,6 +364,12 @@ if(WIN32)
   if(_GPU_PREF)
     target_sources(ColonyGame PRIVATE "${_GPU_PREF}")
     set_source_files_properties("${_GPU_PREF}" PROPERTIES SKIP_UNITY_BUILD_INCLUSION ON)
+  endif()
+
+  # Ensure CrashInitBridge.cpp is compiled into the EXE (resolves wincrash::InitCrashHandler)
+  if(EXISTS "${CMAKE_SOURCE_DIR}/src/platform/win/CrashInitBridge.cpp")
+    target_sources(ColonyGame PRIVATE "${CMAKE_SOURCE_DIR}/src/platform/win/CrashInitBridge.cpp")
+    set_source_files_properties("${CMAKE_SOURCE_DIR}/src/platform/win/CrashInitBridge.cpp" PROPERTIES SKIP_UNITY_BUILD_INCLUSION ON)
   endif()
 
   # Add crash integration to the EXE (kept out of the core lib)
