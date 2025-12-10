@@ -66,7 +66,7 @@ endif()
 list(FILTER SRC_ALL EXCLUDE REGEX ".*/platform/win/(WinLauncher|WinMain|VerticalSlice|win32_main|main_win|LauncherMain|AppMain|win_entry)\\.(c|cc|cxx|cpp)$")
 list(FILTER SRC_ALL EXCLUDE REGEX ".*/colonygame\\.(c|cc|cxx|cpp)$")
 
-# Windows-specific duplicate‑symbol hot spots: prefer one implementation
+# Windows-specific duplicate‑symbol hot spots: keep app/boot code out of the core
 if(WIN32)
   # Prefer AtomicFileWin on Windows; drop cross‑platform AtomicFile.cpp to avoid dupes
   list(FILTER SRC_ALL EXCLUDE REGEX ".*/AtomicFile\\.cpp$")
@@ -82,6 +82,9 @@ if(WIN32)
 
   # Exclude real crash handler implementations from the core lib; add to EXE later
   list(FILTER SRC_ALL EXCLUDE REGEX ".*/platform/win/(CrashDumpWin|CrashHandlerWin|WinIntegration)\\.(c|cc|cxx|cpp)$")
+
+  # Keep app/bootstrapy code out of the core; add to EXE(s) instead
+  list(FILTER SRC_ALL EXCLUDE REGEX ".*/src/(Bootstrap|GraphicsInit|Game)\\.(c|cc|cxx|cpp)$")
 
   # Ensure GPU preference exports live only in the final EXE (avoid duplicates)
   list(FILTER SRC_ALL EXCLUDE REGEX ".*/src/platform/win/GpuPreference\\.(c|cc|cxx|cpp)$")
@@ -99,6 +102,7 @@ set(_colony_disallow_regexes
   ".*/platform/win/(WinLauncher|WinMain|VerticalSlice|win32_main|main_win|LauncherMain|AppMain|win_entry)\\.(c|cc|cxx|cpp)$"
   ".*/platform/win/(CrashDumpWin|CrashHandlerWin|WinIntegration|CrashDumpStub)\\.(c|cc|cxx|cpp)$"
   ".*/colonygame\\.(c|cc|cxx|cpp)$"
+  ".*/src/(Bootstrap|GraphicsInit|Game)\\.(c|cc|cxx|cpp)$"
 )
 
 set(_colony_leaks "")
@@ -152,22 +156,6 @@ target_include_directories(colony_core
 # NOTE (Patch A): Do NOT compile DeviceResources.cpp into colony_core.
 # It must be owned by a single Windows platform lib and linked at the EXE.
 
-# --- Ensure WinPath TU is present exactly once (so tests link on Windows) ---
-foreach(_cand
-  "${CMAKE_SOURCE_DIR}/src/platform/win/WinPath.cpp"
-  "${CMAKE_SOURCE_DIR}/platform/win/WinPath.cpp"
-)
-  if(EXISTS "${_cand}")
-    get_target_property(_core_srcs colony_core SOURCES)
-    if(_core_srcs)
-      list(FILTER _core_srcs EXCLUDE REGEX ".*/WinPath\\.(c|cc|cxx|cpp)$")
-      set_property(TARGET colony_core PROPERTY SOURCES "${_core_srcs}")
-    endif()
-    target_sources(colony_core PRIVATE "${_cand}")
-    break()
-  endif()
-endforeach()
-
 # PCH
 set(_PCH_HEADER "")
 if(DEFINED COLONY_PCH_HEADER AND EXISTS "${CMAKE_SOURCE_DIR}/${COLONY_PCH_HEADER}")
@@ -191,7 +179,7 @@ target_compile_definitions(colony_core
 
 if(MSVC)
   target_compile_options(colony_core PRIVATE /permissive- /Zc:preprocessor /Zc:__cplusplus /utf-8 /W4 /MP)
-  # Treat link warnings as errors to prevent duplicate symbol regressions
+  # Treat link warnings as errors to prevent duplicate symbol regressions (LNK4006, etc.)
   target_link_options(colony_core PRIVATE /WX)
 endif()
 
@@ -302,7 +290,7 @@ if(TARGET Colony::WinPlatform)
   target_link_libraries(ColonyGame PRIVATE Colony::WinPlatform)
 endif()
 
-# --- Add exactly one Windows game entry point to ColonyGame (Patch B) ---
+# --- Patch B: Game owns AppMain.cpp (only one GUI entry in this exe) ---
 if(WIN32 AND NOT (FRONTEND STREQUAL "sdl"))
   set(_APP_ENTRY_ADDED OFF)
   foreach(_cand
@@ -319,6 +307,17 @@ if(WIN32 AND NOT (FRONTEND STREQUAL "sdl"))
     message(FATAL_ERROR "AppMain.cpp not found – provide a single Windows game entry point and add it to ColonyGame.")
   endif()
 endif()
+
+# Bring the app/bootstrap code into the game exe (kept out of the core lib)
+foreach(_appsrc IN ITEMS
+  "${CMAKE_SOURCE_DIR}/src/Bootstrap.cpp"
+  "${CMAKE_SOURCE_DIR}/src/GraphicsInit.cpp"
+  "${CMAKE_SOURCE_DIR}/src/Game.cpp"
+)
+  if(EXISTS "${_appsrc}")
+    target_sources(ColonyGame PRIVATE "${_appsrc}")
+  endif()
+endforeach()
 
 # Windows resources & helpers for the game
 if(WIN32)
@@ -374,11 +373,19 @@ if(WIN32 AND COLONY_BUILD_LAUNCHER AND NOT (FRONTEND STREQUAL "sdl"))
   endif()
   target_link_libraries(ColonyLauncher PRIVATE colony_core colony_build_options shell32 ole32)
 
-  # --- Patch B: Launcher owns EntryWinMain (preferred), else WinLauncher ---
+  # Link platform libs here too if the launcher uses Win platform utilities
+  if(TARGET Colony::PlatformWin)
+    target_link_libraries(ColonyLauncher PRIVATE Colony::PlatformWin)
+  endif()
+  if(TARGET Colony::WinPlatform)
+    target_link_libraries(ColonyLauncher PRIVATE Colony::WinPlatform)
+  endif()
+
+  # --- Patch B revised: Launcher owns WinLauncher.cpp (NOT EntryWinMain) ---
   set(_LAUNCHER_ENTRY_ADDED OFF)
   foreach(_cand
-    "${CMAKE_SOURCE_DIR}/src/app/EntryWinMain.cpp"
-    "${CMAKE_SOURCE_DIR}/src/EntryWinMain.cpp"
+    "${CMAKE_SOURCE_DIR}/src/platform/win/WinLauncher.cpp"
+    "${CMAKE_SOURCE_DIR}/platform/win/WinLauncher.cpp"
   )
     if(EXISTS "${_cand}")
       target_sources(ColonyLauncher PRIVATE "${_cand}")
@@ -387,20 +394,18 @@ if(WIN32 AND COLONY_BUILD_LAUNCHER AND NOT (FRONTEND STREQUAL "sdl"))
     endif()
   endforeach()
   if(NOT _LAUNCHER_ENTRY_ADDED)
-    foreach(_fallback
-      "${CMAKE_SOURCE_DIR}/src/platform/win/WinLauncher.cpp"
-      "${CMAKE_SOURCE_DIR}/platform/win/WinLauncher.cpp"
-    )
-      if(EXISTS "${_fallback}")
-        target_sources(ColonyLauncher PRIVATE "${_fallback}")
-        set(_LAUNCHER_ENTRY_ADDED ON)
-        break()
-      endif()
-    endforeach()
+    message(FATAL_ERROR "WinLauncher.cpp not found – provide a single Windows launcher entry point and add it to ColonyLauncher.")
   endif()
-  if(NOT _LAUNCHER_ENTRY_ADDED)
-    message(FATAL_ERROR "No launcher entry point found – expected EntryWinMain.cpp (preferred) or WinLauncher.cpp.")
-  endif()
+
+  # If the launcher needs crash integration, add it explicitly (kept out of core)
+  foreach(_f IN ITEMS
+    "${CMAKE_SOURCE_DIR}/platform/win/CrashHandlerWin.cpp"
+    "${CMAKE_SOURCE_DIR}/platform/win/CrashDumpWin.cpp"
+  )
+    if(EXISTS "${_f}")
+      target_sources(ColonyLauncher PRIVATE "${_f}")
+    endif()
+  endforeach()
 
   # (Optional) Windows resources for the launcher
   if(EXISTS "${CMAKE_SOURCE_DIR}/platform/win/Manifest.rc")
@@ -505,7 +510,7 @@ if(CMAKE_GENERATOR MATCHES "Visual Studio")
     set(_HLSL_INC_FLAGS_STR "")
   endif()
 
-  # Patch B: auto-detect entrypoint per file; fall back to 'main' if *Main is absent
+  # Auto-detect entrypoint per file; fall back to 'main' if *Main is absent
   function(_configure_vs_shader _file)
     get_filename_component(_we "${_file}" NAME_WE)
     set(_type "")
