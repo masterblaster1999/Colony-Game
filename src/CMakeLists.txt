@@ -321,6 +321,19 @@ if(WIN32 AND NOT (FRONTEND STREQUAL "sdl"))
   endif()
 endif()
 
+# --- Patch 2.1A: ensure GameMain's TU is compiled when using EntryWinMain ---
+# If an EntryWinMain exists (any of common paths), also compile AppMain.cpp as a normal TU.
+set(_HAS_ENTRYWINMAIN OFF)
+if(EXISTS "${CMAKE_SOURCE_DIR}/src/app/EntryWinMain.cpp" OR
+   EXISTS "${CMAKE_SOURCE_DIR}/src/EntryWinMain.cpp" OR
+   EXISTS "${CMAKE_SOURCE_DIR}/src/platform/win/EntryWinMain.cpp")
+  set(_HAS_ENTRYWINMAIN ON)
+endif()
+if(_HAS_ENTRYWINMAIN AND EXISTS "${CMAKE_SOURCE_DIR}/src/AppMain.cpp")
+  target_sources(ColonyGame PRIVATE "${CMAKE_SOURCE_DIR}/src/AppMain.cpp")
+  set_source_files_properties("${CMAKE_SOURCE_DIR}/src/AppMain.cpp" PROPERTIES SKIP_UNITY_BUILD_INCLUSION ON)
+endif()
+
 # Bring the app/bootstrap code into the game exe (kept out of the core lib)
 foreach(_appsrc IN ITEMS
   "${CMAKE_SOURCE_DIR}/src/Bootstrap.cpp"
@@ -341,16 +354,17 @@ if(WIN32)
     target_sources(ColonyGame PRIVATE "${CMAKE_SOURCE_DIR}/platform/win/Manifest.rc")
   endif()
 
-  # GPU preference exports belong in the final game EXE ONLY
-  foreach(_f IN ITEMS
-    "${CMAKE_SOURCE_DIR}/src/platform/win/GpuPreference.cpp"
-    "${CMAKE_SOURCE_DIR}/src/platform/win/HighPerfGPU.cpp" # alt name if present
-  )
-    if(EXISTS "${_f}")
-      target_sources(ColonyGame PRIVATE "${_f}")
-      set_source_files_properties("${_f}" PROPERTIES SKIP_UNITY_BUILD_INCLUSION ON)
-    endif()
-  endforeach()
+  # --- Patch 2.1B: choose exactly one GPU preference TU (avoid duplicate exports) ---
+  set(_GPU_PREF "")
+  if(EXISTS "${CMAKE_SOURCE_DIR}/src/platform/win/HighPerfGPU.cpp")
+    set(_GPU_PREF "${CMAKE_SOURCE_DIR}/src/platform/win/HighPerfGPU.cpp")
+  elseif(EXISTS "${CMAKE_SOURCE_DIR}/src/platform/win/GpuPreference.cpp")
+    set(_GPU_PREF "${CMAKE_SOURCE_DIR}/src/platform/win/GpuPreference.cpp")
+  endif()
+  if(_GPU_PREF)
+    target_sources(ColonyGame PRIVATE "${_GPU_PREF}")
+    set_source_files_properties("${_GPU_PREF}" PROPERTIES SKIP_UNITY_BUILD_INCLUSION ON)
+  endif()
 
   # Add crash integration to the EXE (kept out of the core lib)
   foreach(_f IN ITEMS
