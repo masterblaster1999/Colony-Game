@@ -1,12 +1,8 @@
-#include <Windows.h>
-#include "CrashHandler.h"
-#include "App.h"
+// src/app/EntryWinMain.cpp
+#include <windows.h>
+int GameMain(HINSTANCE, PWSTR, int); // forward
 
-int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int)
+int WINAPI wWinMain(HINSTANCE h, HINSTANCE, PWSTR cmd, int show)
 {
-    // Install crash dumps immediately so even early-start failures are captured.
-    InstallCrashHandler(L"ColonyGame");
-
-    App app;
-    return app.Run(hInstance);
+    return GameMain(h, cmd, show);
 }
