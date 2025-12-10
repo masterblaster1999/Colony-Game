@@ -149,21 +149,8 @@ target_include_directories(colony_core
     "${CMAKE_BINARY_DIR}/generated"
 )
 
-# Ensure exactly one DeviceResources TU is compiled if it exists in multiple roots
-foreach(_cand
-  "${CMAKE_SOURCE_DIR}/src/platform/win/DeviceResources.cpp"
-  "${CMAKE_SOURCE_DIR}/platform/win/DeviceResources.cpp"
-)
-  if(EXISTS "${_cand}")
-    get_target_property(_core_srcs colony_core SOURCES)
-    if(_core_srcs)
-      list(FILTER _core_srcs EXCLUDE REGEX ".*/DeviceResources\\.(c|cc|cxx|cpp)$")
-      set_property(TARGET colony_core PROPERTY SOURCES "${_core_srcs}")
-    endif()
-    target_sources(colony_core PRIVATE "${_cand}")
-    break()
-  endif()
-endforeach()
+# NOTE (Patch A): Do NOT compile DeviceResources.cpp into colony_core.
+# It must be owned by a single Windows platform lib and linked at the EXE.
 
 # --- Ensure WinPath TU is present exactly once (so tests link on Windows) ---
 foreach(_cand
@@ -212,11 +199,19 @@ if(WIN32)
   target_link_libraries(colony_core PUBLIC shell32 ole32)
 endif()
 
+# ----------------------- Patch C: filter SDL2main when not using SDL -----------------------
+set(_TP_LIBS ${COLONY_THIRDPARTY_LIBS})
+if(NOT FRONTEND STREQUAL "sdl")
+  if(_TP_LIBS)
+    # Avoid pulling SDL2main unless we are actually using SDL (prevents SDL_main unresolved).
+    list(FILTER _TP_LIBS EXCLUDE REGEX "SDL2main|SDL2::SDL2main")
+  endif()
+endif()
 # Optional aggregate build options + DirectXTex
 if(NOT TARGET colony_build_options)
   add_library(colony_build_options INTERFACE)
 endif()
-target_link_libraries(colony_core PUBLIC ${COLONY_THIRDPARTY_LIBS} colony_build_options Microsoft::DirectXTex)
+target_link_libraries(colony_core PUBLIC ${_TP_LIBS} colony_build_options Microsoft::DirectXTex)
 
 # ------------------------------- ImGui (opt) ------------------------------
 if(WIN32 AND ENABLE_IMGUI)
@@ -299,7 +294,15 @@ endif()
 
 target_link_libraries(ColonyGame PRIVATE colony_core colony_build_options)
 
-# --- Add exactly one Windows game entry point to ColonyGame ---
+# --- Patch A: link single-owner Windows platform libs only at the EXE ---
+if(TARGET Colony::PlatformWin)
+  target_link_libraries(ColonyGame PRIVATE Colony::PlatformWin)
+endif()
+if(TARGET Colony::WinPlatform)
+  target_link_libraries(ColonyGame PRIVATE Colony::WinPlatform)
+endif()
+
+# --- Add exactly one Windows game entry point to ColonyGame (Patch B) ---
 if(WIN32 AND NOT (FRONTEND STREQUAL "sdl"))
   set(_APP_ENTRY_ADDED OFF)
   foreach(_cand
@@ -315,14 +318,6 @@ if(WIN32 AND NOT (FRONTEND STREQUAL "sdl"))
   if(NOT _APP_ENTRY_ADDED)
     message(FATAL_ERROR "AppMain.cpp not found – provide a single Windows game entry point and add it to ColonyGame.")
   endif()
-
-  # --- Patch B1: ensure EntryWinMain.cpp is NOT compiled into ColonyGame ---
-  foreach(_maybe_entry "${CMAKE_SOURCE_DIR}/src/app/EntryWinMain.cpp" "${CMAKE_SOURCE_DIR}/src/EntryWinMain.cpp")
-    if(EXISTS "${_maybe_entry}")
-      # Mark as header-only for this target so it cannot be compiled here.
-      set_source_files_properties("${_maybe_entry}" PROPERTIES HEADER_FILE_ONLY ON)
-    endif()
-  endforeach()
 endif()
 
 # Windows resources & helpers for the game
@@ -379,7 +374,7 @@ if(WIN32 AND COLONY_BUILD_LAUNCHER AND NOT (FRONTEND STREQUAL "sdl"))
   endif()
   target_link_libraries(ColonyLauncher PRIVATE colony_core colony_build_options shell32 ole32)
 
-  # --- Patch B1: Make the launcher own EntryWinMain.cpp (prefer it); if absent, fall back to WinLauncher.cpp ---
+  # --- Patch B: Launcher owns EntryWinMain (preferred), else WinLauncher ---
   set(_LAUNCHER_ENTRY_ADDED OFF)
   foreach(_cand
     "${CMAKE_SOURCE_DIR}/src/app/EntryWinMain.cpp"
@@ -406,13 +401,6 @@ if(WIN32 AND COLONY_BUILD_LAUNCHER AND NOT (FRONTEND STREQUAL "sdl"))
   if(NOT _LAUNCHER_ENTRY_ADDED)
     message(FATAL_ERROR "No launcher entry point found – expected EntryWinMain.cpp (preferred) or WinLauncher.cpp.")
   endif()
-
-  # Make sure AppMain.cpp is NOT compiled into the launcher (avoid two wWinMain)
-  foreach(_maybe_appmain "${CMAKE_SOURCE_DIR}/src/AppMain.cpp" "${CMAKE_SOURCE_DIR}/src/platform/win/AppMain.cpp")
-    if(EXISTS "${_maybe_appmain}")
-      set_source_files_properties("${_maybe_appmain}" PROPERTIES HEADER_FILE_ONLY ON)
-    endif()
-  endforeach()
 
   # (Optional) Windows resources for the launcher
   if(EXISTS "${CMAKE_SOURCE_DIR}/platform/win/Manifest.rc")
