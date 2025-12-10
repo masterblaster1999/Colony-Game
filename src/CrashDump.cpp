@@ -1,52 +1,65 @@
 #include "CrashDump.h"
-#include <windows.h>
-#include <dbghelp.h>
-#include <shlobj_core.h>
-#include <filesystem>
+#include <DbgHelp.h>
+#include <cstdio>
 #include <string>
+#include <filesystem>
+
 #pragma comment(lib, "Dbghelp.lib")
 
-static LONG WINAPI TopLevelExceptionFilter(EXCEPTION_POINTERS* e)
-{
-    // Create %LOCALAPPDATA%\ColonyGame\Crashes\YYYYMMDD_HHMMSS.dmp
-    PWSTR localAppData = nullptr;
-    if (SUCCEEDED(SHGetKnownFolderPath(FOLDERID_LocalAppData, 0, nullptr, &localAppData)))
+namespace {
+    std::wstring g_appName = L"ColonyGame";
+
+    std::wstring NowStamp()
     {
-        std::filesystem::path dumpDir = std::filesystem::path(localAppData) / L"ColonyGame" / L"Crashes";
-        CoTaskMemFree(localAppData);
-        std::error_code ec; std::filesystem::create_directories(dumpDir, ec);
-
-        SYSTEMTIME st{}; GetLocalTime(&st);
-        wchar_t fname[128]{};
-        swprintf_s(fname, L"%04u%02u%02u_%02u%02u%02u.dmp",
+        SYSTEMTIME st{};
+        GetLocalTime(&st);
+        wchar_t buf[64]{};
+        swprintf_s(buf, L"%04u%02u%02u_%02u%02u%02u",
             st.wYear, st.wMonth, st.wDay, st.wHour, st.wMinute, st.wSecond);
-        auto dumpPath = dumpDir / fname;
+        return buf;
+    }
 
-        HANDLE hFile = CreateFileW(dumpPath.c_str(), GENERIC_WRITE, FILE_SHARE_READ, nullptr,
-                                   CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+    std::filesystem::path CrashDir()
+    {
+        std::wstring localAppData;
+        wchar_t* p = nullptr;
+        size_t len = 0;
+        _wdupenv_s(&p, &len, L"LOCALAPPDATA");
+        if (p) { localAppData.assign(p); free(p); }
+        if (localAppData.empty()) localAppData = L".";
+        auto dir = std::filesystem::path(localAppData) / g_appName / L"CrashDumps";
+        std::error_code ec;
+        std::filesystem::create_directories(dir, ec);
+        return dir;
+    }
+
+    LONG WINAPI DumpUnhandledException(_In_ EXCEPTION_POINTERS* ep)
+    {
+        auto dumpPath = CrashDir() / (g_appName + L"_" + NowStamp() + L"_" + std::to_wstring(GetCurrentProcessId()) + L".dmp");
+        HANDLE hFile = CreateFileW(dumpPath.c_str(), GENERIC_WRITE, FILE_SHARE_READ, nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
         if (hFile != INVALID_HANDLE_VALUE)
         {
             MINIDUMP_EXCEPTION_INFORMATION mei{};
             mei.ThreadId = GetCurrentThreadId();
-            mei.ExceptionPointers = e;
+            mei.ExceptionPointers = ep;
             mei.ClientPointers = FALSE;
 
-            // A small but useful dump
-            MINIDUMP_TYPE type = (MINIDUMP_TYPE)(
-                MiniDumpWithIndirectlyReferencedMemory |
-                MiniDumpScanMemory |
-                MiniDumpWithThreadInfo);
+            // Light dump is usually sufficient; switch to MiniDumpWithFullMemory if you need it
+            MINIDUMP_TYPE mdt = MiniDumpNormal;
 
-            MiniDumpWriteDump(GetCurrentProcess(), GetCurrentProcessId(), hFile, type,
-                              &mei, nullptr, nullptr);
+            MiniDumpWriteDump(GetCurrentProcess(), GetCurrentProcessId(), hFile, mdt, ep ? &mei : nullptr, nullptr, nullptr);
             CloseHandle(hFile);
         }
+        // Let Windows error UI/wer handle aftermath; return EXCEPTION_EXECUTE_HANDLER if you prefer to exit silently
+        return EXCEPTION_CONTINUE_SEARCH;
     }
+} // anon
 
-    return EXCEPTION_EXECUTE_HANDLER; // allow process to terminate after dumping
-}
-
-void InstallCrashHandler(const wchar_t* /*productName*/)
+void wincrash::InitCrashHandler(const wchar_t* appName)
 {
-    SetUnhandledExceptionFilter(TopLevelExceptionFilter);
+    if (appName && *appName) g_appName = appName;
+    // Suppress legacy GP fault dialog
+    SetErrorMode(SEM_NOGPFAULTERRORBOX);
+    // Register handler (see MS guidance for pros/cons of in-proc minidumping)
+    SetUnhandledExceptionFilter(DumpUnhandledException); // :contentReference[oaicite:5]{index=5}
 }
