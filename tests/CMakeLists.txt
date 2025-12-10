@@ -101,12 +101,18 @@ if(TARGET procgen)
     target_link_libraries(colony_smoke PRIVATE procgen)
 endif()
 
-# Pathfinding: prefer the real target; otherwise use OBJECT fallback
-if(TARGET colony_path)
+# ------------------------------------------------------------------
+# PATCH 1.2: Link pathfinding into the test (and also the game exe).
+# Prefer the canonical alias "Colony::Path", then fall back gracefully.
+# ------------------------------------------------------------------
+if(TARGET Colony::Path)
+    target_link_libraries(colony_smoke PRIVATE Colony::Path)
+elseif(TARGET colony_path)
     target_link_libraries(colony_smoke PRIVATE colony_path)
 elseif(TARGET colony::path)
     target_link_libraries(colony_smoke PRIVATE colony::path)
 else()
+    # OBJECT fallback for CI/dev when the lib isn't defined as a target yet
     file(GLOB_RECURSE COLONY_TEST_PATH_SOURCES CONFIGURE_DEPENDS
         "${CMAKE_SOURCE_DIR}/pathfinding/*.cpp"
         "${CMAKE_SOURCE_DIR}/hpa/*.cpp"
@@ -123,6 +129,26 @@ else()
 
         # Bring the objects into the test exe without creating a new target name
         target_sources(colony_smoke PRIVATE $<TARGET_OBJECTS:colony_path_obj>)
+    endif()
+endif()
+
+# Also link the main game executable if it exists (safe, conditional).
+# This keeps the public API available to both the test runner and the game.
+if(TARGET ColonyGame)
+    if(TARGET Colony::Path)
+        target_link_libraries(ColonyGame PRIVATE Colony::Path)
+    elseif(TARGET colony_path)
+        target_link_libraries(ColonyGame PRIVATE colony_path)
+    elseif(TARGET colony::path)
+        target_link_libraries(ColonyGame PRIVATE colony::path)
+    endif()
+elseif(TARGET colony_game)
+    if(TARGET Colony::Path)
+        target_link_libraries(colony_game PRIVATE Colony::Path)
+    elseif(TARGET colony_path)
+        target_link_libraries(colony_game PRIVATE colony_path)
+    elseif(TARGET colony::path)
+        target_link_libraries(colony_game PRIVATE colony::path)
     endif()
 endif()
 
