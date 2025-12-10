@@ -1,5 +1,5 @@
 // src/path/jps.cpp
-#include "jps.h" // declares colony::path::IGrid, Cell, JpsOptions, jps_find_path
+#include "../../pathfinding/jps.h" // declares colony::path::IGrid, Cell, JpsOptions, jps_find_path
 
 namespace colony::path {
 
