@@ -1,7 +1,11 @@
 // Minimal, self-contained crash handler bridge for Windows.
 // Builds into the EXE only (not colony_core).
+#ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
+#endif
+#ifndef NOMINMAX
 #define NOMINMAX
+#endif
 #include <Windows.h>
 #include <DbgHelp.h>
 #include <filesystem>
