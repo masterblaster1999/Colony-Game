@@ -650,6 +650,71 @@ if(MSVC)
 endif()
 
 # ------------------------------------------------------------------------------
+# Wire discrete-GPU hint exports into executables (Windows only)
+# Ensure HighPerfGPU.cpp is compiled into EXEs and not into colony_core to avoid
+# duplicate exported symbols and to follow vendor guidance (exports in the EXE).
+# ------------------------------------------------------------------------------
+function(cg_wire_gpu_exports_to_exe exe)
+  if(NOT TARGET ${exe})
+    return()
+  endif()
+
+  set(_gpu_src "${CMAKE_SOURCE_DIR}/src/platform/win/HighPerfGPU.cpp")
+  if(NOT EXISTS "${_gpu_src}")
+    # Adjust this path if your tree stores the file elsewhere.
+    return()
+  endif()
+
+  # Remove the GPU exports from colony_core if present (avoid duplicates)
+  if(TARGET colony_core)
+    get_target_property(_core_srcs colony_core SOURCES)
+    if(_core_srcs)
+      # Build normalized key for the GPU source
+      get_filename_component(_gpu_real "${_gpu_src}" REALPATH)
+      if(WIN32)
+        string(TOLOWER "${_gpu_real}" _gpu_key)
+      else()
+        set(_gpu_key "${_gpu_real}")
+      endif()
+
+      # Normalize each core source and drop if it matches the GPU file
+      get_target_property(_core_dir colony_core SOURCE_DIR)
+      if(NOT _core_dir)
+        set(_core_dir "${CMAKE_SOURCE_DIR}")
+      endif()
+
+      set(_filtered_core "")
+      foreach(_s IN LISTS _core_srcs)
+        if(IS_ABSOLUTE "${_s}")
+          get_filename_component(_s_real "${_s}" REALPATH)
+        else()
+          get_filename_component(_s_real "${_s}" REALPATH BASE_DIR "${_core_dir}")
+        endif()
+        if(WIN32)
+          string(TOLOWER "${_s_real}" _s_key)
+        else()
+          set(_s_key "${_s_real}")
+        endif()
+        if(NOT _s_key STREQUAL _gpu_key)
+          list(APPEND _filtered_core "${_s}")
+        endif()
+      endforeach()
+      set_property(TARGET colony_core PROPERTY SOURCES "${_filtered_core}")
+    endif()
+  endif()
+
+  # Add GPU exports to the executable target
+  target_sources(${exe} PRIVATE "${_gpu_src}")
+endfunction()
+
+# Attach the GPU exports to known EXE targets (add more if you have others)
+foreach(_exe ColonyGame ColonyLauncher ColonyMapViewer)
+  if(TARGET ${_exe})
+    cg_wire_gpu_exports_to_exe(${_exe})
+  endif()
+endforeach()
+
+# ------------------------------------------------------------------------------
 # Robust source de-dup (case-insensitive, realpath) and EXE/lib deconflict
 # ------------------------------------------------------------------------------
 # Normalize each target's sources by REALPATH, then lowercased on Windows,
