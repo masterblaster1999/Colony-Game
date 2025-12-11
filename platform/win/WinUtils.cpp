@@ -1,39 +1,62 @@
-#ifndef WIN32_LEAN_AND_MEAN
-#  define WIN32_LEAN_AND_MEAN
-#endif
-#ifndef NOMINMAX
-#  define NOMINMAX
-#endif
-#include <Windows.h>
-#include "WinUtils.h"
-#include "WinUtils.hpp"
-namespace win {
+#include "platform/win/WinUtils.hpp"
+#include "core/Log.h"
 
-std::string utf8_from_wstring(std::wstring_view w) {
-    if (w.empty()) return {};
-    // First call to get required size (no NUL added by API)
-    int size = ::WideCharToMultiByte(CP_UTF8, 0, w.data(),
-                                     static_cast<int>(w.size()),
-                                     nullptr, 0, nullptr, nullptr);
-    if (size <= 0) return {};
-    std::string out(static_cast<size_t>(size), '\0');
-    ::WideCharToMultiByte(CP_UTF8, 0, w.data(),
-                          static_cast<int>(w.size()),
-                          out.data(), size, nullptr, nullptr);
-    return out;
+namespace cg::win {
+
+std::filesystem::path GetExecutableDir() {
+    wchar_t buf[MAX_PATH]{};
+    GetModuleFileNameW(nullptr, buf, MAX_PATH);
+    std::filesystem::path exePath = buf;
+    return exePath.remove_filename();
 }
 
-std::wstring wstring_from_utf8(std::string_view u8) {
-    if (u8.empty()) return {};
-    int size = ::MultiByteToWideChar(CP_UTF8, 0, u8.data(),
-                                     static_cast<int>(u8.size()),
-                                     nullptr, 0);
-    if (size <= 0) return {};
-    std::wstring out(static_cast<size_t>(size), L'\0');
-    ::MultiByteToWideChar(CP_UTF8, 0, u8.data(),
-                          static_cast<int>(u8.size()),
-                          out.data(), size);
-    return out;
+std::filesystem::path SetCurrentDirToExe() {
+    auto exeDir = GetExecutableDir();
+    SetDllDirectoryW(exeDir.c_str());
+    SetCurrentDirectoryW(exeDir.c_str());
+    cg::Log::Info("Working dir set to: %s", exeDir.string().c_str());
+    return exeDir;
 }
 
-} // namespace win
+std::filesystem::path EnsureResPresent(const std::filesystem::path& exeDir) {
+    auto res = exeDir / "res";
+    if (std::filesystem::exists(res)) return res;
+    auto alt = exeDir.parent_path() / "res";
+    if (std::filesystem::exists(alt)) {
+        cg::Log::Warn("res/ not next to EXE; using parent/res");
+        return alt;
+    }
+    cg::Log::Error("res/ folder missing.");
+    return {};
+}
+
+void ConfigureDPI() {
+    // Prefer manifest (recommended), fallback to API if needed.
+    // Per‑Monitor‑V2 improves scaling/clarity on multi‑DPI setups.
+    HMODULE user32 = LoadLibraryW(L"user32.dll");
+    if (user32) {
+        using Fn = BOOL (WINAPI*)(DPI_AWARENESS_CONTEXT);
+        auto setCtx = reinterpret_cast<Fn>(GetProcAddress(user32, "SetProcessDpiAwarenessContext"));
+        if (setCtx && setCtx(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2)) {
+            cg::Log::Info("DPI awareness: PerMonitorV2");
+            FreeLibrary(user32);
+            return;
+        }
+        FreeLibrary(user32);
+    }
+    SetProcessDPIAware(); // legacy fallback
+    cg::Log::Info("DPI awareness: System (fallback)");
+}
+
+HANDLE CreateSingleInstanceMutex(const wchar_t* name) {
+    HANDLE h = CreateMutexW(nullptr, FALSE, name);
+    if (!h) return nullptr;
+    if (GetLastError() == ERROR_ALREADY_EXISTS) {
+        MessageBoxW(nullptr, L"Colony-Game is already running.", L"Colony-Game",
+                    MB_ICONINFORMATION | MB_OK);
+        CloseHandle(h);
+        return nullptr;
+    }
+    return h;
+}
+} // namespace cg::win
