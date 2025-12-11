@@ -2,6 +2,8 @@
 #include "TileIO.h"
 #include <cmath>
 #include <algorithm>
+#include <filesystem>                 // ensure std::filesystem::path is declared
+#include "platform/win/WinUtils.h"    // use central GetExecutableDir() if needed (no local duplicate)
 
 TerrainStreamer::TerrainStreamer(JobSystem& jobs, ITerrainRenderer& renderer)
 : m_jobs(jobs), m_renderer(renderer) {}
