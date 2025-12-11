@@ -1,5 +1,6 @@
+// tests/smoke.cpp
 #include <doctest/doctest.h>
 
-TEST_CASE("smoke: arithmetic") {
-    CHECK(2 + 2 == 4);
+TEST_CASE("smoke: test runner boots") {
+    CHECK(true);
 }
