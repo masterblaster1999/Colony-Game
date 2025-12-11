@@ -4,6 +4,17 @@ project(ColonyGameTests LANGUAGES CXX)
 include(FetchContent)
 
 # --------------------------------------------------------------
+# CTest wiring (make tests visible to ctest from the build root)
+# --------------------------------------------------------------
+include(CTest)            # defines BUILD_TESTING and auto-calls enable_testing() unless BUILD_TESTING=OFF
+enable_testing()          # ensure a CTestTestfile.cmake exists for this dir (important for ctest)  # docs: cmake.org/cmake/help/latest/command/enable_testing.html
+
+if(NOT BUILD_TESTING)
+    message(STATUS "BUILD_TESTING=OFF => skipping unit tests configuration")
+    return()
+endif()
+
+# --------------------------------------------------------------
 # doctest (header-only) as an INTERFACE target
 # --------------------------------------------------------------
 if(NOT TARGET doctest)
@@ -25,6 +36,15 @@ if(NOT TARGET doctest)
             "${doctest_upstream_SOURCE_DIR}"
         )
     endif()
+endif()
+
+# Try to load doctest's CMake helper for test discovery if we fetched the repo.
+# (Falls back to a manual add_test() if the module isn't available.)
+set(_DOCTEST_CMAKE_FOUND OFF)
+if(DEFINED doctest_upstream_SOURCE_DIR AND EXISTS "${doctest_upstream_SOURCE_DIR}/scripts/cmake/doctest.cmake")
+    list(APPEND CMAKE_MODULE_PATH "${doctest_upstream_SOURCE_DIR}/scripts/cmake")
+    include(doctest)      # defines doctest_discover_tests()
+    set(_DOCTEST_CMAKE_FOUND ON)
 endif()
 
 # --------------------------------------------------------------
@@ -59,8 +79,8 @@ endif()
 # --------------------------------------------------------------
 set(TEST_SOURCES)
 
-# Runner TU (exactly one main to avoid LNK2005)
-set(_runner "${CMAKE_BINARY_DIR}/tests/test_main.cpp")
+# Runner TU (exactly one main to avoid multiple definitions)
+set(_runner "${CMAKE_CURRENT_BINARY_DIR}/test_main.cpp")
 file(WRITE "${_runner}" [=[
     #define DOCTEST_CONFIG_IMPLEMENT_WITH_MAIN
     #include <doctest/doctest.h>
@@ -102,8 +122,7 @@ if(TARGET procgen)
 endif()
 
 # ------------------------------------------------------------------
-# PATCH 1.2: Link pathfinding into the test (and also the game exe).
-# Prefer the canonical alias "Colony::Path", then fall back gracefully.
+# Link pathfinding into tests (and also the game exe) if available.
 # ------------------------------------------------------------------
 if(TARGET Colony::Path)
     target_link_libraries(colony_smoke PRIVATE Colony::Path)
@@ -126,14 +145,11 @@ else()
             "${CMAKE_SOURCE_DIR}/hpa"
         )
         target_compile_features(colony_path_obj PUBLIC cxx_std_20)
-
-        # Bring the objects into the test exe without creating a new target name
         target_sources(colony_smoke PRIVATE $<TARGET_OBJECTS:colony_path_obj>)
     endif()
 endif()
 
 # Also link the main game executable if it exists (safe, conditional).
-# This keeps the public API available to both the test runner and the game.
 if(TARGET ColonyGame)
     if(TARGET Colony::Path)
         target_link_libraries(ColonyGame PRIVATE Colony::Path)
@@ -156,10 +172,30 @@ endif()
 target_link_libraries(colony_smoke PRIVATE pcg doctest)
 
 # --------------------------------------------------------------
-# CTest wiring
+# Test registration with CTest
+# Prefer doctest_discover_tests(); fall back to a single add_test()
 # --------------------------------------------------------------
-enable_testing()
-add_test(NAME colony_smoke COMMAND colony_smoke)
-set_tests_properties(colony_smoke PROPERTIES
-    WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
-)
+if(_DOCTEST_CMAKE_FOUND AND COMMAND doctest_discover_tests)
+    # Enumerate each TEST_CASE into its own CTest entry; no reconfigure needed when tests change.
+    doctest_discover_tests(colony_smoke
+        TEST_PREFIX      "smoke."
+        WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+        DISCOVERY_MODE   POST_BUILD
+    )
+else()
+    add_test(NAME colony_smoke COMMAND colony_smoke)
+    set_tests_properties(colony_smoke PROPERTIES
+        WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+    )
+endif()
+
+# --------------------------------------------------------------
+# Bridge: if the root didn't call enable_testing(), create a root
+# CTestTestfile.cmake that forwards to this tests dir so that:
+#   ctest --test-dir build -C Release
+# still finds the tests. (No effect if root already has one.)
+# --------------------------------------------------------------
+if(NOT EXISTS "${CMAKE_BINARY_DIR}/CTestTestfile.cmake")
+    file(RELATIVE_PATH _rel_from_root "${CMAKE_BINARY_DIR}" "${CMAKE_CURRENT_BINARY_DIR}")
+    file(WRITE "${CMAKE_BINARY_DIR}/CTestTestfile.cmake" "subdirs(\"${_rel_from_root}\")\n")
+endif()
