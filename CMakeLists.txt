@@ -23,6 +23,10 @@ endif()
 if(POLICY CMP0091)
   cmake_policy(SET CMP0091 NEW)
 endif()
+# Ensure IPO/LTO is enforced when enabled
+if(POLICY CMP0069)
+  cmake_policy(SET CMP0069 NEW)
+endif()
 
 # ------------------------------------------------------------------------------
 # Make project-local modules discoverable
@@ -36,6 +40,16 @@ include(CGPolicies)
 include(CGToolchain)
 
 project(ColonyGame LANGUAGES CXX)
+
+# --- Interprocedural optimization (LTO) for Release when supported -------------
+include(CheckIPOSupported)
+check_ipo_supported(RESULT _ipo_supported OUTPUT _ipo_err LANGUAGES CXX)
+if(_ipo_supported)
+  # CMake will map this to /GL at compile and /LTCG (non-incremental) at link on MSVC.
+  set(CMAKE_INTERPROCEDURAL_OPTIMIZATION_RELEASE ON)
+else()
+  message(STATUS "IPO/LTO not supported by this toolchain: ${_ipo_err}")
+endif()
 
 # --- central Windows flags (optional include) ---
 include(cmake/WindowsFlags.cmake OPTIONAL)
@@ -140,6 +154,8 @@ if(MSVC)
     /Zc:preprocessor
     /Zc:inline
     /Zc:throwingNew
+    /Zc:referenceBinding
+    /Zf
     /EHsc
     $<$<BOOL:${COLONY_WERROR}>:/WX>
   )
@@ -157,7 +173,12 @@ if(MSVC)
     $<$<CONFIG:Release>:/Gw>
     $<$<CONFIG:Release>:/Gy>
   )
-  add_link_options(   $<$<CONFIG:Release>:/LTCG> $<$<CONFIG:Release>:/OPT:REF> $<$<CONFIG:Release>:/OPT:ICF>)
+  add_link_options(
+    $<$<CONFIG:Release>:/INCREMENTAL:NO>
+    $<$<CONFIG:Release>:/LTCG>
+    $<$<CONFIG:Release>:/OPT:REF>
+    $<$<CONFIG:Release>:/OPT:ICF>
+  )
 
   # First-class runtime selection
   if(COLONY_STATIC_RUNTIME)
