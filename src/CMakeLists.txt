@@ -91,6 +91,9 @@ if(WIN32)
 
   # NEW: Keep WinBootstrap out of the core lib; compile only into EXE targets
   list(FILTER SRC_ALL EXCLUDE REGEX ".*/platform/win/WinBootstrap\\.(c|cc|cxx|cpp)$")
+
+  # NEW: Also exclude any platform/win Bootstrap variants from the core
+  list(FILTER SRC_ALL EXCLUDE REGEX ".*/platform/win/(Bootstrap|WinBootstrap)\\.(c|cc|cxx|cpp)$")
 endif()
 
 # Defensive de‑duplication
@@ -375,26 +378,34 @@ if(_HAS_ENTRYWINMAIN AND EXISTS "${CMAKE_SOURCE_DIR}/src/AppMain.cpp")
   set_source_files_properties("${CMAKE_SOURCE_DIR}/src/AppMain.cpp" PROPERTIES SKIP_UNITY_BUILD_INCLUSION ON)
 endif()
 
+# NEW: Add a single Bootstrap TU to ColonyGame (not to colony_core)
+set(_BOOTSTRAP_ADDED OFF)
+foreach(_bs IN ITEMS
+  "${CMAKE_SOURCE_DIR}/platform/win/Bootstrap.cpp"
+  "${CMAKE_SOURCE_DIR}/src/platform/win/Bootstrap.cpp"
+  "${CMAKE_SOURCE_DIR}/src/Bootstrap.cpp"
+  "${CMAKE_SOURCE_DIR}/platform/win/WinBootstrap.cpp"
+  "${CMAKE_SOURCE_DIR}/src/platform/win/WinBootstrap.cpp"
+)
+  if(EXISTS "${_bs}")
+    target_sources(ColonyGame PRIVATE "${_bs}")
+    # Entry/bootstrap-like files should not be merged into unity buckets
+    set_source_files_properties("${_bs}" PROPERTIES SKIP_UNITY_BUILD_INCLUSION ON)
+    set(_BOOTSTRAP_ADDED ON)
+    break()
+  endif()
+endforeach()
+if(NOT _BOOTSTRAP_ADDED)
+  message(STATUS "[Bootstrap] No Bootstrap*.cpp found; skipping.")
+endif()
+
 # Bring the app/bootstrap code into the game exe (kept out of the core lib)
 foreach(_appsrc IN ITEMS
-  "${CMAKE_SOURCE_DIR}/src/Bootstrap.cpp"
   "${CMAKE_SOURCE_DIR}/src/GraphicsInit.cpp"
   "${CMAKE_SOURCE_DIR}/src/Game.cpp"
 )
   if(EXISTS "${_appsrc}")
     target_sources(ColonyGame PRIVATE "${_appsrc}")
-  endif()
-endforeach()
-
-# NEW: Add WinBootstrap only to the EXE target (kept out of core)
-foreach(_wb IN ITEMS
-  "${CMAKE_SOURCE_DIR}/platform/win/WinBootstrap.cpp"
-  "${CMAKE_SOURCE_DIR}/src/platform/win/WinBootstrap.cpp"
-)
-  if(EXISTS "${_wb}")
-    target_sources(ColonyGame PRIVATE "${_wb}")
-    set_source_files_properties("${_wb}" PROPERTIES SKIP_UNITY_BUILD_INCLUSION ON)
-    break()
   endif()
 endforeach()
 
