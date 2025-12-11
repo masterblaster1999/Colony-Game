@@ -20,9 +20,13 @@ endif()
 if(NOT TARGET doctest)
     find_package(doctest CONFIG QUIET)
     if(TARGET doctest::doctest)
+        # Use the imported target from a package manager / system install.
         add_library(doctest INTERFACE)
         target_link_libraries(doctest INTERFACE doctest::doctest)
+        # Imported targets should propagate INTERFACE_INCLUDE_DIRECTORIES.
+        # Nothing else is needed here.
     else()
+        # FetchContent fallback: bring in upstream and publish its includes
         set(FETCHCONTENT_UPDATES_DISCONNECTED ON)
         FetchContent_Declare(doctest_upstream
             GIT_REPOSITORY https://github.com/doctest/doctest.git
@@ -32,6 +36,7 @@ if(NOT TARGET doctest)
         FetchContent_MakeAvailable(doctest_upstream)
 
         add_library(doctest INTERFACE)
+        # Publish the repository root so <doctest/doctest.h> works.
         target_include_directories(doctest INTERFACE
             "${doctest_upstream_SOURCE_DIR}"
         )
@@ -168,8 +173,15 @@ elseif(TARGET colony_game)
     endif()
 endif()
 
-# Header-only deps
+# Header-only deps (publish include dirs transitively via INTERFACE)
 target_link_libraries(colony_smoke PRIVATE pcg doctest)
+
+# ---- Ensure the upstream doctest header is visible on the test target ----
+# If we fetched doctest ourselves, add its repo root to the test's includes so
+# <doctest/doctest.h> is always found, even with unusual toolchains.
+if(DEFINED doctest_upstream_SOURCE_DIR)
+    target_include_directories(colony_smoke PRIVATE "${doctest_upstream_SOURCE_DIR}")
+endif()
 
 # --------------------------------------------------------------
 # Test registration with CTest
