@@ -88,6 +88,9 @@ if(WIN32)
 
   # Ensure GPU preference exports live only in the final EXE (avoid duplicates)
   list(FILTER SRC_ALL EXCLUDE REGEX ".*/src/platform/win/(GpuPreference|HighPerfGPU)\\.(c|cc|cxx|cpp)$")
+
+  # NEW: Keep WinBootstrap out of the core lib; compile only into EXE targets
+  list(FILTER SRC_ALL EXCLUDE REGEX ".*/platform/win/WinBootstrap\\.(c|cc|cxx|cpp)$")
 endif()
 
 # Defensive de‑duplication
@@ -126,6 +129,25 @@ endif()
 
 # ------------------------------ Core library -----------------------------
 add_library(colony_core STATIC ${SRC_ALL})
+
+# Ensure exactly one DeviceResources TU is compiled into the core (avoid LNK4006)
+# Try common locations and add the first one found, removing any duplicates first.
+foreach(_cand
+  "${CMAKE_SOURCE_DIR}/src/platform/win/DeviceResources.cpp"
+  "${CMAKE_SOURCE_DIR}/platform/win/DeviceResources.cpp"
+)
+  if(EXISTS "${_cand}")
+    get_target_property(_core_srcs colony_core SOURCES)
+    if(_core_srcs)
+      list(FILTER _core_srcs EXCLUDE REGEX ".*/DeviceResources\\.(c|cc|cxx|cpp)$")
+      set_property(TARGET colony_core PROPERTY SOURCES "${_core_srcs}")
+    endif()
+    target_sources(colony_core PRIVATE "${_cand}")
+    # Entry-like / singleton device files should not be folded into unity
+    set_source_files_properties("${_cand}" PROPERTIES SKIP_UNITY_BUILD_INCLUSION ON)
+    break()
+  endif()
+endforeach()
 
 # Explicitly control unity (jumbo) builds to avoid accidental ODR/duplicate merges.
 # Keep OFF by default for the core; allow opt-in via COLONY_UNITY_BUILD.
@@ -345,6 +367,18 @@ foreach(_appsrc IN ITEMS
   endif()
 endforeach()
 
+# NEW: Add WinBootstrap only to the EXE target (kept out of core)
+foreach(_wb IN ITEMS
+  "${CMAKE_SOURCE_DIR}/platform/win/WinBootstrap.cpp"
+  "${CMAKE_SOURCE_DIR}/src/platform/win/WinBootstrap.cpp"
+)
+  if(EXISTS "${_wb}")
+    target_sources(ColonyGame PRIVATE "${_wb}")
+    set_source_files_properties("${_wb}" PROPERTIES SKIP_UNITY_BUILD_INCLUSION ON)
+    break()
+  endif()
+endforeach()
+
 # Windows resources & helpers for the game
 if(WIN32)
   if(EXISTS "${CMAKE_BINARY_DIR}/generated/Version.rc")
@@ -434,6 +468,18 @@ if(WIN32 AND COLONY_BUILD_LAUNCHER AND NOT (FRONTEND STREQUAL "sdl"))
   if(NOT _LAUNCHER_ENTRY_ADDED)
     message(FATAL_ERROR "WinLauncher.cpp not found – provide a single Windows launcher entry point and add it to ColonyLauncher.")
   endif()
+
+  # Add WinBootstrap only to the launcher EXE (kept out of core)
+  foreach(_wb IN ITEMS
+    "${CMAKE_SOURCE_DIR}/platform/win/WinBootstrap.cpp"
+    "${CMAKE_SOURCE_DIR}/src/platform/win/WinBootstrap.cpp"
+  )
+    if(EXISTS "${_wb}")
+      target_sources(ColonyLauncher PRIVATE "${_wb}")
+      set_source_files_properties("${_wb}" PROPERTIES SKIP_UNITY_BUILD_INCLUSION ON)
+      break()
+    endif()
+  endforeach()
 
   # If the launcher needs crash integration, add it explicitly (kept out of core)
   foreach(_f IN ITEMS
