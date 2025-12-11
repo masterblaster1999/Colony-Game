@@ -9,17 +9,14 @@
 
 #pragma comment(lib, "user32.lib")
 
-// Exported variables that nudge NV/AMD drivers to use discrete GPU.
-extern "C" {
-__declspec(dllexport) DWORD NvOptimusEnablement = 0x00000001;
-__declspec(dllexport) int   AmdPowerXpressRequestHighPerformance = 1;
-}
+// NOTE: The discrete-GPU hint exports (NvOptimusEnablement, AmdPowerXpressRequestHighPerformance)
+// are intentionally NOT defined here. Keep them in a single dedicated TU (e.g., HighPerfGPU.cpp).
 
 namespace cg {
 
 void SelectHighPerformanceGPU() {
-    // Nothing to do at runtime; the exports above are enough.
-    cg::Log::Info("High-performance GPU hint exported.");
+    // No runtime work required here; GPU preference is handled externally via exports (if enabled).
+    cg::Log::Info("High-performance GPU preference handled by dedicated module (if enabled).");
 }
 
 void ConfigureDPI() {
