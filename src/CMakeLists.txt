@@ -96,6 +96,45 @@ endif()
 # Defensive de‑duplication
 list(REMOVE_DUPLICATES SRC_ALL)
 
+# -------------------- Patch D: DeviceResources ODR guard (Windows) --------------------
+# Ensure exactly one DeviceResources TU is compiled (pre-target, by editing SRC_ALL).
+# Find all DeviceResources candidates; keep one canonical Windows/D3D11 copy.
+set(_dr_candidates)
+foreach(_f IN LISTS SRC_ALL)
+  if(_f MATCHES ".*/DeviceResources[^/]*\\.(c|cc|cxx|cpp)$")
+    list(APPEND _dr_candidates "${_f}")
+  endif()
+endforeach()
+
+list(LENGTH _dr_candidates _dr_count)
+if(_dr_count GREATER 1)
+  # Prefer a platform/win or renderer/*/d3d11 variant when multiple exist.
+  set(_dr_keep "")
+  foreach(_cand IN LISTS _dr_candidates)
+    if(_cand MATCHES ".*/(platform/win|renderer/.*/d3d11|renderer/d3d11)/DeviceResources[^/]*\\.(c|cc|cxx|cpp)$")
+      set(_dr_keep "${_cand}")
+      break()
+    endif()
+  endforeach()
+  if(NOT _dr_keep)
+    list(GET _dr_candidates 0 _dr_keep)
+  endif()
+
+  foreach(_cand IN LISTS _dr_candidates)
+    if(NOT _cand STREQUAL "${_dr_keep}")
+      list(REMOVE_ITEM SRC_ALL "${_cand}")
+    endif()
+  endforeach()
+
+  message(STATUS "[ODR] Using DeviceResources TU: ${_dr_keep}")
+  # Avoid unity-bucket collisions for this TU specifically.
+  set_source_files_properties("${_dr_keep}" PROPERTIES SKIP_UNITY_BUILD_INCLUSION ON)
+elseif(_dr_count EQUAL 1)
+  list(GET _dr_candidates 0 _dr_keep)
+  set_source_files_properties("${_dr_keep}" PROPERTIES SKIP_UNITY_BUILD_INCLUSION ON)
+endif()
+# -------------------------------------------------------------------------------------
+
 # ---------------------------- Guardrail: verify filters ----------------------------
 # Fail configure if any app/ or entry-point sources leaked into colony_core.
 set(_colony_disallow_regexes
@@ -130,25 +169,6 @@ endif()
 # ------------------------------ Core library -----------------------------
 add_library(colony_core STATIC ${SRC_ALL})
 
-# Ensure exactly one DeviceResources TU is compiled into the core (avoid LNK4006)
-# Try common locations and add the first one found, removing any duplicates first.
-foreach(_cand
-  "${CMAKE_SOURCE_DIR}/src/platform/win/DeviceResources.cpp"
-  "${CMAKE_SOURCE_DIR}/platform/win/DeviceResources.cpp"
-)
-  if(EXISTS "${_cand}")
-    get_target_property(_core_srcs colony_core SOURCES)
-    if(_core_srcs)
-      list(FILTER _core_srcs EXCLUDE REGEX ".*/DeviceResources\\.(c|cc|cxx|cpp)$")
-      set_property(TARGET colony_core PROPERTY SOURCES "${_core_srcs}")
-    endif()
-    target_sources(colony_core PRIVATE "${_cand}")
-    # Entry-like / singleton device files should not be folded into unity
-    set_source_files_properties("${_cand}" PROPERTIES SKIP_UNITY_BUILD_INCLUSION ON)
-    break()
-  endif()
-endforeach()
-
 # Explicitly control unity (jumbo) builds to avoid accidental ODR/duplicate merges.
 # Keep OFF by default for the core; allow opt-in via COLONY_UNITY_BUILD.
 if(COLONY_UNITY_BUILD)
@@ -176,7 +196,6 @@ target_include_directories(colony_core
 )
 
 # NOTE: Keep platform/entry-only sources out of the core.
-# If DeviceResources.cpp is platform-coupled in your tree, ensure it's not added here.
 
 # PCH
 set(_PCH_HEADER "")
