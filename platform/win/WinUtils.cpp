@@ -6,7 +6,7 @@
 #endif
 #include <Windows.h>
 #include "WinUtils.h"
-
+#include "WinUtils.hpp"
 namespace win {
 
 std::string utf8_from_wstring(std::wstring_view w) {
