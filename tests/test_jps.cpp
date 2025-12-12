@@ -1,6 +1,7 @@
 // tests/test_jps.cpp (doctest)
 #include <vector>
 #include <doctest/doctest.h>
+
 #include "pathfinding/Jps.hpp"
 
 using colony::path::Cell;
@@ -8,9 +9,16 @@ using colony::path::JpsOptions;
 using colony::path::jps_find_path;
 using colony::path::IGrid;
 
-class TestGrid final : public IGrid {
+// NOTE:
+// This test file can be compiled in a CMake UNITY_BUILD (aka "unity/jumbo build") where multiple
+// .cpp files get merged into a single translation unit. Another test file also defines a
+// TestGrid type, so we keep our helper type/function in a unique namespace with a unique name
+// to avoid redefinition errors.
+namespace colony_smoke_jps {
+
+class JpsTestGrid final : public IGrid {
 public:
-    TestGrid(int w, int h)
+    JpsTestGrid(int w, int h)
         : W(w), H(h), blocked(static_cast<size_t>(w * h), 0u) {}
 
     void setBlocked(int x, int y, bool b = true) {
@@ -31,15 +39,17 @@ private:
     std::vector<unsigned> blocked;
 };
 
-static JpsOptions DefaultOpts() {
+static JpsOptions DefaultOptsJps() {
     JpsOptions o{};
     // keep defaults; override per-test below as needed
     return o;
 }
 
+} // namespace colony_smoke_jps
+
 TEST_CASE("Jps: StartEqualsGoal") {
-    TestGrid g(5, 5);
-    auto o = DefaultOpts();
+    colony_smoke_jps::JpsTestGrid g(5, 5);
+    auto o = colony_smoke_jps::DefaultOptsJps();
     Cell s{2, 2}, t{2, 2};
 
     auto path = jps_find_path(g, s, t, o);
@@ -49,10 +59,10 @@ TEST_CASE("Jps: StartEqualsGoal") {
 }
 
 TEST_CASE("Jps: BlockedStartOrGoal") {
-    TestGrid g(5, 5);
+    colony_smoke_jps::JpsTestGrid g(5, 5);
     g.setBlocked(1, 1, true);
 
-    auto o = DefaultOpts();
+    auto o = colony_smoke_jps::DefaultOptsJps();
 
     auto p1 = jps_find_path(g, Cell{1, 1}, Cell{4, 4}, o);
     CHECK(p1.empty());
@@ -62,13 +72,13 @@ TEST_CASE("Jps: BlockedStartOrGoal") {
 }
 
 TEST_CASE("Jps: Corner cutting guard") {
-    TestGrid g(2, 2);
+    colony_smoke_jps::JpsTestGrid g(2, 2);
     g.setBlocked(1, 0, true);
     g.setBlocked(0, 1, true);
 
     SUBCASE("dontCrossCorners = true → no path") {
-        auto o = DefaultOpts();
-        o.allowDiagonal   = true;
+        auto o = colony_smoke_jps::DefaultOptsJps();
+        o.allowDiagonal    = true;
         o.dontCrossCorners = true;
 
         auto path = jps_find_path(g, Cell{0, 0}, Cell{1, 1}, o);
@@ -76,8 +86,8 @@ TEST_CASE("Jps: Corner cutting guard") {
     }
 
     SUBCASE("dontCrossCorners = false → diagonal path") {
-        auto o = DefaultOpts();
-        o.allowDiagonal   = true;
+        auto o = colony_smoke_jps::DefaultOptsJps();
+        o.allowDiagonal    = true;
         o.dontCrossCorners = false;
 
         auto path = jps_find_path(g, Cell{0, 0}, Cell{1, 1}, o);
