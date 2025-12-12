@@ -103,6 +103,16 @@ list(APPEND TEST_SOURCES ${_MORE_TESTS})
 add_executable(colony_smoke ${TEST_SOURCES})
 target_compile_features(colony_smoke PRIVATE cxx_std_23)
 
+# --------------------------------------------------------------
+# Unity builds:
+# The root project may enable UNITY_BUILD globally for speed.
+# Tests frequently define helper types with common names across multiple .cpp files.
+# When unity builds are enabled, multiple test .cpp files can be merged into one TU,
+# causing ODR/redefinition errors (e.g., 'TestGrid' defined in test_jps.cpp and test_nav.cpp).
+# Disable unity builds for this test target to keep each test .cpp isolated.
+# --------------------------------------------------------------
+set_target_properties(colony_smoke PROPERTIES UNITY_BUILD OFF)
+
 if(MSVC)
     target_compile_options(colony_smoke PRIVATE /utf-8 /W4 /permissive-)
 else()
