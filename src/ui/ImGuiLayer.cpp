@@ -52,10 +52,7 @@ using namespace cg::ui;
 // --------------------------------------------------------------------------------------
 
 // If 1, handleWndProc() will ALSO return true for mouse/keyboard/text messages when
-// ImGui IO says it wants to capture them. Useful if your input system uses handleWndProc()
-// to block game input.
-//
-// Keep 0 if your Win32 WndProc returns early to DefWindowProc() when this returns true.
+// ImGui IO says it wants to capture them.
 #ifndef CG_IMGUI_LAYER_USE_WANT_CAPTURE_FLAGS
   #define CG_IMGUI_LAYER_USE_WANT_CAPTURE_FLAGS 0
 #endif
@@ -65,10 +62,29 @@ using namespace cg::ui;
   #define CG_IMGUI_LAYER_BASE_FONT_PX 13.0f
 #endif
 
+// Optional: call ImGui_ImplWin32_EnableAlphaCompositing if your backend provides it.
+#ifndef CG_IMGUI_LAYER_ENABLE_ALPHA_COMPOSITING
+  #define CG_IMGUI_LAYER_ENABLE_ALPHA_COMPOSITING 0
+#endif
+
 // ImGui may or may not define this depending on version; provide fallback.
 #ifndef ImTextureID_Invalid
   #define ImTextureID_Invalid ((ImTextureID)0)
 #endif
+
+// --------------------------------------------------------------------------------------
+// IMPORTANT FIX for your error:
+//
+// In some Dear ImGui versions, imgui_impl_win32.h intentionally does NOT declare
+// ImGui_ImplWin32_WndProcHandler (it's commented out to avoid <windows.h> dependencies).
+// The Win32 backend .cpp explicitly tells you to copy an extern declaration into your .cpp.
+// :contentReference[oaicite:1]{index=1}
+// --------------------------------------------------------------------------------------
+#ifndef IMGUI_IMPL_API
+  #define IMGUI_IMPL_API IMGUI_API
+#endif
+
+extern IMGUI_IMPL_API LRESULT ImGui_ImplWin32_WndProcHandler(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam);
 
 namespace {
 
@@ -101,7 +117,7 @@ static void ConfigureStyleForViewports()
     }
 }
 
-// Wide -> UTF-8 (no NUL written). Safe for /W4 (checks int range).
+// Wide -> UTF-8 (no NUL written). Safe for /W4.
 static std::string WideToUtf8(const std::wstring& ws)
 {
     if (ws.empty())
@@ -135,8 +151,7 @@ static std::string WideToUtf8(const std::wstring& ws)
     return out;
 }
 
-// Persist imgui.ini and imgui_log.txt under the same writable dir the launcher uses.
-// (winpath::writable_data_dir() already creates directories best-effort.)
+// Persist imgui.ini and imgui_log.txt under %LOCALAPPDATA%\ColonyGame (via winpath helper).
 static void SetImGuiIniAndLogToWritableDataDir()
 {
     ImGuiIO& io = ImGui::GetIO();
@@ -203,8 +218,6 @@ static std::filesystem::path FindDefaultFontOnDisk()
     return {};
 }
 
-// Rebuild fonts sized to the chosen DPI scale + scale style sizes.
-// Recreates the DX11 font atlas GPU resources.
 static void RebuildFontsForScale(float scale)
 {
     if (scale <= 0.0f)
@@ -279,9 +292,7 @@ static void DrawFontAtlasWindow(HWND hwnd)
             ImGui::Text("Atlas: %d x %d", atlas->TexWidth, atlas->TexHeight);
 
             if (ImGui::Button("Rebuild fonts for current DPI"))
-            {
                 RequestFontRebuild(GetDpiScaleForHwnd(hwnd));
-            }
 
             const bool has_tex =
                 (atlas->TexID != ImTextureID_Invalid) &&
@@ -291,9 +302,9 @@ static void DrawFontAtlasWindow(HWND hwnd)
             if (has_tex)
             {
                 const float avail = ImGui::GetContentRegionAvail().x;
-                const float scale = (avail > 0.0f) ? (avail / static_cast<float>(atlas->TexWidth)) : 1.0f;
-                const float w = static_cast<float>(atlas->TexWidth) * scale;
-                const float h = static_cast<float>(atlas->TexHeight) * scale;
+                const float sxy = (avail > 0.0f) ? (avail / static_cast<float>(atlas->TexWidth)) : 1.0f;
+                const float w = static_cast<float>(atlas->TexWidth) * sxy;
+                const float h = static_cast<float>(atlas->TexHeight) * sxy;
                 ImGui::Image(atlas->TexID, ImVec2(w, h));
             }
             else
@@ -376,7 +387,6 @@ static void DrawDockspaceAndMenuBar(HWND hwnd)
     ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 0.0f);
     ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0.0f, 0.0f));
 
-    // Allow the game to show through the central node.
     ImGuiDockNodeFlags dock_flags = ImGuiDockNodeFlags_PassthruCentralNode;
     window_flags |= ImGuiWindowFlags_NoBackground;
 
@@ -411,7 +421,6 @@ static void DrawDockspaceAndMenuBar(HWND hwnd)
 }
 
 // RAII guard to preserve OM render targets and viewports during platform window rendering.
-// Prevents multi-viewport path from leaving your D3D11 state altered.
 struct D3D11StateGuard
 {
     ID3D11DeviceContext* ctx = nullptr;
@@ -537,10 +546,8 @@ bool ImGuiLayer::initialize(HWND hwnd, ID3D11Device* device, ID3D11DeviceContext
     io.ConfigFlags |= ImGuiConfigFlags_ViewportsEnable;
     io.ConfigWindowsMoveFromTitleBarOnly = true;
 
-    // Store ImGui settings/logs in app data.
     SetImGuiIniAndLogToWritableDataDir();
 
-    // Win32 backend helpers
     ImGui_ImplWin32_EnableDpiAwareness();
 
     if (!ImGui_ImplWin32_Init(m_hwnd))
@@ -549,12 +556,12 @@ bool ImGuiLayer::initialize(HWND hwnd, ID3D11Device* device, ID3D11DeviceContext
     if (!ImGui_ImplDX11_Init(m_device, m_context))
         return false;
 
-    // Optional, but harmless if supported: improves per-pixel alpha behavior for viewport windows.
+#if CG_IMGUI_LAYER_ENABLE_ALPHA_COMPOSITING
     ImGui_ImplWin32_EnableAlphaCompositing(m_hwnd);
+#endif
 
     ConfigureStyleForViewports();
 
-    // Build initial fonts for current monitor DPI.
     RequestFontRebuild(GetDpiScaleForHwnd(m_hwnd));
     ApplyPendingDpiRebuild(m_hwnd);
 
@@ -583,7 +590,6 @@ void ImGuiLayer::newFrame()
     if (!m_initialized || !enabled)
         return;
 
-    // Apply deferred DPI/font rebuild safely at the start of a frame.
     ApplyPendingDpiRebuild(m_hwnd);
 
     ImGui_ImplDX11_NewFrame();
@@ -596,14 +602,12 @@ void ImGuiLayer::render()
     if (!m_initialized || !enabled)
         return;
 
-    // Dockspace host + debug windows before Render().
     DrawDockspaceAndMenuBar(m_hwnd);
     DrawImGuiDebugWindows(m_hwnd);
 
     ImGui::Render();
     ImGui_ImplDX11_RenderDrawData(ImGui::GetDrawData());
 
-    // Multi-viewport rendering
     ImGuiIO& io = ImGui::GetIO();
     if (io.ConfigFlags & ImGuiConfigFlags_ViewportsEnable)
     {
@@ -618,7 +622,9 @@ bool ImGuiLayer::handleWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam
     if (!m_initialized)
         return false;
 
-    const bool backend_consumed = (ImGui_ImplWin32_WndProcHandler(hWnd, msg, wParam, lParam) != 0);
+    // FIX: must be initialized at declaration (also prevents C2737).
+    const bool backend_consumed =
+        (ImGui_ImplWin32_WndProcHandler(hWnd, msg, wParam, lParam) != 0);
 
     // WM_DPICHANGED: request rebuild; do actual GPU work in newFrame().
     if (msg == WM_DPICHANGED)
