@@ -1,25 +1,30 @@
 #pragma once
 
 #include <filesystem>
-#include <string>
-#include <array>
 
-#include "platform/win/WinUtils.h" // provides GetExecutableDir()
+// IMPORTANT:
+// Declare only (no definition in this header) to avoid ODR/linker multiple-definition issues.
+// Provide the single definition in src/platform/win/WinUtils.cpp (or equivalent).
+std::filesystem::path GetExecutableDir();
 
 // Base content directory placed next to the EXE.
-inline std::filesystem::path GetContentDir()
+[[nodiscard]] inline std::filesystem::path GetContentDir()
 {
-    return GetExecutableDir() / L"Content";
+    const auto exeDir = GetExecutableDir();
+    if (exeDir.empty())
+        return {}; // caller can handle missing/unknown exe dir
+    return exeDir / L"Content";
 }
 
-struct TerrainStreamingDirs {
+struct TerrainStreamingDirs
+{
     std::filesystem::path root;    // .../Content/Streaming/Terrain
     std::filesystem::path height;  // .../Content/Streaming/Terrain/Height
     std::filesystem::path albedo;  // .../Content/Streaming/Terrain/Albedo
     std::filesystem::path normal;  // .../Content/Streaming/Terrain/Normal
 };
 
-inline TerrainStreamingDirs GetTerrainDirs()
+[[nodiscard]] inline TerrainStreamingDirs GetTerrainDirs()
 {
     const auto streaming = GetContentDir() / L"Streaming";
     const auto terrain   = streaming / L"Terrain";
