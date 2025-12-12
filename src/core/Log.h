@@ -1,8 +1,10 @@
 // src/core/Log.h
 #pragma once
+
 #include <filesystem>
 #include <string>
 #include <cstdarg>
+#include <cstdio>   // vsnprintf / vsnprintf_s
 
 // Windows-only formatting annotation (helps MSVC static analysis)
 #if defined(_MSC_VER)
@@ -24,7 +26,34 @@ void LogShutdown();
 void LogMessage(LogLevel level, CORE_PRINTF_FMT const char* fmt, ...);
 
 // va_list variant to enable adapter wrappers and forwarding
-void LogMessageV(LogLevel level, CORE_PRINTF_FMT const char* fmt, va_list args);
+//
+// PATCH: provide an inline definition so callers can always link against LogMessageV.
+// This fixes LNK2001 when Log.cpp only implements LogMessage().
+// Implementation formats into a temporary buffer then forwards to LogMessage("%s", ...)
+// so it still uses the existing thread-safe sink (file, OutputDebugString, etc.).
+inline void LogMessageV(LogLevel level, CORE_PRINTF_FMT const char* fmt, va_list args)
+{
+    if (!fmt)
+        return;
+
+    char buf[2048];
+    buf[0] = '\0';
+
+    va_list copy;
+    va_copy(copy, args);
+
+#if defined(_MSC_VER)
+    (void)vsnprintf_s(buf, sizeof(buf), _TRUNCATE, fmt, copy);
+#else
+    (void)vsnprintf(buf, sizeof(buf), fmt, copy);
+    buf[sizeof(buf) - 1] = '\0';
+#endif
+
+    va_end(copy);
+
+    // Forward to the main logger so we preserve file/debug sinks and locking behavior.
+    ::core::LogMessage(level, "%s", buf);
+}
 
 // Convenience macros (guarded to avoid accidental redefinition)
 #ifndef LOG_TRACE
@@ -56,31 +85,31 @@ namespace cg {
 // Functional style: cg::log::info("..."), cg::log::warn("..."), etc.
 namespace log {
 
-inline void trace(const char* fmt, ...) {
+inline void trace(CORE_PRINTF_FMT const char* fmt, ...) {
   va_list args; va_start(args, fmt);
   ::core::LogMessageV(::core::LogLevel::Trace, fmt, args);
   va_end(args);
 }
 
-inline void info(const char* fmt, ...) {
+inline void info(CORE_PRINTF_FMT const char* fmt, ...) {
   va_list args; va_start(args, fmt);
   ::core::LogMessageV(::core::LogLevel::Info, fmt, args);
   va_end(args);
 }
 
-inline void warn(const char* fmt, ...) {
+inline void warn(CORE_PRINTF_FMT const char* fmt, ...) {
   va_list args; va_start(args, fmt);
   ::core::LogMessageV(::core::LogLevel::Warn, fmt, args);
   va_end(args);
 }
 
-inline void error(const char* fmt, ...) {
+inline void error(CORE_PRINTF_FMT const char* fmt, ...) {
   va_list args; va_start(args, fmt);
   ::core::LogMessageV(::core::LogLevel::Error, fmt, args);
   va_end(args);
 }
 
-inline void critical(const char* fmt, ...) {
+inline void critical(CORE_PRINTF_FMT const char* fmt, ...) {
   va_list args; va_start(args, fmt);
   ::core::LogMessageV(::core::LogLevel::Critical, fmt, args);
   va_end(args);
@@ -90,27 +119,27 @@ inline void critical(const char* fmt, ...) {
 
 // Class-style: cg::Log::Info("..."), cg::Log::Warn("..."), etc.
 struct Log {
-  static void Trace(const char* fmt, ...) {
+  static void Trace(CORE_PRINTF_FMT const char* fmt, ...) {
     va_list args; va_start(args, fmt);
     ::core::LogMessageV(::core::LogLevel::Trace, fmt, args);
     va_end(args);
   }
-  static void Info(const char* fmt, ...) {
+  static void Info(CORE_PRINTF_FMT const char* fmt, ...) {
     va_list args; va_start(args, fmt);
     ::core::LogMessageV(::core::LogLevel::Info, fmt, args);
     va_end(args);
   }
-  static void Warn(const char* fmt, ...) {
+  static void Warn(CORE_PRINTF_FMT const char* fmt, ...) {
     va_list args; va_start(args, fmt);
     ::core::LogMessageV(::core::LogLevel::Warn, fmt, args);
     va_end(args);
   }
-  static void Error(const char* fmt, ...) {
+  static void Error(CORE_PRINTF_FMT const char* fmt, ...) {
     va_list args; va_start(args, fmt);
     ::core::LogMessageV(::core::LogLevel::Error, fmt, args);
     va_end(args);
   }
-  static void Critical(const char* fmt, ...) {
+  static void Critical(CORE_PRINTF_FMT const char* fmt, ...) {
     va_list args; va_start(args, fmt);
     ::core::LogMessageV(::core::LogLevel::Critical, fmt, args);
     va_end(args);
