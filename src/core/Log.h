@@ -27,12 +27,8 @@ void LogMessage(LogLevel level, CORE_PRINTF_FMT const char* fmt, ...);
 
 // va_list variant to enable adapter wrappers and forwarding
 //
-// PATCH: provide an inline definition so callers can always link against LogMessageV.
-// This fixes LNK2001 when Log.cpp only implements LogMessage().
-// Implementation formats into a temporary buffer then forwards to LogMessage("%s", ...)
-// so it still uses the existing thread-safe sink (file, OutputDebugString, etc.).
-inline void LogMessageV(LogLevel level, CORE_PRINTF_FMT const char* fmt, va_list args)
-{
+// va_list variant to enable adapter wrappers and forwarding
+   void LogMessageV(LogLevel level, CORE_PRINTF_FMT const char* fmt, va_list args);
     if (!fmt)
         return;
 
