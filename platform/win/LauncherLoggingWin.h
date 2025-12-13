@@ -1,14 +1,14 @@
+// platform/win/LauncherLoggingWin.h
 #pragma once
 
 #include <filesystem>
 #include <fstream>
+#include <ostream>
 #include <string>
 
-// Logging helpers used by the launcher (UTF-16 log files under %LOCALAPPDATA%)
-
+// Logging helpers used by the launcher (log files under %LOCALAPPDATA%\ColonyGame\logs).
 std::filesystem::path LogsDir();
-
-std::wofstream OpenLogFile();
+std::wofstream         OpenLogFile();
 
 // Overload for the real log file
 void WriteLog(std::wofstream& log, const std::wstring& line);
