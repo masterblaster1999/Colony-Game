@@ -3,6 +3,8 @@
 #include "WinSDK.h"
 #include "WinBootstrap.h"
 
+#include "platform/win/LauncherLogSingletonWin.h" // <-- PATCH: unified process-wide launcher log + WriteLog()
+
 #include <winerror.h>  // ERROR_ALREADY_EXISTS
 #include <DbgHelp.h>
 #include <filesystem>
@@ -24,8 +26,7 @@
 namespace
 {
     HANDLE                g_mutex   = nullptr;
-    std::ofstream         g_log;
-    std::mutex            g_logMu;
+    std::mutex            g_logMu;   // <-- PATCH: keep mutex to avoid interleaved lines across threads
     std::filesystem::path g_root;
     std::filesystem::path g_dumpDir;
 
@@ -39,6 +40,18 @@ namespace
         ::WideCharToMultiByte(CP_UTF8, 0, w.data(), (int)w.size(), s.data(), n, nullptr, nullptr);
         return s;
     }
+
+    // PATCH: companion conversion (UTF-8 -> UTF-16)
+    std::wstring utf8_to_wide(std::string_view s)
+    {
+        if (s.empty()) return {};
+        const int n = ::MultiByteToWideChar(CP_UTF8, 0, s.data(), (int)s.size(), nullptr, 0);
+        if (n <= 0) return {};
+        std::wstring w((size_t)n, L'\0');
+        ::MultiByteToWideChar(CP_UTF8, 0, s.data(), (int)s.size(), w.data(), n);
+        return w;
+    }
+
     std::string path_u8(const std::filesystem::path& p) { return wide_to_utf8(p.wstring()); }
 
     // ---------------- Paths ----------------
@@ -114,21 +127,32 @@ namespace
     }
 
     // ---------------- Logging ----------------
-    std::string ts_now()
+    //
+    // PATCH: Replace local std::ofstream-based logging with the unified launcher logging
+    // backend (OpenLogFile() via LauncherLog()) to avoid duplicated/competing startup logs
+    // across WinLauncher / AppMain / WinBootstrap / WinMain.
+    //
+    // Keep call sites intact (log_open/log_info/log_err), but ignore per-call file paths.
+    //
+    void log_open(const std::filesystem::path& /*file*/)
     {
-        using namespace std::chrono;
-        auto now = system_clock::now();
-        std::time_t t = system_clock::to_time_t(now);
-        std::tm tm{}; localtime_s(&tm, &t);
-        char buf[32]; std::strftime(buf, sizeof(buf), "%Y-%m-%d %H:%M:%S", &tm);
-        return std::string(buf);
+        // Force one-time creation/open of the unified launcher-style log stream.
+        // (Safe to call multiple times; singleton opens once per process.)
+        (void)LauncherLog();
     }
-    void log_open(const std::filesystem::path& file) { g_log.open(file, std::ios::out | std::ios::app); }
+
     void log_write(const char* level, const std::string& line)
     {
         std::scoped_lock lk(g_logMu);
-        if (g_log.is_open()) { g_log << "[" << ts_now() << "][" << level << "] " << line << "\n"; g_log.flush(); }
+
+        auto& log = LauncherLog();
+
+        const std::wstring wLevel = utf8_to_wide(level ? std::string_view(level) : std::string_view{});
+        const std::wstring wLine  = utf8_to_wide(line);
+
+        WriteLog(log, std::wstring(L"[WinBootstrap][") + wLevel + L"] " + wLine);
     }
+
     void log_info(const std::string& s) { log_write("INFO",  s); }
     void log_err (const std::string& s) { log_write("ERROR", s); }
 
@@ -143,7 +167,7 @@ namespace
             else
                 SetDllDirectoryW(L"");               // Legacy fallback: remove CWD from DLL path
         }
-    } // SetDefaultDllDirectories. 
+    } // SetDefaultDllDirectories.
 
     void set_thread_name(PCWSTR name)
     {
@@ -153,7 +177,7 @@ namespace
             if (auto p = reinterpret_cast<SetThreadDescription_t>(GetProcAddress(k32, "SetThreadDescription")))
                 p(GetCurrentThread(), name);
         }
-    } // SetThreadDescription. 
+    } // SetThreadDescription.
 
     // ---------------- DPI awareness ----------------
     void set_dpi_awareness()
@@ -165,7 +189,7 @@ namespace
             { p(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2); return; }
         }
         SetProcessDPIAware(); // Vista fallback
-    } // PMv2 guidance. 
+    } // PMv2 guidance.
 
     // ---------------- Optional console (debug) ----------------
     void maybe_alloc_console(bool enable)
@@ -224,7 +248,7 @@ namespace
             MessageBoxW(nullptr, msg.c_str(), L"Colony-Game Crash", MB_OK | MB_ICONERROR);
         }
         return EXCEPTION_EXECUTE_HANDLER;
-    } // MiniDumpWriteDump signature / MINIDUMP_TYPE. 
+    } // MiniDumpWriteDump signature / MINIDUMP_TYPE.
 
     void install_crash_filter(const std::filesystem::path& dumpDir)
     {
@@ -258,7 +282,7 @@ std::filesystem::path GameRoot() { return g_root; }
 void Preflight(const Options& opt)
 {
     // Process-wide stability & security first.
-    HeapSetInformation(nullptr, HeapEnableTerminationOnCorruption, nullptr, 0); // fail-fast on heap corruption. 
+    HeapSetInformation(nullptr, HeapEnableTerminationOnCorruption, nullptr, 0); // fail-fast on heap corruption.
     harden_dll_search();
     set_thread_name(L"Bootstrap/Main");
 
@@ -303,7 +327,16 @@ void Shutdown()
 {
     log_info("Bootstrap shutdown.");
     if (g_mutex) { ReleaseMutex(g_mutex); CloseHandle(g_mutex); g_mutex = nullptr; }
-    if (g_log.is_open()) { g_log.flush(); g_log.close(); }
+
+    // PATCH: Do not close the unified LauncherLog() stream (process-wide singleton).
+    // We can flush it best-effort.
+    {
+        std::scoped_lock lk(g_logMu);
+        auto& log = LauncherLog();
+        if (log.good())
+            log.flush();
+    }
 }
 
 } // namespace winboot
+
