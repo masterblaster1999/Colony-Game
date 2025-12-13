@@ -175,7 +175,8 @@ namespace
 // -----------------------------------------------------------------------------
 
 // Quotes a single argument according to the rules used by CreateProcess/CommandLineToArgvW.
-// See MS docs on CommandLineToArgvW for the backslash + quote behaviour. :contentReference[oaicite:1]{index=1}
+// See MS docs on CommandLineToArgvW for the backslash + quote behaviour.
+// https://learn.microsoft.com/windows/win32/api/shellapi/nf-shellapi-commandlinetoargvw
 std::wstring QuoteArgWindows(const std::wstring& arg)
 {
     if (arg.empty())
