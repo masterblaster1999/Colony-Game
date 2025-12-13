@@ -86,7 +86,7 @@ bool AppWindow::Create(HINSTANCE hInst, int nCmdShow, int width, int height)
 
     RECT r{0,0,(LONG)width,(LONG)height};
     // High-DPI aware rect sizing for the client area.
-    AdjustWindowRectExForDpi(&r, WS_OVERLAPPEDWINDOW, FALSE, 0, GetDpiForSystem()); // MS docs. :contentReference[oaicite:4]{index=4}
+    AdjustWindowRectExForDpi(&r, WS_OVERLAPPEDWINDOW, FALSE, 0, GetDpiForSystem());
 
     m_hwnd = CreateWindowExW(
         0, kClass, L"Colony Game",
@@ -96,7 +96,7 @@ bool AppWindow::Create(HINSTANCE hInst, int nCmdShow, int width, int height)
 
     if (!m_hwnd) return false;
 
-    RegisterRawMouse(m_hwnd); // enables WM_INPUT raw deltas (docs require registration). :contentReference[oaicite:5]{index=5}
+    RegisterRawMouse(m_hwnd); // enables WM_INPUT raw deltas (docs require registration).
 
     RECT cr{};
     GetClientRect(m_hwnd, &cr);
@@ -152,7 +152,7 @@ LRESULT AppWindow::HandleMsg(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam)
     case WM_DPICHANGED:
     {
         // Resize/move suggested rect for PMv2
-        // Per MS guidance, apply the suggested rectangle. :contentReference[oaicite:6]{index=6}
+        // Per MS guidance, apply the suggested rectangle.
         RECT* const prcNewWindow = (RECT*)lParam;
         SetWindowPos(hWnd, nullptr,
             prcNewWindow->left, prcNewWindow->top,
@@ -232,7 +232,7 @@ LRESULT AppWindow::HandleMsg(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam)
 
     case WM_MOUSEWHEEL:
     {
-        // Wheel detents are multiples of WHEEL_DELTA (120). :contentReference[oaicite:7]{index=7}
+        // Wheel detents are multiples of WHEEL_DELTA (120).
         const int detents = GET_WHEEL_DELTA_WPARAM(wParam) / 120;
         if (detents != 0) {
             g_zoom *= (1.0f + 0.10f * static_cast<float>(detents));
@@ -246,7 +246,7 @@ LRESULT AppWindow::HandleMsg(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam)
     // --- Raw input (high-resolution mouse deltas) -----------------------------
     case WM_INPUT:
     {
-        // Per docs, use GetRawInputData to fetch RAWINPUT for this HRAWINPUT. :contentReference[oaicite:8]{index=8}
+        // Per docs, use GetRawInputData to fetch RAWINPUT for this HRAWINPUT.
         UINT dwSize = 0;
         GetRawInputData(reinterpret_cast<HRAWINPUT>(lParam), RID_INPUT, nullptr, &dwSize, sizeof(RAWINPUTHEADER));
         if (dwSize) {
