@@ -134,8 +134,8 @@ void LogMessageV(LogLevel level, const char* fmt, va_list ap)
 #endif
 
     char line[2100]{};
-#if defined(_MSC_VER)
-    (void)snprintf_s(line, sizeof(line), _TRUNCATE, "[%s] %s\n", LevelTag(level), msg);
+ #if defined(_MSC_VER)
+    (void)_snprintf_s(line, sizeof(line), _TRUNCATE, "[%s] %s\n", LevelTag(level), msg);
 #else
     (void)snprintf(line, sizeof(line), "[%s] %s\n", LevelTag(level), msg);
 #endif
