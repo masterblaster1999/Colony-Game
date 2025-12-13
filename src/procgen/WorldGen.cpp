@@ -3,6 +3,7 @@
 #include "procgen/Noise.h"
 #include "procgen/Poisson.h"
 #include "procgen/Erosion.h"
+#include "procgen/Hydrology.h" // NEW: rivers/lakes + moisture-from-water
 
 // === New: worldgen connectors/siting/roads ===
 #include "worldgen/SettlementSitingGenerator.hpp"
@@ -130,6 +131,36 @@ WorldData generateWorld(const WorldParams& params) {
         applyHydraulicErosion(out.height, out.w, out.h, params.seed ^ 0x9e3779b9u, ep);
     }
 
+    // === NEW: Hydrology (rivers/lakes) + water-driven moisture =================
+    // Run AFTER erosion so drainage follows the carved terrain.
+    HydrologySettings hs;
+    hs.seed = params.seed ^ 0xC0FFEEu;
+
+    // Hydrology uses a percentile-based sea level. Derive a percentile that matches
+    // the explicit seaLevel (value) used by your world params.
+    {
+        size_t below = 0;
+        for (float v : out.height) {
+            below += (v <= params.seaLevel) ? 1u : 0u;
+        }
+        hs.seaLevelPercentile = out.height.empty()
+            ? 0.0f
+            : static_cast<float>(below) / static_cast<float>(out.height.size());
+    }
+
+    // Keep hydrology moisture focused on rivers/lakes (you already do a coastal boost).
+    hs.includeSeaInMoisture = false;
+
+    // Scale falloff by map size (tune as desired).
+    hs.moistureFalloff = 0.12f * static_cast<float>(std::min(out.w, out.h));
+
+    HydrologyResult hydro = GenerateHydrology(out.w, out.h, out.height, hs);
+    std::vector<float> hydroMoisture = ComputeMoisture(hydro, hs);
+
+    const bool hasHydroMoisture = (hydroMoisture.size() == out.height.size());
+    const bool hasHydroWater    = (hydro.water.size() == out.height.size());
+    // === END hydrology =========================================================
+
     // Moisture and temperature
     for (int y=0;y<out.h;++y){
         float lat = std::abs((y / (float)(out.h-1)) * 2.f - 1.f); // 0 equator, 1 poles
@@ -141,6 +172,13 @@ WorldData generateWorld(const WorldParams& params) {
             // Simple coastal moistening
             float h = out.height[i];
             if (h < params.seaLevel + params.beachWidth) m = std::min(1.f, m + 0.15f);
+
+            // NEW: bias moisture by distance-to-(river/lake) so biomes green up near water.
+            // hydroMoisture is 1 at rivers/lakes and falls off toward 0 with distance.
+            if (hasHydroMoisture && h > params.seaLevel) {
+                m = clamp01(m * 0.70f + hydroMoisture[(size_t)i] * 0.30f);
+            }
+
             out.moisture[i] = clamp01(m);
 
             // Temperature: hot at equator, cool at poles and high altitudes
@@ -192,12 +230,27 @@ WorldData generateWorld(const WorldParams& params) {
 
     // === New: Settlement siting + connectors to water + road network (drop‑in) ===
     {
-        // Build a simple water mask (1 = water) from height and sea level.
+        // Build a water mask (1 = water).
+        // Prefer rivers/lakes from hydrology when available, but keep sea consistent with params.seaLevel.
         std::vector<uint8_t> waterMask(out.height.size(), 0u);
-        for (int y=0; y<out.h; ++y){
-            for (int x=0; x<out.w; ++x){
-                size_t i = (size_t)id(x,y,out.w);
-                waterMask[i] = (out.height[i] <= params.seaLevel) ? 1u : 0u;
+
+        if (hasHydroWater) {
+            for (size_t i = 0; i < waterMask.size(); ++i) {
+                // Always treat "sea" based on the explicit seaLevel used elsewhere.
+                if (out.height[i] <= params.seaLevel) {
+                    waterMask[i] = 1u;
+                    continue;
+                }
+
+                const WaterKind wk = hydro.water[i];
+                waterMask[i] = (wk == WaterKind::River || wk == WaterKind::Lake) ? 1u : 0u;
+            }
+        } else {
+            for (int y=0; y<out.h; ++y){
+                for (int x=0; x<out.w; ++x){
+                    size_t i = (size_t)id(x,y,out.w);
+                    waterMask[i] = (out.height[i] <= params.seaLevel) ? 1u : 0u;
+                }
             }
         }
 
