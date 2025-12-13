@@ -1,5 +1,8 @@
+// tests/test_math_and_noise.cpp
 #include "doctest/doctest.h"
-#include <vector>
-#include <cmath>
 
-// ... your TEST_CASEs. No DOCTEST_CONFIG_* macros here ...
+// include whatever production headers you are testing here
+
+TEST_CASE("math sanity") {
+    // ...
+}
