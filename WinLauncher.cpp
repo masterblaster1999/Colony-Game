@@ -48,6 +48,7 @@
 #include "platform/win/LauncherLoggingWin.h"
 #include "platform/win/LauncherCliWin.h"
 #include "platform/win/LauncherInstanceWin.h"
+#include "platform/win/DpiMessagesWin.h" // <-- PATCH: WM_DPICHANGED handling helpers
 
 #ifdef COLONY_EMBED_GAME_LOOP
 #   include "colony/world/World.h"
@@ -382,7 +383,8 @@ namespace
         colony::RenderSnapshot snapshot;
     };
 
-    EmbeddedState g_state;
+    EmbeddedState   g_state;
+    windpi::DpiState g_embedded_dpi; // <-- PATCH: per-window DPI state for the embedded GDI view
 }
 
 static LRESULT CALLBACK EmbeddedWndProc(HWND hwnd,
@@ -390,6 +392,16 @@ static LRESULT CALLBACK EmbeddedWndProc(HWND hwnd,
                                         WPARAM wParam,
                                         LPARAM lParam)
 {
+    // --- PATCH: handle per-monitor DPI changes (WM_DPICHANGED) ---
+    // This keeps the window's physical size consistent when moved between monitors
+    // with different scaling, and gives us a live DPI scale for drawing.
+    LRESULT dpiResult = 0;
+    if (windpi::TryHandleMessage(hwnd, msg, wParam, lParam, g_embedded_dpi, dpiResult))
+    {
+        InvalidateRect(hwnd, nullptr, FALSE);
+        return dpiResult;
+    }
+
     switch (msg)
     {
         case WM_PAINT:
@@ -413,7 +425,7 @@ static LRESULT CALLBACK EmbeddedWndProc(HWND hwnd,
 
             const int   w     = rc.right - rc.left;
             const int   h     = rc.bottom - rc.top;
-            const float scale = 60.0f;
+            const float scale = 60.0f * g_embedded_dpi.scale; // <-- PATCH: DPI-aware scale
             const float cx    = w * 0.5f;
             const float cy    = h * 0.5f;
 
@@ -428,7 +440,7 @@ static LRESULT CALLBACK EmbeddedWndProc(HWND hwnd,
             {
                 const int x = static_cast<int>(cx + static_cast<float>(p.x) * scale);
                 const int y = static_cast<int>(cy - static_cast<float>(p.y) * scale);
-                const int r = 6;
+                const int r = static_cast<int>(6.0f * g_embedded_dpi.scale); // <-- PATCH: DPI-aware radius
 
                 Ellipse(dc, x - r, y - r, x + r, y + r);
             }
@@ -446,7 +458,11 @@ static LRESULT CALLBACK EmbeddedWndProc(HWND hwnd,
                 << g_state.snapshot.sim_time;
 
             const std::wstring hudText = hud.str();
-            TextOutW(dc, 8, 8, hudText.c_str(),
+
+            // <-- PATCH: keep HUD padding roughly constant in physical size
+            const int pad = windpi::DipToPx(8, g_embedded_dpi.dpi);
+
+            TextOutW(dc, pad, pad, hudText.c_str(),
                      static_cast<int>(hudText.size()));
 
             SelectObject(dc, oldFont);
@@ -501,6 +517,9 @@ static int RunEmbeddedGameLoop(std::wostream& log)
         MsgBox(L"Colony Game", L"Failed to create embedded window.");
         return 11;
     }
+
+    // --- PATCH: initialize DPI state immediately so drawing scale is correct from frame 1 ---
+    windpi::InitFromHwnd(hwnd, g_embedded_dpi);
 
     // 2) Build the world and run a fixed-timestep loop.
     colony::World          world;
