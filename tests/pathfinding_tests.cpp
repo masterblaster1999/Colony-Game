@@ -1,3 +1,4 @@
+// tests/pathfinding_tests.cpp
 #include "doctest/doctest.h"
 #include <pathfinding/Jps.hpp>
 
