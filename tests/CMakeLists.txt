@@ -84,12 +84,23 @@ endif()
 # --------------------------------------------------------------
 set(TEST_SOURCES)
 
-# Runner TU (exactly one main to avoid multiple definitions)
-set(_runner "${CMAKE_CURRENT_BINARY_DIR}/test_main.cpp")
-file(WRITE "${_runner}" [=[
-    #define DOCTEST_CONFIG_IMPLEMENT_WITH_MAIN
-    #include <doctest/doctest.h>
-]=])
+# Runner TU (exactly one translation unit is allowed to implement doctest / provide main)
+# Prefer a checked-in tests/test_main.cpp if it exists; otherwise generate one into the build tree.
+set(_source_runner    "${CMAKE_SOURCE_DIR}/tests/test_main.cpp")
+set(_generated_runner "${CMAKE_CURRENT_BINARY_DIR}/test_main.cpp")
+set(_RUNNER_IS_GENERATED OFF)
+
+if(EXISTS "${_source_runner}")
+    set(_runner "${_source_runner}")
+else()
+    set(_runner "${_generated_runner}")
+    set(_RUNNER_IS_GENERATED ON)
+    file(WRITE "${_runner}" [=[
+        #define DOCTEST_CONFIG_IMPLEMENT_WITH_MAIN
+        #include <doctest/doctest.h>
+    ]=])
+endif()
+
 list(APPEND TEST_SOURCES "${_runner}")
 
 # Add all tests (except any old runner or smoke with another main)
@@ -102,6 +113,87 @@ list(APPEND TEST_SOURCES ${_MORE_TESTS})
 
 add_executable(colony_smoke ${TEST_SOURCES})
 target_compile_features(colony_smoke PRIVATE cxx_std_23)
+
+# --------------------------------------------------------------
+# Guardrail: enforce that ONLY test_main.cpp is the doctest runner/implementation TU.
+#
+# The failure mode we're preventing:
+#   If *any* other test .cpp defines DOCTEST_CONFIG_IMPLEMENT_WITH_MAIN or DOCTEST_CONFIG_IMPLEMENT,
+#   you will get ODR / "multiple definition" linker errors.
+#
+# This guardrail runs at BUILD TIME (not just configure-time), so it catches the problem
+# immediately with a clear error even if someone adds the macro to an existing test file
+# without re-running CMake.
+# --------------------------------------------------------------
+set(_doctest_guard_script "${CMAKE_CURRENT_BINARY_DIR}/doctest_runner_guardrail.cmake")
+file(WRITE "${_doctest_guard_script}" [=[
+    if(NOT DEFINED TESTS_DIR)
+        message(FATAL_ERROR "doctest runner guardrail: TESTS_DIR was not provided")
+    endif()
+    if(NOT DEFINED RUNNER)
+        message(FATAL_ERROR "doctest runner guardrail: RUNNER was not provided")
+    endif()
+
+    # Normalize path separators for reliable prefix checks (especially on Windows).
+    file(TO_CMAKE_PATH "${TESTS_DIR}" _tests_dir_norm)
+    file(TO_CMAKE_PATH "${RUNNER}"   _runner_norm)
+
+    file(GLOB_RECURSE _ALL_CPP "${_tests_dir_norm}/*.cpp")
+
+    set(_offenders "")
+    set(_runner_has_impl OFF)
+
+    foreach(_src IN LISTS _ALL_CPP)
+        file(READ "${_src}" _contents)
+
+        # Match lines that define either doctest implementation macro.
+        if(_contents MATCHES "(^|[\\r\\n])[ \\t]*#[ \\t]*define[ \\t]+DOCTEST_CONFIG_IMPLEMENT_WITH_MAIN" OR
+           _contents MATCHES "(^|[\\r\\n])[ \\t]*#[ \\t]*define[ \\t]+DOCTEST_CONFIG_IMPLEMENT([ \\t\\r\\n]|$)")
+            if(_src STREQUAL "${_runner_norm}")
+                set(_runner_has_impl ON)
+            else()
+                list(APPEND _offenders "${_src}")
+            endif()
+        endif()
+    endforeach()
+
+    if(_offenders)
+        list(JOIN _offenders "\n  - " _pretty)
+        message(FATAL_ERROR
+            "Doctest runner guardrail failed.\n"
+            "Only the dedicated runner is allowed to define DOCTEST_CONFIG_IMPLEMENT_WITH_MAIN / DOCTEST_CONFIG_IMPLEMENT.\n"
+            "Runner:\n"
+            "  ${_runner_norm}\n"
+            "\n"
+            "Remove those defines from:\n"
+            "  - ${_pretty}\n"
+        )
+    endif()
+
+    # If the runner lives inside the tests source tree, ensure it actually contains a doctest implementation macro.
+    # (If the runner is generated in the build tree, we assume it is correct.)
+    string(FIND "${_runner_norm}" "${_tests_dir_norm}" _prefix_pos)
+    if(_prefix_pos EQUAL 0)
+        if(NOT _runner_has_impl)
+            message(FATAL_ERROR
+                "Doctest runner guardrail failed.\n"
+                "The configured runner does not define DOCTEST_CONFIG_IMPLEMENT_WITH_MAIN or DOCTEST_CONFIG_IMPLEMENT.\n"
+                "Runner:\n"
+                "  ${_runner_norm}\n"
+            )
+        endif()
+    endif()
+]=])
+
+add_custom_target(colony_doctest_runner_guardrail
+    COMMAND "${CMAKE_COMMAND}"
+        -DTESTS_DIR:PATH="${CMAKE_SOURCE_DIR}/tests"
+        -DRUNNER:FILEPATH="${_runner}"
+        -P "${_doctest_guard_script}"
+    COMMENT "Checking doctest runner uniqueness (only test_main.cpp may implement doctest)"
+    VERBATIM
+)
+add_dependencies(colony_smoke colony_doctest_runner_guardrail)
 
 # --------------------------------------------------------------
 # Unity builds:
