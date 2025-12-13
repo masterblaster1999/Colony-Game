@@ -25,6 +25,13 @@ if(NOT TARGET doctest)
         target_link_libraries(doctest INTERFACE doctest::doctest)
         # Imported targets should propagate INTERFACE_INCLUDE_DIRECTORIES.
         # Nothing else is needed here.
+
+        # NOTE: Some doctest packages also provide doctest::doctest_with_main.
+        # We intentionally do NOT link any "...with_main" target, because we provide
+        # our own single runner TU (test_main.cpp) to avoid ODR/linker conflicts.
+        if(TARGET doctest::doctest_with_main)
+            message(STATUS "Found doctest::doctest_with_main (NOT linking it; using our own test_main.cpp runner)")
+        endif()
     else()
         # FetchContent fallback: bring in upstream and publish its includes
         set(FETCHCONTENT_UPDATES_DISCONNECTED ON)
@@ -206,7 +213,23 @@ add_dependencies(colony_smoke colony_doctest_runner_guardrail)
 set_target_properties(colony_smoke PROPERTIES UNITY_BUILD OFF)
 
 if(MSVC)
-    target_compile_options(colony_smoke PRIVATE /utf-8 /W4 /permissive-)
+    target_compile_options(colony_smoke PRIVATE
+        /utf-8
+        /W4
+        /permissive-
+        /Zc:__cplusplus
+        /MP
+
+        # --- PATCH (G): harden doctest ODR correctness on MSVC ---
+        # If DOCTEST_CONFIG_IMPLEMENT* ever leaks in via /D (directory/target/global definitions,
+        # imported targets, toolchain files, etc.), cl.exe would compile doctest implementation
+        # into multiple .obj files -> LNK2005 multiple definition.
+        # Force-undefine both implementation macros on the command line for ALL test TUs.
+        # The runner still defines DOCTEST_CONFIG_IMPLEMENT_WITH_MAIN in-source (#define),
+        # which /U cannot undo.
+        /UDOCTEST_CONFIG_IMPLEMENT
+        /UDOCTEST_CONFIG_IMPLEMENT_WITH_MAIN
+    )
 else()
     target_compile_options(colony_smoke PRIVATE -Wall -Wextra -Wpedantic)
 endif()
@@ -243,7 +266,15 @@ else()
         "${CMAKE_SOURCE_DIR}/pathfinding/*.cpp"
         "${CMAKE_SOURCE_DIR}/hpa/*.cpp"
     )
+
     if(COLONY_TEST_PATH_SOURCES)
+        # --- EXTRA SAFETY ---
+        # Avoid accidentally pulling any *_test.cpp / *_tests.cpp / test_*.cpp sources that may
+        # live next to production code. Those sometimes include doctest implementation macros
+        # and can cause LNK2005 when linked with the main test runner.
+        list(FILTER COLONY_TEST_PATH_SOURCES EXCLUDE REGEX ".*/tests?/.*")
+        list(FILTER COLONY_TEST_PATH_SOURCES EXCLUDE REGEX ".*/(test_.*|.*_test|.*_tests)\\.cpp$")
+
         add_library(colony_path_obj OBJECT ${COLONY_TEST_PATH_SOURCES})
         target_include_directories(colony_path_obj PUBLIC
             "${CMAKE_SOURCE_DIR}"
