@@ -1,4 +1,16 @@
 // platform/win/LauncherLoggingWin.cpp
+//
+// Windows-only log helpers used by the launcher and (optionally) other startup paths
+// such as AppMain / WinBootstrap / WinMain.
+//
+// Goals:
+//  - Single source of truth for the logs directory: %LOCALAPPDATA%\ColonyGame\logs
+//  - Per-process default log file naming (launcher.log for launcher; <exe>.log for others)
+//  - Best-effort rotation + pruning of rotated logs
+//  - Always mirror to OutputDebugStringW (Visual Studio Output window)
+//  - Safe if OpenLogFile() is called multiple times in the same process:
+//      * first call rotates + truncates (fresh log for this run)
+//      * subsequent calls append and DO NOT rotate again
 
 #include "platform/win/LauncherLoggingWin.h"
 
@@ -7,6 +19,7 @@
 
 #include <algorithm>
 #include <filesystem>
+#include <string>
 #include <vector>
 
 namespace fs = std::filesystem;
@@ -34,8 +47,91 @@ namespace
         return std::wstring(buf);
     }
 
-    // Best-effort pruning: keep newest N rotated logs that match launcher_*.log
-    void PruneRotatedLogs(const fs::path& dir, std::size_t keep_count)
+    std::wstring ToLowerCopy(std::wstring s)
+    {
+        for (auto& ch : s)
+        {
+            ch = static_cast<wchar_t>(towlower(ch));
+        }
+        return s;
+    }
+
+    std::wstring SanitizeForFilename(std::wstring s)
+    {
+        // Windows forbids: < > : " / \ | ? *  and control chars.
+        // Also avoid trailing spaces/dots.
+        if (s.empty())
+            return s;
+
+        for (auto& ch : s)
+        {
+            const bool isCtrl = (ch >= 0 && ch < 32);
+            switch (ch)
+            {
+                case L'<': case L'>': case L':': case L'"':
+                case L'/': case L'\\': case L'|': case L'?': case L'*':
+                    ch = L'_';
+                    break;
+                default:
+                    if (isCtrl)
+                        ch = L'_';
+                    break;
+            }
+        }
+
+        // Trim trailing spaces and dots (invalid in Windows filenames).
+        while (!s.empty() && (s.back() == L' ' || s.back() == L'.'))
+            s.pop_back();
+
+        // Avoid crazy-long names.
+        constexpr std::size_t kMaxLen = 64;
+        if (s.size() > kMaxLen)
+            s.resize(kMaxLen);
+
+        return s;
+    }
+
+    std::wstring GetProcessExeStem()
+    {
+        // GetModuleFileNameW doesn't require any helper headers and works reliably for "current process".
+        std::wstring buf;
+        buf.resize(32768);
+
+        DWORD n = ::GetModuleFileNameW(nullptr, buf.data(), static_cast<DWORD>(buf.size()));
+        if (n == 0)
+            return {};
+
+        buf.resize(n);
+
+        std::error_code ec;
+        fs::path p(buf);
+        std::wstring stem = p.stem().wstring();
+        (void)ec;
+
+        return stem;
+    }
+
+    // Decide the per-process base log name.
+    // - If the exe name contains "launcher" (case-insensitive), keep legacy launcher.log naming.
+    // - Otherwise use the exe stem (e.g. ColonyGame.log, Colony.exe, etc.)
+    std::wstring DefaultLogBasename()
+    {
+        std::wstring stem = GetProcessExeStem();
+        stem = SanitizeForFilename(stem);
+
+        if (stem.empty())
+            return L"launcher";
+
+        const std::wstring lower = ToLowerCopy(stem);
+        if (lower.find(L"launcher") != std::wstring::npos)
+            return L"launcher"; // preserves existing launcher.log naming
+
+        return stem;
+    }
+
+    // Best-effort pruning: keep newest N rotated logs that match "<prefix>*.log"
+    // Example prefix: "launcher_" or "ColonyGame_"
+    void PruneRotatedLogs(const fs::path& dir, const std::wstring& prefix, std::size_t keep_count)
     {
         if (dir.empty() || keep_count == 0)
             return;
@@ -65,9 +161,7 @@ namespace
                 continue;
 
             const std::wstring name = p.filename().wstring();
-
-            // rotated logs: launcher_YYYY..._pid....log
-            if (name.rfind(L"launcher_", 0) != 0)
+            if (!prefix.empty() && name.rfind(prefix, 0) != 0)
                 continue;
 
             entries.push_back(Entry{p, it.last_write_time(ec)});
@@ -111,41 +205,57 @@ std::wofstream OpenLogFile()
     const fs::path dir = LogsDir();
     if (dir.empty())
     {
-        ::OutputDebugStringW(L"[Launcher][Log] LogsDir() empty; logging disabled.\n");
+        ::OutputDebugStringW(L"[Log] LogsDir() empty; logging disabled.\n");
         return {};
     }
 
-    const fs::path mainLog = dir / L"launcher.log";
+    const std::wstring baseName = DefaultLogBasename();
+    const fs::path mainLog      = dir / (baseName + L".log");
 
-    // Rotate existing launcher.log if present
+    // If multiple startup paths call OpenLogFile() in the same process, avoid re-rotating.
+    static std::wstring s_opened_main_log_path;
+    const bool firstOpenForThisProcess =
+        s_opened_main_log_path.empty() || s_opened_main_log_path != mainLog.wstring();
+
+    if (firstOpenForThisProcess)
     {
+        // Rotate existing <baseName>.log if present
         std::error_code ec;
         if (fs::exists(mainLog, ec))
         {
             const DWORD pid = ::GetCurrentProcessId();
 
-            fs::path rotated =
-                dir / (L"launcher_" + TimestampForFilename() + L"_pid" + std::to_wstring(pid) + L".log");
+            fs::path rotated = dir / (baseName + L"_" + TimestampForFilename() +
+                                      L"_pid" + std::to_wstring(pid) + L".log");
 
             // Best-effort rename. If it fails (locked, permissions), we'll just overwrite.
             fs::rename(mainLog, rotated, ec);
         }
 
-        // Keep newest 20 rotated logs.
-        PruneRotatedLogs(dir, 20);
+        // Keep newest 20 rotated logs for THIS baseName only.
+        PruneRotatedLogs(dir, baseName + L"_", 20);
+
+        s_opened_main_log_path = mainLog.wstring();
     }
 
     std::wofstream log;
-    log.open(mainLog, std::ios::out | std::ios::trunc);
+
+    // First open: trunc (fresh log for this run)
+    // Subsequent opens in the same process: append (avoid clobber/extra rotation)
+    log.open(mainLog, std::ios::out | (firstOpenForThisProcess ? std::ios::trunc : std::ios::app));
 
     if (!log)
     {
-        ::OutputDebugStringW(L"[Launcher][Log] Failed to open %LOCALAPPDATA%\\ColonyGame\\logs\\launcher.log\n");
+        std::wstring msg = L"[Log] Failed to open log file: " + mainLog.wstring();
+        DebugOutLine(msg);
         return {};
     }
 
     // Small header (kept minimal so it won't break anyone grepping old patterns).
-    WriteLog(log, L"[Launcher] Log opened. pid=" + std::to_wstring(::GetCurrentProcessId()));
+    WriteLog(log,
+             L"[Log] Opened. name=" + baseName +
+             L" pid=" + std::to_wstring(::GetCurrentProcessId()) +
+             L" file=" + mainLog.wstring());
     return log;
 }
 
