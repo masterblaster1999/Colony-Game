@@ -44,9 +44,11 @@ endif()
 find_package(taskflow   CONFIG QUIET)
 find_package(directxtex CONFIG REQUIRED) # Microsoft::DirectXTex
 
-# ------------------------------ Source ownership ------------------------------
+# ------------------------------ Modules ------------------------------
 include("${COLONY_ROOT_DIR}/cmake/CGSources.cmake")
+include("${COLONY_ROOT_DIR}/cmake/CGShadersPipeline.cmake")
 
+# ------------------------------ Sources ------------------------------
 cg_collect_core_sources(COLONY_CORE_SOURCES
   ROOT_DIR "${COLONY_ROOT_DIR}"
   FRONTEND "${FRONTEND}"
@@ -59,7 +61,6 @@ endif()
 target_sources(colony_core PRIVATE ${COLONY_CORE_SOURCES})
 
 # Explicitly control unity (jumbo) builds to avoid accidental ODR/duplicate merges.
-# Keep OFF by default for the core; allow opt-in via COLONY_UNITY_BUILD.
 if(COLONY_UNITY_BUILD)
   set_target_properties(colony_core PROPERTIES UNITY_BUILD ON)
 else()
@@ -108,8 +109,6 @@ target_compile_definitions(colony_core
 
 if(MSVC)
   target_compile_options(colony_core PRIVATE /permissive- /Zc:preprocessor /Zc:__cplusplus /utf-8 /W4 /MP)
-  # NOTE: Linker warnings-as-errors belongs on the final EXE(s), not on a static library.
-  # If you want compile-time warnings-as-errors, define COLONY_WERROR=ON at the top level.
   if(DEFINED COLONY_WERROR AND COLONY_WERROR)
     target_compile_options(colony_core PRIVATE /WX)
   endif()
@@ -123,10 +122,10 @@ endif()
 set(_TP_LIBS ${COLONY_THIRDPARTY_LIBS})
 if(NOT FRONTEND STREQUAL "sdl")
   if(_TP_LIBS)
-    # Avoid pulling SDL2main unless we are actually using SDL (prevents SDL_main unresolved).
     list(FILTER _TP_LIBS EXCLUDE REGEX "SDL2main|SDL2::SDL2main")
   endif()
 endif()
+
 # Optional aggregate build options + DirectXTex
 if(NOT TARGET colony_build_options)
   add_library(colony_build_options INTERFACE)
@@ -201,7 +200,6 @@ if(WIN32)
   endif()
 endif()
 
-# Explicitly control unity for the EXE as well (opt-in)
 if(COLONY_UNITY_BUILD)
   set_target_properties(ColonyGame PROPERTIES UNITY_BUILD ON UNITY_BUILD_UNIQUE_ID "COLONY")
 else()
@@ -225,7 +223,7 @@ endif()
 
 target_link_libraries(ColonyGame PRIVATE colony_core colony_build_options)
 
-# --- Patch A: link single-owner Windows platform libs only at the EXE ---
+# Link single-owner Windows platform libs only at the EXE (if present)
 if(TARGET Colony::PlatformWin)
   target_link_libraries(ColonyGame PRIVATE Colony::PlatformWin)
 endif()
@@ -269,7 +267,6 @@ if(WIN32 AND COLONY_BUILD_LAUNCHER AND NOT (FRONTEND STREQUAL "sdl"))
 
   target_link_libraries(ColonyLauncher PRIVATE colony_core colony_build_options shell32 ole32)
 
-  # Link platform libs here too if the launcher uses Win platform utilities
   if(TARGET Colony::PlatformWin)
     target_link_libraries(ColonyLauncher PRIVATE Colony::PlatformWin)
   endif()
@@ -282,7 +279,6 @@ if(WIN32 AND COLONY_BUILD_LAUNCHER AND NOT (FRONTEND STREQUAL "sdl"))
     FRONTEND "${FRONTEND}"
   )
 
-  # Set startup project to the game by default; switch to the launcher if you prefer
   set_property(DIRECTORY "${CMAKE_SOURCE_DIR}" PROPERTY VS_STARTUP_PROJECT ColonyGame)
 else()
   set_property(DIRECTORY "${CMAKE_SOURCE_DIR}" PROPERTY VS_STARTUP_PROJECT ColonyGame)
@@ -326,178 +322,12 @@ if(EXISTS "${CONTENT_DIR}")
   )
 endif()
 
-# --------------------------------- SHADERS --------------------------------
-# If a top-level shader pipeline is already present (e.g. CGShaders / colony_register_shaders),
-# avoid also configuring VS_SHADER_* here to prevent double-compilation and FXC/DXC mismatches.
-set(_COLONY_SHADERS_EXTERNALLY_HANDLED FALSE)
-if(COMMAND cg_compile_hlsl OR COMMAND colony_register_shaders)
-  set(_COLONY_SHADERS_EXTERNALLY_HANDLED TRUE)
-endif()
-
-if(_COLONY_SHADERS_EXTERNALLY_HANDLED)
-  # Add shaders to the IDE (header-only) but let the external pipeline do compilation/copying.
-  file(GLOB_RECURSE _ALL_SHADERS CONFIGURE_DEPENDS
-    "${COLONY_ROOT_DIR}/renderer/Shaders/*.hlsl"
-    "${COLONY_ROOT_DIR}/renderer/Shaders/*.hlsli"
-    "${COLONY_ROOT_DIR}/shaders/*.hlsl"
-    "${COLONY_ROOT_DIR}/shaders/*.hlsli"
-  )
-  if(_ALL_SHADERS)
-    target_sources(ColonyGame PRIVATE ${_ALL_SHADERS})
-    set_source_files_properties(${_ALL_SHADERS} PROPERTIES HEADER_FILE_ONLY ON)
-    source_group(TREE "${COLONY_ROOT_DIR}" PREFIX "Shaders" FILES ${_ALL_SHADERS})
-  endif()
-  unset(_ALL_SHADERS)
-
-elseif(CMAKE_GENERATOR MATCHES "Visual Studio")
-  set(HLSL_DIR  "${COLONY_ROOT_DIR}/renderer/Shaders")
-  set(HLSL_INC_PRIMARY  "${HLSL_DIR}/include")
-  set(HLSL_INC_ALT      "${COLONY_ROOT_DIR}/shaders/include")
-  set(_VS_OUTDIR "$(OutDir)res\\shaders")
-
-  # Vertex/Pixel always — only compile real entrypoint files by suffix
-  file(GLOB_RECURSE HLSL_SOURCES CONFIGURE_DEPENDS
-    "${HLSL_DIR}/*_vs.hlsl"
-    "${HLSL_DIR}/*_ps.hlsl"
-  )
-
-  # Compute only when enabled (prevents X3501 if CSMain isn’t present yet)
-  file(GLOB_RECURSE HLSL_CS_ALL CONFIGURE_DEPENDS "${HLSL_DIR}/*_cs.hlsl")
-  if(COLONY_ENABLE_COMPUTE_SHADERS)
-    list(APPEND HLSL_SOURCES ${HLSL_CS_ALL})
-  else()
-    set(HLSL_LIBRARY ${HLSL_CS_ALL})
-  endif()
-
-  file(GLOB_RECURSE HLSL_ALL_HLSL CONFIGURE_DEPENDS "${HLSL_DIR}/*.hlsl")
-  file(GLOB_RECURSE HLSL_INCLUDES CONFIGURE_DEPENDS "${HLSL_DIR}/*.hlsli")
-
-  if(HLSL_SOURCES)
-    target_sources(ColonyGame PRIVATE ${HLSL_SOURCES})
-  endif()
-  if(HLSL_LIBRARY)
-    target_sources(ColonyGame PRIVATE ${HLSL_LIBRARY})
-    set_source_files_properties(${HLSL_LIBRARY} PROPERTIES HEADER_FILE_ONLY ON)
-  endif()
-  if(HLSL_INCLUDES)
-    target_sources(ColonyGame PRIVATE ${HLSL_INCLUDES})
-    set_source_files_properties(${HLSL_INCLUDES} PROPERTIES HEADER_FILE_ONLY ON)
-  endif()
-
-  source_group("Shaders\\Sources"  FILES ${HLSL_SOURCES})
-  source_group("Shaders\\Library"  FILES ${HLSL_LIBRARY})
-  source_group("Shaders\\Includes" FILES ${HLSL_INCLUDES})
-
-  # Build a safe include flag string for FXC (avoid semicolons in VS_SHADER_FLAGS).
-  set(_HLSL_INC_FLAGS_LIST "")
-  if(EXISTS "${HLSL_INC_PRIMARY}")
-    list(APPEND _HLSL_INC_FLAGS_LIST "/I\"${HLSL_INC_PRIMARY}\"")
-  endif()
-  if(EXISTS "${HLSL_INC_ALT}")
-    list(APPEND _HLSL_INC_FLAGS_LIST "/I\"${HLSL_INC_ALT}\"")
-  endif()
-  if(_HLSL_INC_FLAGS_LIST)
-    string(JOIN " " _HLSL_INC_FLAGS_STR ${_HLSL_INC_FLAGS_LIST})
-  else()
-    set(_HLSL_INC_FLAGS_STR "")
-  endif()
-
-  # Auto-detect entrypoint per file; fall back to 'main' if *Main is absent
-  function(_configure_vs_shader _file)
-    get_filename_component(_we "${_file}" NAME_WE)
-    set(_type "")
-    if(_we MATCHES "_vs$")
-      set(_type "Vertex")
-    elseif(_we MATCHES "_ps$")
-      set(_type "Pixel")
-    elseif(_we MATCHES "_cs$")
-      set(_type "Compute")
-    else()
-      return()
-    endif()
-
-    # Read the shader file to detect whether VSMain/PSMain/CSMain exist.
-    file(READ "${_file}" _hlsl_src)
-    set(_entry "main")
-    if(_type STREQUAL "Vertex")
-      string(FIND "${_hlsl_src}" "VSMain(" _hit)
-      if(NOT _hit EQUAL -1)
-        set(_entry "VSMain")
-      endif()
-    elseif(_type STREQUAL "Pixel")
-      string(FIND "${_hlsl_src}" "PSMain(" _hit)
-      if(NOT _hit EQUAL -1)
-        set(_entry "PSMain")
-      endif()
-    elseif(_type STREQUAL "Compute")
-      string(FIND "${_hlsl_src}" "CSMain(" _hit)
-      if(NOT _hit EQUAL -1)
-        set(_entry "CSMain")
-      endif()
-    endif()
-
-    set_source_files_properties("${_file}" PROPERTIES
-      VS_SHADER_TYPE                  "${_type}"
-      VS_SHADER_MODEL                 "5.0"
-      VS_SHADER_ENTRYPOINT            "${_entry}"
-      VS_SHADER_OBJECT_FILE_NAME      "${_VS_OUTDIR}\\%(Filename).cso"
-      VS_SHADER_ENABLE_DEBUG          "$<CONFIG:Debug>"
-      VS_SHADER_DISABLE_OPTIMIZATIONS "$<CONFIG:Debug>"
-      VS_SHADER_FLAGS                 "${_HLSL_INC_FLAGS_STR}"
-    )
-  endfunction()
-
-  foreach(_sh IN LISTS HLSL_SOURCES)
-    _configure_vs_shader("${_sh}")
-  endforeach()
-
-  unset(HLSL_DIR)
-  unset(HLSL_INC_PRIMARY)
-  unset(HLSL_INC_ALT)
-  unset(_VS_OUTDIR)
-  unset(_HLSL_INC_FLAGS_LIST)
-  unset(_HLSL_INC_FLAGS_STR)
-
-else()
-  include(${COLONY_ROOT_DIR}/cmake/ColonyShaders.cmake OPTIONAL RESULT_VARIABLE _colony_shaders_included)
-
-  set(_COLONY_MANIFEST "")
-  if(EXISTS "${COLONY_ROOT_DIR}/renderer/Shaders/shaders.json")
-    set(_COLONY_MANIFEST "${COLONY_ROOT_DIR}/renderer/Shaders/shaders.json")
-  elseif(EXISTS "${COLONY_ROOT_DIR}/shaders/shaders.json")
-    set(_COLONY_MANIFEST "${COLONY_ROOT_DIR}/shaders/shaders.json")
-  endif()
-
-  if(_COLONY_MANIFEST AND COMMAND colony_register_shaders)
-    set(_COLONY_SHADER_OUT "${CMAKE_BINARY_DIR}/shaders")
-    colony_register_shaders(
-      TARGET       ColonyGame
-      MANIFEST     "${_COLONY_MANIFEST}"
-      OUTPUT_DIR   "${_COLONY_SHADER_OUT}"
-      INCLUDE_DIRS
-        "${COLONY_ROOT_DIR}/renderer/Shaders"
-        "${COLONY_ROOT_DIR}/renderer/Shaders/include"
-        "${COLONY_ROOT_DIR}/shaders"
-        "${COLONY_ROOT_DIR}/shaders/include"
-      DXC_ARGS     -nologo
-    )
-
-    if(COMMAND colony_install_shaders)
-      colony_install_shaders(TARGET ColonyGame DESTINATION bin/shaders)
-    endif()
-
-    add_custom_command(TARGET ColonyGame POST_BUILD
-      COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:ColonyGame>/res/shaders"
-      COMMAND ${CMAKE_COMMAND} -E copy_directory
-              "${CMAKE_BINARY_DIR}/shaders/$<CONFIG>"
-              "$<TARGET_FILE_DIR:ColonyGame>/res/shaders"
-      VERBATIM
-    )
-  else()
-    message(STATUS "No shaders.json manifest found; DXC shader registration skipped.")
-  endif()
-endif()
-unset(_COLONY_SHADERS_EXTERNALLY_HANDLED)
+# ------------------------------- SHADERS (one-liner) -------------------------------
+cg_setup_shaders_pipeline(
+  TARGET ColonyGame
+  ROOT_DIR "${COLONY_ROOT_DIR}"
+  ENABLE_COMPUTE_SHADERS ${COLONY_ENABLE_COMPUTE_SHADERS}
+)
 
 # ------------------------------- Install ----------------------------------
 install(TARGETS ColonyGame RUNTIME DESTINATION ".")
