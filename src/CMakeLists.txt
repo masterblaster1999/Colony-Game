@@ -1,5 +1,13 @@
 # src/CMakeLists.txt
-cmake_minimum_required(VERSION 3.20)
+
+# When this directory is configured as a *standalone* project, set the CMake policy
+# version here. When included from the repository root (add_subdirectory(src)),
+# do NOT call cmake_minimum_required() to avoid resetting policy behavior inside
+# this subdirectory.
+if(CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)
+  cmake_minimum_required(VERSION 3.27...3.31 FATAL_ERROR)
+  project(ColonyGame LANGUAGES CXX)
+endif()
 
 set_property(GLOBAL PROPERTY USE_FOLDERS ON)
 include(FetchContent)
@@ -40,6 +48,16 @@ file(GLOB_RECURSE SRC_ALL
   "${CMAKE_SOURCE_DIR}/src/*.hpp" "${CMAKE_SOURCE_DIR}/src/*.h"
   "${CMAKE_SOURCE_DIR}/platform/win/*.cpp" "${CMAKE_SOURCE_DIR}/platform/win/*.h"
 )
+
+# Normalize paths so regex filters behave consistently on Windows (backslashes vs slashes).
+set(_SRC_ALL_NORM "")
+foreach(_f IN LISTS SRC_ALL)
+  file(TO_CMAKE_PATH "${_f}" _f_norm)
+  list(APPEND _SRC_ALL_NORM "${_f_norm}")
+endforeach()
+set(SRC_ALL "${_SRC_ALL_NORM}")
+unset(_SRC_ALL_NORM)
+unset(_f_norm)
 
 # Keep app/ and any entry points out of the core lib
 list(FILTER SRC_ALL EXCLUDE REGEX ".*/src/app/.*\\.(c|cc|cxx|cpp)$")
@@ -96,7 +114,24 @@ if(WIN32)
   list(FILTER SRC_ALL EXCLUDE REGEX ".*/platform/win/(Bootstrap|WinBootstrap)\\.(c|cc|cxx|cpp)$")
 endif()
 
-# Defensive de‑duplication
+# Defensive de‑duplication (case-insensitive on Windows)
+if(WIN32)
+  set(_seen "")
+  set(_dedup "")
+  foreach(_f IN LISTS SRC_ALL)
+    string(TOLOWER "${_f}" _key)
+    list(FIND _seen "${_key}" _idx)
+    if(_idx EQUAL -1)
+      list(APPEND _seen "${_key}")
+      list(APPEND _dedup "${_f}")
+    endif()
+  endforeach()
+  set(SRC_ALL "${_dedup}")
+  unset(_seen)
+  unset(_dedup)
+  unset(_key)
+  unset(_idx)
+endif()
 list(REMOVE_DUPLICATES SRC_ALL)
 
 # -------------------- Patch D: DeviceResources ODR guard (Windows) --------------------
@@ -136,6 +171,8 @@ elseif(_dr_count EQUAL 1)
   list(GET _dr_candidates 0 _dr_keep)
   set_source_files_properties("${_dr_keep}" PROPERTIES SKIP_UNITY_BUILD_INCLUSION ON)
 endif()
+unset(_dr_candidates)
+unset(_dr_count)
 # -------------------------------------------------------------------------------------
 
 # ---------------------------- Guardrail: verify filters ----------------------------
@@ -167,10 +204,19 @@ if(_colony_leaks)
     "Update the filters in src/CMakeLists.txt to exclude them."
   )
 endif()
+unset(_colony_disallow_regexes)
+unset(_colony_leaks)
+unset(_colony_leaks_joined)
+unset(_rx)
 # -------------------------------------------------------------------------------
 
 # ------------------------------ Core library -----------------------------
-add_library(colony_core STATIC ${SRC_ALL})
+if(NOT TARGET colony_core)
+  add_library(colony_core STATIC ${SRC_ALL})
+else()
+  # If the target already exists (e.g., created elsewhere), just attach sources here.
+  target_sources(colony_core PRIVATE ${SRC_ALL})
+endif()
 
 # Explicitly control unity (jumbo) builds to avoid accidental ODR/duplicate merges.
 # Keep OFF by default for the core; allow opt-in via COLONY_UNITY_BUILD.
@@ -212,6 +258,7 @@ endif()
 if(COLONY_USE_PCH AND _PCH_HEADER)
   target_precompile_headers(colony_core PRIVATE "${_PCH_HEADER}")
 endif()
+unset(_PCH_HEADER)
 
 # Public feature toggles for consumers
 target_compile_definitions(colony_core
@@ -223,8 +270,11 @@ target_compile_definitions(colony_core
 
 if(MSVC)
   target_compile_options(colony_core PRIVATE /permissive- /Zc:preprocessor /Zc:__cplusplus /utf-8 /W4 /MP)
-  # Treat link warnings as errors to prevent duplicate symbol regressions (LNK4006, etc.)
-  target_link_options(colony_core PRIVATE /WX)
+  # NOTE: Linker warnings-as-errors belongs on the final EXE(s), not on a static library.
+  # If you want compile-time warnings-as-errors, define COLONY_WERROR=ON at the top level.
+  if(DEFINED COLONY_WERROR AND COLONY_WERROR)
+    target_compile_options(colony_core PRIVATE /WX)
+  endif()
 endif()
 
 if(WIN32)
@@ -244,6 +294,7 @@ if(NOT TARGET colony_build_options)
   add_library(colony_build_options INTERFACE)
 endif()
 target_link_libraries(colony_core PUBLIC ${_TP_LIBS} colony_build_options Microsoft::DirectXTex)
+unset(_TP_LIBS)
 
 # ------------------------------- ImGui (opt) ------------------------------
 if(WIN32 AND ENABLE_IMGUI)
@@ -272,6 +323,7 @@ if(WIN32 AND ENABLE_IMGUI)
   elseif(TARGET imgui_backend)
     target_link_libraries(colony_core PRIVATE imgui_backend)
   endif()
+  unset(_imgui_ok)
 endif()
 
 # ------------------------------- Tracy (opt) ------------------------------
@@ -300,7 +352,9 @@ if(NOT taskflow_FOUND)
 endif()
 
 # =============================== Game EXE ===============================
-add_executable(ColonyGame)
+if(NOT TARGET ColonyGame)
+  add_executable(ColonyGame)
+endif()
 
 if(WIN32)
   target_compile_definitions(ColonyGame PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX)
@@ -363,6 +417,7 @@ if(WIN32 AND NOT (FRONTEND STREQUAL "sdl"))
   if(NOT _ENTRY_ADDED)
     message(FATAL_ERROR "No Windows entry point found. Provide src/app/EntryWinMain.cpp (that calls GameMain).")
   endif()
+  unset(_ENTRY_ADDED)
 endif()
 
 # --- Patch 2.1A: ensure GameMain's TU is compiled when using EntryWinMain ---
@@ -377,6 +432,7 @@ if(_HAS_ENTRYWINMAIN AND EXISTS "${CMAKE_SOURCE_DIR}/src/AppMain.cpp")
   target_sources(ColonyGame PRIVATE "${CMAKE_SOURCE_DIR}/src/AppMain.cpp")
   set_source_files_properties("${CMAKE_SOURCE_DIR}/src/AppMain.cpp" PROPERTIES SKIP_UNITY_BUILD_INCLUSION ON)
 endif()
+unset(_HAS_ENTRYWINMAIN)
 
 # NEW: Add a single Bootstrap TU to ColonyGame (not to colony_core)
 set(_BOOTSTRAP_ADDED OFF)
@@ -398,6 +454,7 @@ endforeach()
 if(NOT _BOOTSTRAP_ADDED)
   message(STATUS "[Bootstrap] No Bootstrap*.cpp found; skipping.")
 endif()
+unset(_BOOTSTRAP_ADDED)
 
 # Bring the app/bootstrap code into the game exe (kept out of the core lib)
 foreach(_appsrc IN ITEMS
@@ -408,6 +465,7 @@ foreach(_appsrc IN ITEMS
     target_sources(ColonyGame PRIVATE "${_appsrc}")
   endif()
 endforeach()
+unset(_appsrc)
 
 # Windows resources & helpers for the game
 if(WIN32)
@@ -429,6 +487,7 @@ if(WIN32)
     target_sources(ColonyGame PRIVATE "${_GPU_PREF}")
     set_source_files_properties("${_GPU_PREF}" PROPERTIES SKIP_UNITY_BUILD_INCLUSION ON)
   endif()
+  unset(_GPU_PREF)
 
   # Ensure CrashInitBridge.cpp is compiled into the EXE (resolves wincrash::InitCrashHandler)
   if(EXISTS "${CMAKE_SOURCE_DIR}/src/platform/win/CrashInitBridge.cpp")
@@ -448,6 +507,7 @@ if(WIN32)
       set_source_files_properties("${_f}" PROPERTIES SKIP_UNITY_BUILD_INCLUSION ON)
     endif()
   endforeach()
+  unset(_f)
 
   # Link DbgHelp for MiniDumpWriteDump (in EXE only)
   target_link_libraries(ColonyGame PRIVATE dbghelp) # MiniDumpWriteDump etc.
@@ -455,7 +515,10 @@ endif()
 
 # ============================== Launcher EXE ==============================
 if(WIN32 AND COLONY_BUILD_LAUNCHER AND NOT (FRONTEND STREQUAL "sdl"))
-  add_executable(ColonyLauncher)
+  if(NOT TARGET ColonyLauncher)
+    add_executable(ColonyLauncher)
+  endif()
+
   target_compile_definitions(ColonyLauncher PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX)
   if(NOT SHOW_CONSOLE)
     set_target_properties(ColonyLauncher PROPERTIES WIN32_EXECUTABLE YES)
@@ -487,6 +550,7 @@ if(WIN32 AND COLONY_BUILD_LAUNCHER AND NOT (FRONTEND STREQUAL "sdl"))
   foreach(_cand
     "${CMAKE_SOURCE_DIR}/src/platform/win/WinLauncher.cpp"
     "${CMAKE_SOURCE_DIR}/platform/win/WinLauncher.cpp"
+    "${CMAKE_SOURCE_DIR}/WinLauncher.cpp"        # repo-root fallback
   )
     if(EXISTS "${_cand}")
       target_sources(ColonyLauncher PRIVATE "${_cand}")
@@ -498,6 +562,7 @@ if(WIN32 AND COLONY_BUILD_LAUNCHER AND NOT (FRONTEND STREQUAL "sdl"))
   if(NOT _LAUNCHER_ENTRY_ADDED)
     message(FATAL_ERROR "WinLauncher.cpp not found – provide a single Windows launcher entry point and add it to ColonyLauncher.")
   endif()
+  unset(_LAUNCHER_ENTRY_ADDED)
 
   # Add WinBootstrap only to the launcher EXE (kept out of core)
   foreach(_wb IN ITEMS
@@ -510,6 +575,7 @@ if(WIN32 AND COLONY_BUILD_LAUNCHER AND NOT (FRONTEND STREQUAL "sdl"))
       break()
     endif()
   endforeach()
+  unset(_wb)
 
   # If the launcher needs crash integration, add it explicitly (kept out of core)
   foreach(_f IN ITEMS
@@ -521,6 +587,7 @@ if(WIN32 AND COLONY_BUILD_LAUNCHER AND NOT (FRONTEND STREQUAL "sdl"))
       set_source_files_properties("${_f}" PROPERTIES SKIP_UNITY_BUILD_INCLUSION ON)
     endif()
   endforeach()
+  unset(_f)
 
   # (Optional) Windows resources for the launcher
   if(EXISTS "${CMAKE_SOURCE_DIR}/platform/win/Manifest.rc")
@@ -537,13 +604,13 @@ endif()
 if(CMAKE_CONFIGURATION_TYPES)
   foreach(cfg IN LISTS CMAKE_CONFIGURATION_TYPES)
     string(TOUPPER "${cfg}" CFGU)
-    set_target_properties(ColonyGame     PROPERTIES RUNTIME_OUTPUT_DIRECTORY_${CFGU} "${CMAKE_BINARY_DIR}/bin/${cfg}")
+    set_target_properties(ColonyGame PROPERTIES RUNTIME_OUTPUT_DIRECTORY_${CFGU} "${CMAKE_BINARY_DIR}/bin/${cfg}")
     if(TARGET ColonyLauncher)
       set_target_properties(ColonyLauncher PROPERTIES RUNTIME_OUTPUT_DIRECTORY_${CFGU} "${CMAKE_BINARY_DIR}/bin/${cfg}")
     endif()
   endforeach()
 else()
-  set_target_properties(ColonyGame     PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
+  set_target_properties(ColonyGame PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
   if(TARGET ColonyLauncher)
     set_target_properties(ColonyLauncher PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
   endif()
@@ -572,7 +639,29 @@ if(EXISTS "${CONTENT_DIR}")
 endif()
 
 # --------------------------------- SHADERS --------------------------------
-if(CMAKE_GENERATOR MATCHES "Visual Studio")
+# If a top-level shader pipeline is already present (e.g. CGShaders / colony_register_shaders),
+# avoid also configuring VS_SHADER_* here to prevent double-compilation and FXC/DXC mismatches.
+set(_COLONY_SHADERS_EXTERNALLY_HANDLED FALSE)
+if(COMMAND cg_compile_hlsl OR COMMAND colony_register_shaders)
+  set(_COLONY_SHADERS_EXTERNALLY_HANDLED TRUE)
+endif()
+
+if(_COLONY_SHADERS_EXTERNALLY_HANDLED)
+  # Add shaders to the IDE (header-only) but let the external pipeline do compilation/copying.
+  file(GLOB_RECURSE _ALL_SHADERS CONFIGURE_DEPENDS
+    "${CMAKE_SOURCE_DIR}/renderer/Shaders/*.hlsl"
+    "${CMAKE_SOURCE_DIR}/renderer/Shaders/*.hlsli"
+    "${CMAKE_SOURCE_DIR}/shaders/*.hlsl"
+    "${CMAKE_SOURCE_DIR}/shaders/*.hlsli"
+  )
+  if(_ALL_SHADERS)
+    target_sources(ColonyGame PRIVATE ${_ALL_SHADERS})
+    set_source_files_properties(${_ALL_SHADERS} PROPERTIES HEADER_FILE_ONLY ON)
+    source_group(TREE "${CMAKE_SOURCE_DIR}" PREFIX "Shaders" FILES ${_ALL_SHADERS})
+  endif()
+  unset(_ALL_SHADERS)
+
+elseif(CMAKE_GENERATOR MATCHES "Visual Studio")
   set(HLSL_DIR  "${CMAKE_SOURCE_DIR}/renderer/Shaders")
   set(HLSL_INC_PRIMARY  "${HLSL_DIR}/include")
   set(HLSL_INC_ALT      "${CMAKE_SOURCE_DIR}/shaders/include")
@@ -674,6 +763,13 @@ if(CMAKE_GENERATOR MATCHES "Visual Studio")
     _configure_vs_shader("${_sh}")
   endforeach()
 
+  unset(HLSL_DIR)
+  unset(HLSL_INC_PRIMARY)
+  unset(HLSL_INC_ALT)
+  unset(_VS_OUTDIR)
+  unset(_HLSL_INC_FLAGS_LIST)
+  unset(_HLSL_INC_FLAGS_STR)
+
 else()
   include(${CMAKE_SOURCE_DIR}/cmake/ColonyShaders.cmake OPTIONAL RESULT_VARIABLE _colony_shaders_included)
 
@@ -713,6 +809,7 @@ else()
     message(STATUS "No shaders.json manifest found; DXC shader registration skipped.")
   endif()
 endif()
+unset(_COLONY_SHADERS_EXTERNALLY_HANDLED)
 
 # ------------------------------- Install ----------------------------------
 install(TARGETS ColonyGame RUNTIME DESTINATION ".")
