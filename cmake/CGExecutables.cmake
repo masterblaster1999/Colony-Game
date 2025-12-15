@@ -1,28 +1,17 @@
 # cmake/CGExecutables.cmake
 #
 # Owns ColonyGame + ColonyLauncher executable target setup:
-# - compile features / MSVC flags / WIN32_EXECUTABLE toggling
-# - include dirs
+# - WIN32_EXECUTABLE toggling and include dirs
 # - link to colony_core + colony_build_options
 # - attach EXE-owned sources via CGSources.cmake helpers
-# - optional platform libraries (Colony::PlatformWin / Colony::WinPlatform)
+# - toolchain defaults (warnings/sanitizers/link /WX) via CGToolchainWin.cmake
 #
-# Usage:
-#   cg_setup_executables(
-#     ROOT_DIR "${COLONY_ROOT_DIR}"
-#     FRONTEND "${FRONTEND}"
-#     SHOW_CONSOLE ${SHOW_CONSOLE}
-#     UNITY_BUILD ${COLONY_UNITY_BUILD}
-#     BUILD_LAUNCHER ${COLONY_BUILD_LAUNCHER}
-#     CORE_TARGET colony_core
-#     BUILD_OPTIONS_TARGET colony_build_options
-#     OUT_TARGETS COLONY_EXECUTABLE_TARGETS
-#   )
+# (VS startup project and solution folders moved to CGProjectDefaults.cmake.)
 
 include_guard(GLOBAL)
 
-# Ensure EXE-owned source helpers exist
 include("${CMAKE_CURRENT_LIST_DIR}/CGSources.cmake")
+include("${CMAKE_CURRENT_LIST_DIR}/CGToolchainWin.cmake")
 
 function(_cg_apply_exe_common_settings tgt)
   cmake_parse_arguments(ARG "" "ROOT_DIR;SHOW_CONSOLE;UNITY_BUILD;UNITY_UNIQUE_ID" "" ${ARGN})
@@ -60,22 +49,15 @@ function(_cg_apply_exe_common_settings tgt)
     "${CMAKE_BINARY_DIR}/generated"
   )
 
-  if(MSVC)
-    target_compile_options("${tgt}" PRIVATE
-      /permissive-
-      /Zc:preprocessor
-      /Zc:__cplusplus
-      /utf-8
-      /W4
-      /MP
-    )
-    # Keep prior behavior: link warnings-as-errors at final EXEs
-    target_link_options("${tgt}" PRIVATE /WX)
-  endif()
+  # Apply toolchain defaults (warnings/sanitizers + /WX link for MSVC)
+  cg_toolchain_win_setup_target("${tgt}"
+    IS_EXE       ON
+    LINK_WERROR  ON
+  )
 endfunction()
 
 function(cg_setup_executables)
-  cmake_parse_arguments(ARG "" 
+  cmake_parse_arguments(ARG ""
     "ROOT_DIR;FRONTEND;SHOW_CONSOLE;UNITY_BUILD;BUILD_LAUNCHER;CORE_TARGET;BUILD_OPTIONS_TARGET;OUT_TARGETS"
     ""
     ${ARGN}
@@ -115,7 +97,6 @@ function(cg_setup_executables)
 
   target_link_libraries(ColonyGame PRIVATE "${ARG_CORE_TARGET}" "${ARG_BUILD_OPTIONS_TARGET}")
 
-  # Optional platform libs (single-owner platform modules if present)
   if(TARGET Colony::PlatformWin)
     target_link_libraries(ColonyGame PRIVATE Colony::PlatformWin)
   endif()
@@ -123,13 +104,11 @@ function(cg_setup_executables)
     target_link_libraries(ColonyGame PRIVATE Colony::WinPlatform)
   endif()
 
-  # Add EXE-owned sources (entrypoints, crash, gpu exports, bootstrap, etc.)
   cg_add_colonygame_sources(ColonyGame
     ROOT_DIR "${ARG_ROOT_DIR}"
     FRONTEND "${ARG_FRONTEND}"
   )
 
-  # DbgHelp for MiniDumpWriteDump etc. (EXE-only)
   if(WIN32)
     target_link_libraries(ColonyGame PRIVATE dbghelp)
   endif()
@@ -145,7 +124,7 @@ function(cg_setup_executables)
     _cg_apply_exe_common_settings(ColonyLauncher
       ROOT_DIR "${ARG_ROOT_DIR}"
       SHOW_CONSOLE "${ARG_SHOW_CONSOLE}"
-      UNITY_BUILD "${ARG_UNITY_build}"
+      UNITY_BUILD "${ARG_UNITY_BUILD}"
       UNITY_UNIQUE_ID "COLONY_LAUNCHER"
     )
 
@@ -170,10 +149,6 @@ function(cg_setup_executables)
     list(APPEND _exe_targets ColonyLauncher)
   endif()
 
-  # VS convenience: default startup project
-  set_property(DIRECTORY "${CMAKE_SOURCE_DIR}" PROPERTY VS_STARTUP_PROJECT ColonyGame)
-
-  # Return created targets
   if(ARG_OUT_TARGETS)
     set(${ARG_OUT_TARGETS} "${_exe_targets}" PARENT_SCOPE)
   endif()
