@@ -1,19 +1,13 @@
 # src/CMakeLists.txt
 
-# When this directory is configured as a *standalone* project, set the CMake policy
-# version here. When included from the repository root (add_subdirectory(src)),
-# do NOT call cmake_minimum_required() to avoid resetting policy behavior inside
-# this subdirectory.
 if(CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)
   cmake_minimum_required(VERSION 3.27...3.31 FATAL_ERROR)
   project(ColonyGame LANGUAGES CXX)
 endif()
 
-# Repo root (works both from root-add_subdirectory and standalone -S src)
 get_filename_component(COLONY_ROOT_DIR "${CMAKE_CURRENT_LIST_DIR}/.." ABSOLUTE)
 
 set_property(GLOBAL PROPERTY USE_FOLDERS ON)
-include(FetchContent)
 
 # -------------------------------- Options --------------------------------
 set(FRONTEND "" CACHE STRING "Frontend: '' (Win32 native) or 'sdl'")
@@ -28,10 +22,7 @@ option(SHOW_CONSOLE        "Show console for the Win32 executable(s)" OFF)
 option(COLONY_USE_PCH      "Enable precompiled headers" ON)
 option(COLONY_UNITY_BUILD  "Enable CMake Unity builds (jumbo)" OFF)
 
-# Gate compute shaders to avoid FXC X3501 until all *_cs.hlsl have CSMain
 option(COLONY_ENABLE_COMPUTE_SHADERS "Compile compute shaders (*_cs.hlsl) if they define CSMain" OFF)
-
-# Option B: build a separate launcher EXE that can spawn the game EXE
 option(COLONY_BUILD_LAUNCHER "Build native Windows launcher (separate EXE)" ON)
 
 set(COLONY_PCH_HEADER "" CACHE STRING "Path to a shared PCH header (relative to source root)")
@@ -47,6 +38,8 @@ find_package(directxtex CONFIG REQUIRED) # Microsoft::DirectXTex
 # ------------------------------ Modules ------------------------------
 include("${COLONY_ROOT_DIR}/cmake/CGSources.cmake")
 include("${COLONY_ROOT_DIR}/cmake/CGShadersPipeline.cmake")
+include("${COLONY_ROOT_DIR}/cmake/CGRuntimeLayout.cmake")
+include("${COLONY_ROOT_DIR}/cmake/CGOptionalDeps.cmake")
 
 # ------------------------------ Sources ------------------------------
 cg_collect_core_sources(COLONY_CORE_SOURCES
@@ -60,7 +53,6 @@ if(NOT TARGET colony_core)
 endif()
 target_sources(colony_core PRIVATE ${COLONY_CORE_SOURCES})
 
-# Explicitly control unity (jumbo) builds to avoid accidental ODR/duplicate merges.
 if(COLONY_UNITY_BUILD)
   set_target_properties(colony_core PROPERTIES UNITY_BUILD ON)
 else()
@@ -99,12 +91,10 @@ if(COLONY_USE_PCH AND _PCH_HEADER)
 endif()
 unset(_PCH_HEADER)
 
-# Public feature toggles for consumers
+# Public feature toggles (note: ImGui/Tracy defines are now set by CGOptionalDeps.cmake)
 target_compile_definitions(colony_core
   PUBLIC
     $<$<STREQUAL:${FRONTEND},sdl>:COLONY_USE_SDL=1>
-    $<$<BOOL:${ENABLE_IMGUI}>:CG_ENABLE_IMGUI=1>
-    $<$<BOOL:${ENABLE_TRACY}>:TRACY_ENABLE=1>
 )
 
 if(MSVC)
@@ -118,7 +108,7 @@ if(WIN32)
   target_link_libraries(colony_core PUBLIC shell32 ole32)
 endif()
 
-# ----------------------- Patch C: filter SDL2main when not using SDL -----------------------
+# Link the aggregated third-party list if provided by your top-level build.
 set(_TP_LIBS ${COLONY_THIRDPARTY_LIBS})
 if(NOT FRONTEND STREQUAL "sdl")
   if(_TP_LIBS)
@@ -126,58 +116,18 @@ if(NOT FRONTEND STREQUAL "sdl")
   endif()
 endif()
 
-# Optional aggregate build options + DirectXTex
 if(NOT TARGET colony_build_options)
   add_library(colony_build_options INTERFACE)
 endif()
 target_link_libraries(colony_core PUBLIC ${_TP_LIBS} colony_build_options Microsoft::DirectXTex)
 unset(_TP_LIBS)
 
-# ------------------------------- ImGui (opt) ------------------------------
-if(WIN32 AND ENABLE_IMGUI)
-  set(_imgui_ok FALSE)
-  if(TARGET imgui::imgui)
-    set(_imgui_ok TRUE)
-  endif()
-  if(NOT _imgui_ok)
-    message(STATUS "[ImGui] vcpkg target not found; using FetchContent fallback.")
-    FetchContent_Declare(imgui GIT_REPOSITORY https://github.com/ocornut/imgui.git GIT_TAG v1.90.5)
-    FetchContent_MakeAvailable(imgui)
-    add_library(imgui_backend STATIC
-      ${imgui_SOURCE_DIR}/imgui.cpp
-      ${imgui_SOURCE_DIR}/imgui_draw.cpp
-      ${imgui_SOURCE_DIR}/imgui_tables.cpp
-      ${imgui_SOURCE_DIR}/imgui_widgets.cpp
-      ${imgui_SOURCE_DIR}/backends/imgui_impl_win32.cpp
-      ${imgui_SOURCE_DIR}/backends/imgui_impl_dx11.cpp
-    )
-    target_include_directories(imgui_backend PUBLIC ${imgui_SOURCE_DIR} ${imgui_SOURCE_DIR}/backends)
-    target_compile_definitions(imgui_backend PUBLIC IMGUI_DISABLE_OBSOLETE_FUNCTIONS)
-    target_link_libraries(imgui_backend PUBLIC d3d11 dxgi)
-  endif()
-  if(TARGET imgui::imgui)
-    target_link_libraries(colony_core PRIVATE imgui::imgui)
-  elseif(TARGET imgui_backend)
-    target_link_libraries(colony_core PRIVATE imgui_backend)
-  endif()
-  unset(_imgui_ok)
-endif()
-
-# ------------------------------- Tracy (opt) ------------------------------
-if(WIN32 AND ENABLE_TRACY)
-  if(NOT TARGET Tracy::TracyClient)
-    message(STATUS "[Tracy] packaged target not found; using FetchContent fallback.")
-    FetchContent_Declare(tracy GIT_REPOSITORY https://github.com/wolfpld/tracy.git GIT_TAG v0.11.0)
-    FetchContent_MakeAvailable(tracy)
-    add_library(tracy_client STATIC ${tracy_SOURCE_DIR}/public/TracyClient.cpp)
-    target_include_directories(tracy_client PUBLIC ${tracy_SOURCE_DIR}/public ${tracy_SOURCE_DIR})
-    if(MSVC)
-      target_link_libraries(tracy_client PUBLIC ws2_32 dbghelp)
-    endif()
-    add_library(Tracy::TracyClient ALIAS tracy_client)
-  endif()
-  target_link_libraries(colony_core PRIVATE Tracy::TracyClient)
-endif()
+# --------------------- Optional deps (ONE LINER) ---------------------
+cg_setup_optional_deps(
+  CORE_TARGET colony_core
+  ENABLE_IMGUI ${ENABLE_IMGUI}
+  ENABLE_TRACY ${ENABLE_TRACY}
+)
 
 # ----------------------------- Taskflow fallback --------------------------
 if(NOT taskflow_FOUND)
@@ -223,7 +173,6 @@ endif()
 
 target_link_libraries(ColonyGame PRIVATE colony_core colony_build_options)
 
-# Link single-owner Windows platform libs only at the EXE (if present)
 if(TARGET Colony::PlatformWin)
   target_link_libraries(ColonyGame PRIVATE Colony::PlatformWin)
 endif()
@@ -231,13 +180,11 @@ if(TARGET Colony::WinPlatform)
   target_link_libraries(ColonyGame PRIVATE Colony::WinPlatform)
 endif()
 
-# Add "EXE-owned" sources (entrypoints, crash, gpu exports, bootstrap, etc.)
 cg_add_colonygame_sources(ColonyGame
   ROOT_DIR "${COLONY_ROOT_DIR}"
   FRONTEND "${FRONTEND}"
 )
 
-# Link DbgHelp for MiniDumpWriteDump (in EXE only)
 if(WIN32)
   target_link_libraries(ColonyGame PRIVATE dbghelp)
 endif()
@@ -284,43 +231,17 @@ else()
   set_property(DIRECTORY "${CMAKE_SOURCE_DIR}" PROPERTY VS_STARTUP_PROJECT ColonyGame)
 endif()
 
-# Output (multi/single config)
-if(CMAKE_CONFIGURATION_TYPES)
-  foreach(cfg IN LISTS CMAKE_CONFIGURATION_TYPES)
-    string(TOUPPER "${cfg}" CFGU)
-    set_target_properties(ColonyGame PROPERTIES RUNTIME_OUTPUT_DIRECTORY_${CFGU} "${CMAKE_BINARY_DIR}/bin/${cfg}")
-    if(TARGET ColonyLauncher)
-      set_target_properties(ColonyLauncher PROPERTIES RUNTIME_OUTPUT_DIRECTORY_${CFGU} "${CMAKE_BINARY_DIR}/bin/${cfg}")
-    endif()
-  endforeach()
-else()
-  set_target_properties(ColonyGame PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
-  if(TARGET ColonyLauncher)
-    set_target_properties(ColonyLauncher PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
-  endif()
-endif()
-
-# Runtime dir variable
-set(_RUNTIME_DIR "$<TARGET_FILE_DIR:ColonyGame>")
-
-# ------------------------------ Post-build copy ---------------------------
-add_custom_command(TARGET ColonyGame POST_BUILD
-  COMMAND ${CMAKE_COMMAND} -E make_directory "${_RUNTIME_DIR}/assets"
-  COMMAND ${CMAKE_COMMAND} -E make_directory "${_RUNTIME_DIR}/res"
-  COMMAND ${CMAKE_COMMAND} -E copy_directory "${COLONY_ROOT_DIR}/assets" "${_RUNTIME_DIR}/assets"
-  COMMAND ${CMAKE_COMMAND} -E copy_directory "${COLONY_ROOT_DIR}/res"    "${_RUNTIME_DIR}/res"
-  VERBATIM
+# --------------------- Runtime layout (ONE LINERS) ---------------------
+cg_configure_runtime_output(
+  TARGETS ColonyGame ColonyLauncher
+  BASE_DIR "${CMAKE_BINARY_DIR}/bin"
 )
 
-set(CONTENT_DIR "${COLONY_ROOT_DIR}/Content")
-if(EXISTS "${CONTENT_DIR}")
-  add_custom_command(TARGET ColonyGame POST_BUILD
-    COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:ColonyGame>/Content"
-    COMMAND ${CMAKE_COMMAND} -E copy_directory "${CONTENT_DIR}" "$<TARGET_FILE_DIR:ColonyGame>/Content"
-    COMMENT "Copy Content/ next to the EXE for streaming"
-    VERBATIM
-  )
-endif()
+# IMPORTANT: Call content-copy before shader pipeline so shader copies can overwrite res/shaders.
+cg_add_post_build_content_copy(
+  TARGET ColonyGame
+  ROOT_DIR "${COLONY_ROOT_DIR}"
+)
 
 # ------------------------------- SHADERS (one-liner) -------------------------------
 cg_setup_shaders_pipeline(
@@ -334,6 +255,5 @@ install(TARGETS ColonyGame RUNTIME DESTINATION ".")
 if(TARGET ColonyLauncher)
   install(TARGETS ColonyLauncher RUNTIME DESTINATION ".")
 endif()
-install(DIRECTORY "${COLONY_ROOT_DIR}/assets/"  DESTINATION "assets")
-install(DIRECTORY "${COLONY_ROOT_DIR}/res/"     DESTINATION "res")
-install(DIRECTORY "${COLONY_ROOT_DIR}/Content/" DESTINATION "Content")
+
+cg_install_runtime_content(ROOT_DIR "${COLONY_ROOT_DIR}")
