@@ -94,6 +94,13 @@ option(COLONY_ENABLE_TRACY "Build with Tracy profiler instrumentation (vcpkg por
 option(COLONY_BUILD_TESTS "Build unit tests" ON)
 option(COLONY_RELEASE_STATIC_CRT "Use static runtime (/MT) in Release; dynamic in Debug" OFF)
 
+# If ON, configuration will error if it detects duplicated Win platform .cpp basenames
+# in BOTH:
+#   - ${CMAKE_SOURCE_DIR}/src/platform/win
+#   - ${CMAKE_SOURCE_DIR}/platform/win
+# This forces the repo toward a single canonical implementation (recommended long-term).
+option(COLONY_STRICT_WIN_PLATFORM_DEDUP "Hard-fail if legacy platform/win duplicates exist" OFF)
+
 set(COLONY_GAME_TARGET "" CACHE STRING
   "Name of the game's main executable target (if different from 'ColonyGame') to link with colony_path")
 
@@ -209,7 +216,8 @@ function(colony_enable_pch tgt)
   if(NOT COLONY_USE_PCH)
     return()
   endif()
-  if(ARGC LESS 2)
+  # Expected: colony_enable_pch(<target> <PUBLIC|PRIVATE|INTERFACE> <header...>)
+  if(ARGC LESS 3)
     message(FATAL_ERROR "colony_enable_pch(<target> <PUBLIC|PRIVATE|INTERFACE> <header...>)")
   endif()
   target_precompile_headers(${tgt} ${ARGN})
@@ -233,6 +241,76 @@ function(colony_apply_debug_runtime_checks tgt)
   if(MSVC AND TARGET "${tgt}")
     target_compile_options(${tgt} PRIVATE $<$<CONFIG:Debug>:/RTC1>)
   endif()
+endfunction()
+
+# Add a source file only if it isn't already present in the target (REALPATH, case-insensitive on Windows).
+function(colony_add_source_if_missing tgt src_path)
+  if(NOT TARGET "${tgt}")
+    return()
+  endif()
+  if(NOT EXISTS "${src_path}")
+    return()
+  endif()
+
+  get_target_property(_srcs "${tgt}" SOURCES)
+  if(NOT _srcs)
+    set(_srcs "")
+  endif()
+
+  get_filename_component(_want "${src_path}" REALPATH)
+  if(WIN32)
+    string(TOLOWER "${_want}" _want_key)
+  else()
+    set(_want_key "${_want}")
+  endif()
+
+  set(_found FALSE)
+  get_target_property(_tgt_dir "${tgt}" SOURCE_DIR)
+  if(NOT _tgt_dir)
+    set(_tgt_dir "${CMAKE_SOURCE_DIR}")
+  endif()
+
+  foreach(_s IN LISTS _srcs)
+    if(IS_ABSOLUTE "${_s}")
+      get_filename_component(_abs "${_s}" REALPATH)
+    else()
+      get_filename_component(_abs "${_s}" REALPATH BASE_DIR "${_tgt_dir}")
+    endif()
+    if(WIN32)
+      string(TOLOWER "${_abs}" _abs_key)
+    else()
+      set(_abs_key "${_abs}")
+    endif()
+    if(_abs_key STREQUAL _want_key)
+      set(_found TRUE)
+      break()
+    endif()
+  endforeach()
+
+  if(NOT _found)
+    target_sources("${tgt}" PRIVATE "${src_path}")
+  endif()
+endfunction()
+
+# Apply /EHa only to CrashDumpWin.cpp for a given target (if present).
+function(colony_apply_seh_for_crashdump tgt)
+  if(NOT (MSVC AND COLONY_SEH_CRASHDUMP))
+    return()
+  endif()
+  if(NOT TARGET "${tgt}")
+    return()
+  endif()
+
+  get_target_property(_srcs "${tgt}" SOURCES)
+  if(NOT _srcs)
+    return()
+  endif()
+
+  foreach(_src IN LISTS _srcs)
+    if(_src MATCHES "CrashDumpWin\\.cpp$")
+      set_source_files_properties(${_src} PROPERTIES COMPILE_OPTIONS "/EHa")
+    endif()
+  endforeach()
 endfunction()
 
 # ------------------------------------------------------------------------------
@@ -266,17 +344,17 @@ if(WIN32)
 
   if(COLONY_HLSL)
     if(COMMAND cg_set_hlsl_properties)
-      cg_set_hlsl_properties("${CMAKE_SOURCE_DIR}/renderer/Shaders/AtmosphereSky.hlsl"              ENTRY "PSMain" PROFILE "ps_6_0")
-      cg_set_hlsl_properties("${CMAKE_SOURCE_DIR}/renderer/Shaders/VolumetricClouds.hlsl"            ENTRY "PSMain" PROFILE "ps_6_0")
-      cg_set_hlsl_properties("${CMAKE_SOURCE_DIR}/renderer/Shaders/VoxelIso_MT.compute.hlsl"         ENTRY "CSMain" PROFILE "cs_6_0")
-      cg_set_hlsl_properties("${CMAKE_SOURCE_DIR}/renderer/Shaders/VoxelIso_MT_Materials.compute.hlsl" ENTRY "CSMain" PROFILE "cs_6_0")
-      cg_set_hlsl_properties("${CMAKE_SOURCE_DIR}/renderer/Shaders/erosion_thermal_flow_cs.hlsl"     ENTRY "CSMain" PROFILE "cs_6_0")
-      cg_set_hlsl_properties("${CMAKE_SOURCE_DIR}/renderer/Shaders/erosion_thermal_apply_cs.hlsl"    ENTRY "CSMain" PROFILE "cs_6_0")
-      cg_set_hlsl_properties("${CMAKE_SOURCE_DIR}/shaders/ThermalOutflowCS.hlsl"                     ENTRY "CSMain" PROFILE "cs_6_0")
-      cg_set_hlsl_properties("${CMAKE_SOURCE_DIR}/shaders/ThermalApplyCS.hlsl"                       ENTRY "CSMain" PROFILE "cs_6_0")
-      cg_set_hlsl_properties("${CMAKE_SOURCE_DIR}/shaders/Terrain.hlsl"                              ENTRY "PSMain" PROFILE "ps_6_0")
-      cg_set_hlsl_properties("${CMAKE_SOURCE_DIR}/shaders/raster/ToneMap.ps.hlsl"                    ENTRY "PSMain" PROFILE "ps_6_0")
-      cg_set_hlsl_properties("${CMAKE_SOURCE_DIR}/renderer/Shaders/Batch2D_ps.hlsl"                  ENTRY "PSMain" PROFILE "ps_6_0")
+      cg_set_hlsl_properties("${CMAKE_SOURCE_DIR}/renderer/Shaders/AtmosphereSky.hlsl"                 ENTRY "PSMain" PROFILE "ps_6_0")
+      cg_set_hlsl_properties("${CMAKE_SOURCE_DIR}/renderer/Shaders/VolumetricClouds.hlsl"               ENTRY "PSMain" PROFILE "ps_6_0")
+      cg_set_hlsl_properties("${CMAKE_SOURCE_DIR}/renderer/Shaders/VoxelIso_MT.compute.hlsl"            ENTRY "CSMain" PROFILE "cs_6_0")
+      cg_set_hlsl_properties("${CMAKE_SOURCE_DIR}/renderer/Shaders/VoxelIso_MT_Materials.compute.hlsl"  ENTRY "CSMain" PROFILE "cs_6_0")
+      cg_set_hlsl_properties("${CMAKE_SOURCE_DIR}/renderer/Shaders/erosion_thermal_flow_cs.hlsl"        ENTRY "CSMain" PROFILE "cs_6_0")
+      cg_set_hlsl_properties("${CMAKE_SOURCE_DIR}/renderer/Shaders/erosion_thermal_apply_cs.hlsl"       ENTRY "CSMain" PROFILE "cs_6_0")
+      cg_set_hlsl_properties("${CMAKE_SOURCE_DIR}/shaders/ThermalOutflowCS.hlsl"                        ENTRY "CSMain" PROFILE "cs_6_0")
+      cg_set_hlsl_properties("${CMAKE_SOURCE_DIR}/shaders/ThermalApplyCS.hlsl"                          ENTRY "CSMain" PROFILE "cs_6_0")
+      cg_set_hlsl_properties("${CMAKE_SOURCE_DIR}/shaders/Terrain.hlsl"                                 ENTRY "PSMain" PROFILE "ps_6_0")
+      cg_set_hlsl_properties("${CMAKE_SOURCE_DIR}/shaders/raster/ToneMap.ps.hlsl"                       ENTRY "PSMain" PROFILE "ps_6_0")
+      cg_set_hlsl_properties("${CMAKE_SOURCE_DIR}/renderer/Shaders/Batch2D_ps.hlsl"                     ENTRY "PSMain" PROFILE "ps_6_0")
     endif()
 
     cg_compile_hlsl(ColonyShaders
@@ -305,7 +383,7 @@ if(COLONY_ENABLE_TRACY)
 endif()
 find_package(tracy CONFIG ${_CG_TRACY_REQUEST_MODE})
 if(NOT tracy_FOUND)
-  find_package(Tracy CONFIG ${__CG_TRACY_REQUEST_MODE})
+  find_package(Tracy CONFIG ${_CG_TRACY_REQUEST_MODE})
 endif()
 set(COLONY_TRACY_TARGET "")
 if(TARGET tracy::TracyClient)
@@ -331,7 +409,9 @@ endif()
 # ------------------------------------------------------------------------------
 # Pathfinding library
 # ------------------------------------------------------------------------------
-file(GLOB_RECURSE COLONY_PATH_SOURCES
+# NOTE: Using GLOB_RECURSE is intentionally limited to this small leaf library.
+# TODO (recommended): replace with explicit target_sources() lists once file layout settles.
+file(GLOB_RECURSE COLONY_PATH_SOURCES CONFIGURE_DEPENDS
      "${CMAKE_SOURCE_DIR}/pathfinding/*.cpp"
      "${CMAKE_SOURCE_DIR}/hpa/*.cpp")
 
@@ -363,17 +443,150 @@ if(EXISTS "${CMAKE_SOURCE_DIR}/src/CMakeLists.txt")
 endif()
 
 # ------------------------------------------------------------------------------
+# NEW: Canonical Windows platform library (STATIC)
+# Goal:
+#   - Compile Win platform support code exactly once
+#   - Prefer src/platform/win over legacy platform/win when both exist
+#   - Avoid ODR/linker errors from duplicate CrashHandlerWin.cpp, etc.
+# ------------------------------------------------------------------------------
+if(WIN32)
+  set(_CG_WIN_SRC_DIR    "${CMAKE_SOURCE_DIR}/src/platform/win")
+  set(_CG_WIN_LEGACY_DIR "${CMAKE_SOURCE_DIR}/platform/win")
+
+  set(_CG_WIN_SRC_ALL "")
+  set(_CG_WIN_LEGACY_ALL "")
+  if(EXISTS "${_CG_WIN_SRC_DIR}")
+    file(GLOB_RECURSE _CG_WIN_SRC_ALL CONFIGURE_DEPENDS
+      "${_CG_WIN_SRC_DIR}/*.c"
+      "${_CG_WIN_SRC_DIR}/*.cpp"
+    )
+  endif()
+  if(EXISTS "${_CG_WIN_LEGACY_DIR}")
+    file(GLOB_RECURSE _CG_WIN_LEGACY_ALL CONFIGURE_DEPENDS
+      "${_CG_WIN_LEGACY_DIR}/*.c"
+      "${_CG_WIN_LEGACY_DIR}/*.cpp"
+    )
+  endif()
+
+  # Build list of basenames present in src/platform/win
+  set(_CG_WIN_SRC_BASENAMES "")
+  foreach(_f IN LISTS _CG_WIN_SRC_ALL)
+    get_filename_component(_nm "${_f}" NAME)
+    list(APPEND _CG_WIN_SRC_BASENAMES "${_nm}")
+  endforeach()
+  list(REMOVE_DUPLICATES _CG_WIN_SRC_BASENAMES)
+
+  # Detect duplicates (same basename exists in BOTH trees)
+  set(_CG_WIN_DUP_BASENAMES "")
+  foreach(_f IN LISTS _CG_WIN_LEGACY_ALL)
+    get_filename_component(_nm "${_f}" NAME)
+    list(FIND _CG_WIN_SRC_BASENAMES "${_nm}" _idx)
+    if(NOT _idx EQUAL -1)
+      list(APPEND _CG_WIN_DUP_BASENAMES "${_nm}")
+    endif()
+  endforeach()
+  list(REMOVE_DUPLICATES _CG_WIN_DUP_BASENAMES)
+
+  if(_CG_WIN_DUP_BASENAMES)
+    if(COLONY_STRICT_WIN_PLATFORM_DEDUP)
+      message(FATAL_ERROR
+        "Duplicate Windows platform source basenames found in BOTH:\n"
+        "  ${_CG_WIN_SRC_DIR}\n"
+        "  ${_CG_WIN_LEGACY_DIR}\n"
+        "Duplicates:\n  ${_CG_WIN_DUP_BASENAMES}\n"
+        "Fix: delete/move the legacy copies in platform/win (recommended), or set COLONY_STRICT_WIN_PLATFORM_DEDUP=OFF.")
+    else()
+      message(WARNING
+        "Duplicate Windows platform source basenames found in BOTH:\n"
+        "  ${_CG_WIN_SRC_DIR}\n"
+        "  ${_CG_WIN_LEGACY_DIR}\n"
+        "Duplicates (legacy copies will be pruned from ALL targets):\n  ${_CG_WIN_DUP_BASENAMES}\n"
+        "Recommendation: physically delete/move the legacy duplicates under platform/win.")
+    endif()
+  endif()
+
+  # Exclude list for this library (these are NOT safe/appropriate to live in a library).
+  # - GPU export sources must live in executables to avoid duplicate exported symbols.
+  # - Entry points must remain in EXE targets only.
+  set(_CG_WINLIB_EXCLUDE_REGEX
+      "(^|/)(HighPerfGPU|WinLauncher|AppMain|EntryWinMain|EntryPoint)\\.(c|cpp)$"
+  )
+
+  # Build platform lib source list:
+  #   1) take ALL src/platform/win
+  #   2) take ONLY non-duplicate legacy files
+  #   3) apply exclude regex
+  set(_CG_PLATFORM_WIN_SOURCES "")
+  foreach(_f IN LISTS _CG_WIN_SRC_ALL)
+    if(_f MATCHES "${_CG_WINLIB_EXCLUDE_REGEX}")
+      continue()
+    endif()
+    list(APPEND _CG_PLATFORM_WIN_SOURCES "${_f}")
+  endforeach()
+  foreach(_f IN LISTS _CG_WIN_LEGACY_ALL)
+    get_filename_component(_nm "${_f}" NAME)
+    list(FIND _CG_WIN_DUP_BASENAMES "${_nm}" _dup_idx)
+    if(NOT _dup_idx EQUAL -1)
+      continue() # skip legacy duplicate (src copy wins globally)
+    endif()
+    if(_f MATCHES "${_CG_WINLIB_EXCLUDE_REGEX}")
+      continue()
+    endif()
+    list(APPEND _CG_PLATFORM_WIN_SOURCES "${_f}")
+  endforeach()
+  list(REMOVE_DUPLICATES _CG_PLATFORM_WIN_SOURCES)
+
+  # Store duplicate basenames globally so we can prune legacy duplicates from ALL targets.
+  set_property(GLOBAL PROPERTY COLONY_WIN_LEGACY_DUP_BASENAMES "${_CG_WIN_DUP_BASENAMES}")
+
+  if(_CG_PLATFORM_WIN_SOURCES)
+    add_library(colony_platform_win STATIC ${_CG_PLATFORM_WIN_SOURCES})
+    add_library(colony::platform_win ALIAS colony_platform_win)
+
+    target_compile_features(colony_platform_win PUBLIC cxx_std_23)
+    target_include_directories(colony_platform_win PUBLIC
+      "${CMAKE_SOURCE_DIR}/include"
+      "${CMAKE_SOURCE_DIR}"
+    )
+    if(MSVC)
+      target_compile_definitions(colony_platform_win PRIVATE UNICODE _UNICODE)
+    endif()
+
+    # Common Win32 libs used by typical platform helpers / crash dumps / path utils.
+    target_link_libraries(colony_platform_win PRIVATE
+      dbghelp
+      shlwapi
+      shell32
+    )
+
+    if(COLONY_USE_PCH)
+      target_precompile_headers(colony_platform_win PRIVATE "${COLONY_PCH_HEADER}")
+    endif()
+
+    colony_apply_msvc_runtime(colony_platform_win)
+    colony_apply_debug_runtime_checks(colony_platform_win)
+  endif()
+endif()
+
+# ------------------------------------------------------------------------------
 # Link third-party deps to core
 # ------------------------------------------------------------------------------
 if(TARGET colony_core)
-  target_link_libraries(colony_core PRIVATE
+  # IMPORTANT: colony_core is a library target; if it's STATIC (common), consumers must see its deps.
+  # Use PUBLIC so executables/tests linking colony_core also link these.
+  target_link_libraries(colony_core PUBLIC
     SDL2::SDL2
     imgui::imgui
     ${COLONY_SPDLOG_TARGET}
   )
 
+  if(TARGET colony_platform_win)
+    # Link platform lib as PUBLIC so dependents (EXEs/tests) pull it in automatically.
+    target_link_libraries(colony_core PUBLIC colony::platform_win)
+  endif()
+
   if(COLONY_TRACY_TARGET AND COLONY_ENABLE_TRACY)
-    target_link_libraries(colony_core PRIVATE ${COLONY_TRACY_TARGET})
+    target_link_libraries(colony_core PUBLIC ${COLONY_TRACY_TARGET})
     target_compile_definitions(colony_core PRIVATE TRACY_ENABLE=1)
     get_target_property(_TRACY_INC ${COLONY_TRACY_TARGET} INTERFACE_INCLUDE_DIRECTORIES)
     if(_TRACY_INC)
@@ -385,23 +598,12 @@ if(TARGET colony_core)
     SPDLOG_ACTIVE_LEVEL=$<IF:$<CONFIG:Debug>,SPDLOG_LEVEL_TRACE,SPDLOG_LEVEL_INFO>
   )
 
-  if(MSVC)
+  if(MSVC AND COLONY_WERROR)
     target_link_options(colony_core PRIVATE /WX)
   endif()
 
   if(TARGET colony_path)
-    target_link_libraries(colony_core PRIVATE colony::path)
-  endif()
-
-  if(MSVC AND COLONY_SEH_CRASHDUMP)
-    get_target_property(_core_srcs colony_core SOURCES)
-    if(_core_srcs)
-      foreach(_src IN LISTS _core_srcs)
-        if(_src MATCHES "CrashDumpWin\\.cpp$")
-          set_source_files_properties(${_src} PROPERTIES COMPILE_OPTIONS "/EHa")
-        endif()
-      endforeach()
-    endif()
+    target_link_libraries(colony_core PUBLIC colony::path)
   endif()
 
   if(COLONY_USE_PCH)
@@ -410,6 +612,14 @@ if(TARGET colony_core)
 
   colony_apply_msvc_runtime(colony_core)
   colony_apply_debug_runtime_checks(colony_core)
+
+  # Ensure CrashDumpWin.cpp (if present) is compiled with /EHa, regardless of which target owns it.
+  colony_apply_seh_for_crashdump(colony_core)
+endif()
+
+# Also apply /EHa to CrashDumpWin.cpp if it lives in the platform lib.
+if(TARGET colony_platform_win)
+  colony_apply_seh_for_crashdump(colony_platform_win)
 endif()
 
 # ------------------------------------------------------------------------------
@@ -447,6 +657,18 @@ if(COLONY_GAME_TARGET AND TARGET "${COLONY_GAME_TARGET}" AND TARGET colony_path)
   target_link_libraries("${COLONY_GAME_TARGET}" PRIVATE colony::path)
 endif()
 
+# If the platform lib exists, link it into executables as a safety net even if colony_core isn't linked.
+if(TARGET colony_platform_win)
+  foreach(_exe ColonyGame ColonyLauncher ColonyMapViewer)
+    if(TARGET ${_exe})
+      target_link_libraries(${_exe} PRIVATE colony::platform_win)
+    endif()
+  endforeach()
+  if(COLONY_GAME_TARGET AND TARGET "${COLONY_GAME_TARGET}")
+    target_link_libraries("${COLONY_GAME_TARGET}" PRIVATE colony::platform_win)
+  endif()
+endif()
+
 if(TARGET ColonyGame)
   colony_apply_msvc_runtime(ColonyGame)
   colony_apply_debug_runtime_checks(ColonyGame)
@@ -459,48 +681,40 @@ endif()
 # ------------------------------------------------------------------------------
 # Link/copy compiled shaders next to the exe
 # ------------------------------------------------------------------------------
-function(_cg_first_exe_in_dir out_var start_dir)
-  get_property(_tgts DIRECTORY "${start_dir}" PROPERTY BUILDSYSTEM_TARGETS)
-  foreach(_t IN LISTS _tgts)
-    get_target_property(_type "${_t}" TYPE)
-    if(_type STREQUAL "EXECUTABLE")
-      set(${out_var} "${_t}" PARENT_SCOPE)
-      return()
-    endif()
-  endforeach()
-  get_property(_subs DIRECTORY "${start_dir}" PROPERTY SUBDIRECTORIES)
-  foreach(_sd IN LISTS _subs)
-    _cg_first_exe_in_dir(_found "${_sd}")
-    if(_found)
-      set(${out_var} "${_found}" PARENT_SCOPE)
-      return()
-    endif()
-  endforeach()
-  set(${out_var} "" PARENT_SCOPE)
-endfunction()
-
-# Job System attachment (optional)
-_cg_first_exe_in_dir(_CG_EXE_TGT_JOBS "${CMAKE_SOURCE_DIR}")
-if(_CG_EXE_TGT_JOBS)
-  if(EXISTS "${CMAKE_SOURCE_DIR}/src/core/JobSystem.cpp")
-    target_sources(${_CG_EXE_TGT_JOBS} PRIVATE src/core/JobSystem.cpp)
-    target_include_directories(${_CG_EXE_TGT_JOBS} PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
-  else()
-    message(WARNING "JobSystem: src/core/JobSystem.cpp not found.")
-  endif()
-else()
-  message(WARNING "JobSystem: No executable target found; cannot attach JobSystem.cpp.")
-endif()
-
 if(WIN32)
   get_property(_CG_SHADER_TGT GLOBAL PROPERTY COLONY_SHADERS_TARGET)
   if(_CG_SHADER_TGT)
-    _cg_first_exe_in_dir(_CG_EXE_TGT "${CMAKE_SOURCE_DIR}")
-    if(_CG_EXE_TGT)
-      cg_link_shaders_to_target(${_CG_SHADER_TGT} ${_CG_EXE_TGT})
-    else()
-      message(WARNING "CGShaders: No executable target found to link shaders to.")
+    set(_CG_SHADER_EXES "")
+    foreach(_t ColonyGame ColonyLauncher ColonyMapViewer)
+      if(TARGET ${_t})
+        list(APPEND _CG_SHADER_EXES "${_t}")
+      endif()
+    endforeach()
+    if(COLONY_GAME_TARGET AND TARGET "${COLONY_GAME_TARGET}")
+      list(APPEND _CG_SHADER_EXES "${COLONY_GAME_TARGET}")
     endif()
+    list(REMOVE_DUPLICATES _CG_SHADER_EXES)
+
+    if(_CG_SHADER_EXES)
+      foreach(_exe IN LISTS _CG_SHADER_EXES)
+        cg_link_shaders_to_target(${_CG_SHADER_TGT} ${_exe})
+      endforeach()
+    else()
+      message(WARNING "CGShaders: No executable targets found to link shaders to.")
+    endif()
+  endif()
+endif()
+
+# ------------------------------------------------------------------------------
+# Job System ownership fix:
+# Do NOT inject JobSystem.cpp into a random executable.
+# If a job system TU exists, it should be owned by the core library target.
+# ------------------------------------------------------------------------------
+if(TARGET colony_core)
+  # Adjust the path if your repo stores it elsewhere.
+  if(EXISTS "${CMAKE_SOURCE_DIR}/src/core/JobSystem.cpp")
+    colony_add_source_if_missing(colony_core "${CMAKE_SOURCE_DIR}/src/core/JobSystem.cpp")
+    target_include_directories(colony_core PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/include")
   endif()
 endif()
 
@@ -513,7 +727,9 @@ if(WIN32)
   )
   if(MSVC)
     target_compile_definitions(ColonyMapViewer PRIVATE UNICODE _UNICODE)
-    target_link_options(ColonyMapViewer PRIVATE /WX)
+    if(COLONY_WERROR)
+      target_link_options(ColonyMapViewer PRIVATE /WX)
+    endif()
   endif()
   target_link_libraries(ColonyMapViewer PRIVATE
     procgen
@@ -551,7 +767,7 @@ endif()
 # ------------------------------------------------------------------------------
 include(cmake/NoFlagsInSources.cmake OPTIONAL)
 if(COMMAND colony_fixup_sources)
-  foreach(_t colony_path procgen colony_core ColonyGame ColonyMapViewer)
+  foreach(_t colony_path procgen colony_core colony_platform_win ColonyGame ColonyMapViewer)
     if(TARGET ${_t})
       colony_fixup_sources(${_t})
     endif()
@@ -561,7 +777,7 @@ endif()
 # ------------------------------------------------------------------------------
 # NEW: Prune duplicate/forbidden sources after targets exist (Windows)
 # - Keep entry points out of libraries (e.g., colony_core)
-# - Resolve duplicate platform files (e.g., CrashHandlerWin.cpp)
+# - Prefer src/platform/win over legacy platform/win for same-basename files
 # - Deduplicate any repeated source entries
 # ------------------------------------------------------------------------------
 function(colony_prune_sources tgt)
@@ -573,36 +789,58 @@ function(colony_prune_sources tgt)
     return()
   endif()
 
+  # Load global list of legacy win basenames that must be pruned everywhere.
+  get_property(_legacy_dup_names GLOBAL PROPERTY COLONY_WIN_LEGACY_DUP_BASENAMES)
+  if(NOT _legacy_dup_names)
+    set(_legacy_dup_names "")
+  endif()
+
   set(_keep "")
   foreach(_s IN LISTS _srcs)
+    # Normalize to absolute realpath when possible (needed for directory checks).
+    if(IS_ABSOLUTE "${_s}")
+      set(_abs_candidate "${_s}")
+    else()
+      get_target_property(_src_dir ${tgt} SOURCE_DIR)
+      if(NOT _src_dir)
+        set(_src_dir "${CMAKE_SOURCE_DIR}")
+      endif()
+      set(_abs_candidate "${_src_dir}/${_s}")
+    endif()
+
+    # If the file doesn't exist yet (generated), keep it.
+    if(EXISTS "${_abs_candidate}")
+      get_filename_component(_abs "${_abs_candidate}" REALPATH)
+    else()
+      set(_abs "${_abs_candidate}")
+    endif()
+
     # 1) Never allow process entry-points inside the core library.
     if(${tgt} STREQUAL "colony_core")
-      if(_s MATCHES "/(WinLauncher|AppMain|EntryWinMain)\\.cpp$")
-        # Skip: entry points must live only in EXE targets
+      if(_abs MATCHES "/(WinLauncher|AppMain|EntryWinMain)\\.(c|cpp)$")
         continue()
       endif()
     endif()
 
-    # 2) Resolve MSB8027-style duplicate object names:
-    # Prefer the 'src/platform/win' CrashHandler over the top-level duplicate.
-    if(_s MATCHES "/platform/win/CrashHandlerWin\\.cpp$")
-      if(EXISTS "${CMAKE_SOURCE_DIR}/src/platform/win/CrashHandlerWin.cpp")
-        if(_s MATCHES "^${CMAKE_SOURCE_DIR}/platform/win/CrashHandlerWin\\.cpp$")
-          continue() # drop the top-level duplicate
-        endif()
+    # 2) Globally prune legacy platform/win duplicates if a src/platform/win twin exists.
+    if(_abs MATCHES "/platform/win/")
+      get_filename_component(_bn "${_abs}" NAME)
+      list(FIND _legacy_dup_names "${_bn}" _dup_idx)
+      if(NOT _dup_idx EQUAL -1)
+        # Drop legacy duplicate everywhere.
+        continue()
       endif()
     endif()
 
     list(APPEND _keep "${_s}")
   endforeach()
 
-  # Extra safety: remove accidental repeats.
   list(REMOVE_DUPLICATES _keep)
   set_property(TARGET ${tgt} PROPERTY SOURCES "${_keep}")
 endfunction()
 
-# Apply the pruning to common targets (only those that exist)
-foreach(_t colony_core ColonyGame ColonyLauncher ColonyMapViewer)
+# Apply pruning to common targets (only those that exist)
+foreach(_t colony_path procgen colony_platform_win colony_core ColonyGame ColonyLauncher ColonyMapViewer)
   if(TARGET ${_t})
     colony_prune_sources(${_t})
   endif()
@@ -628,11 +866,14 @@ endif()
 if(TARGET colony_path)
   set_target_properties(colony_path PROPERTIES UNITY_BUILD OFF)
 endif()
+if(TARGET colony_platform_win)
+  set_target_properties(colony_platform_win PROPERTIES UNITY_BUILD OFF)
+endif()
 
 # ------------------------------------------------------------------------------
-# Enforce link warnings-as-errors on all executable targets (MSVC)
+# Enforce link warnings-as-errors on all executable targets (MSVC) (optional)
 # ------------------------------------------------------------------------------
-if(MSVC)
+if(MSVC AND COLONY_WERROR)
   function(_cg_apply_link_wx start_dir)
     get_property(_tgts DIRECTORY "${start_dir}" PROPERTY BUILDSYSTEM_TARGETS)
     foreach(_t IN LISTS _tgts)
@@ -651,7 +892,7 @@ endif()
 
 # ------------------------------------------------------------------------------
 # Wire discrete-GPU hint exports into executables (Windows only)
-# Ensure HighPerfGPU.cpp is compiled into EXEs and not into colony_core to avoid
+# Ensure HighPerfGPU.cpp is compiled into EXEs and not into libraries to avoid
 # duplicate exported symbols and to follow vendor guidance (exports in the EXE).
 # ------------------------------------------------------------------------------
 function(cg_wire_gpu_exports_to_exe exe)
@@ -669,7 +910,6 @@ function(cg_wire_gpu_exports_to_exe exe)
   if(TARGET colony_core)
     get_target_property(_core_srcs colony_core SOURCES)
     if(_core_srcs)
-      # Build normalized key for the GPU source
       get_filename_component(_gpu_real "${_gpu_src}" REALPATH)
       if(WIN32)
         string(TOLOWER "${_gpu_real}" _gpu_key)
@@ -677,7 +917,6 @@ function(cg_wire_gpu_exports_to_exe exe)
         set(_gpu_key "${_gpu_real}")
       endif()
 
-      # Normalize each core source and drop if it matches the GPU file
       get_target_property(_core_dir colony_core SOURCE_DIR)
       if(NOT _core_dir)
         set(_core_dir "${CMAKE_SOURCE_DIR}")
@@ -703,6 +942,42 @@ function(cg_wire_gpu_exports_to_exe exe)
     endif()
   endif()
 
+  # Remove the GPU exports from colony_platform_win if present (avoid duplicates)
+  if(TARGET colony_platform_win)
+    get_target_property(_plat_srcs colony_platform_win SOURCES)
+    if(_plat_srcs)
+      get_filename_component(_gpu_real "${_gpu_src}" REALPATH)
+      if(WIN32)
+        string(TOLOWER "${_gpu_real}" _gpu_key)
+      else()
+        set(_gpu_key "${_gpu_real}")
+      endif()
+
+      get_target_property(_plat_dir colony_platform_win SOURCE_DIR)
+      if(NOT _plat_dir)
+        set(_plat_dir "${CMAKE_SOURCE_DIR}")
+      endif()
+
+      set(_filtered_plat "")
+      foreach(_s IN LISTS _plat_srcs)
+        if(IS_ABSOLUTE "${_s}")
+          get_filename_component(_s_real "${_s}" REALPATH)
+        else()
+          get_filename_component(_s_real "${_s}" REALPATH BASE_DIR "${_plat_dir}")
+        endif()
+        if(WIN32)
+          string(TOLOWER "${_s_real}" _s_key)
+        else()
+          set(_s_key "${_s_real}")
+        endif()
+        if(NOT _s_key STREQUAL _gpu_key)
+          list(APPEND _filtered_plat "${_s}")
+        endif()
+      endforeach()
+      set_property(TARGET colony_platform_win PROPERTY SOURCES "${_filtered_plat}")
+    endif()
+  endif()
+
   # Add GPU exports to the executable target
   target_sources(${exe} PRIVATE "${_gpu_src}")
 endfunction()
@@ -713,6 +988,9 @@ foreach(_exe ColonyGame ColonyLauncher ColonyMapViewer)
     cg_wire_gpu_exports_to_exe(${_exe})
   endif()
 endforeach()
+if(COLONY_GAME_TARGET AND TARGET "${COLONY_GAME_TARGET}")
+  cg_wire_gpu_exports_to_exe("${COLONY_GAME_TARGET}")
+endif()
 
 # ------------------------------------------------------------------------------
 # Robust source de-dup (case-insensitive, realpath) and EXE/lib deconflict
@@ -732,13 +1010,21 @@ function(colony_normalize_and_dedupe_sources tgt)
   set(_keep "")
   foreach(_s IN LISTS _srcs)
     if(IS_ABSOLUTE "${_s}")
-      get_filename_component(_abs "${_s}" REALPATH)
+      if(EXISTS "${_s}")
+        get_filename_component(_abs "${_s}" REALPATH)
+      else()
+        set(_abs "${_s}")
+      endif()
     else()
       get_target_property(_src_dir ${tgt} SOURCE_DIR)
       if(NOT _src_dir)
         set(_src_dir "${CMAKE_SOURCE_DIR}")
       endif()
-      get_filename_component(_abs "${_s}" REALPATH BASE_DIR "${_src_dir}")
+      if(EXISTS "${_src_dir}/${_s}")
+        get_filename_component(_abs "${_s}" REALPATH BASE_DIR "${_src_dir}")
+      else()
+        set(_abs "${_src_dir}/${_s}")
+      endif()
     endif()
     set(_norm "${_abs}")
     if(WIN32)
@@ -755,64 +1041,104 @@ function(colony_normalize_and_dedupe_sources tgt)
   set_property(TARGET ${tgt} PROPERTY SOURCES "${_keep}")
 endfunction()
 
-# If a source file is already compiled into a library (e.g., colony_core),
-# do not also compile it into the executable (e.g., ColonyGame/ColonyLauncher).
-function(colony_remove_sources_already_in_lib exe lib)
-  if(TARGET ${exe} AND TARGET ${lib})
-    get_target_property(_exe_srcs ${exe} SOURCES)
-    get_target_property(_lib_srcs ${lib} SOURCES)
-    if(_exe_srcs AND _lib_srcs)
+# If a source file is already compiled into a library, do not also compile it into another target.
+# (Despite name, this works for any pair of targets.)
+function(colony_remove_sources_already_in_lib consumer lib)
+  if(TARGET ${consumer} AND TARGET ${lib})
+    get_target_property(_c_srcs ${consumer} SOURCES)
+    get_target_property(_l_srcs ${lib} SOURCES)
+    if(_c_srcs AND _l_srcs)
       # Build normalized set of lib sources
-      set(_lib_norm "")
-      get_target_property(_lib_dir ${lib} SOURCE_DIR)
-      if(NOT _lib_dir)
-        set(_lib_dir "${CMAKE_SOURCE_DIR}")
+      set(_l_norm "")
+      get_target_property(_l_dir ${lib} SOURCE_DIR)
+      if(NOT _l_dir)
+        set(_l_dir "${CMAKE_SOURCE_DIR}")
       endif()
-      foreach(_s IN LISTS _lib_srcs)
+      foreach(_s IN LISTS _l_srcs)
         if(IS_ABSOLUTE "${_s}")
-          get_filename_component(_abs "${_s}" REALPATH)
+          if(EXISTS "${_s}")
+            get_filename_component(_abs "${_s}" REALPATH)
+          else()
+            set(_abs "${_s}")
+          endif()
         else()
-          get_filename_component(_abs "${_s}" REALPATH BASE_DIR "${_lib_dir}")
+          if(EXISTS "${_l_dir}/${_s}")
+            get_filename_component(_abs "${_s}" REALPATH BASE_DIR "${_l_dir}")
+          else()
+            set(_abs "${_l_dir}/${_s}")
+          endif()
         endif()
         if(WIN32)
           string(TOLOWER "${_abs}" _abs)
         endif()
-        list(APPEND _lib_norm "${_abs}")
+        list(APPEND _l_norm "${_abs}")
       endforeach()
 
-      # Keep only exe sources that are NOT already in the lib
+      # Keep only consumer sources that are NOT already in the lib
       set(_keep "")
-      get_target_property(_exe_dir ${exe} SOURCE_DIR)
-      if(NOT _exe_dir)
-        set(_exe_dir "${CMAKE_SOURCE_DIR}")
+      get_target_property(_c_dir ${consumer} SOURCE_DIR)
+      if(NOT _c_dir)
+        set(_c_dir "${CMAKE_SOURCE_DIR}")
       endif()
-      foreach(_s IN LISTS _exe_srcs)
+      foreach(_s IN LISTS _c_srcs)
         if(IS_ABSOLUTE "${_s}")
-          get_filename_component(_abs "${_s}" REALPATH)
+          if(EXISTS "${_s}")
+            get_filename_component(_abs "${_s}" REALPATH)
+          else()
+            set(_abs "${_s}")
+          endif()
         else()
-          get_filename_component(_abs "${_s}" REALPATH BASE_DIR "${_exe_dir}")
+          if(EXISTS "${_c_dir}/${_s}")
+            get_filename_component(_abs "${_s}" REALPATH BASE_DIR "${_c_dir}")
+          else()
+            set(_abs "${_c_dir}/${_s}")
+          endif()
         endif()
         if(WIN32)
           string(TOLOWER "${_abs}" _abs)
         endif()
-        list(FIND _lib_norm "${_abs}" _idx)
+        list(FIND _l_norm "${_abs}" _idx)
         if(_idx EQUAL -1)
           list(APPEND _keep "${_s}")
         endif()
       endforeach()
 
-      set_property(TARGET ${exe} PROPERTY SOURCES "${_keep}")
+      set_property(TARGET ${consumer} PROPERTY SOURCES "${_keep}")
     endif()
   endif()
 endfunction()
 
 # Apply normalization/dedup to common targets
-foreach(_t colony_path procgen colony_core ColonyGame ColonyLauncher ColonyMapViewer)
+foreach(_t colony_path procgen colony_platform_win colony_core ColonyGame ColonyLauncher ColonyMapViewer)
   if(TARGET ${_t})
     colony_normalize_and_dedupe_sources(${_t})
   endif()
 endforeach()
 
-# Prevent exe/lib double-compiles
-colony_remove_sources_already_in_lib(ColonyGame    colony_core)
-colony_remove_sources_already_in_lib(ColonyLauncher colony_core)
+# Prevent cross-target double-compiles:
+# 1) Keep platform sources in colony_platform_win only (except HighPerfGPU.cpp which is in EXEs).
+if(TARGET colony_platform_win)
+  foreach(_consumer colony_core ColonyGame ColonyLauncher ColonyMapViewer)
+    if(TARGET ${_consumer})
+      colony_remove_sources_already_in_lib(${_consumer} colony_platform_win)
+    endif()
+  endforeach()
+  if(COLONY_GAME_TARGET AND TARGET "${COLONY_GAME_TARGET}")
+    colony_remove_sources_already_in_lib("${COLONY_GAME_TARGET}" colony_platform_win)
+  endif()
+endif()
+
+# 2) Prevent exe/lib double-compiles between ColonyGame/Launcher and colony_core
+colony_remove_sources_already_in_lib(ColonyGame      colony_core)
+colony_remove_sources_already_in_lib(ColonyLauncher  colony_core)
+if(COLONY_GAME_TARGET AND TARGET "${COLONY_GAME_TARGET}")
+  colony_remove_sources_already_in_lib("${COLONY_GAME_TARGET}" colony_core)
+endif()
+
+# Re-apply CrashDump /EHa after source moves
+if(TARGET colony_core)
+  colony_apply_seh_for_crashdump(colony_core)
+endif()
+if(TARGET colony_platform_win)
+  colony_apply_seh_for_crashdump(colony_platform_win)
+endif()
