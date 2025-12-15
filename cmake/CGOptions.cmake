@@ -1,59 +1,53 @@
 # cmake/CGOptions.cmake
+#
+# Centralizes user-facing cache variables / options for the project.
+# This file is Windows-aware, but safe to include on other platforms.
+#
+# Uses include_guard() so multiple includes do not re-run option definitions. :contentReference[oaicite:3]{index=3}
+
 include_guard(GLOBAL)
 
-# Windows-only build guard
-if(NOT WIN32)
-  message(FATAL_ERROR "This project is configured for Windows/MSVC only.")
+# VS folder organization (keeps Solution Explorer tidy)
+set_property(GLOBAL PROPERTY USE_FOLDERS ON)
+
+# ------------------------------ User-facing options ------------------------------
+
+# Frontend selector (matches existing behavior: '' (native Win32) or 'sdl')
+set(FRONTEND "" CACHE STRING "Frontend: '' (Win32 native) or 'sdl'")
+set_property(CACHE FRONTEND PROPERTY STRINGS "" sdl)
+
+# Optional UI / instrumentation
+option(ENABLE_IMGUI "Enable Dear ImGui UI (Win32 + D3D11 backends)" ON)   # :contentReference[oaicite:4]{index=4}
+option(ENABLE_TRACY "Enable Tracy instrumentation client" ON)
+
+# Build toggles
+option(SHOW_CONSOLE        "Show console for the Win32 executable(s)" OFF)
+option(COLONY_USE_PCH      "Enable precompiled headers" ON)
+option(COLONY_UNITY_BUILD  "Enable CMake Unity builds (jumbo)" OFF)
+
+# Gate compute shaders to avoid FXC X3501 until all *_cs.hlsl have CSMain
+option(COLONY_ENABLE_COMPUTE_SHADERS
+  "Compile compute shaders (*_cs.hlsl) if they define CSMain"
+  OFF
+)
+
+# Separate Windows launcher EXE that spawns the game
+option(COLONY_BUILD_LAUNCHER "Build native Windows launcher (separate EXE)" ON)
+
+# Optional: compile warnings-as-errors for colony_core (EXE link /WX is handled elsewhere)
+option(COLONY_WERROR "Treat compiler warnings as errors when compiling colony_core" OFF)
+
+# Optional override for shared PCH header (relative to repo root, unless absolute path)
+set(COLONY_PCH_HEADER "" CACHE STRING "Path to a shared PCH header (relative to repo root)")
+
+# ------------------------------ Windows-only defaults / guards ------------------------------
+
+if(WIN32)
+  # Global compile defines used throughout the project
+  add_compile_definitions(_CRT_SECURE_NO_WARNINGS UNICODE _UNICODE)
+else()
+  # If somebody configures outside Windows, force Windows-only options off to avoid surprises.
+  set(ENABLE_IMGUI OFF CACHE BOOL "Enable Dear ImGui UI (Win32 + D3D11 backends)" FORCE)
+  set(ENABLE_TRACY OFF CACHE BOOL "Enable Tracy instrumentation client" FORCE)
+  set(COLONY_BUILD_LAUNCHER OFF CACHE BOOL "Build native Windows launcher (separate EXE)" FORCE)
 endif()
-
-# Disallow 32-bit (make the message single-command and unambiguous)
-if(CMAKE_SIZEOF_VOID_P EQUAL 4)
-  message(FATAL_ERROR "32-bit builds are not supported.\nPlease build x64.")
-endif()
-
-# Language standard
-set(CMAKE_CXX_STANDARD 23)
-set(CMAKE_CXX_STANDARD_REQUIRED ON)
-set(CMAKE_CXX_EXTENSIONS OFF)
-
-# Feature toggles (keep your names)
-option(ENABLE_IMGUI "Enable Dear ImGui overlay" ON)
-option(ENABLE_TRACY "Enable Tracy profiler" ON)
-option(TRACY_FETCH "Fetch Tracy via FetchContent" ON)
-option(SHOW_CONSOLE "Show console for WIN32 exe" OFF)
-option(BUILD_TESTING "Enable tests" ON)
-
-# Frontend & renderer knobs you already expose
-set(FRONTEND "win32" CACHE STRING "Frontend to build: win32 or sdl")
-set_property(CACHE FRONTEND PROPERTY STRINGS win32 sdl)
-set(COLONY_RENDERER "d3d11" CACHE STRING "Renderer backend: d3d11 or d3d12")
-set_property(CACHE COLONY_RENDERER PROPERTY STRINGS d3d11 d3d12)
-
-# HLSL defaults (unchanged)
-set(COLONY_HLSL_MODEL "5.0" CACHE STRING "Default HLSL shader model (e.g. 5.0, 5.1, 6.6, 6.7)")
-set_property(CACHE COLONY_HLSL_MODEL PROPERTY STRINGS "5.0;5.1;6.0;6.6;6.7")
-set(COLONY_HLSL_COMPILER "AUTO" CACHE STRING "HLSL compiler: AUTO | FXC | DXC")
-set_property(CACHE COLONY_HLSL_COMPILER PROPERTY STRINGS "AUTO;FXC;DXC")
-
-# Optional build knobs
-option(COLONY_USE_PCH "Enable precompiled headers if a PCH header exists" ON)
-option(COLONY_UNITY_BUILD "Enable Unity (jumbo) builds" OFF)
-option(COLONY_LTO "Enable IPO/LTO for Release" OFF)
-option(COLONY_ASAN "Enable AddressSanitizer (MSVC, Debug only)" OFF)
-option(COLONY_WARNINGS_AS_ERRORS "Treat warnings as errors" OFF)
-
-# CRT selection (CMP0091 must be NEW; see CGPolicies.cmake)
-option(COLONY_STATIC_CRT "Link MSVC runtime statically (/MT,/MTd)" OFF)
-if(MSVC)
-  if(COLONY_STATIC_CRT)
-    # /MT (Release) and /MTd (Debug)
-    set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
-  else()
-    # /MD (Release) and /MDd (Debug)
-    set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>DLL")
-  endif()
-  message(STATUS "MSVC runtime: ${CMAKE_MSVC_RUNTIME_LIBRARY}")
-endif()
-
-# IPO/LTO block (unchanged)
-# [keep your existing check_ipo_supported / message(...) / endif() nesting here]
