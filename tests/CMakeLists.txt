@@ -115,11 +115,13 @@ file(GLOB_RECURSE _MORE_TESTS CONFIGURE_DEPENDS
     "${CMAKE_SOURCE_DIR}/tests/*.cpp"
 )
 list(FILTER _MORE_TESTS EXCLUDE REGEX ".*/(test_)?main\\.cpp$")
-list(REMOVE_ITEM _MORE_TESTS "${CMAKE_SOURCE_DIR}/tests/smoke/smoke.cpp")
+# Exclude any 'smoke.cpp' regardless of location to avoid a second main() TU
+list(FILTER _MORE_TESTS EXCLUDE REGEX ".*/smoke\\.cpp$")
 list(APPEND TEST_SOURCES ${_MORE_TESTS})
 
-add_executable(colony_smoke ${TEST_SOURCES})
-target_compile_features(colony_smoke PRIVATE cxx_std_23)
+# ---------- One test executable ----------
+add_executable(colony_tests ${TEST_SOURCES})
+target_compile_features(colony_tests PRIVATE cxx_std_23)
 
 # --------------------------------------------------------------
 # Guardrail: enforce that ONLY test_main.cpp is the doctest runner/implementation TU.
@@ -200,7 +202,7 @@ add_custom_target(colony_doctest_runner_guardrail
     COMMENT "Checking doctest runner uniqueness (only test_main.cpp may implement doctest)"
     VERBATIM
 )
-add_dependencies(colony_smoke colony_doctest_runner_guardrail)
+add_dependencies(colony_tests colony_doctest_runner_guardrail)
 
 # --------------------------------------------------------------
 # Unity builds:
@@ -210,10 +212,10 @@ add_dependencies(colony_smoke colony_doctest_runner_guardrail)
 # causing ODR/redefinition errors (e.g., 'TestGrid' defined in test_jps.cpp and test_nav.cpp).
 # Disable unity builds for this test target to keep each test .cpp isolated.
 # --------------------------------------------------------------
-set_target_properties(colony_smoke PROPERTIES UNITY_BUILD OFF)
+set_target_properties(colony_tests PROPERTIES UNITY_BUILD OFF)
 
 if(MSVC)
-    target_compile_options(colony_smoke PRIVATE
+    target_compile_options(colony_tests PRIVATE
         /utf-8
         /W4
         /permissive-
@@ -231,10 +233,10 @@ if(MSVC)
         /UDOCTEST_CONFIG_IMPLEMENT_WITH_MAIN
     )
 else()
-    target_compile_options(colony_smoke PRIVATE -Wall -Wextra -Wpedantic)
+    target_compile_options(colony_tests PRIVATE -Wall -Wextra -Wpedantic)
 endif()
 
-target_include_directories(colony_smoke PRIVATE
+target_include_directories(colony_tests PRIVATE
     ${CMAKE_SOURCE_DIR}/include
     ${CMAKE_SOURCE_DIR}/src
     ${CMAKE_SOURCE_DIR}/src/worldgen
@@ -242,24 +244,24 @@ target_include_directories(colony_smoke PRIVATE
 
 # Link production libs if present
 if(TARGET colony_build_options)
-    target_link_libraries(colony_smoke PRIVATE colony_build_options)
+    target_link_libraries(colony_tests PRIVATE colony_build_options)
 endif()
 if(TARGET colony_core)
-    target_link_libraries(colony_smoke PRIVATE colony_core)
+    target_link_libraries(colony_tests PRIVATE colony_core)
 endif()
 if(TARGET procgen)
-    target_link_libraries(colony_smoke PRIVATE procgen)
+    target_link_libraries(colony_tests PRIVATE procgen)
 endif()
 
 # ------------------------------------------------------------------
 # Link pathfinding into tests (and also the game exe) if available.
 # ------------------------------------------------------------------
 if(TARGET Colony::Path)
-    target_link_libraries(colony_smoke PRIVATE Colony::Path)
+    target_link_libraries(colony_tests PRIVATE Colony::Path)
 elseif(TARGET colony_path)
-    target_link_libraries(colony_smoke PRIVATE colony_path)
+    target_link_libraries(colony_tests PRIVATE colony_path)
 elseif(TARGET colony::path)
-    target_link_libraries(colony_smoke PRIVATE colony::path)
+    target_link_libraries(colony_tests PRIVATE colony::path)
 else()
     # OBJECT fallback for CI/dev when the lib isn't defined as a target yet
     file(GLOB_RECURSE COLONY_TEST_PATH_SOURCES CONFIGURE_DEPENDS
@@ -283,7 +285,7 @@ else()
             "${CMAKE_SOURCE_DIR}/hpa"
         )
         target_compile_features(colony_path_obj PUBLIC cxx_std_20)
-        target_sources(colony_smoke PRIVATE $<TARGET_OBJECTS:colony_path_obj>)
+        target_sources(colony_tests PRIVATE $<TARGET_OBJECTS:colony_path_obj>)
     endif()
 endif()
 
@@ -307,13 +309,13 @@ elseif(TARGET colony_game)
 endif()
 
 # Header-only deps (publish include dirs transitively via INTERFACE)
-target_link_libraries(colony_smoke PRIVATE pcg doctest)
+target_link_libraries(colony_tests PRIVATE pcg doctest)
 
 # ---- Ensure the upstream doctest header is visible on the test target ----
 # If we fetched doctest ourselves, add its repo root to the test's includes so
 # <doctest/doctest.h> is always found, even with unusual toolchains.
 if(DEFINED doctest_upstream_SOURCE_DIR)
-    target_include_directories(colony_smoke PRIVATE "${doctest_upstream_SOURCE_DIR}")
+    target_include_directories(colony_tests PRIVATE "${doctest_upstream_SOURCE_DIR}")
 endif()
 
 # --------------------------------------------------------------
@@ -322,14 +324,14 @@ endif()
 # --------------------------------------------------------------
 if(_DOCTEST_CMAKE_FOUND AND COMMAND doctest_discover_tests)
     # Enumerate each TEST_CASE into its own CTest entry; no reconfigure needed when tests change.
-    doctest_discover_tests(colony_smoke
-        TEST_PREFIX      "smoke."
+    doctest_discover_tests(colony_tests
+        TEST_PREFIX      "tests."
         WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
         DISCOVERY_MODE   POST_BUILD
     )
 else()
-    add_test(NAME colony_smoke COMMAND colony_smoke)
-    set_tests_properties(colony_smoke PROPERTIES
+    add_test(NAME colony_tests COMMAND colony_tests)
+    set_tests_properties(colony_tests PROPERTIES
         WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
     )
 endif()
