@@ -11,7 +11,12 @@
         "USE_PIX": "ON",
         "USE_RAWINPUT": "ON"
       },
-      "vendor": { "microsoft.com/VisualStudioSettings/CMake/1.0": { "hostOS": ["Windows"] } }
+      "vendor": {
+        "microsoft.com/VisualStudioSettings/CMake/1.0": {
+          "hostOS": ["Windows"]
+        }
+      }
     }
   ]
 }
+
