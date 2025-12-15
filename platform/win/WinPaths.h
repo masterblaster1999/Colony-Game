@@ -327,14 +327,14 @@ namespace cg { namespace paths {
 
   // Ensure our standard directories are present (no failure if any cannot be created).
   inline void ensureStandardGameDirs() {
-    ensureDir(userDataRoot());
-    ensureDir(logsDir());
-    ensureDir(dumpsDir());
-    ensureDir(savesDir());
-    ensureDir(screenshotsDir());
-    ensureDir(configDir());
-    ensureDir(cacheDir());
-    ensureDir(modsDir());
+    (void)ensureDir(userDataRoot());
+    (void)ensureDir(logsDir());
+    (void)ensureDir(dumpsDir());
+    (void)ensureDir(savesDir());
+    (void)ensureDir(screenshotsDir());
+    (void)ensureDir(configDir());
+    (void)ensureDir(cacheDir());
+    (void)ensureDir(modsDir());
   }
 
   // ============
