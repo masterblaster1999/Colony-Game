@@ -32,6 +32,23 @@ function(colony_append_existing OUT_VAR)
 endfunction()
 
 # ---------------------------------------------------------------------------
+# Per-source overrides
+# ---------------------------------------------------------------------------
+# Best practice: CrashDumpWin.cpp is typically built with /EHa (SEH-aware),
+# which conflicts with a PCH built with /EHsc. Disable PCH for this TU and
+# apply /EHa only to this file.
+if(MSVC)
+    set(_CRASHDUMP_WIN "${PLATFORM_WIN_DIR}/CrashDumpWin.cpp")
+    if(EXISTS "${_CRASHDUMP_WIN}")
+        set_source_files_properties("${_CRASHDUMP_WIN}" PROPERTIES
+            SKIP_PRECOMPILE_HEADERS ON
+            SKIP_UNITY_BUILD_INCLUSION ON
+            COMPILE_OPTIONS "/EHa"
+        )
+    endif()
+endif()
+
+# ---------------------------------------------------------------------------
 # Library: colony_platform_win  (DX12 DeviceResources owner)
 # Compile DeviceResources.* exactly once here; link this lib ONCE in the EXE.
 # ---------------------------------------------------------------------------
