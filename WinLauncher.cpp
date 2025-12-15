@@ -58,13 +58,10 @@
 namespace fs = std::filesystem;
 
 // -----------------------------------------------------------------------------
-// Hybrid GPU hints (NVidia / AMD). Drivers look for these exports.
+// Hybrid GPU hints (NVidia / AMD).
+// NOTE: The exported globals are defined once in platform/win/HighPerfGPU.cpp
+// to avoid duplicate-symbol warnings.
 // -----------------------------------------------------------------------------
-extern "C"
-{
-    __declspec(dllexport) DWORD NvOptimusEnablement                 = 0x00000001;
-    __declspec(dllexport) int   AmdPowerXpressRequestHighPerformance = 1;
-}
 
 // -----------------------------------------------------------------------------
 // Local helpers that are still logically "launcher orchestration"
