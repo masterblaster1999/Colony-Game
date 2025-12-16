@@ -3,29 +3,10 @@
 // IMPORTANT:
 //   This must be the ONLY translation unit in the test executable that defines
 //   DOCTEST_CONFIG_IMPLEMENT (or DOCTEST_CONFIG_IMPLEMENT_WITH_MAIN).
-//   All other test .cpp files must ONLY `#include <doctest/doctest.h>`
-//   and must NOT define any DOCTEST_CONFIG_* implementation macros.
+//   All other test .cpp files should just include doctest WITHOUT those macros.
 //
-// We intentionally use DOCTEST_CONFIG_IMPLEMENT (NOT ...WITH_MAIN) because we
-// provide our own main() so we can set sane defaults programmatically while
-// still honoring doctest command-line flags.
-// (Doctest requires the implementation block to exist in exactly one TU.)
-
-#if defined(DOCTEST_CONFIG_IMPLEMENT_WITH_MAIN)
-#   error "DOCTEST_CONFIG_IMPLEMENT_WITH_MAIN generates its own main(). This file provides a custom main(), so DOCTEST_CONFIG_IMPLEMENT_WITH_MAIN must NOT be defined. Remove it from any target-wide compile definitions and any other .cpp files."
-#endif
-
-#ifdef _WIN32
-    // Prevent Windows headers from defining min/max macros and reduce header bloat.
-    #ifndef NOMINMAX
-        #define NOMINMAX
-    #endif
-    #ifndef WIN32_LEAN_AND_MEAN
-        #define WIN32_LEAN_AND_MEAN
-    #endif
-#endif
-
-// Implement the doctest test runner in this (and only this) translation unit.
+// We use DOCTEST_CONFIG_IMPLEMENT (instead of ...WITH_MAIN) so we can customize
+// defaults and still support doctest command-line flags.
 #define DOCTEST_CONFIG_IMPLEMENT
 #include <doctest/doctest.h>
 
@@ -33,6 +14,12 @@
 #include <cstring> // std::strcmp
 
 #ifdef _WIN32
+    #ifndef NOMINMAX
+        #define NOMINMAX
+    #endif
+    #ifndef WIN32_LEAN_AND_MEAN
+        #define WIN32_LEAN_AND_MEAN
+    #endif
     #include <windows.h> // IsDebuggerPresent
 #endif
 
@@ -45,15 +32,10 @@ bool env_truthy(const char* v) {
 
 bool running_in_ci() {
     // Common CI environment variables across popular CI providers.
-    // Add more here if you use a different CI.
     return env_truthy(std::getenv("CI")) ||
            env_truthy(std::getenv("GITHUB_ACTIONS")) ||
            env_truthy(std::getenv("TF_BUILD")) ||
-           env_truthy(std::getenv("APPVEYOR")) ||
-           env_truthy(std::getenv("GITLAB_CI")) ||
-           env_truthy(std::getenv("CIRCLECI")) ||
-           env_truthy(std::getenv("TEAMCITY_VERSION")) ||
-           env_truthy(std::getenv("JENKINS_URL"));
+           env_truthy(std::getenv("APPVEYOR"));
 }
 
 bool debugger_attached() {
@@ -75,14 +57,12 @@ int main(int argc, char** argv) {
     context.setOption("no-path-filenames", true); // cleaner Windows output
 
     // CI defaults: avoid debug breaks & ANSI color noise in logs.
-    // (Still overridable via command line if you really want to.)
     if (running_in_ci()) {
         context.setOption("no-breaks", true);
         context.setOption("no-colors", true);
     }
 
     // Local debugging: keep breaks enabled when a debugger is attached.
-    // (Still overridable via command line if you really want to.)
     if (debugger_attached()) {
         context.setOption("no-breaks", false);
     }
@@ -92,8 +72,7 @@ int main(int argc, char** argv) {
 
     const int res = context.run();
 
-    // IMPORTANT: query flags (--help/--version/--list-test-cases/--no-run/--exit)
-    // rely on the user doing this.
+    // --help / --version etc.
     if (context.shouldExit())
         return res;
 
