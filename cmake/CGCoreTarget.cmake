@@ -8,6 +8,14 @@
 # - Taskflow fallback include-dir if package not found
 # - Optional ImGui/Tracy wiring via CGOptionalDeps.cmake
 # - Toolchain defaults (warnings/sanitizers) via CGToolchainWin.cmake
+#
+# Patch notes (applied):
+# - Filter out src-gamesingletu.cpp by default (prevents ODR/link duplicate symbol issues).
+#   Pass SINGLE_TU to keep it.
+# - Filter out compiled Windows platform implementation sources (*/platform/win/*.c|*.cpp)
+#   from colony_core so platform code is owned by colony_platform_win.
+# - Ensure CrashDumpWin.cpp (if it ends up in colony_core sources) is built with /EHa and
+#   skipped from PCH + Unity to avoid MSVC C4652 PCH mismatch and unity/ODR edge cases.
 
 include_guard(GLOBAL)
 
@@ -15,7 +23,8 @@ include("${CMAKE_CURRENT_LIST_DIR}/CGToolchainWin.cmake")
 include("${CMAKE_CURRENT_LIST_DIR}/CGOptionalDeps.cmake")
 
 function(cg_setup_core_target)
-  cmake_parse_arguments(ARG ""
+  cmake_parse_arguments(ARG
+    "SINGLE_TU"
     "TARGET;ROOT_DIR;FRONTEND;UNITY_BUILD;USE_PCH;PCH_HEADER;ENABLE_IMGUI;ENABLE_TRACY;WERROR"
     "SOURCES;PUBLIC_INCLUDE_DIRS;THIRDPARTY_LIBS"
     ${ARGN}
@@ -39,10 +48,76 @@ function(cg_setup_core_target)
     add_library("${_tgt}" STATIC)
   endif()
 
+  # ----------------------------
+  # Sources (with safety filters)
+  # ----------------------------
   if(ARG_SOURCES)
-    target_sources("${_tgt}" PRIVATE ${ARG_SOURCES})
+    set(_srcs_filtered "")
+    set(_excluded_platform 0)
+    set(_excluded_entry    0)
+    set(_excluded_single   0)
+
+    foreach(_s IN LISTS ARG_SOURCES)
+      set(_s_norm "${_s}")
+      string(REPLACE "\\" "/" _s_norm "${_s_norm}")
+
+      get_filename_component(_bn  "${_s_norm}" NAME)
+      get_filename_component(_ext "${_s_norm}" EXT)
+      string(TOLOWER "${_ext}" _ext_l)
+
+      # 1) Exclude the single-TU jumbo file by default (it commonly causes ODR/link dupes).
+      if(NOT ARG_SINGLE_TU AND _bn STREQUAL "src-gamesingletu.cpp")
+        math(EXPR _excluded_single "${_excluded_single} + 1")
+        continue()
+      endif()
+
+      # 2) Keep entrypoints and GPU-export TUs out of the core static library.
+      if(_ext_l MATCHES "^\\.(c|cc|cxx|cpp)$")
+        if(_bn MATCHES "^(EntryWinMain|WinLauncher|AppMain|win_entry)\\.(c|cc|cxx|cpp)$")
+          math(EXPR _excluded_entry "${_excluded_entry} + 1")
+          continue()
+        endif()
+        if(_bn STREQUAL "HighPerfGPU.cpp")
+          math(EXPR _excluded_entry "${_excluded_entry} + 1")
+          continue()
+        endif()
+
+        # 3) Do not compile platform implementation sources into colony_core.
+        #    These should belong to colony_platform_win (compiled once).
+        if(_s_norm MATCHES "/platform/win/")
+          math(EXPR _excluded_platform "${_excluded_platform} + 1")
+          continue()
+        endif()
+      endif()
+
+      list(APPEND _srcs_filtered "${_s}")
+    endforeach()
+
+    if(_excluded_single GREATER 0 OR _excluded_entry GREATER 0 OR _excluded_platform GREATER 0)
+      set(_msg "cg_setup_core_target(${_tgt}): filtered")
+      if(_excluded_single GREATER 0)
+        set(_msg "${_msg} ${_excluded_single} single-TU")
+      endif()
+      if(_excluded_entry GREATER 0)
+        set(_msg "${_msg} ${_excluded_entry} entrypoint/GPU")
+      endif()
+      if(_excluded_platform GREATER 0)
+        set(_msg "${_msg} ${_excluded_platform} platform/win")
+      endif()
+      message(STATUS "${_msg} source(s) from colony_core")
+    endif()
+
+    if(_srcs_filtered)
+      target_sources("${_tgt}" PRIVATE ${_srcs_filtered})
+    endif()
+
+    unset(_srcs_filtered)
+    unset(_excluded_platform)
+    unset(_excluded_entry)
+    unset(_excluded_single)
   endif()
 
+  # Unity
   if(ARG_UNITY_BUILD)
     set_target_properties("${_tgt}" PROPERTIES UNITY_BUILD ON)
   else()
@@ -160,6 +235,46 @@ function(cg_setup_core_target)
     endif()
 
     unset(_pch)
+  endif()
+
+  # CrashDumpWin.cpp: /EHa + skip PCH + skip unity (avoid MSVC C4652 + unity edge cases).
+  # Prefer the shared helper if the root CMake defines it; otherwise do a local best-effort.
+  if(COMMAND colony_apply_seh_for_crashdump)
+    colony_apply_seh_for_crashdump("${_tgt}")
+  else()
+    if(MSVC AND (NOT DEFINED COLONY_SEH_CRASHDUMP OR COLONY_SEH_CRASHDUMP))
+      get_target_property(_core_srcs "${_tgt}" SOURCES)
+      if(_core_srcs)
+        get_target_property(_tgt_dir "${_tgt}" SOURCE_DIR)
+        if(NOT _tgt_dir)
+          set(_tgt_dir "${CMAKE_SOURCE_DIR}")
+        endif()
+
+        foreach(_src IN LISTS _core_srcs)
+          if(_src MATCHES "CrashDumpWin\\.cpp$")
+            if(IS_ABSOLUTE "${_src}")
+              set(_abs_candidate "${_src}")
+            else()
+              set(_abs_candidate "${_tgt_dir}/${_src}")
+            endif()
+
+            if(EXISTS "${_abs_candidate}")
+              get_filename_component(_abs "${_abs_candidate}" REALPATH)
+            else()
+              set(_abs "${_abs_candidate}")
+            endif()
+
+            set_source_files_properties("${_abs}"
+              TARGET_DIRECTORY "${_tgt}"
+              PROPERTIES
+                COMPILE_OPTIONS "/EHa"
+                SKIP_PRECOMPILE_HEADERS ON
+                SKIP_UNITY_BUILD_INCLUSION ON
+            )
+          endif()
+        endforeach()
+      endif()
+    endif()
   endif()
 
   # Taskflow fallback
