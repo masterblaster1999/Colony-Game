@@ -293,6 +293,8 @@ function(colony_add_source_if_missing tgt src_path)
 endfunction()
 
 # Apply /EHa only to CrashDumpWin.cpp for a given target (if present).
+# Also skip PCH + unity inclusion for that TU to avoid MSVC C4652 warnings when
+# /EHa differs from the target's PCH flags (/EHsc), and to prevent unity/ODR edge cases.
 function(colony_apply_seh_for_crashdump tgt)
   if(NOT (MSVC AND COLONY_SEH_CRASHDUMP))
     return()
@@ -306,9 +308,35 @@ function(colony_apply_seh_for_crashdump tgt)
     return()
   endif()
 
+  # Resolve relative source paths against the directory where the target was created.
+  get_target_property(_tgt_dir "${tgt}" SOURCE_DIR)
+  if(NOT _tgt_dir)
+    set(_tgt_dir "${CMAKE_SOURCE_DIR}")
+  endif()
+
   foreach(_src IN LISTS _srcs)
     if(_src MATCHES "CrashDumpWin\\.cpp$")
-      set_source_files_properties(${_src} PROPERTIES COMPILE_OPTIONS "/EHa")
+      # Normalize to an absolute path (safer across directory scopes).
+      if(IS_ABSOLUTE "${_src}")
+        set(_abs_candidate "${_src}")
+      else()
+        set(_abs_candidate "${_tgt_dir}/${_src}")
+      endif()
+
+      if(EXISTS "${_abs_candidate}")
+        get_filename_component(_abs "${_abs_candidate}" REALPATH)
+      else()
+        set(_abs "${_abs_candidate}")
+      endif()
+
+      # IMPORTANT: set properties in the directory scope where the target was created.
+      set_source_files_properties("${_abs}"
+        TARGET_DIRECTORY "${tgt}"
+        PROPERTIES
+          COMPILE_OPTIONS "/EHa"
+          SKIP_PRECOMPILE_HEADERS ON
+          SKIP_UNITY_BUILD_INCLUSION ON
+      )
     endif()
   endforeach()
 endfunction()
