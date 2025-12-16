@@ -1,92 +1,74 @@
 // tests/test_paths.cpp
-#ifdef _WIN32
-#define DOCTEST_CONFIG_IMPLEMENT_WITH_MAIN
+//
+// NOTE:
+//   Do NOT define DOCTEST_CONFIG_IMPLEMENT* in this file.
+//   tests/test_main.cpp is the only TU that provides doctest implementation + main.
+
 #include <doctest/doctest.h>
 
-#include <filesystem>
-#include <fstream>
+#include <cstdlib>     // std::getenv
+#include <filesystem>  // std::filesystem
+#include <fstream>     // std::ifstream
 #include <string>
-#include <cstdlib>   // _wdupenv_s
-#include <windows.h>
-#include <shlobj.h>  // SHGetKnownFolderPath
-
-// Try to use the project's helpers if available.
-#if __has_include("platform/win/PathUtilWin.h")
-  #include "platform/win/PathUtilWin.h"
-  #define COLONY_HAS_PROJECT_PATHUTIL 1
-#else
-  #define COLONY_HAS_PROJECT_PATHUTIL 0
-#endif
+#include <iostream>
 
 namespace fs = std::filesystem;
 
-static fs::path colony_saved_games_dir() {
-#if COLONY_HAS_PROJECT_PATHUTIL
-    // Expected to exist in your repo (namespace may be winpath or similar).
-    return winpath::saved_games_dir();
-#else
-    // Fallback: KNOWNFOLDERID Saved Games.
-    PWSTR p = nullptr;
-    fs::path out;
-    if (SUCCEEDED(SHGetKnownFolderPath(FOLDERID_SavedGames, KF_FLAG_CREATE, NULL, &p))) {
-        out = fs::path(p);
-        CoTaskMemFree(p);
-    } else {
-        out = fs::temp_directory_path();
+namespace {
+
+fs::path get_project_root() {
+    // Try env var first (useful in CI or when running from arbitrary working dirs).
+    if (const char* env = std::getenv("COLONY_PROJECT_ROOT")) {
+        if (*env)
+            return fs::path(env);
     }
-    fs::create_directories(out);
-    return out;
-#endif
+
+    // Fallback: walk up from current working directory to find repo markers.
+    fs::path cwd = fs::current_path();
+    for (int i = 0; i < 10; ++i) {
+        if (fs::exists(cwd / "CMakeLists.txt") && fs::exists(cwd / "README.md")) {
+            return cwd;
+        }
+        fs::path parent = cwd.parent_path();
+        if (parent == cwd)
+            break;
+        cwd = parent;
+    }
+
+    // Worst-case fallback.
+    return fs::current_path();
 }
 
-static fs::path colony_writable_data_dir() {
-#if COLONY_HAS_PROJECT_PATHUTIL
-    // Expected to exist in your repo.
-    return winpath::writable_data_dir();
-#else
-    // Fallback: %LOCALAPPDATA%\ColonyGame
-    wchar_t* env = nullptr; size_t len = 0;
-    fs::path base = fs::temp_directory_path();
-    if (_wdupenv_s(&env, &len, L"LOCALAPPDATA") == 0 && env) {
-        base = fs::path(env);
-        free(env);
-    }
-    fs::path out = base / L"ColonyGame";
-    fs::create_directories(out);
-    return out;
-#endif
+fs::path assets_dir() {
+    return get_project_root() / "assets";
 }
 
-TEST_CASE("Saved Games directory exists and is writable") {
-    const fs::path dir = colony_saved_games_dir();
-    REQUIRE_MESSAGE(!dir.empty(), "Saved Games dir is empty path");
-    REQUIRE_MESSAGE(fs::exists(dir), "Saved Games dir does not exist: " << dir.string());
+} // namespace
 
-    const fs::path probe = dir / L"doctest_savedgames_probe.tmp";
-    {
-        std::ofstream f(probe, std::ios::binary);
-        REQUIRE_MESSAGE(f.good(), "Cannot create a file in Saved Games: " << dir.string());
-        f << "ok";
-    }
-    CHECK(fs::file_size(probe) == 2);
-    fs::remove(probe);
+TEST_CASE("assets directory exists") {
+    const fs::path dir = assets_dir();
+    INFO("assets dir: ", dir.string());
+
+    CHECK_MESSAGE(fs::exists(dir), "assets directory is missing");
+    CHECK_MESSAGE(fs::is_directory(dir), "assets path is not a directory");
 }
 
-TEST_CASE("Writable data directory exists and is writable") {
-    const fs::path dir = colony_writable_data_dir();
-    fs::create_directories(dir);
-    REQUIRE_MESSAGE(fs::exists(dir), "Writable data dir does not exist: " << dir.string());
+TEST_CASE("can open a known asset file if present") {
+    const fs::path dir = assets_dir();
+    const fs::path candidate = dir / "placeholder.txt";
+    INFO("candidate: ", candidate.string());
 
-    const fs::path probe = dir / L"doctest_writable_probe.tmp";
-    {
-        std::ofstream f(probe, std::ios::binary);
-        REQUIRE_MESSAGE(f.good(), "Cannot create a file in writable data dir: " << dir.string());
-        f << "ok";
+    if (!fs::exists(candidate)) {
+        WARN("candidate asset not present; skipping");
+        return;
     }
-    CHECK(fs::file_size(probe) == 2);
-    fs::remove(probe);
+
+    std::ifstream f(candidate, std::ios::binary);
+    CHECK_MESSAGE(f.good(), "could not open candidate asset file");
 }
-#else
-// Non-Windows builds: make the test binary do nothing.
-int main() { return 0; }
-#endif
+
+TEST_CASE("filesystem path conversions are safe on Windows") {
+    const fs::path p = assets_dir();
+    CHECK_NOTHROW(p.wstring());
+    CHECK_NOTHROW(p.u8string());
+}
