@@ -6,6 +6,7 @@
 #include <new>
 #include <algorithm>
 #include <type_traits>
+#include <utility>
 
 #if !defined(_WIN32)
 #  error "This arena implementation is tuned for Windows builds (_aligned_malloc/_aligned_free)."
@@ -19,9 +20,16 @@ inline std::size_t align_up(std::size_t n, std::size_t a) {
     return (n + (a - 1)) & ~(a - 1);
 }
 
+// Align pointer-sized integer 'n' up to 'a' (a must be a power of two)
+inline std::uintptr_t align_up_ptr(std::uintptr_t n, std::size_t a) {
+    const std::uintptr_t mask = static_cast<std::uintptr_t>(a - 1u);
+    return (n + mask) & ~mask;
+}
+
 class Arena {
 public:
-    explicit Arena(std::size_t defaultBlockBytes = 1u << 20, std::size_t alignment = alignof(std::max_align_t))
+    explicit Arena(std::size_t defaultBlockBytes = 1u << 20,
+                   std::size_t alignment = alignof(std::max_align_t))
         : defaultBlockBytes_(defaultBlockBytes), alignment_(alignment) {
         add_block(defaultBlockBytes_);
     }
@@ -42,13 +50,22 @@ public:
         bytes = align_up(bytes, align);
 
         Block& b = blocks_.back();
-        std::size_t offset = align_up(b.used, align);
+
+        // IMPORTANT: Align the *address* (base + used), not just b.used.
+        const auto base    = reinterpret_cast<std::uintptr_t>(b.ptr);
+        const auto current = base + static_cast<std::uintptr_t>(b.used);
+        const auto aligned = align_up_ptr(current, align);
+        const std::size_t offset = static_cast<std::size_t>(aligned - base);
+
         if (offset + bytes > b.capacity) {
-            // Need a new block; grow geometrically to reduce churn
-            std::size_t cap = std::max(defaultBlockBytes_, bytes);
+            // Need a new block; grow geometrically to reduce churn.
+            // Also include worst-case alignment padding so that an aligned allocation
+            // can always fit even if the underlying block base isn't aligned to `align`.
+            const std::size_t cap = std::max(defaultBlockBytes_, bytes + (align - 1u));
             add_block(cap);
             return allocate(bytes, align);
         }
+
         void* p = static_cast<void*>(b.ptr + offset);
         b.used = offset + bytes;
         return p;
