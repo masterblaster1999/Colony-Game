@@ -437,7 +437,7 @@ namespace cg { namespace paths {
                                             std::error_code& ec) noexcept
   {
     ec.clear();
-    ensureParent(target);
+    (void)ensureParent(target); // FIX: intentionally discard [[nodiscard]] result (prevents MSVC C4834)
     auto tmp = tempSiblingFor(target);
 
     // Create a temp file with write-through
