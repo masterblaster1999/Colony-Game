@@ -57,6 +57,8 @@
 #include <chrono>
 #include <cstdlib>
 #include <system_error>
+#include <cwchar> // std::wcschr
+#include <ctime>  // std::tm, wcsftime, localtime_s
 
 namespace cg { namespace paths {
 
@@ -78,17 +80,32 @@ namespace cg { namespace paths {
   // ---------------------
   // By default we use CG_APP_NAMEW / CG_COMPANY_NAMEW. If you want to change
   // them at runtime (early in startup), call setAppIdentity(...).
-  inline const std::wstring& appNameW() {
-    static std::wstring v = CG_APP_NAMEW;
-    return v;
+  namespace detail {
+
+    // Intentionally consume (do not discard) a [[nodiscard]] value.
+    // Passing the value as an argument avoids MSVC C4834 while keeping intent explicit.
+    template <class T>
+    constexpr void ignore_nodiscard([[maybe_unused]] T&&) noexcept {}
+
+    inline std::wstring& appNameStorage() {
+      static std::wstring v = CG_APP_NAMEW;
+      return v;
+    }
+    inline std::wstring& companyNameStorage() {
+      static std::wstring v = CG_COMPANY_NAMEW;
+      return v;
+    }
+  } // namespace detail
+
+  [[nodiscard]] inline const std::wstring& appNameW() {
+    return detail::appNameStorage();
   }
-  inline const std::wstring& companyNameW() {
-    static std::wstring v = CG_COMPANY_NAMEW;
-    return v;
+  [[nodiscard]] inline const std::wstring& companyNameW() {
+    return detail::companyNameStorage();
   }
   inline void setAppIdentity(std::wstring product, std::wstring company = L"") {
-    const_cast<std::wstring&>(appNameW())     = std::move(product);
-    const_cast<std::wstring&>(companyNameW()) = std::move(company);
+    detail::appNameStorage()     = std::move(product);
+    detail::companyNameStorage() = std::move(company);
   }
 
   // =========
@@ -116,12 +133,28 @@ namespace cg { namespace paths {
   // Expand environment strings like "%LOCALAPPDATA%\Foo".
   [[nodiscard]] inline std::wstring expand_env(std::wstring_view in) {
     if (in.empty()) return {};
-    // worst-case: env expansion may grow, so call twice
-    DWORD n = ExpandEnvironmentStringsW(std::wstring(in).c_str(), nullptr, 0);
+
+    // Worst-case: env expansion may grow, so call twice.
+    const std::wstring in_w(in);
+
+    DWORD n = ExpandEnvironmentStringsW(in_w.c_str(), nullptr, 0);
     if (n == 0) return std::wstring(in);
-    std::wstring out; out.resize(n);
-    DWORD n2 = ExpandEnvironmentStringsW(std::wstring(in).c_str(), out.data(), n);
+
+    std::wstring out;
+    out.resize(n);
+
+    DWORD n2 = ExpandEnvironmentStringsW(in_w.c_str(), out.data(), n);
     if (n2 == 0) return std::wstring(in);
+
+    // If the environment changed between calls (rare), retry with new size.
+    if (n2 > n) {
+      out.resize(n2);
+      n2 = ExpandEnvironmentStringsW(in_w.c_str(), out.data(), n2);
+      if (n2 == 0) return std::wstring(in);
+    }
+
+    // n2 includes the null terminator.
+    out.resize(n2);
     if (!out.empty() && out.back() == L'\0') out.pop_back();
     return out;
   }
@@ -219,7 +252,9 @@ namespace cg { namespace paths {
   inline void setCwdToExe() {
     auto dir = exeDir();
     std::error_code ec;
-    std::filesystem::create_directories(dir, ec);
+
+    // create_directories returns bool (and may be [[nodiscard]] in some STL builds)
+    detail::ignore_nodiscard(std::filesystem::create_directories(dir, ec));
     std::filesystem::current_path(dir, ec);
 
     HMODULE k32 = GetModuleHandleW(L"kernel32.dll");
@@ -316,7 +351,8 @@ namespace cg { namespace paths {
   // Ensure a directory exists (best effort). Returns the actual directory path if it exists/was created.
   [[nodiscard]] inline std::filesystem::path ensureDir(const std::filesystem::path& p) {
     std::error_code ec;
-    std::filesystem::create_directories(p, ec);
+    // create_directories returns bool (and may be [[nodiscard]] in some STL builds)
+    detail::ignore_nodiscard(std::filesystem::create_directories(p, ec));
     return p;
   }
 
@@ -327,14 +363,14 @@ namespace cg { namespace paths {
 
   // Ensure our standard directories are present (no failure if any cannot be created).
   inline void ensureStandardGameDirs() {
-    (void)ensureDir(userDataRoot());
-    (void)ensureDir(logsDir());
-    (void)ensureDir(dumpsDir());
-    (void)ensureDir(savesDir());
-    (void)ensureDir(screenshotsDir());
-    (void)ensureDir(configDir());
-    (void)ensureDir(cacheDir());
-    (void)ensureDir(modsDir());
+    detail::ignore_nodiscard(ensureDir(userDataRoot()));
+    detail::ignore_nodiscard(ensureDir(logsDir()));
+    detail::ignore_nodiscard(ensureDir(dumpsDir()));
+    detail::ignore_nodiscard(ensureDir(savesDir()));
+    detail::ignore_nodiscard(ensureDir(screenshotsDir()));
+    detail::ignore_nodiscard(ensureDir(configDir()));
+    detail::ignore_nodiscard(ensureDir(cacheDir()));
+    detail::ignore_nodiscard(ensureDir(modsDir()));
   }
 
   // ============
@@ -437,7 +473,7 @@ namespace cg { namespace paths {
                                             std::error_code& ec) noexcept
   {
     ec.clear();
-    (void)ensureParent(target); // FIX: intentionally discard [[nodiscard]] result (prevents MSVC C4834)
+    detail::ignore_nodiscard(ensureParent(target)); // intentionally ignore returned path
     auto tmp = tempSiblingFor(target);
 
     // Create a temp file with write-through
@@ -483,7 +519,6 @@ namespace cg { namespace paths {
   // Simple file read to string (binary-safe).
   [[nodiscard]] inline std::optional<std::string>
   readFileAll(const std::filesystem::path& file) {
-    std::error_code ec;
     std::ifstream in(file, std::ios::binary);
     if (!in.good()) return std::nullopt;
     in.seekg(0, std::ios::end);
