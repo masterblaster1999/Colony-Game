@@ -1,6 +1,15 @@
 // tests/worldgen/test_grid_index.cpp
-#define DOCTEST_CONFIG_IMPLEMENT_WITH_MAIN
-#include "doctest/doctest.h"
+//
+// IMPORTANT:
+//   Do NOT define DOCTEST_CONFIG_IMPLEMENT or DOCTEST_CONFIG_IMPLEMENT_WITH_MAIN here.
+//   The doctest implementation + (custom) main must live in exactly one translation unit:
+//   tests/test_main.cpp
+//
+
+#include <doctest/doctest.h>
+
+#include <cstddef> // std::size_t
+
 #include "worldgen/detail/GridIndex.hpp"
 
 TEST_CASE("inb bounds") {
@@ -14,9 +23,12 @@ TEST_CASE("inb bounds") {
 
 TEST_CASE("index3 layout") {
     using worldgen::detail::index3;
+
     const std::size_t sx = 4, sy = 3, sz = 2;
-    // (x=1,y=2,z=0) => (0*3+2)*4+1 = 9
-    CHECK(index3(1,2,0, sx,sy,sz) == 9);
-    // (x=0,y=0,z=1) => (1*3+0)*4+0 = 12
-    CHECK(index3(0,0,1, sx,sy,sz) == 12);
+
+    // (x=1, y=2, z=0) => (0*3 + 2)*4 + 1 = 9
+    CHECK(index3(1, 2, 0, sx, sy, sz) == 9);
+
+    // (x=0, y=0, z=1) => (1*3 + 0)*4 + 0 = 12
+    CHECK(index3(0, 0, 1, sx, sy, sz) == 12);
 }
