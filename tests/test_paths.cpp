@@ -69,8 +69,6 @@ TEST_CASE("can open a known asset file if present") {
 
 TEST_CASE("filesystem path conversions are safe on Windows") {
     const fs::path p = assets_dir();
-
-    // Make the discard explicit so MSVC doesn't warn on [[nodiscard]] return values.
     CHECK_NOTHROW((void)p.wstring());
     CHECK_NOTHROW((void)p.u8string());
 }
