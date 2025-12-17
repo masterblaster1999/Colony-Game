@@ -29,9 +29,38 @@ struct JpsOptions {
     bool  smoothPath        = false;  // optional string-pulling smoothing
 };
 
+namespace detail {
+
+// IMPORTANT:
+//   This header now provides a small *wrapper* around the real implementation.
+//   You must provide this function in a .cpp (or rename your existing
+//   out-of-line `jps_find_path` to this name/signature).
+//
+// Example rename (in your existing Jps.cpp):
+//   std::vector<Cell> colony::path::jps_find_path(...)  --> 
+//   std::vector<Cell> colony::path::detail::jps_find_path_impl(...)
+std::vector<Cell> jps_find_path_impl(
+    const IGrid& grid, Cell start, Cell goal, const JpsOptions& opt);
+
+} // namespace detail
+
 // Return empty vector when no path exists.
 // The output path includes both start and goal.
-std::vector<Cell> jps_find_path(
-    const IGrid& grid, Cell start, Cell goal, const JpsOptions& opt = {});
+inline std::vector<Cell> jps_find_path(
+    const IGrid& grid, Cell start, Cell goal, const JpsOptions& opt = {})
+{
+    // PATCH: StartEqualsGoal should return {start} (if the cell is walkable).
+    if (start.x == goal.x && start.y == goal.y) {
+        if (!grid.walkable(start.x, start.y))
+            return {};
+        return { start };
+    }
+
+    // Defensive validation (also keeps behavior sensible for blocked start/goal).
+    if (!grid.walkable(start.x, start.y) || !grid.walkable(goal.x, goal.y))
+        return {};
+
+    return detail::jps_find_path_impl(grid, start, goal, opt);
+}
 
 } // namespace colony::path
