@@ -69,6 +69,6 @@ TEST_CASE("can open a known asset file if present") {
 
 TEST_CASE("filesystem path conversions are safe on Windows") {
     const fs::path p = assets_dir();
-    CHECK_NOTHROW(p.wstring());
-    CHECK_NOTHROW(p.u8string());
+    CHECK_NOTHROW((void)p.wstring());
+    CHECK_NOTHROW((void)p.u8string());
 }
