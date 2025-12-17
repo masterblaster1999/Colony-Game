@@ -32,12 +32,15 @@ struct JpsOptions {
 namespace detail {
 
 // IMPORTANT:
-//   This header now provides a small *wrapper* around the real implementation.
+//   This header provides a small *wrapper* around the real implementation.
 //   You must provide this function in a .cpp (or rename your existing
 //   out-of-line `jps_find_path` to this name/signature).
 //
+//   The implementation MUST respect opt.allowDiagonal and opt.dontCrossCorners.
+//   (This is critical for the "Corner cutting guard" unit tests.)
+//
 // Example rename (in your existing Jps.cpp):
-//   std::vector<Cell> colony::path::jps_find_path(...)  --> 
+//   std::vector<Cell> colony::path::jps_find_path(...)  -->
 //   std::vector<Cell> colony::path::detail::jps_find_path_impl(...)
 std::vector<Cell> jps_find_path_impl(
     const IGrid& grid, Cell start, Cell goal, const JpsOptions& opt);
@@ -49,7 +52,9 @@ std::vector<Cell> jps_find_path_impl(
 inline std::vector<Cell> jps_find_path(
     const IGrid& grid, Cell start, Cell goal, const JpsOptions& opt = {})
 {
-    // PATCH: StartEqualsGoal should return {start} (if the cell is walkable).
+    // PATCH (StartEqualsGoal):
+    // When start == goal, return a one-node path if that cell is walkable.
+    // This matches typical pathfinding API expectations and your unit tests.
     if (start.x == goal.x && start.y == goal.y) {
         if (!grid.walkable(start.x, start.y))
             return {};
@@ -60,6 +65,9 @@ inline std::vector<Cell> jps_find_path(
     if (!grid.walkable(start.x, start.y) || !grid.walkable(goal.x, goal.y))
         return {};
 
+    // PATCH (Plumb dontCrossCorners):
+    // We pass the full options struct to the implementation, so it can
+    // forward opt.dontCrossCorners into the JPS core (Jump/PruneNeighbors).
     return detail::jps_find_path_impl(grid, start, goal, opt);
 }
 
