@@ -1,73 +1,59 @@
+// include/pathfinding/Jps.hpp
 #pragma once
+
 #include <vector>
-#include <cstdint>
-#include <limits>
-#include <functional>
 
 namespace colony::path {
 
-// Simple integer point
-struct Cell { int x{}, y{}; };
+// Simple integer grid cell
+struct Cell {
+    int x{};
+    int y{};
+};
 
-// Map abstraction (adapt this with your tilemap)
-struct IGrid {
+// Minimal grid interface used by the public JPS API
+class IGrid {
+public:
     virtual ~IGrid() = default;
     virtual int  width()  const = 0;
     virtual int  height() const = 0;
-    // Return true if the cell is inside the map AND traversable.
+    // Should return false for out-of-bounds.
     virtual bool walkable(int x, int y) const = 0;
 };
 
-// Options that match common colony sim needs
+// Options exposed by the public JPS API
 struct JpsOptions {
-    bool allowDiagonal      = true;   // 8-connected movement
-    bool dontCrossCorners   = true;   // forbid corner cutting on diagonals
-    float costStraight      = 1.0f;   // cost of N/E/S/W
-    float costDiagonal      = 1.41421356237f; // ~= sqrt(2)
-    float heuristicWeight   = 1.0f;   // 1.0 keeps A* optimal
-    bool  tieBreakCross     = true;   // favor straighter paths slightly
-    bool  smoothPath        = false;  // optional string-pulling smoothing
+    // Movement rules
+    bool allowDiagonal    = true;
+    bool dontCrossCorners = true;
+
+    // Costs (used by the underlying search if supported)
+    float costStraight    = 1.0f;
+    float costDiagonal    = 1.41421356f; // ~sqrt(2)
+    float heuristicWeight = 1.0f;        // 1.0 = admissible (if heuristic matches costs)
+
+    // Optional behaviors
+    bool tieBreakCross = false;
+    bool smoothPath    = false;
 };
 
 namespace detail {
+    // Implemented in pathfinding/JpsAdapter.cpp (in colony_path target)
+    std::vector<Cell> jps_find_path_impl(const IGrid& grid, Cell start, Cell goal, const JpsOptions& opt);
+}
 
-// IMPORTANT:
-//   This header provides a small *wrapper* around the real implementation.
-//   You must provide this function in a .cpp (or rename your existing
-//   out-of-line `jps_find_path` to this name/signature).
-//
-//   The implementation MUST respect opt.allowDiagonal and opt.dontCrossCorners.
-//   (This is critical for the "Corner cutting guard" unit tests.)
-//
-// Example rename (in your existing Jps.cpp):
-//   std::vector<Cell> colony::path::jps_find_path(...)  -->
-//   std::vector<Cell> colony::path::detail::jps_find_path_impl(...)
-std::vector<Cell> jps_find_path_impl(
-    const IGrid& grid, Cell start, Cell goal, const JpsOptions& opt);
-
-} // namespace detail
-
-// Return empty vector when no path exists.
-// The output path includes both start and goal.
-inline std::vector<Cell> jps_find_path(
-    const IGrid& grid, Cell start, Cell goal, const JpsOptions& opt = {})
-{
-    // PATCH (StartEqualsGoal):
-    // When start == goal, return a one-node path if that cell is walkable.
-    // This matches typical pathfinding API expectations and your unit tests.
+// Public entry point
+inline std::vector<Cell> jps_find_path(const IGrid& grid, Cell start, Cell goal, const JpsOptions& opt = {}) {
+    // Start==Goal special case
     if (start.x == goal.x && start.y == goal.y) {
-        if (!grid.walkable(start.x, start.y))
-            return {};
+        if (!grid.walkable(start.x, start.y)) return {};
         return { start };
     }
 
-    // Defensive validation (also keeps behavior sensible for blocked start/goal).
-    if (!grid.walkable(start.x, start.y) || !grid.walkable(goal.x, goal.y))
-        return {};
+    // Blocked start/goal guard
+    if (!grid.walkable(start.x, start.y)) return {};
+    if (!grid.walkable(goal.x, goal.y))   return {};
 
-    // PATCH (Plumb dontCrossCorners):
-    // We pass the full options struct to the implementation, so it can
-    // forward opt.dontCrossCorners into the JPS core (Jump/PruneNeighbors).
     return detail::jps_find_path_impl(grid, start, goal, opt);
 }
 
