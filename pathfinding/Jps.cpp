@@ -2,9 +2,10 @@
 #include "JpsCore.hpp"
 
 #include <algorithm>     // min, max, reverse
+#include <cmath>         // sqrt
 #include <cstddef>       // size_t
 #include <cstdint>       // uint64_t
-#include <cstdlib>       // abs
+#include <cstdlib>       // abs, llabs
 #include <optional>      // optional
 #include <queue>         // priority_queue
 #include <unordered_map> // unordered_map
@@ -58,17 +59,11 @@ namespace colony::path
             return true;
         }
 
-        static inline float sanitizePositive(float v, float fallback) noexcept
-        {
-            // Handles <= 0 and NaN (since NaN > 0 is false).
-            return (v > 0.0f) ? v : fallback;
-        }
-
-        static inline float heuristic_cost(int x0, int y0,
-                                           int x1, int y1,
-                                           bool allowDiagonal,
-                                           float costStraight,
-                                           float costDiagonal) noexcept
+        static inline float metricCost(int x0, int y0,
+                                       int x1, int y1,
+                                       bool allowDiagonal,
+                                       float costStraight,
+                                       float costDiagonal) noexcept
         {
             const int dx = std::abs(x1 - x0);
             const int dy = std::abs(y1 - y0);
@@ -76,33 +71,46 @@ namespace colony::path
             if (!allowDiagonal)
                 return costStraight * float(dx + dy);
 
-            const int mn = std::min(dx, dy);
-            const int mx = std::max(dx, dy);
-
-            // In an empty grid, a diagonal is only beneficial if cheaper than two straights.
-            const float diag = (costDiagonal < 2.0f * costStraight) ? costDiagonal : (2.0f * costStraight);
-
-            return diag * float(mn) + costStraight * float(mx - mn);
+            const int diag = std::min(dx, dy);
+            const int str  = std::max(dx, dy) - diag;
+            return costDiagonal * float(diag) + costStraight * float(str);
         }
 
-        static inline float segment_cost(int x0, int y0,
-                                         int x1, int y1,
-                                         float costStraight,
-                                         float costDiagonal) noexcept
+        static inline float tieBreakCrossTerm(int x, int y,
+                                              int sx, int sy,
+                                              int gx, int gy,
+                                              float costStraight) noexcept
         {
-            const int dx = std::abs(x1 - x0);
-            const int dy = std::abs(y1 - y0);
+            // Cross-product tie-breaker (classic “prefer straight line” trick).
+            // See e.g. Amit Patel’s heuristics page for the canonical formula. :contentReference[oaicite:3]{index=3}
+            //
+            // dx1 = current.x - goal.x
+            // dy1 = current.y - goal.y
+            // dx2 = start.x   - goal.x
+            // dy2 = start.y   - goal.y
+            // cross = abs(dx1*dy2 - dx2*dy1)
+            //
+            // We normalize by |start-goal| and multiply by a tiny epsilon so it behaves
+            // like a tie-breaker and does not meaningfully distort f-scores.
 
-            if (dx == 0 || dy == 0)
-                return costStraight * float(dx + dy);
+            const long long dx1 = static_cast<long long>(x)  - gx;
+            const long long dy1 = static_cast<long long>(y)  - gy;
+            const long long dx2 = static_cast<long long>(sx) - gx;
+            const long long dy2 = static_cast<long long>(sy) - gy;
 
-            // For a proper JPS jump, dx == dy; but keep robust for safety.
-            const int mn = std::min(dx, dy);
-            const int mx = std::max(dx, dy);
-            return costDiagonal * float(mn) + costStraight * float(mx - mn);
+            const long long cross = std::llabs(dx1 * dy2 - dx2 * dy1);
+
+            const float lineLen = std::sqrt(float(dx2 * dx2 + dy2 * dy2));
+            if (lineLen <= 1e-5f)
+                return 0.0f;
+
+            const float distFromLine = float(cross) / lineLen;
+
+            // Tiny epsilon: behaves like a tie-break among near-equal f values.
+            const float epsilon = 1e-6f * costStraight;
+            return distFromLine * epsilon;
         }
 
-        // Plain A* fallback used when JPS8 pruning assumptions don't hold.
         static std::vector<std::pair<int, int>>
         FindPathAStarFallback(const GridView& grid,
                               int sx, int sy,
@@ -111,16 +119,29 @@ namespace colony::path
                               bool dontCrossCorners,
                               float costStraight,
                               float costDiagonal,
-                              float heuristicWeight)
+                              float heuristicWeight,
+                              bool tieBreakCross)
         {
+            if (!grid.passable(sx, sy) || !grid.passable(gx, gy))
+                return {};
+
+            if (sx == gx && sy == gy)
+                return { {sx, sy} };
+
+            // Sanitize tuning
+            if (costStraight <= 0.0f) costStraight = 1.0f;
+            if (costDiagonal <= 0.0f) costDiagonal = 1.41421356237f;
+            if (heuristicWeight < 0.0f) heuristicWeight = 0.0f;
+
+            const bool useTie = tieBreakCross && heuristicWeight > 0.0f;
+
             struct PQItem
             {
                 int x{}, y{};
                 float f{}, g{};
-
                 bool operator<(const PQItem& o) const noexcept
                 {
-                    // std::priority_queue is a max-heap by default; invert for min-heap by f.
+                    // min-heap by f (priority_queue is max-heap by default)
                     return f > o.f;
                 }
             };
@@ -131,25 +152,27 @@ namespace colony::path
 
             if (grid.width > 0 && grid.height > 0)
             {
-                const std::size_t cap =
-                    static_cast<std::size_t>(grid.width) * static_cast<std::size_t>(grid.height);
+                const std::size_t cap = static_cast<std::size_t>(grid.width) * static_cast<std::size_t>(grid.height);
                 gScore.reserve(cap);
                 parent.reserve(cap);
             }
 
-            const auto h = [&](int x, int y) noexcept -> float
-            {
-                return heuristic_cost(x, y, gx, gy, allowDiagonal, costStraight, costDiagonal);
+            auto H = [&](int x, int y) noexcept -> float {
+                return metricCost(x, y, gx, gy, allowDiagonal, costStraight, costDiagonal);
+            };
+            auto Tie = [&](int x, int y) noexcept -> float {
+                return useTie ? tieBreakCrossTerm(x, y, sx, sy, gx, gy, costStraight) : 0.0f;
             };
 
             const auto startKey = Pack(sx, sy);
             gScore[startKey] = 0.0f;
-            open.push(PQItem{ sx, sy, heuristicWeight * h(sx, sy), 0.0f });
+            open.push(PQItem{ sx, sy, heuristicWeight * H(sx, sy) + Tie(sx, sy), 0.0f });
 
-            static constexpr int kDirs4[4][2] = {
+            static constexpr int DIRS4[4][2] = {
                 { 1, 0 }, { -1, 0 }, { 0, 1 }, { 0, -1 }
             };
-            static constexpr int kDirsDiag[4][2] = {
+            static constexpr int DIRS8[8][2] = {
+                { 1, 0 }, { -1, 0 }, { 0, 1 }, { 0, -1 },
                 { 1, 1 }, { -1, 1 }, { 1, -1 }, { -1, -1 }
             };
 
@@ -166,41 +189,40 @@ namespace colony::path
                 if (cur.x == gx && cur.y == gy)
                     return Reconstruct(parent, sx, sy, gx, gy);
 
-                auto relax = [&](int dx, int dy)
+                const auto* dirs = allowDiagonal ? DIRS8 : DIRS4;
+                const int dirCount = allowDiagonal ? 8 : 4;
+
+                for (int i = 0; i < dirCount; ++i)
                 {
+                    const int dx = dirs[i][0];
+                    const int dy = dirs[i][1];
+
                     if (!canStep(grid, cur.x, cur.y, dx, dy, allowDiagonal, dontCrossCorners))
-                        return;
+                        continue;
 
                     const int nx = cur.x + dx;
                     const int ny = cur.y + dy;
-                    const auto nKey = Pack(nx, ny);
 
                     const float step = (dx != 0 && dy != 0) ? costDiagonal : costStraight;
                     const float newG = cur.g + step;
 
-                    const auto it = gScore.find(nKey);
+                    const auto key = Pack(nx, ny);
+                    const auto it  = gScore.find(key);
+
                     if (it == gScore.end() || newG < it->second)
                     {
-                        gScore[nKey] = newG;
-                        parent[nKey] = { cur.x, cur.y };
+                        gScore[key] = newG;
+                        parent[key] = { cur.x, cur.y };
 
-                        const float f = newG + heuristicWeight * h(nx, ny);
+                        const float f = newG + heuristicWeight * H(nx, ny) + Tie(nx, ny);
                         open.push(PQItem{ nx, ny, f, newG });
                     }
-                };
-
-                for (const auto& d : kDirs4)
-                    relax(d[0], d[1]);
-
-                if (allowDiagonal)
-                {
-                    for (const auto& d : kDirsDiag)
-                        relax(d[0], d[1]);
                 }
             }
 
             return {};
         }
+
     } // namespace
 
     float Octile(int x0, int y0, int x1, int y1, bool allowDiagonal) noexcept
@@ -247,7 +269,7 @@ namespace colony::path
             if (x == goalX && y == goalY)
                 return std::make_pair(x, y);
 
-            // Forced-neighbor checks (Harabor & Grastien style)
+            // Forced-neighbor checks
             if (dx != 0 && dy != 0) // diagonal move
             {
                 if ((blocked(g, x - dx, y) && g.passable(x - dx, y + dy)) ||
@@ -271,7 +293,7 @@ namespace colony::path
                     return std::make_pair(x, y);
                 }
             }
-            else // vertical (dy != 0)
+            else // vertical
             {
                 if ((blocked(g, x + 1, y) && g.passable(x + 1, y + dy)) ||
                     (blocked(g, x - 1, y) && g.passable(x - 1, y + dy)))
@@ -326,7 +348,6 @@ namespace colony::path
             return;
         }
 
-        // Moving direction (dx,dy) from parent -> current
         if (dx != 0 && dy != 0) // diagonal move
         {
             // Natural neighbors
@@ -334,7 +355,7 @@ namespace colony::path
             pushDirIfFirstStepValid(0, dy);
             pushDirIfFirstStepValid(dx, dy);
 
-            // Forced neighbors (diagonal variants)
+            // Forced neighbors
             if (blocked(g, x - dx, y) && g.passable(x - dx, y + dy))
                 pushDirIfFirstStepValid(-dx, dy);
             if (blocked(g, x, y - dy) && g.passable(x + dx, y - dy))
@@ -342,10 +363,8 @@ namespace colony::path
         }
         else if (dx != 0) // horizontal
         {
-            // Natural neighbor
             pushDirIfFirstStepValid(dx, 0);
 
-            // Forced neighbors (diagonal around obstacle)
             if (allowDiag)
             {
                 if (blocked(g, x, y + 1) && g.passable(x + dx, y + 1))
@@ -354,12 +373,10 @@ namespace colony::path
                     pushDirIfFirstStepValid(dx, -1);
             }
         }
-        else // vertical (dy != 0)
+        else // vertical
         {
-            // Natural neighbor
             pushDirIfFirstStepValid(0, dy);
 
-            // Forced neighbors (diagonal around obstacle)
             if (allowDiag)
             {
                 if (blocked(g, x + 1, y) && g.passable(x + 1, y + dy))
@@ -394,7 +411,7 @@ namespace colony::path
             const auto it = parent.find(Pack(x, y));
             if (it == parent.end())
             {
-                path.clear(); // no path
+                path.clear();
                 return path;
             }
 
@@ -407,7 +424,9 @@ namespace colony::path
         return path;
     }
 
-    // Cost/weight overload: THIS is what JpsOptions should drive.
+    // -------------------------------------------------------------------------
+    // Tuned overload (this is what JpsOptions should call)
+    // -------------------------------------------------------------------------
     std::vector<std::pair<int, int>>
     FindPathJPS(const GridView& grid,
                 int sx, int sy,
@@ -416,28 +435,41 @@ namespace colony::path
                 bool dontCrossCorners,
                 float costStraight,
                 float costDiagonal,
-                float heuristicWeight)
+                float heuristicWeight,
+                bool tieBreakCross)
     {
         if (!grid.passable(sx, sy) || !grid.passable(gx, gy))
             return {};
 
         if (sx == gx && sy == gy)
-            return { { sx, sy } };
+            return { {sx, sy} };
 
-        // Sanitize inputs (handles <=0 and NaN).
-        costStraight   = sanitizePositive(costStraight, 1.0f);
-        costDiagonal   = sanitizePositive(costDiagonal, 1.41421356237f * costStraight);
-        heuristicWeight = (heuristicWeight > 0.0f) ? heuristicWeight : 0.0f;
+        // Sanitize tuning
+        if (costStraight <= 0.0f) costStraight = 1.0f;
+        if (costDiagonal <= 0.0f) costDiagonal = 1.41421356237f;
+        if (heuristicWeight < 0.0f) heuristicWeight = 0.0f;
 
-        // If diagonal moves are disabled, or diagonals are dominated by two straights,
-        // JPS8 pruning can miss paths. Use plain A* in those regimes.
-        if (!allowDiagonal || costDiagonal > 2.0f * costStraight)
+        // If diagonal edges are disabled (or never beneficial), JPS pruning assumptions break down.
+        // Fallback to plain A* in those cases.
+        if (!allowDiagonal || costDiagonal >= 2.0f * costStraight)
         {
             return FindPathAStarFallback(grid,
                                          sx, sy, gx, gy,
-                                         allowDiagonal, dontCrossCorners,
-                                         costStraight, costDiagonal, heuristicWeight);
+                                         /*allowDiagonal=*/false,
+                                         dontCrossCorners,
+                                         costStraight, costDiagonal,
+                                         heuristicWeight,
+                                         tieBreakCross);
         }
+
+        const bool useTie = tieBreakCross && heuristicWeight > 0.0f;
+
+        auto H = [&](int x, int y) noexcept -> float {
+            return metricCost(x, y, gx, gy, /*allowDiagonal=*/true, costStraight, costDiagonal);
+        };
+        auto Tie = [&](int x, int y) noexcept -> float {
+            return useTie ? tieBreakCrossTerm(x, y, sx, sy, gx, gy, costStraight) : 0.0f;
+        };
 
         struct PQItem
         {
@@ -457,21 +489,15 @@ namespace colony::path
 
         if (grid.width > 0 && grid.height > 0)
         {
-            const std::size_t cap =
-                static_cast<std::size_t>(grid.width) * static_cast<std::size_t>(grid.height);
+            const std::size_t cap = static_cast<std::size_t>(grid.width) * static_cast<std::size_t>(grid.height);
             gScore.reserve(cap);
             parent.reserve(cap);
         }
 
-        const auto h = [&](int x, int y) noexcept -> float
-        {
-            return heuristic_cost(x, y, gx, gy, allowDiagonal, costStraight, costDiagonal);
-        };
-
         const auto startKey = Pack(sx, sy);
         gScore[startKey] = 0.0f;
 
-        open.push(PQItem{ sx, sy, heuristicWeight * h(sx, sy), 0.0f, sx, sy });
+        open.push(PQItem{ sx, sy, heuristicWeight * H(sx, sy) + Tie(sx, sy), 0.0f, sx, sy });
 
         std::vector<std::pair<int, int>> dirs;
         dirs.reserve(8);
@@ -481,6 +507,7 @@ namespace colony::path
             const PQItem cur = open.top();
             open.pop();
 
+            // Skip stale entries
             const auto curKey = Pack(cur.x, cur.y);
             const auto bestIt = gScore.find(curKey);
             if (bestIt != gScore.end() && cur.g > bestIt->second)
@@ -492,12 +519,15 @@ namespace colony::path
             PruneNeighbors(grid,
                            cur.x, cur.y,
                            sgn(cur.x - cur.px), sgn(cur.y - cur.py),
-                           allowDiagonal, dontCrossCorners,
+                           /*allowDiag=*/true, dontCrossCorners,
                            dirs);
 
-            for (const auto& [dx, dy] : dirs)
+            for (const auto& d : dirs)
             {
-                auto jp = Jump(grid, cur.x, cur.y, dx, dy, gx, gy, allowDiagonal, dontCrossCorners);
+                const int dx = d.first;
+                const int dy = d.second;
+
+                auto jp = Jump(grid, cur.x, cur.y, dx, dy, gx, gy, /*allowDiag=*/true, dontCrossCorners);
                 if (!jp)
                     continue;
 
@@ -505,8 +535,7 @@ namespace colony::path
                 const int jy = jp->second;
                 const auto key = Pack(jx, jy);
 
-                // IMPORTANT: g-cost now uses caller-provided costs.
-                const float newG = cur.g + segment_cost(cur.x, cur.y, jx, jy, costStraight, costDiagonal);
+                const float newG = cur.g + metricCost(cur.x, cur.y, jx, jy, /*allowDiagonal=*/true, costStraight, costDiagonal);
 
                 const auto it = gScore.find(key);
                 if (it == gScore.end() || newG < it->second)
@@ -514,8 +543,7 @@ namespace colony::path
                     gScore[key] = newG;
                     parent[key] = { cur.x, cur.y };
 
-                    // IMPORTANT: f-score now uses caller-provided heuristicWeight.
-                    const float f = newG + heuristicWeight * h(jx, jy);
+                    const float f = newG + heuristicWeight * H(jx, jy) + Tie(jx, jy);
                     open.push(PQItem{ jx, jy, f, newG, cur.x, cur.y });
                 }
             }
@@ -524,7 +552,9 @@ namespace colony::path
         return {};
     }
 
-    // Back-compat 7-arg overload (classic costs/weight).
+    // -------------------------------------------------------------------------
+    // Base overload (kept for existing call sites)
+    // -------------------------------------------------------------------------
     std::vector<std::pair<int, int>>
     FindPathJPS(const GridView& grid,
                 int sx, int sy,
@@ -532,12 +562,18 @@ namespace colony::path
                 bool allowDiagonal,
                 bool dontCrossCorners)
     {
+        // Preserve old behavior (fixed costs, no tie-break cross).
         return FindPathJPS(grid,
                            sx, sy, gx, gy,
                            allowDiagonal, dontCrossCorners,
                            /*costStraight=*/1.0f,
                            /*costDiagonal=*/1.41421356237f,
-                           /*heuristicWeight=*/1.0f);
+                           /*heuristicWeight=*/1.0f,
+                           /*tieBreakCross=*/false);
     }
+
+    // NOTE:
+    // Do NOT implement the 6-arg FindPathJPS overload here.
+    // It is inline in JpsCore.hpp.
 
 } // namespace colony::path
