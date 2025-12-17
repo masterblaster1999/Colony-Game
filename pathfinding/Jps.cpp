@@ -1,7 +1,7 @@
 // Jps.cpp — MSVC-friendly implementation of Jump Point Search
 #include "JpsCore.hpp"
 
-#include <algorithm>     // min, reverse
+#include <algorithm>     // min, max, reverse
 #include <cstddef>       // size_t
 #include <cstdint>       // uint64_t
 #include <cstdlib>       // abs
@@ -57,6 +57,150 @@ namespace colony::path
 
             return true;
         }
+
+        static inline float sanitizePositive(float v, float fallback) noexcept
+        {
+            // Handles <= 0 and NaN (since NaN > 0 is false).
+            return (v > 0.0f) ? v : fallback;
+        }
+
+        static inline float heuristic_cost(int x0, int y0,
+                                           int x1, int y1,
+                                           bool allowDiagonal,
+                                           float costStraight,
+                                           float costDiagonal) noexcept
+        {
+            const int dx = std::abs(x1 - x0);
+            const int dy = std::abs(y1 - y0);
+
+            if (!allowDiagonal)
+                return costStraight * float(dx + dy);
+
+            const int mn = std::min(dx, dy);
+            const int mx = std::max(dx, dy);
+
+            // In an empty grid, a diagonal is only beneficial if cheaper than two straights.
+            const float diag = (costDiagonal < 2.0f * costStraight) ? costDiagonal : (2.0f * costStraight);
+
+            return diag * float(mn) + costStraight * float(mx - mn);
+        }
+
+        static inline float segment_cost(int x0, int y0,
+                                         int x1, int y1,
+                                         float costStraight,
+                                         float costDiagonal) noexcept
+        {
+            const int dx = std::abs(x1 - x0);
+            const int dy = std::abs(y1 - y0);
+
+            if (dx == 0 || dy == 0)
+                return costStraight * float(dx + dy);
+
+            // For a proper JPS jump, dx == dy; but keep robust for safety.
+            const int mn = std::min(dx, dy);
+            const int mx = std::max(dx, dy);
+            return costDiagonal * float(mn) + costStraight * float(mx - mn);
+        }
+
+        // Plain A* fallback used when JPS8 pruning assumptions don't hold.
+        static std::vector<std::pair<int, int>>
+        FindPathAStarFallback(const GridView& grid,
+                              int sx, int sy,
+                              int gx, int gy,
+                              bool allowDiagonal,
+                              bool dontCrossCorners,
+                              float costStraight,
+                              float costDiagonal,
+                              float heuristicWeight)
+        {
+            struct PQItem
+            {
+                int x{}, y{};
+                float f{}, g{};
+
+                bool operator<(const PQItem& o) const noexcept
+                {
+                    // std::priority_queue is a max-heap by default; invert for min-heap by f.
+                    return f > o.f;
+                }
+            };
+
+            std::priority_queue<PQItem> open;
+            std::unordered_map<std::uint64_t, float> gScore;
+            std::unordered_map<std::uint64_t, std::pair<int, int>> parent;
+
+            if (grid.width > 0 && grid.height > 0)
+            {
+                const std::size_t cap =
+                    static_cast<std::size_t>(grid.width) * static_cast<std::size_t>(grid.height);
+                gScore.reserve(cap);
+                parent.reserve(cap);
+            }
+
+            const auto h = [&](int x, int y) noexcept -> float
+            {
+                return heuristic_cost(x, y, gx, gy, allowDiagonal, costStraight, costDiagonal);
+            };
+
+            const auto startKey = Pack(sx, sy);
+            gScore[startKey] = 0.0f;
+            open.push(PQItem{ sx, sy, heuristicWeight * h(sx, sy), 0.0f });
+
+            static constexpr int kDirs4[4][2] = {
+                { 1, 0 }, { -1, 0 }, { 0, 1 }, { 0, -1 }
+            };
+            static constexpr int kDirsDiag[4][2] = {
+                { 1, 1 }, { -1, 1 }, { 1, -1 }, { -1, -1 }
+            };
+
+            while (!open.empty())
+            {
+                const PQItem cur = open.top();
+                open.pop();
+
+                const auto curKey = Pack(cur.x, cur.y);
+                const auto bestIt = gScore.find(curKey);
+                if (bestIt != gScore.end() && cur.g > bestIt->second)
+                    continue;
+
+                if (cur.x == gx && cur.y == gy)
+                    return Reconstruct(parent, sx, sy, gx, gy);
+
+                auto relax = [&](int dx, int dy)
+                {
+                    if (!canStep(grid, cur.x, cur.y, dx, dy, allowDiagonal, dontCrossCorners))
+                        return;
+
+                    const int nx = cur.x + dx;
+                    const int ny = cur.y + dy;
+                    const auto nKey = Pack(nx, ny);
+
+                    const float step = (dx != 0 && dy != 0) ? costDiagonal : costStraight;
+                    const float newG = cur.g + step;
+
+                    const auto it = gScore.find(nKey);
+                    if (it == gScore.end() || newG < it->second)
+                    {
+                        gScore[nKey] = newG;
+                        parent[nKey] = { cur.x, cur.y };
+
+                        const float f = newG + heuristicWeight * h(nx, ny);
+                        open.push(PQItem{ nx, ny, f, newG });
+                    }
+                };
+
+                for (const auto& d : kDirs4)
+                    relax(d[0], d[1]);
+
+                if (allowDiagonal)
+                {
+                    for (const auto& d : kDirsDiag)
+                        relax(d[0], d[1]);
+                }
+            }
+
+            return {};
+        }
     } // namespace
 
     float Octile(int x0, int y0, int x1, int y1, bool allowDiagonal) noexcept
@@ -106,12 +250,6 @@ namespace colony::path
             // Forced-neighbor checks (Harabor & Grastien style)
             if (dx != 0 && dy != 0) // diagonal move
             {
-                // Forced neighbors for diagonal movement:
-                // - if one of the orthogonal neighbors is blocked
-                //   and the corresponding diagonal "around the corner" is open.
-                //
-                // Note: For dontCrossCorners=true, such forced diagonal successors may become invalid,
-                // and will be filtered by canStep() during pruning/expansion.
                 if ((blocked(g, x - dx, y) && g.passable(x - dx, y + dy)) ||
                     (blocked(g, x, y - dy) && g.passable(x + dx, y - dy)))
                 {
@@ -124,8 +262,6 @@ namespace colony::path
                 {
                     return std::make_pair(x, y);
                 }
-
-                // Continue stepping diagonally (loop tail)
             }
             else if (dx != 0) // horizontal
             {
@@ -134,8 +270,6 @@ namespace colony::path
                 {
                     return std::make_pair(x, y);
                 }
-
-                // Continue stepping horizontally (loop tail)
             }
             else // vertical (dy != 0)
             {
@@ -144,8 +278,6 @@ namespace colony::path
                 {
                     return std::make_pair(x, y);
                 }
-
-                // Continue stepping vertically (loop tail)
             }
         }
     }
@@ -275,20 +407,37 @@ namespace colony::path
         return path;
     }
 
-    // Extended overload: supports dontCrossCorners explicitly.
+    // Cost/weight overload: THIS is what JpsOptions should drive.
     std::vector<std::pair<int, int>>
     FindPathJPS(const GridView& grid,
                 int sx, int sy,
                 int gx, int gy,
                 bool allowDiagonal,
-                bool dontCrossCorners)
+                bool dontCrossCorners,
+                float costStraight,
+                float costDiagonal,
+                float heuristicWeight)
     {
-        // Hard correctness guards (helps unit tests & prevents weird behavior)
         if (!grid.passable(sx, sy) || !grid.passable(gx, gy))
             return {};
 
         if (sx == gx && sy == gy)
-            return { {sx, sy} };
+            return { { sx, sy } };
+
+        // Sanitize inputs (handles <=0 and NaN).
+        costStraight   = sanitizePositive(costStraight, 1.0f);
+        costDiagonal   = sanitizePositive(costDiagonal, 1.41421356237f * costStraight);
+        heuristicWeight = (heuristicWeight > 0.0f) ? heuristicWeight : 0.0f;
+
+        // If diagonal moves are disabled, or diagonals are dominated by two straights,
+        // JPS8 pruning can miss paths. Use plain A* in those regimes.
+        if (!allowDiagonal || costDiagonal > 2.0f * costStraight)
+        {
+            return FindPathAStarFallback(grid,
+                                         sx, sy, gx, gy,
+                                         allowDiagonal, dontCrossCorners,
+                                         costStraight, costDiagonal, heuristicWeight);
+        }
 
         struct PQItem
         {
@@ -298,7 +447,6 @@ namespace colony::path
 
             bool operator<(const PQItem& o) const noexcept
             {
-                // std::priority_queue is a max-heap by default; invert for min-heap by f.
                 return f > o.f;
             }
         };
@@ -307,18 +455,23 @@ namespace colony::path
         std::unordered_map<std::uint64_t, float> gScore;
         std::unordered_map<std::uint64_t, std::pair<int, int>> parent;
 
-        // Light reserve to reduce rehashing on typical grids (safe on Windows/MSVC).
         if (grid.width > 0 && grid.height > 0)
         {
-            const std::size_t cap = static_cast<std::size_t>(grid.width) * static_cast<std::size_t>(grid.height);
+            const std::size_t cap =
+                static_cast<std::size_t>(grid.width) * static_cast<std::size_t>(grid.height);
             gScore.reserve(cap);
             parent.reserve(cap);
         }
 
+        const auto h = [&](int x, int y) noexcept -> float
+        {
+            return heuristic_cost(x, y, gx, gy, allowDiagonal, costStraight, costDiagonal);
+        };
+
         const auto startKey = Pack(sx, sy);
         gScore[startKey] = 0.0f;
 
-        open.push(PQItem{ sx, sy, Octile(sx, sy, gx, gy, allowDiagonal), 0.0f, sx, sy });
+        open.push(PQItem{ sx, sy, heuristicWeight * h(sx, sy), 0.0f, sx, sy });
 
         std::vector<std::pair<int, int>> dirs;
         dirs.reserve(8);
@@ -328,7 +481,6 @@ namespace colony::path
             const PQItem cur = open.top();
             open.pop();
 
-            // Skip stale queue entries (critical for correctness with JPS pruning based on parent direction).
             const auto curKey = Pack(cur.x, cur.y);
             const auto bestIt = gScore.find(curKey);
             if (bestIt != gScore.end() && cur.g > bestIt->second)
@@ -353,7 +505,8 @@ namespace colony::path
                 const int jy = jp->second;
                 const auto key = Pack(jx, jy);
 
-                const float newG = cur.g + Octile(cur.x, cur.y, jx, jy, allowDiagonal);
+                // IMPORTANT: g-cost now uses caller-provided costs.
+                const float newG = cur.g + segment_cost(cur.x, cur.y, jx, jy, costStraight, costDiagonal);
 
                 const auto it = gScore.find(key);
                 if (it == gScore.end() || newG < it->second)
@@ -361,17 +514,30 @@ namespace colony::path
                     gScore[key] = newG;
                     parent[key] = { cur.x, cur.y };
 
-                    const float f = newG + Octile(jx, jy, gx, gy, allowDiagonal);
+                    // IMPORTANT: f-score now uses caller-provided heuristicWeight.
+                    const float f = newG + heuristicWeight * h(jx, jy);
                     open.push(PQItem{ jx, jy, f, newG, cur.x, cur.y });
                 }
             }
         }
 
-        return {}; // no path
+        return {};
     }
 
-    // NOTE:
-    // The 6-argument back-compat overload of FindPathJPS is defined inline in JpsCore.hpp.
-    // Do not define it here as well (MSVC will error with: C2084 "already has a body").
+    // Back-compat 7-arg overload (classic costs/weight).
+    std::vector<std::pair<int, int>>
+    FindPathJPS(const GridView& grid,
+                int sx, int sy,
+                int gx, int gy,
+                bool allowDiagonal,
+                bool dontCrossCorners)
+    {
+        return FindPathJPS(grid,
+                           sx, sy, gx, gy,
+                           allowDiagonal, dontCrossCorners,
+                           /*costStraight=*/1.0f,
+                           /*costDiagonal=*/1.41421356237f,
+                           /*heuristicWeight=*/1.0f);
+    }
 
 } // namespace colony::path
