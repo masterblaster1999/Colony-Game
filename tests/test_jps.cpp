@@ -1,8 +1,15 @@
 // tests/test_jps.cpp (doctest)
-#include <vector>
+//
+// NOTE:
+//   Do NOT define DOCTEST_CONFIG_IMPLEMENT* in this file.
+//   tests/test_main.cpp is the only TU that provides doctest implementation + main.
+
 #include <doctest/doctest.h>
 
 #include "pathfinding/Jps.hpp"
+
+#include <cstddef> // std::size_t
+#include <vector>
 
 using colony::path::Cell;
 using colony::path::JpsOptions;
@@ -19,11 +26,13 @@ namespace colony_smoke_jps {
 class JpsTestGrid final : public IGrid {
 public:
     JpsTestGrid(int w, int h)
-        : W(w), H(h), blocked(static_cast<size_t>(w * h), 0u) {}
+        : W(w), H(h), blocked(static_cast<std::size_t>(w) * static_cast<std::size_t>(h), 0u) {}
 
     void setBlocked(int x, int y, bool b = true) {
         if (x < 0 || y < 0 || x >= W || y >= H) return;
-        blocked[static_cast<size_t>(y * W + x)] = b ? 1u : 0u;
+        const std::size_t idx =
+            static_cast<std::size_t>(y) * static_cast<std::size_t>(W) + static_cast<std::size_t>(x);
+        blocked[idx] = b ? 1u : 0u;
     }
 
     // IGrid
@@ -31,7 +40,9 @@ public:
     int  height() const override { return H; }
     bool walkable(int x, int y) const override {
         if (x < 0 || y < 0 || x >= W || y >= H) return false;
-        return blocked[static_cast<size_t>(y * W + x)] == 0u;
+        const std::size_t idx =
+            static_cast<std::size_t>(y) * static_cast<std::size_t>(W) + static_cast<std::size_t>(x);
+        return blocked[idx] == 0u;
     }
 
 private:
@@ -98,3 +109,4 @@ TEST_CASE("Jps: Corner cutting guard") {
         CHECK(path.back().y  == 1);
     }
 }
+
