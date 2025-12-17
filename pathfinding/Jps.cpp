@@ -370,14 +370,8 @@ namespace colony::path
         return {}; // no path
     }
 
-    // Back-compat signature from JpsCore.hpp (defaults to dontCrossCorners=true).
-    std::vector<std::pair<int, int>>
-    FindPathJPS(const GridView& grid,
-                int sx, int sy,
-                int gx, int gy,
-                bool allowDiagonal)
-    {
-        return FindPathJPS(grid, sx, sy, gx, gy, allowDiagonal, /*dontCrossCorners=*/true);
-    }
+    // NOTE:
+    // The 6-argument back-compat overload of FindPathJPS is defined inline in JpsCore.hpp.
+    // Do not define it here as well (MSVC will error with: C2084 "already has a body").
 
 } // namespace colony::path
