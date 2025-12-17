@@ -1,59 +1,42 @@
-// include/pathfinding/Jps.hpp
 #pragma once
 
 #include <vector>
 
 namespace colony::path {
 
-// Simple integer grid cell
 struct Cell {
-    int x{};
-    int y{};
+    int x = 0;
+    int y = 0;
 };
 
-// Minimal grid interface used by the public JPS API
-class IGrid {
-public:
-    virtual ~IGrid() = default;
-    virtual int  width()  const = 0;
-    virtual int  height() const = 0;
-    // Should return false for out-of-bounds.
-    virtual bool walkable(int x, int y) const = 0;
-};
-
-// Options exposed by the public JPS API
 struct JpsOptions {
     // Movement rules
     bool allowDiagonal    = true;
-    bool dontCrossCorners = true;
+    bool dontCrossCorners = true; // if true: diagonal step requires both orthogonal neighbors
 
-    // Costs (used by the underlying search if supported)
+    // (Not yet wired into the JPS core in this patch, but kept for API stability)
     float costStraight    = 1.0f;
-    float costDiagonal    = 1.41421356f; // ~sqrt(2)
-    float heuristicWeight = 1.0f;        // 1.0 = admissible (if heuristic matches costs)
+    float costDiagonal    = 1.41421356237f;
+    float heuristicWeight = 1.0f;
+    bool  tieBreakCross   = false;
 
-    // Optional behaviors
-    bool tieBreakCross = false;
-    bool smoothPath    = false;
+    // Post-process returned path
+    bool smoothPath       = false; // if true: string-pull (line-of-sight) smoothing
+};
+
+struct IGrid {
+    virtual ~IGrid() = default;
+    virtual int  width()  const = 0;
+    virtual int  height() const = 0;
+    virtual bool walkable(int x, int y) const = 0;
 };
 
 namespace detail {
-    // Implemented in pathfinding/JpsAdapter.cpp (in colony_path target)
-    std::vector<Cell> jps_find_path_impl(const IGrid& grid, Cell start, Cell goal, const JpsOptions& opt);
-}
+// Implemented in pathfinding/JpsAdapter.cpp
+std::vector<Cell> jps_find_path_impl(const IGrid& grid, Cell start, Cell goal, const JpsOptions& opt);
+} // namespace detail
 
-// Public entry point
 inline std::vector<Cell> jps_find_path(const IGrid& grid, Cell start, Cell goal, const JpsOptions& opt = {}) {
-    // Start==Goal special case
-    if (start.x == goal.x && start.y == goal.y) {
-        if (!grid.walkable(start.x, start.y)) return {};
-        return { start };
-    }
-
-    // Blocked start/goal guard
-    if (!grid.walkable(start.x, start.y)) return {};
-    if (!grid.walkable(goal.x, goal.y))   return {};
-
     return detail::jps_find_path_impl(grid, start, goal, opt);
 }
 
