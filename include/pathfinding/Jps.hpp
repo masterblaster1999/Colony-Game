@@ -1,3 +1,4 @@
+// include/pathfinding/Jps.hpp
 #pragma once
 
 #include <vector>
@@ -5,39 +6,45 @@
 namespace colony::path {
 
 struct Cell {
-    int x = 0;
-    int y = 0;
+    int x{};
+    int y{};
 };
 
-struct JpsOptions {
-    // Movement rules
-    bool allowDiagonal    = true;
-    bool dontCrossCorners = true; // if true: diagonal step requires both orthogonal neighbors
-
-    // (Not yet wired into the JPS core in this patch, but kept for API stability)
-    float costStraight    = 1.0f;
-    float costDiagonal    = 1.41421356237f;
-    float heuristicWeight = 1.0f;
-    bool  tieBreakCross   = false;
-
-    // Post-process returned path
-    bool smoothPath       = false; // if true: string-pull (line-of-sight) smoothing
-};
-
-struct IGrid {
+class IGrid {
+public:
     virtual ~IGrid() = default;
+
     virtual int  width()  const = 0;
     virtual int  height() const = 0;
     virtual bool walkable(int x, int y) const = 0;
 };
 
-namespace detail {
-// Implemented in pathfinding/JpsAdapter.cpp
-std::vector<Cell> jps_find_path_impl(const IGrid& grid, Cell start, Cell goal, const JpsOptions& opt);
-} // namespace detail
+struct JpsOptions {
+    // 4-neighbor vs 8-neighbor
+    bool allowDiagonal = false;
 
-inline std::vector<Cell> jps_find_path(const IGrid& grid, Cell start, Cell goal, const JpsOptions& opt = {}) {
-    return detail::jps_find_path_impl(grid, start, goal, opt);
+    // If diagonal, forbid “cutting corners” through blocked orthogonals
+    bool dontCrossCorners = true;
+
+    // Adapter output preference:
+    // - true  => return dense step-by-step path (grid neighbors)
+    // - false => may return sparse “jump points” (depends on core output)
+    bool returnDensePath = true;
+
+    // If you later want to expose JPS jump points directly, this flag can be used
+    // to keep only jump points even if returnDensePath==true.
+    bool preferJumpPoints = false;
+
+    // Optional later enhancement (string pulling / LOS smoothing)
+    bool smoothPath = false;
+};
+
+// Implemented in pathfinding/JpsAdapter.cpp (bridges to JpsCore)
+std::vector<Cell> jps_find_path_impl(const IGrid& grid, Cell start, Cell goal, const JpsOptions& opt);
+
+// Public API
+inline std::vector<Cell> jps_find_path(const IGrid& grid, Cell start, Cell goal, const JpsOptions& opt) {
+    return jps_find_path_impl(grid, start, goal, opt);
 }
 
 } // namespace colony::path
