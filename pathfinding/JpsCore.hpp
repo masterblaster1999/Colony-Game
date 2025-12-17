@@ -1,5 +1,14 @@
 #pragma once
 // JpsCore.hpp — minimal, self-contained Jump Point Search interface for MSVC
+//
+// NOTE (compatibility):
+// - This header now declares a 7-argument FindPathJPS overload that includes
+//   `dontCrossCorners`.
+// - It also provides a 6-argument *inline* back-compat overload that forwards
+//   to the 7-argument version with dontCrossCorners=true.
+// If you already have a non-inline (out-of-line) definition of the 6-arg overload
+// in a .cpp, remove/rename it (or switch it to only implement the 7-arg overload)
+// to avoid multiple-definition linker errors.
 
 #include <cstdint>
 #include <functional>
@@ -41,12 +50,31 @@ namespace colony::path
 
     // Public API: Find a grid path from (sx,sy) to (gx,gy).
     // Returns a polyline of (x,y) tiles including start and goal.
-    // Set allowDiagonal=false to restrict to 4-neighborhood.
+    //
+    // allowDiagonal:
+    //   - true  => 8-neighborhood
+    //   - false => 4-neighborhood
+    //
+    // dontCrossCorners (only meaningful when allowDiagonal == true):
+    //   - true  => forbid corner cutting on diagonals (requires both adjacent cardinals free)
+    //   - false => allow diagonal moves even if they "cut" past a blocked corner
     std::vector<std::pair<int,int>>
     FindPathJPS(const GridView& grid,
                 int sx, int sy,
                 int gx, int gy,
-                bool allowDiagonal = true);
+                bool allowDiagonal,
+                bool dontCrossCorners);
+
+    // Back-compat overload: preserves existing call sites that only specify allowDiagonal.
+    // Equivalent to: FindPathJPS(..., allowDiagonal, /*dontCrossCorners=*/true)
+    inline std::vector<std::pair<int,int>>
+    FindPathJPS(const GridView& grid,
+                int sx, int sy,
+                int gx, int gy,
+                bool allowDiagonal = true)
+    {
+        return FindPathJPS(grid, sx, sy, gx, gy, allowDiagonal, /*dontCrossCorners=*/true);
+    }
 
     // ---- Internals (exposed for unit tests, but you can keep them header-only
     // to help MSVC optimize) ----
