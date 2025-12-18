@@ -125,7 +125,14 @@ endif()
 # ------------------------------------------------------------------------------
 # Build options
 # ------------------------------------------------------------------------------
-option(COLONY_WERROR         "Treat warnings as errors on MSVC" OFF)
+
+# Default warnings-as-errors to ON in CI (OFF locally). Presets/cache can override.
+set(_CG_DEFAULT_WERROR OFF)
+if(DEFINED ENV{CI})
+  set(_CG_DEFAULT_WERROR ON)
+endif()
+
+option(COLONY_WERROR         "Treat warnings as errors on MSVC (defaults ON in CI)" ${_CG_DEFAULT_WERROR})
 option(COLONY_UNITY          "Enable Unity/Jumbo builds for project targets" ON)
 option(COLONY_STATIC_RUNTIME "Link static MSVC runtime (/MT) instead of DLL" OFF)
 
@@ -219,6 +226,22 @@ if(MSVC)
     _CRT_SECURE_NO_WARNINGS
   )
 
+  # Reduce warning noise from external headers when using /W4 + /WX.
+  # Only enable if the compiler actually supports these flags.
+  include(CheckCXXCompilerFlag)
+  set(_CG_SAVE_REQUIRED_FLAGS "${CMAKE_REQUIRED_FLAGS}")
+  set(CMAKE_REQUIRED_FLAGS "/WX")
+  check_cxx_compiler_flag("/external:anglebrackets" _CG_HAS_EXTERNAL_ANGLEBRACKETS)
+  check_cxx_compiler_flag("/external:W0" _CG_HAS_EXTERNAL_W0)
+  set(CMAKE_REQUIRED_FLAGS "${_CG_SAVE_REQUIRED_FLAGS}")
+
+  if(_CG_HAS_EXTERNAL_ANGLEBRACKETS AND _CG_HAS_EXTERNAL_W0)
+    add_compile_options(
+      /external:anglebrackets
+      /external:W0
+    )
+  endif()
+
   add_compile_options(
     /permissive-
     /W4
@@ -252,17 +275,27 @@ if(MSVC)
     $<$<CONFIG:Release>:/OPT:ICF>
   )
 
-  # First-class runtime selection
+  # First-class runtime selection (CMP0091=NEW required; already set above)
+  # This sets the default MSVC runtime for all targets created afterwards.
   if(COLONY_STATIC_RUNTIME)
     set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+  elseif(COLONY_RELEASE_STATIC_CRT)
+    # Debug: DLL CRT (/MDd). Release: static CRT (/MT). Others: DLL CRT (/MD).
+    set(CMAKE_MSVC_RUNTIME_LIBRARY "$<IF:$<CONFIG:Debug>,MultiThreadedDebugDLL,$<IF:$<CONFIG:Release>,MultiThreaded,MultiThreadedDLL>>")
   else()
     set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>DLL")
   endif()
 endif()
 
 # ---- Defensive cleanup: strip any stray /RTC* from non-Debug toolchain vars ----
+# Additionally, when ASan is enabled on MSVC, /RTC* is incompatible and must be stripped from Debug too.
 if(MSVC)
-  foreach(_CFG RELEASE RELWITHDEBINFO MINSIZEREL)
+  set(_CG_RTC_STRIP_CONFIGS RELEASE RELWITHDEBINFO MINSIZEREL)
+  if(COLONY_ENABLE_ASAN)
+    list(APPEND _CG_RTC_STRIP_CONFIGS DEBUG)
+  endif()
+
+  foreach(_CFG IN LISTS _CG_RTC_STRIP_CONFIGS)
     foreach(_LANG C CXX)
       string(TOUPPER "${_CFG}" _CFG_UP)
       set(_VAR "CMAKE_${_LANG}_FLAGS_${_CFG_UP}")
@@ -274,6 +307,8 @@ if(MSVC)
       endif()
     endforeach()
   endforeach()
+
+  unset(_CG_RTC_STRIP_CONFIGS)
 endif()
 
 # ---- Helpers ------------------------------------------------------------------
@@ -291,9 +326,8 @@ endfunction()
 function(colony_apply_msvc_runtime tgt)
   if(MSVC AND TARGET "${tgt}")
     if(COLONY_STATIC_RUNTIME)
-      return()
-    endif()
-    if(COLONY_RELEASE_STATIC_CRT)
+      set(_rt "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+    elseif(COLONY_RELEASE_STATIC_CRT)
       set(_rt "$<IF:$<CONFIG:Debug>,MultiThreadedDebugDLL,$<IF:$<CONFIG:Release>,MultiThreaded,MultiThreadedDLL>>")
     else()
       set(_rt "MultiThreaded$<$<CONFIG:Debug>:Debug>DLL")
@@ -304,6 +338,10 @@ endfunction()
 
 function(colony_apply_debug_runtime_checks tgt)
   if(MSVC AND TARGET "${tgt}")
+    # MSVC AddressSanitizer is incompatible with /RTC* runtime checks.
+    if(COLONY_ENABLE_ASAN)
+      return()
+    endif()
     target_compile_options(${tgt} PRIVATE $<$<CONFIG:Debug>:/RTC1>)
   endif()
 endfunction()
