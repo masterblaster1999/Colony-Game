@@ -83,14 +83,27 @@ endif()
 
 project(ColonyGame LANGUAGES CXX)
 
+# --------------------------------------------------------------------
+# Back-compat / preset hygiene:
+# Some presets/CI pass -DCOLONY_LTO=ON/OFF. Make it a real option and
+# actually use it so it isn't reported as "unused".
+# --------------------------------------------------------------------
+option(COLONY_LTO "Enable IPO/LTO for Release when supported" ON)
+
 # --- Interprocedural optimization (LTO) for Release when supported -------------
 include(CheckIPOSupported)
 check_ipo_supported(RESULT _ipo_supported OUTPUT _ipo_err LANGUAGES CXX)
-if(_ipo_supported)
-  # CMake will map this to /GL at compile and /LTCG at link on MSVC.
-  set(CMAKE_INTERPROCEDURAL_OPTIMIZATION_RELEASE ON)
+if(COLONY_LTO)
+  if(_ipo_supported)
+    # CMake will map this to /GL at compile and /LTCG at link on MSVC.
+    set(CMAKE_INTERPROCEDURAL_OPTIMIZATION_RELEASE ON)
+  else()
+    message(STATUS "IPO/LTO not supported by this toolchain: ${_ipo_err}")
+    set(CMAKE_INTERPROCEDURAL_OPTIMIZATION_RELEASE OFF)
+  endif()
 else()
-  message(STATUS "IPO/LTO not supported by this toolchain: ${_ipo_err}")
+  message(STATUS "IPO/LTO disabled (COLONY_LTO=OFF).")
+  set(CMAKE_INTERPROCEDURAL_OPTIMIZATION_RELEASE OFF)
 endif()
 
 # --- central Windows flags (optional include) ---
@@ -148,9 +161,6 @@ option(COLONY_ENABLE_TRACY "Build with Tracy profiler instrumentation (vcpkg por
 
 option(COLONY_BUILD_TESTS "Build unit tests" ON)
 option(COLONY_RELEASE_STATIC_CRT "Use static runtime (/MT) in Release; dynamic in Debug" OFF)
-
-# NEW: allow turning install rules off (useful if you need to bisect build issues)
-option(COLONY_ENABLE_INSTALL "Generate install() rules (packaging/staging)" ON)
 
 # If ON, configuration will error if it detects duplicated Win platform .cpp basenames
 # in BOTH:
@@ -548,62 +558,52 @@ endif()
 # ------------------------------------------------------------------------------
 # B) Target-split modules (replace in-root target creation with add_subdirectory)
 # ------------------------------------------------------------------------------
-function(colony_add_subdirectory_checked dir)
-  set(_abs "${CMAKE_SOURCE_DIR}/${dir}")
-  if(NOT IS_DIRECTORY "${_abs}")
-    message(FATAL_ERROR "Expected module directory '${dir}' does not exist: ${_abs}")
-  endif()
-  if(NOT EXISTS "${_abs}/CMakeLists.txt")
-    message(FATAL_ERROR
-      "Expected '${dir}/CMakeLists.txt' but it does not exist.\n"
-      "This repo is now using module-split CMake targets (core/renderer/engine/nav/platform_win/game).\n"
-      "Fix: add the missing CMakeLists.txt file in: ${_abs}")
-  endif()
-  add_subdirectory("${dir}")
-endfunction()
+add_subdirectory(core)           # colony_core
+add_subdirectory(platform/win)   # colony_platform_win
 
-colony_add_subdirectory_checked(core)           # colony_core
-colony_add_subdirectory_checked(platform/win)   # colony_platform_win
-colony_add_subdirectory_checked(pathfinding)    # colony_nav
-colony_add_subdirectory_checked(renderer)       # colony_renderer
-colony_add_subdirectory_checked(engine)         # colony_engine
+# ------------------------------------------------------------------------------
+# FIX: If colony_platform_win was created with no .c/.cpp sources, CMake cannot
+# infer a linker language and generation fails. Force CXX and (if needed) inject
+# a tiny dummy TU so the target is well-formed.
+# ------------------------------------------------------------------------------
+if(TARGET colony_platform_win)
+  get_target_property(_CG_PLAT_SOURCES colony_platform_win SOURCES)
+  if(NOT _CG_PLAT_SOURCES)
+    message(WARNING
+      "colony_platform_win target exists but has no SOURCES. "
+      "This usually means the source glob/list in platform/win/CMakeLists.txt matched nothing. "
+      "Injecting a tiny dummy TU so CMake can determine the linker language. "
+      "You should fix platform/win/CMakeLists.txt to include the real Win sources."
+    )
+    file(MAKE_DIRECTORY "${CMAKE_BINARY_DIR}/cmake")
+    set(_CG_PLAT_DUMMY "${CMAKE_BINARY_DIR}/cmake/colony_platform_win_dummy.cpp")
+    if(NOT EXISTS "${_CG_PLAT_DUMMY}")
+      file(WRITE "${_CG_PLAT_DUMMY}" "void colony_platform_win_dummy() {}\n")
+    endif()
+    target_sources(colony_platform_win PRIVATE "${_CG_PLAT_DUMMY}")
+    set_source_files_properties("${_CG_PLAT_DUMMY}"
+      PROPERTIES
+        GENERATED TRUE
+        SKIP_PRECOMPILE_HEADERS ON
+        SKIP_UNITY_BUILD_INCLUSION ON
+    )
+  endif()
+  set_target_properties(colony_platform_win PROPERTIES LINKER_LANGUAGE CXX)
+endif()
+unset(_CG_PLAT_SOURCES)
+unset(_CG_PLAT_DUMMY)
 
-# Preferred: game targets live under src/
+add_subdirectory(pathfinding)    # colony_nav
+add_subdirectory(renderer)       # colony_renderer
+add_subdirectory(engine)         # colony_engine
+
 if(EXISTS "${CMAKE_SOURCE_DIR}/src/CMakeLists.txt")
-  add_subdirectory(src)                         # ColonyGame (preferred) + any game-only targets
+  add_subdirectory(src)          # ColonyGame (preferred) + any game-only targets
 endif()
 
 # Optional legacy fallback: only run the old CGGameTarget if the game target wasn't created by src/
 if(EXISTS "${CMAKE_SOURCE_DIR}/cmake/CGGameTarget.cmake" AND NOT TARGET ColonyGame)
   include(CGGameTarget)
-endif()
-
-# ------------------------------------------------------------------------------
-# Compatibility aliases (in case some modules only define non-namespaced targets)
-# ------------------------------------------------------------------------------
-if(TARGET colony_core AND NOT TARGET colony::core)
-  add_library(colony::core ALIAS colony_core)
-endif()
-if(TARGET colony_renderer AND NOT TARGET colony::renderer)
-  add_library(colony::renderer ALIAS colony_renderer)
-endif()
-if(TARGET colony_engine AND NOT TARGET colony::engine)
-  add_library(colony::engine ALIAS colony_engine)
-endif()
-if(TARGET colony_platform_win AND NOT TARGET colony::platform_win)
-  add_library(colony::platform_win ALIAS colony_platform_win)
-endif()
-
-# nav back-compat: if some module still uses colony_path naming
-if(TARGET colony_nav AND NOT TARGET colony::nav)
-  add_library(colony::nav ALIAS colony_nav)
-elseif(TARGET colony_path)
-  if(NOT TARGET colony_nav)
-    add_library(colony_nav ALIAS colony_path)
-  endif()
-  if(NOT TARGET colony::nav)
-    add_library(colony::nav ALIAS colony_path)
-  endif()
 endif()
 
 # ------------------------------------------------------------------------------
@@ -636,6 +636,7 @@ if(TARGET colony_core)
     target_link_libraries(colony_core PUBLIC colony::platform_win)
   endif()
 
+  # Ensure CrashDumpWin.cpp (if present) is compiled with /EHa, regardless of which target owns it.
   colony_apply_seh_for_crashdump(colony_core)
 endif()
 
@@ -646,6 +647,7 @@ if(TARGET colony_renderer)
   )
 endif()
 
+# Also apply /EHa to CrashDumpWin.cpp if it lives in the platform lib.
 if(TARGET colony_platform_win)
   colony_apply_seh_for_crashdump(colony_platform_win)
 endif()
@@ -736,13 +738,8 @@ if(WIN32)
       target_link_options(ColonyMapViewer PRIVATE /WX)
     endif()
   endif()
-
-  # Link the engine if it exists (it should, after the module split).
-  if(TARGET colony_engine OR TARGET colony::engine)
-    target_link_libraries(ColonyMapViewer PRIVATE colony::engine)
-  endif()
-
   target_link_libraries(ColonyMapViewer PRIVATE
+    colony::engine
     user32
     gdi32
     comdlg32
@@ -775,14 +772,8 @@ endif()
 # ------------------------------------------------------------------------------
 # D) Install rules
 # ------------------------------------------------------------------------------
-if(COLONY_ENABLE_INSTALL)
-  include("${CMAKE_SOURCE_DIR}/cmake/CGInstallRules.cmake")
-  if(COMMAND colony_install_all)
-    colony_install_all()
-  else()
-    message(WARNING "CGInstallRules.cmake did not define colony_install_all(); skipping install() rules.")
-  endif()
-endif()
+include("${CMAKE_SOURCE_DIR}/cmake/CGInstallRules.cmake")
+colony_install_all()
 
 # ------------------------------------------------------------------------------
 # Guard & auto-fix: ensure no flags/genex slipped into SOURCES (after targets)
@@ -1017,6 +1008,8 @@ endif()
 # ------------------------------------------------------------------------------
 # Robust source de-dup (case-insensitive, realpath) and EXE/lib deconflict
 # ------------------------------------------------------------------------------
+# Normalize each target's sources by REALPATH, then lowercased on Windows,
+# and remove duplicates so the same .cpp isn't compiled twice under different paths.
 function(colony_normalize_and_dedupe_sources tgt)
   if(NOT TARGET ${tgt})
     return()
@@ -1061,11 +1054,14 @@ function(colony_normalize_and_dedupe_sources tgt)
   set_property(TARGET ${tgt} PROPERTY SOURCES "${_keep}")
 endfunction()
 
+# If a source file is already compiled into a library, do not also compile it into another target.
+# (Despite name, this works for any pair of targets.)
 function(colony_remove_sources_already_in_lib consumer lib)
   if(TARGET ${consumer} AND TARGET ${lib})
     get_target_property(_c_srcs ${consumer} SOURCES)
     get_target_property(_l_srcs ${lib} SOURCES)
     if(_c_srcs AND _l_srcs)
+      # Build normalized set of lib sources
       set(_l_norm "")
       get_target_property(_l_dir ${lib} SOURCE_DIR)
       if(NOT _l_dir)
@@ -1091,6 +1087,7 @@ function(colony_remove_sources_already_in_lib consumer lib)
         list(APPEND _l_norm "${_abs}")
       endforeach()
 
+      # Keep only consumer sources that are NOT already in the lib
       set(_keep "")
       get_target_property(_c_dir ${consumer} SOURCE_DIR)
       if(NOT _c_dir)
@@ -1124,12 +1121,15 @@ function(colony_remove_sources_already_in_lib consumer lib)
   endif()
 endfunction()
 
+# Apply normalization/dedup to common targets
 foreach(_t colony_nav colony_renderer colony_engine colony_platform_win colony_core ColonyGame ColonyLauncher ColonyMapViewer)
   if(TARGET ${_t})
     colony_normalize_and_dedupe_sources(${_t})
   endif()
 endforeach()
 
+# Prevent cross-target double-compiles:
+# 1) Keep platform sources in colony_platform_win only (except HighPerfGPU.cpp which is in EXEs).
 if(TARGET colony_platform_win)
   foreach(_consumer colony_core ColonyGame ColonyLauncher ColonyMapViewer)
     if(TARGET ${_consumer})
@@ -1141,12 +1141,14 @@ if(TARGET colony_platform_win)
   endif()
 endif()
 
+# 2) Prevent exe/lib double-compiles between ColonyGame/Launcher and colony_core
 colony_remove_sources_already_in_lib(ColonyGame      colony_core)
 colony_remove_sources_already_in_lib(ColonyLauncher  colony_core)
 if(COLONY_GAME_TARGET AND TARGET "${COLONY_GAME_TARGET}")
   colony_remove_sources_already_in_lib("${COLONY_GAME_TARGET}" colony_core)
 endif()
 
+# Re-apply CrashDump /EHa after source moves
 if(TARGET colony_core)
   colony_apply_seh_for_crashdump(colony_core)
 endif()
@@ -1157,6 +1159,17 @@ endif()
 # ------------------------------------------------------------------------------
 # Visual Studio/MSBuild: Fix MSB8027 object filename collisions in generated .vcxproj
 # ------------------------------------------------------------------------------
+# MSB8027 happens when two or more sources share the same basename and MSBuild places
+# all .obj outputs into the same $(IntDir), overwriting earlier outputs. Microsoft’s
+# suggested fix is to change Object File Name to $(IntDir)%(RelativeDir).
+#
+# With CMake-generated VS projects, <ClCompile Include="..."> is often an absolute path,
+# and MSBuild documents that %(RelativeDir) begins with %(RootDir) in that case.
+# To avoid "C:\" appearing inside $(IntDir), we use %(Directory), which is the directory
+# of the item without the root directory.
+#
+# We import a generated *.user.props file into every generated vcxproj using CMake's
+# VS_USER_PROPS target property.
 option(COLONY_VS_UNIQUE_OBJ_OUTPUTS
   "Visual Studio only: route object files into unique per-source directories to avoid MSB8027 collisions"
   ON
@@ -1167,6 +1180,7 @@ if(MSVC AND COLONY_VS_UNIQUE_OBJ_OUTPUTS AND CMAKE_GENERATOR MATCHES "Visual Stu
   file(MAKE_DIRECTORY "${_CG_OBJ_PROPS_DIR}")
   set(_CG_OBJ_USER_PROPS "${_CG_OBJ_PROPS_DIR}/ColonyGame.ObjectFileName.user.props")
 
+  # Generate (or overwrite) a deterministic props file into the build tree.
   file(WRITE "${_CG_OBJ_USER_PROPS}" [=[<?xml version="1.0" encoding="utf-8"?>
 <Project ToolsVersion="4.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
 
@@ -1185,6 +1199,7 @@ if(MSVC AND COLONY_VS_UNIQUE_OBJ_OUTPUTS AND CMAKE_GENERATOR MATCHES "Visual Stu
 </Project>
 ]=])
 
+  # Apply to every non-imported, non-alias C++ target generated by this build.
   function(_cg_apply_vs_user_props_recursive dir)
     get_property(_tgts DIRECTORY "${dir}" PROPERTY BUILDSYSTEM_TARGETS)
     foreach(_t IN LISTS _tgts)
@@ -1192,17 +1207,21 @@ if(MSVC AND COLONY_VS_UNIQUE_OBJ_OUTPUTS AND CMAKE_GENERATOR MATCHES "Visual Stu
         continue()
       endif()
 
+      # Skip ALIAS targets (cannot set properties on them).
       get_target_property(_aliased "${_t}" ALIASED_TARGET)
       if(_aliased)
         continue()
       endif()
 
+      # Skip imported targets (vcpkg, system libs, etc.).
       get_target_property(_imported "${_t}" IMPORTED)
       if(_imported)
         continue()
       endif()
 
       get_target_property(_type "${_t}" TYPE)
+
+      # Only targets that generate a .vcxproj benefit from this.
       if(_type STREQUAL "EXECUTABLE" OR
          _type STREQUAL "STATIC_LIBRARY" OR
          _type STREQUAL "SHARED_LIBRARY" OR
