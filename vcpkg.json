@@ -1,45 +1,67 @@
 {
   "$schema": "https://raw.githubusercontent.com/microsoft/vcpkg-tool/main/docs/vcpkg.schema.json",
+
   "$comment": "Pinned baseline + tighter platform constraints to avoid common Windows/VS vcpkg build breaks (UWP/MinGW/Xbox/static CRT).",
+  "$comment_asset_caching": "A) Asset caching (sources/tools) is configured via env var X_VCPKG_ASSET_SOURCES (not via vcpkg.json). Example (PowerShell): clear;x-azurl,file:///Z:/vcpkg/asset-cache,,readwrite  (replace Z:/vcpkg/asset-cache with your path).",
+  "$comment_binary_caching": "B) Binary caching (built packages) is configured via env var VCPKG_BINARY_SOURCES (not via vcpkg.json). Example (PowerShell): clear;files,Z:/vcpkg/binary-cache,readwrite  (replace Z:/vcpkg/binary-cache with your path).",
+  "$comment_imgui_fallback": "C) ImGui defaults to NO-Freetype (stb_truetype) for reliability. Opt-in Freetype via: vcpkg install --x-feature=imgui-freetype",
+
   "name": "colony-game",
   "version-string": "0.1.0",
   "description": "Windows-only colony sim / engine dependencies via vcpkg (DX11/DX12 toolchain, UI, profiling).",
   "homepage": "https://github.com/masterblaster1999/Colony-Game",
   "license": "MIT",
+
   "supports": "windows & (x64 | arm64) & !uwp & !mingw & !staticcrt & !xbox",
   "builtin-baseline": "84bab45d415d22042bd0b9081aea57f362da3f35",
+
   "overrides": [
     { "name": "tracy", "version": "0.11.1#1" }
   ],
+
+  "default-features": [
+    "imgui-no-freetype"
+  ],
+
   "dependencies": [
     "fmt",
     "spdlog",
     "entt",
     "nlohmann-json",
-    {
-      "name": "imgui",
-      "default-features": false,
-      "features": [ "docking-experimental", "win32-binding", "dx11-binding" ]
-    },
+
     "directx-headers",
     { "$comment": "DXC tool used at build time (shader compilation).", "name": "directx-dxc", "host": true },
     { "$comment": "DXC runtime/library (dxcompiler). Remove if you only need the tool.", "name": "directx-dxc" },
     { "name": "directxtex", "features": [ "dx11" ] },
+
     { "name": "tracy", "default-features": false },
     { "name": "winpixevent", "platform": "windows & (x64 | arm64) & !staticcrt & !xbox" },
+
     "taskflow",
     "doctest",
+
     { "$comment": "Build-fix deps from CI", "name": "sdl2" },
     { "name": "miniaudio" }
   ],
+
   "features": {
-    "imgui-freetype": {
-      "description": "Enable ImGui FreeType font rasterization (pulls freetype). Opt-in to avoid CI download flakiness.",
+    "imgui-no-freetype": {
+      "description": "Default/stable UI setup: ImGui docking + Win32 + DX11 bindings, WITHOUT FreeType (uses stb_truetype). Avoids freetype fetch/build flakiness.",
       "dependencies": [
         {
           "name": "imgui",
           "default-features": false,
-          "features": [ "freetype" ]
+          "features": [ "docking-experimental", "win32-binding", "dx11-binding" ]
+        }
+      ]
+    },
+    "imgui-freetype": {
+      "description": "Opt-in: Enable ImGui FreeType font rasterization (pulls freetype). Enable with: vcpkg install --x-feature=imgui-freetype",
+      "dependencies": [
+        {
+          "name": "imgui",
+          "default-features": false,
+          "features": [ "docking-experimental", "win32-binding", "dx11-binding", "freetype" ]
         }
       ]
     }
