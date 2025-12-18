@@ -1,12 +1,23 @@
 // pathfinding/JpsAdapter.cpp
 // Bridges include/pathfinding/Jps.hpp public API to the JPS core (pathfinding/JpsCore.hpp).
 
-#include "pathfinding/Jps.hpp"
+// IMPORTANT (Windows/MSVC include-shadowing fix):
+// Include the public header via its *actual* repo path to avoid picking up an unintended
+// "pathfinding/Jps.hpp" from some other include directory (common on Windows CI).
+#include "include/pathfinding/Jps.hpp"
+
+// Sanity-check we got the intended public header.
+#ifndef COLONY_PATHFINDING_JPS_HPP_PUBLIC
+    #error "Wrong Jps.hpp included. This .cpp must include the repo's public header at include/pathfinding/Jps.hpp."
+#endif
+static_assert(COLONY_PATHFINDING_JPS_HPP_PUBLIC == 1, "Wrong Jps.hpp included (public header macro mismatch).");
+
 #include "pathfinding/JpsCore.hpp"
 
 #include <algorithm>
 #include <cassert>
 #include <cmath>
+#include <cstddef>
 #include <cstdlib>
 #include <vector>
 
@@ -92,7 +103,7 @@ std::vector<Cell> densify_if_needed(const GridView& gv,
     if (in.size() <= 1) return in;
 
     bool has_gaps = false;
-    for (size_t i = 1; i < in.size(); ++i) {
+    for (std::size_t i = 1; i < in.size(); ++i) {
         const int dx = std::abs(in[i].x - in[i - 1].x);
         const int dy = std::abs(in[i].y - in[i - 1].y);
         if (dx > 1 || dy > 1) { has_gaps = true; break; }
@@ -103,7 +114,7 @@ std::vector<Cell> densify_if_needed(const GridView& gv,
     dense.reserve(in.size() * 2);
     dense.push_back(in.front());
 
-    for (size_t i = 1; i < in.size(); ++i) {
+    for (std::size_t i = 1; i < in.size(); ++i) {
         const Cell target = in[i];
 
         int x0 = dense.back().x;
@@ -152,12 +163,12 @@ std::vector<Cell> smooth_waypoints(const GridView& gv,
     out.reserve(dense.size());
     out.push_back(dense.front());
 
-    size_t anchor = 0;
+    std::size_t anchor = 0;
     while (anchor + 1 < dense.size()) {
-        size_t best = anchor + 1;
+        std::size_t best = anchor + 1;
 
         // Try to push best forward while LOS holds.
-        for (size_t j = best + 1; j < dense.size(); ++j) {
+        for (std::size_t j = best + 1; j < dense.size(); ++j) {
             if (line_ok(gv, dense[anchor], dense[j], opt.allowDiagonal, opt.dontCrossCorners)) {
                 best = j;
             } else {
@@ -178,6 +189,70 @@ std::vector<Cell> smooth_waypoints(const GridView& gv,
     return out;
 }
 
+// ---- Core-path call selection (no C++20 'requires' needed) ----
+// Prefer extended overload if BOTH the overload exists AND JpsOptions provides the needed fields.
+// Otherwise fall back to the simpler overloads.
+//
+// This fixes the build break where JpsAdapter.cpp referenced opt.costStraight / etc even when
+// JpsOptions didn't define them (and avoids non-dependent requires-expressions).
+template <class Opt>
+auto find_core_path_impl(const GridView& gv, Cell start, Cell goal, const Opt& opt, int)
+    -> decltype(FindPathJPS(gv,
+                            start.x, start.y,
+                            goal.x, goal.y,
+                            opt.allowDiagonal,
+                            opt.dontCrossCorners,
+                            opt.costStraight,
+                            opt.costDiagonal,
+                            opt.heuristicWeight,
+                            opt.tieBreakCross))
+{
+    return FindPathJPS(gv,
+                       start.x, start.y,
+                       goal.x, goal.y,
+                       opt.allowDiagonal,
+                       opt.dontCrossCorners,
+                       opt.costStraight,
+                       opt.costDiagonal,
+                       opt.heuristicWeight,
+                       opt.tieBreakCross);
+}
+
+template <class Opt>
+auto find_core_path_impl(const GridView& gv, Cell start, Cell goal, const Opt& opt, long)
+    -> decltype(FindPathJPS(gv,
+                            start.x, start.y,
+                            goal.x, goal.y,
+                            opt.allowDiagonal,
+                            opt.dontCrossCorners))
+{
+    return FindPathJPS(gv,
+                       start.x, start.y,
+                       goal.x, goal.y,
+                       opt.allowDiagonal,
+                       opt.dontCrossCorners);
+}
+
+template <class Opt>
+auto find_core_path_impl(const GridView& gv, Cell start, Cell goal, const Opt& opt, ...)
+    -> decltype(FindPathJPS(gv,
+                            start.x, start.y,
+                            goal.x, goal.y,
+                            opt.allowDiagonal))
+{
+    return FindPathJPS(gv,
+                       start.x, start.y,
+                       goal.x, goal.y,
+                       opt.allowDiagonal);
+}
+
+template <class Opt>
+auto find_core_path(const GridView& gv, Cell start, Cell goal, const Opt& opt)
+{
+    // Prefer best-match overload first (int), then fallback (long), then final fallback (...).
+    return find_core_path_impl(gv, start, goal, opt, 0);
+}
+
 } // unnamed namespace
 
 std::vector<Cell> jps_find_path_impl(const IGrid& grid, Cell start, Cell goal, const JpsOptions& opt)
@@ -191,37 +266,7 @@ std::vector<Cell> jps_find_path_impl(const IGrid& grid, Cell start, Cell goal, c
         [&grid](int x, int y) { return !grid.walkable(x, y); } // true => blocked
     };
 
-    // Prefer the overload that uses costs/heuristics if it's available.
-    const auto corePath = [&]() {
-        if constexpr (requires {
-            FindPathJPS(gv,
-                        start.x, start.y,
-                        goal.x, goal.y,
-                        opt.allowDiagonal,
-                        opt.dontCrossCorners,
-                        opt.costStraight,
-                        opt.costDiagonal,
-                        opt.heuristicWeight,
-                        opt.tieBreakCross);
-        }) {
-            return FindPathJPS(gv,
-                               start.x, start.y,
-                               goal.x, goal.y,
-                               opt.allowDiagonal,
-                               opt.dontCrossCorners,
-                               opt.costStraight,
-                               opt.costDiagonal,
-                               opt.heuristicWeight,
-                               opt.tieBreakCross);
-        } else {
-            return FindPathJPS(gv,
-                               start.x, start.y,
-                               goal.x, goal.y,
-                               opt.allowDiagonal,
-                               opt.dontCrossCorners);
-        }
-    }();
-
+    const auto corePath = find_core_path(gv, start, goal, opt);
     if (corePath.empty()) return {};
 
     std::vector<Cell> out;
@@ -243,4 +288,15 @@ std::vector<Cell> jps_find_path_impl(const IGrid& grid, Cell start, Cell goal, c
 }
 
 } // namespace detail
+
+// Compatibility wrapper:
+// - Public header in include/pathfinding/Jps.hpp declares colony::path::jps_find_path_impl
+// - Older/internal callers may use colony::path::detail::jps_find_path_impl
+//
+// Keeping this wrapper prevents link errors if the declaration lives in colony::path.
+std::vector<Cell> jps_find_path_impl(const IGrid& grid, Cell start, Cell goal, const JpsOptions& opt)
+{
+    return detail::jps_find_path_impl(grid, start, goal, opt);
+}
+
 } // namespace colony::path
