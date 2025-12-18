@@ -1,11 +1,13 @@
 {
   "$schema": "https://raw.githubusercontent.com/microsoft/vcpkg-tool/main/docs/vcpkg.schema.json",
+  "$comment": "Pinned baseline + tighter platform constraints to avoid common Windows/VS vcpkg build breaks (UWP/MinGW/Xbox/static CRT).",
   "name": "colony-game",
   "version-string": "0.1.0",
   "description": "Windows-only colony sim / engine dependencies via vcpkg (DX11/DX12 toolchain, UI, profiling).",
   "homepage": "https://github.com/masterblaster1999/Colony-Game",
   "license": "MIT",
-  "supports": "windows & !uwp",
+  "supports": "windows & (x64 | arm64) & !uwp & !mingw & !staticcrt & !xbox",
+  "builtin-baseline": "84bab45d415d22042bd0b9081aea57f362da3f35",
   "overrides": [
     { "name": "tracy", "version": "0.11.1#1" }
   ],
@@ -20,11 +22,11 @@
       "features": [ "docking-experimental", "win32-binding", "dx11-binding", "freetype" ]
     },
     "directx-headers",
-    { "name": "directx-dxc", "host": true },
-    { "name": "directx-dxc" },
+    { "$comment": "DXC tool used at build time (shader compilation).", "name": "directx-dxc", "host": true },
+    { "$comment": "DXC runtime/library (dxcompiler). Remove if you only need the tool.", "name": "directx-dxc" },
     { "name": "directxtex", "features": [ "dx11" ] },
     { "name": "tracy", "default-features": false },
-    { "name": "winpixevent", "platform": "windows & x64" },
+    { "name": "winpixevent", "platform": "windows & (x64 | arm64) & !staticcrt & !xbox" },
     "taskflow",
     "doctest",
     { "$comment": "Build-fix deps from CI", "name": "sdl2" },
