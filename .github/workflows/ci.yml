@@ -11,7 +11,7 @@ on:
       - '.github/ISSUE_TEMPLATE/**'
       - 'LICENSE'
   push:
-    branches: [ main ]            # run on merges to main
+    branches: [ main ]              # run on merges to main
     tags:     [ 'v*', 'release-*' ] # run on version tags for releases
     paths-ignore:
       - '**/*.md'
@@ -22,6 +22,7 @@ on:
 
 permissions:
   contents: write   # needed to publish release assets on tag pushes
+  actions:  write   # safer for cache write when explicit permissions are set
 
 # Cancel previous runs for the same branch/PR to cut costs
 concurrency:
@@ -36,6 +37,12 @@ jobs:
     defaults:
       run:
         shell: pwsh
+
+    env:
+      # Keep vcpkg caches inside the workspace so actions/cache can persist them between runs.
+      VCPKG_DOWNLOADS: ${{ github.workspace }}\.vcpkg\downloads
+      VCPKG_DEFAULT_BINARY_CACHE: ${{ github.workspace }}\.vcpkg\archives
+      VCPKG_DISABLE_METRICS: 1
 
     steps:
       - name: Checkout
@@ -67,15 +74,21 @@ jobs:
           "VCPKG_ROOT=$root" | Out-File -FilePath $env:GITHUB_ENV -Append
           Write-Host "Using VCPKG_ROOT=$root"
 
-      - name: Cache vcpkg artifacts (manifest mode)
+      - name: Cache vcpkg (binary cache + downloads)
         if: ${{ hashFiles('vcpkg.json', 'vcpkg-configuration.json') != '' }}
         uses: actions/cache@v4
         with:
           path: |
-            ${{ env.VCPKG_ROOT }}\installed
-            C:\Users\runneradmin\AppData\Local\vcpkg\archives
-          key: vcpkg-${{ runner.os }}-${{ hashFiles('vcpkg.json', 'vcpkg-configuration.json') }}
-          restore-keys: vcpkg-${{ runner.os }}-
+            ${{ github.workspace }}\.vcpkg
+          key: vcpkg-${{ runner.os }}-x64-windows-${{ hashFiles('vcpkg.json', 'vcpkg-configuration.json') }}
+          restore-keys: |
+            vcpkg-${{ runner.os }}-x64-windows-
+            vcpkg-${{ runner.os }}-
+
+      - name: Ensure vcpkg cache directories exist
+        run: |
+          New-Item -ItemType Directory -Force -Path "${env:VCPKG_DOWNLOADS}" | Out-Null
+          New-Item -ItemType Directory -Force -Path "${env:VCPKG_DEFAULT_BINARY_CACHE}" | Out-Null
 
       - name: Configure (CMake, VS 2022 x64, vcpkg toolchain)
         run: >
@@ -83,14 +96,24 @@ jobs:
           -G "Visual Studio 17 2022" -A x64
           -DCMAKE_TOOLCHAIN_FILE="${env:VCPKG_ROOT}\scripts\buildsystems\vcpkg.cmake"
           -DVCPKG_MANIFEST_MODE=ON
+          -DVCPKG_TARGET_TRIPLET=x64-windows
           -DBUILD_TESTING=ON
           -DCOLONY_LTO=OFF
 
+      - name: Build (Debug)
+        run: cmake --build build --config Debug --parallel
+
+      - name: Run tests (ctest, Debug)
+        run: ctest --test-dir build -C Debug --output-on-failure
+
+      - name: Build (RelWithDebInfo)
+        run: cmake --build build --config RelWithDebInfo --parallel
+
+      - name: Run tests (ctest, RelWithDebInfo)
+        run: ctest --test-dir build -C RelWithDebInfo --output-on-failure
+
       - name: Build (Release)
         run: cmake --build build --config Release --parallel
-
-      - name: Run tests (ctest)
-        run: ctest --test-dir build -C Release --output-on-failure
 
       - name: Stage runtime (stage_win)
         run: cmake --build build --config Release --target stage_win --parallel
