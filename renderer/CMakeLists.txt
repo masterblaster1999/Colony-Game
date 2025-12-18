@@ -1,192 +1,73 @@
 # renderer/CMakeLists.txt
-#
-# Windows-only renderer build + "single-owner" platform static lib.
-# - Only colony_platform_win compiles DeviceResources.*
-# - Renderer and the rest of the app link to that one library.
-# - DXC is used to compile HLSL (SM 6.x).
-#
-cmake_minimum_required(VERSION 3.20)
+# Target: colony_renderer (colony::renderer)
 
-# ---------------------------------------------------------------------------
-# Windows-only guard
-# ---------------------------------------------------------------------------
-if(NOT WIN32)
-    message(FATAL_ERROR "This project configuration builds Windows-only (Direct3D 12).")
-endif()
-
-# ---------------------------------------------------------------------------
-# Find DXC (DirectX Shader Compiler)
-# ---------------------------------------------------------------------------
-# Try PATH first, then common vcpkg locations.
-find_program(DXC_EXECUTABLE
-    NAMES dxc
-    HINTS
-        "$ENV{VCPKG_ROOT}/installed/x64-windows/tools/dxc"
-        "${CMAKE_SOURCE_DIR}/vcpkg_installed/x64-windows/tools/dxc"
+set(_CG_RENDERER_DIRS
+  "${CMAKE_SOURCE_DIR}/renderer"
+  "${CMAKE_SOURCE_DIR}/src/renderer"
 )
 
-if(NOT DXC_EXECUTABLE)
-    message(FATAL_ERROR "DXC not found. Please install Microsoft DirectX Shader Compiler (dxc).")
-endif()
-
-# ---------------------------------------------------------------------------
-# Helper: compile_hlsl(out_var src entry profile [INCLUDE_DIRS ...] [DEFINES ...])
-# Writes dxil outputs into ${CMAKE_CURRENT_BINARY_DIR}/shaders/
-# ---------------------------------------------------------------------------
-function(compile_hlsl OUT_VAR SRC_FILE ENTRY PROFILE)
-    set(options)
-    set(oneValueArgs)
-    set(multiValueArgs INCLUDE_DIRS DEFINES)
-    cmake_parse_arguments(HLSL "${options}" "${oneValueArgs}" "${multiValueArgs}" ${ARGN})
-
-    # Build include and define args
-    set(INC_ARGS "")
-    foreach(inc IN LISTS HLSL_INCLUDE_DIRS)
-        list(APPEND INC_ARGS -I "${inc}")
-    endforeach()
-
-    set(DEF_ARGS "")
-    foreach(def IN LISTS HLSL_DEFINES)
-        list(APPEND DEF_ARGS -D "${def}")
-    endforeach()
-
-    # Output file name: <basename>.<profile>.dxil
-    get_filename_component(_src_abs "${SRC_FILE}" ABSOLUTE)
-    get_filename_component(_name_we "${_src_abs}" NAME_WE)
-    string(REPLACE ":" "_" _profile_tag "${PROFILE}")
-    set(_out "${CMAKE_CURRENT_BINARY_DIR}/shaders/${_name_we}.${_profile_tag}.dxil")
-
-    add_custom_command(
-        OUTPUT "${_out}"
-        COMMAND ${CMAKE_COMMAND} -E make_directory "${CMAKE_CURRENT_BINARY_DIR}/shaders"
-        COMMAND "${DXC_EXECUTABLE}"
-                -T ${PROFILE}
-                -E ${ENTRY}
-                $<$<CONFIG:Debug>:-Od -Zi -Qembed_debug>
-                $<$<CONFIG:RelWithDebInfo>:-O3 -Zi -Qembed_debug>
-                $<$<CONFIG:Release>:-O3>
-                ${INC_ARGS} ${DEF_ARGS}
-                -Fo "${_out}"
-                "${_src_abs}"
-        DEPENDS "${_src_abs}"
-        COMMENT "DXC ${SRC_FILE} (${ENTRY}/${PROFILE})"
-        VERBATIM
+set(COLONY_RENDERER_SOURCES "")
+foreach(_d IN LISTS _CG_RENDERER_DIRS)
+  if(EXISTS "${_d}")
+    file(GLOB_RECURSE _tmp CONFIGURE_DEPENDS
+      "${_d}/*.c"
+      "${_d}/*.cpp"
     )
+    list(APPEND COLONY_RENDERER_SOURCES ${_tmp})
+  endif()
+endforeach()
+list(REMOVE_DUPLICATES COLONY_RENDERER_SOURCES)
 
-    set(${OUT_VAR} "${_out}" PARENT_SCOPE)
-endfunction()
-
-# ---------------------------------------------------------------------------
-# PATCH B: Single-owner Windows platform static lib
-#   Only this target compiles DeviceResources.* to avoid LNK4006 duplicates.
-#   Other targets link to it; they do NOT list DeviceResources.cpp themselves.
-# ---------------------------------------------------------------------------
-add_library(colony_platform_win STATIC
-    "${CMAKE_SOURCE_DIR}/platform/win/DeviceResources.cpp"
-    "${CMAKE_SOURCE_DIR}/platform/win/DeviceResources.h"
-)
-target_compile_features(colony_platform_win PUBLIC cxx_std_20)
-target_include_directories(colony_platform_win PUBLIC "${CMAKE_SOURCE_DIR}/platform/win")
-target_link_libraries(colony_platform_win PUBLIC d3d12 dxgi dxguid)
-add_library(Colony::PlatformWin ALIAS colony_platform_win)
-
-# Optional: If your renderer target already exists, make it consume the platform lib.
-if(TARGET colony_renderer)
-    target_link_libraries(colony_renderer PUBLIC Colony::PlatformWin)
+if(COLONY_RENDERER_SOURCES)
+  add_library(colony_renderer STATIC)
+  target_sources(colony_renderer PRIVATE ${COLONY_RENDERER_SOURCES})
+else()
+  add_library(colony_renderer INTERFACE)
+  message(STATUS "colony_renderer: no sources found; created INTERFACE target.")
 endif()
 
-# Optional: If your main exe target exists, link platform once here too.
-if(TARGET colony_exe)
-    target_link_libraries(colony_exe PRIVATE Colony::PlatformWin)
+add_library(colony::renderer ALIAS colony_renderer)
+set_target_properties(colony_renderer PROPERTIES FOLDER "libs")
+
+get_target_property(_cg_r_type colony_renderer TYPE)
+if(_cg_r_type STREQUAL "INTERFACE_LIBRARY")
+  set(_cg_r_pub INTERFACE)
+else()
+  set(_cg_r_pub PUBLIC)
 endif()
 
-# ---------------------------------------------------------------------------
-# SHADERS — from your snippet (paths anchored at ${CMAKE_SOURCE_DIR})
-# Adjust ENTRY names if your HLSL uses different entry points.
-# ---------------------------------------------------------------------------
+target_compile_features(colony_renderer ${_cg_r_pub} cxx_std_23)
 
-# List of HLSL shaders (from your error log / repo)
-set(COLONY_HLSL_SOURCES
-    "${CMAKE_SOURCE_DIR}/renderer/Shaders/AtmosphereSky.hlsl"
-    "${CMAKE_SOURCE_DIR}/shaders/raster/FullScreen.vs.hlsl"
-    "${CMAKE_SOURCE_DIR}/renderer/Shaders/Common/FullScreenTriangleVS.hlsl"
-    "${CMAKE_SOURCE_DIR}/renderer/Shaders/Batch2D_ps.hlsl"
-    "${CMAKE_SOURCE_DIR}/renderer/Shaders/WaterGerstner.hlsl"
-    "${CMAKE_SOURCE_DIR}/renderer/Shaders/erosion_thermal_apply_cs.hlsl"
-    "${CMAKE_SOURCE_DIR}/renderer/Shaders/erosion_thermal_flow_cs.hlsl"
+target_include_directories(colony_renderer ${_cg_r_pub}
+  "$<BUILD_INTERFACE:${CMAKE_SOURCE_DIR}/include>"
+  "$<BUILD_INTERFACE:${CMAKE_SOURCE_DIR}>"
+  "$<BUILD_INTERFACE:${CMAKE_SOURCE_DIR}/renderer>"
+  "$<INSTALL_INTERFACE:${COLONY_INSTALL_INCLUDEDIR}>"
 )
 
-# Compile each shader with the correct entry/profile.
-set(COMPILED_SHADERS)
-
-# Atmosphere sky – likely a full-screen PS
-compile_hlsl(SH_ATMOSPHERE_SKY
-    "${CMAKE_SOURCE_DIR}/renderer/Shaders/AtmosphereSky.hlsl"
-    PSMain
-    ps_6_0
-    INCLUDE_DIRS "${CMAKE_SOURCE_DIR}/renderer/Shaders"
-)
-list(APPEND COMPILED_SHADERS "${SH_ATMOSPHERE_SKY}")
-
-# FullScreen VS
-compile_hlsl(SH_FULLSCREEN_VS
-    "${CMAKE_SOURCE_DIR}/shaders/raster/FullScreen.vs.hlsl"
-    VSMain
-    vs_6_0
-    INCLUDE_DIRS "${CMAKE_SOURCE_DIR}/shaders/raster"
-)
-list(APPEND COMPILED_SHADERS "${SH_FULLSCREEN_VS}")
-
-# FullScreenTriangle VS
-compile_hlsl(SH_FULLSCREEN_TRIANGLE_VS
-    "${CMAKE_SOURCE_DIR}/renderer/Shaders/Common/FullScreenTriangleVS.hlsl"
-    VSMain
-    vs_6_0
-    INCLUDE_DIRS "${CMAKE_SOURCE_DIR}/renderer/Shaders/Common"
-)
-list(APPEND COMPILED_SHADERS "${SH_FULLSCREEN_TRIANGLE_VS}")
-
-# 2D batch PS
-compile_hlsl(SH_BATCH2D_PS
-    "${CMAKE_SOURCE_DIR}/renderer/Shaders/Batch2D_ps.hlsl"
-    PSMain
-    ps_6_0
-    INCLUDE_DIRS "${CMAKE_SOURCE_DIR}/renderer/Shaders"
-)
-list(APPEND COMPILED_SHADERS "${SH_BATCH2D_PS}")
-
-# Water / Gerstner waves (adjust entry if your shader is VS/CS)
-compile_hlsl(SH_WATER_GERSTNER
-    "${CMAKE_SOURCE_DIR}/renderer/Shaders/WaterGerstner.hlsl"
-    PSMain
-    ps_6_0
-    INCLUDE_DIRS "${CMAKE_SOURCE_DIR}/renderer/Shaders"
-)
-list(APPEND COMPILED_SHADERS "${SH_WATER_GERSTNER}")
-
-# Erosion compute shaders
-compile_hlsl(SH_EROSION_THERMAL_APPLY
-    "${CMAKE_SOURCE_DIR}/renderer/Shaders/erosion_thermal_apply_cs.hlsl"
-    CSMain
-    cs_6_0
-    INCLUDE_DIRS "${CMAKE_SOURCE_DIR}/renderer/Shaders"
-)
-list(APPEND COMPILED_SHADERS "${SH_EROSION_THERMAL_APPLY}")
-
-compile_hlsl(SH_EROSION_THERMAL_FLOW
-    "${CMAKE_SOURCE_DIR}/renderer/Shaders/erosion_thermal_flow_cs.hlsl"
-    CSMain
-    cs_6_0
-    INCLUDE_DIRS "${CMAKE_SOURCE_DIR}/renderer/Shaders"
-)
-list(APPEND COMPILED_SHADERS "${SH_EROSION_THERMAL_FLOW}")
-
-# Group all compiled shaders into a dedicated custom target (shows up as a VS project).
-add_custom_target(ColonyShaders ALL
-    DEPENDS ${COMPILED_SHADERS}
+# Dependencies:
+target_link_libraries(colony_renderer ${_cg_r_pub}
+  colony::core
 )
 
-# If renderer is a real target, ensure it builds after shaders
-if(TARGET colony_renderer)
-    add_dependencies(colony_renderer ColonyShaders)
+# SDL2 + ImGui usually belong to renderer; if any other module needs them,
+# it should link them too (or rely on renderer's PUBLIC link). :contentReference[oaicite:7]{index=7}
+if(TARGET SDL2::SDL2)
+  target_link_libraries(colony_renderer ${_cg_r_pub} SDL2::SDL2)
 endif()
+if(TARGET imgui::imgui)
+  target_link_libraries(colony_renderer ${_cg_r_pub} imgui::imgui)
+endif()
+
+if(COLONY_USE_PCH AND NOT _cg_r_type STREQUAL "INTERFACE_LIBRARY")
+  target_precompile_headers(colony_renderer PRIVATE "${COLONY_PCH_HEADER}")
+endif()
+
+if(NOT _cg_r_type STREQUAL "INTERFACE_LIBRARY")
+  colony_apply_msvc_runtime(colony_renderer)
+  colony_apply_debug_runtime_checks(colony_renderer)
+endif()
+
+unset(_cg_r_type)
+unset(_cg_r_pub)
+
