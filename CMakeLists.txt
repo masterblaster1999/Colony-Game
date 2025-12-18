@@ -157,7 +157,7 @@ option(COLONY_RELEASE_STATIC_CRT "Use static runtime (/MT) in Release; dynamic i
 option(COLONY_STRICT_WIN_PLATFORM_DEDUP "Hard-fail if legacy platform/win duplicates exist" OFF)
 
 set(COLONY_GAME_TARGET "" CACHE STRING
-  "Name of the game's main executable target (if different from 'ColonyGame') to link with colony_path")
+  "Name of the game's main executable target (if different from 'ColonyGame') to link with colony_nav")
 
 # Keep legacy cache var in sync so any other modules still reading it behave correctly.
 if(DEFINED COLONY_UNITY_BUILD AND NOT "${COLONY_UNITY_BUILD}" STREQUAL "${COLONY_UNITY}")
@@ -452,6 +452,11 @@ include(CGThirdParty)
 include(CGShaders)
 
 # ------------------------------------------------------------------------------
+# A) Install layout (path install names) - MUST be included before add_subdirectory()
+# ------------------------------------------------------------------------------
+include("${CMAKE_SOURCE_DIR}/cmake/CGInstallLayout.cmake")
+
+# ------------------------------------------------------------------------------
 # Shaders: explicit list (Windows-only)
 # ------------------------------------------------------------------------------
 if(WIN32)
@@ -538,183 +543,30 @@ if(NOT COLONY_SPDLOG_TARGET)
 endif()
 
 # ------------------------------------------------------------------------------
-# Pathfinding library
+# B) Target-split modules (replace in-root target creation with add_subdirectory)
 # ------------------------------------------------------------------------------
-# NOTE: Using GLOB_RECURSE is intentionally limited to this small leaf library.
-# TODO (recommended): replace with explicit target_sources() lists once file layout settles.
-file(GLOB_RECURSE COLONY_PATH_SOURCES CONFIGURE_DEPENDS
-     "${CMAKE_SOURCE_DIR}/pathfinding/*.cpp"
-     "${CMAKE_SOURCE_DIR}/hpa/*.cpp")
+add_subdirectory(core)           # colony_core
+add_subdirectory(platform/win)   # colony_platform_win
+add_subdirectory(pathfinding)    # colony_nav
+add_subdirectory(renderer)       # colony_renderer
+add_subdirectory(engine)         # colony_engine
 
-if(COLONY_PATH_SOURCES)
-  add_library(colony_path STATIC ${COLONY_PATH_SOURCES})
-  add_library(colony::path ALIAS colony_path)
-
-  target_include_directories(colony_path PUBLIC
-    "${CMAKE_SOURCE_DIR}"
-    "${CMAKE_SOURCE_DIR}/include"
-    "${CMAKE_SOURCE_DIR}/pathfinding"
-    "${CMAKE_SOURCE_DIR}/hpa")
-
-  target_compile_features(colony_path PUBLIC cxx_std_23)
-
-  if(COLONY_USE_PCH)
-    target_precompile_headers(colony_path PRIVATE "${COLONY_PCH_HEADER}")
-  endif()
-
-  colony_apply_msvc_runtime(colony_path)
-  colony_apply_debug_runtime_checks(colony_path)
-endif()
-
-# ------------------------------------------------------------------------------
-# Core game source tree
-# ------------------------------------------------------------------------------
 if(EXISTS "${CMAKE_SOURCE_DIR}/src/CMakeLists.txt")
-  add_subdirectory(src)
+  add_subdirectory(src)          # ColonyGame (preferred) + any game-only targets
+endif()
+
+# Optional legacy fallback: only run the old CGGameTarget if the game target wasn't created by src/
+if(EXISTS "${CMAKE_SOURCE_DIR}/cmake/CGGameTarget.cmake" AND NOT TARGET ColonyGame)
+  include(CGGameTarget)
 endif()
 
 # ------------------------------------------------------------------------------
-# NEW: Canonical Windows platform library (STATIC)
-# Goal:
-#   - Compile Win platform support code exactly once
-#   - Prefer src/platform/win over legacy platform/win when both exist
-#   - Avoid ODR/linker errors from duplicate CrashHandlerWin.cpp, etc.
-# ------------------------------------------------------------------------------
-if(WIN32)
-  set(_CG_WIN_SRC_DIR    "${CMAKE_SOURCE_DIR}/src/platform/win")
-  set(_CG_WIN_LEGACY_DIR "${CMAKE_SOURCE_DIR}/platform/win")
-
-  set(_CG_WIN_SRC_ALL "")
-  set(_CG_WIN_LEGACY_ALL "")
-  if(EXISTS "${_CG_WIN_SRC_DIR}")
-    file(GLOB_RECURSE _CG_WIN_SRC_ALL CONFIGURE_DEPENDS
-      "${_CG_WIN_SRC_DIR}/*.c"
-      "${_CG_WIN_SRC_DIR}/*.cpp"
-    )
-  endif()
-  if(EXISTS "${_CG_WIN_LEGACY_DIR}")
-    file(GLOB_RECURSE _CG_WIN_LEGACY_ALL CONFIGURE_DEPENDS
-      "${_CG_WIN_LEGACY_DIR}/*.c"
-      "${_CG_WIN_LEGACY_DIR}/*.cpp"
-    )
-  endif()
-
-  # Build list of basenames present in src/platform/win
-  set(_CG_WIN_SRC_BASENAMES "")
-  foreach(_f IN LISTS _CG_WIN_SRC_ALL)
-    get_filename_component(_nm "${_f}" NAME)
-    list(APPEND _CG_WIN_SRC_BASENAMES "${_nm}")
-  endforeach()
-  list(REMOVE_DUPLICATES _CG_WIN_SRC_BASENAMES)
-
-  # Detect duplicates (same basename exists in BOTH trees)
-  set(_CG_WIN_DUP_BASENAMES "")
-  foreach(_f IN LISTS _CG_WIN_LEGACY_ALL)
-    get_filename_component(_nm "${_f}" NAME)
-    list(FIND _CG_WIN_SRC_BASENAMES "${_nm}" _idx)
-    if(NOT _idx EQUAL -1)
-      list(APPEND _CG_WIN_DUP_BASENAMES "${_nm}")
-    endif()
-  endforeach()
-  list(REMOVE_DUPLICATES _CG_WIN_DUP_BASENAMES)
-
-  if(_CG_WIN_DUP_BASENAMES)
-    if(COLONY_STRICT_WIN_PLATFORM_DEDUP)
-      message(FATAL_ERROR
-        "Duplicate Windows platform source basenames found in BOTH:\n"
-        "  ${_CG_WIN_SRC_DIR}\n"
-        "  ${_CG_WIN_LEGACY_DIR}\n"
-        "Duplicates:\n  ${_CG_WIN_DUP_BASENAMES}\n"
-        "Fix: delete/move the legacy copies in platform/win (recommended), or set COLONY_STRICT_WIN_PLATFORM_DEDUP=OFF.")
-    else()
-      message(WARNING
-        "Duplicate Windows platform source basenames found in BOTH:\n"
-        "  ${_CG_WIN_SRC_DIR}\n"
-        "  ${_CG_WIN_LEGACY_DIR}\n"
-        "Duplicates (legacy copies will be pruned from ALL targets):\n  ${_CG_WIN_DUP_BASENAMES}\n"
-        "Recommendation: physically delete/move the legacy duplicates under platform/win.")
-    endif()
-  endif()
-
-  # Exclude list for this library (these are NOT safe/appropriate to live in a library).
-  # - GPU export sources must live in executables to avoid duplicate exported symbols.
-  # - Entry points must remain in EXE targets only.
-  set(_CG_WINLIB_EXCLUDE_REGEX
-      "(^|/)(HighPerfGPU|WinLauncher|AppMain|EntryWinMain|EntryPoint)\\.(c|cpp)$"
-  )
-
-  # Build platform lib source list:
-  #   1) take ALL src/platform/win
-  #   2) take ONLY non-duplicate legacy files
-  #   3) apply exclude regex
-  set(_CG_PLATFORM_WIN_SOURCES "")
-  foreach(_f IN LISTS _CG_WIN_SRC_ALL)
-    if(_f MATCHES "${_CG_WINLIB_EXCLUDE_REGEX}")
-      continue()
-    endif()
-    list(APPEND _CG_PLATFORM_WIN_SOURCES "${_f}")
-  endforeach()
-  foreach(_f IN LISTS _CG_WIN_LEGACY_ALL)
-    get_filename_component(_nm "${_f}" NAME)
-    list(FIND _CG_WIN_DUP_BASENAMES "${_nm}" _dup_idx)
-    if(NOT _dup_idx EQUAL -1)
-      continue() # skip legacy duplicate (src copy wins globally)
-    endif()
-    if(_f MATCHES "${_CG_WINLIB_EXCLUDE_REGEX}")
-      continue()
-    endif()
-    list(APPEND _CG_PLATFORM_WIN_SOURCES "${_f}")
-  endforeach()
-  list(REMOVE_DUPLICATES _CG_PLATFORM_WIN_SOURCES)
-
-  # Store duplicate basenames globally so we can prune legacy duplicates from ALL targets.
-  set_property(GLOBAL PROPERTY COLONY_WIN_LEGACY_DUP_BASENAMES "${_CG_WIN_DUP_BASENAMES}")
-
-  if(_CG_PLATFORM_WIN_SOURCES)
-    add_library(colony_platform_win STATIC ${_CG_PLATFORM_WIN_SOURCES})
-    add_library(colony::platform_win ALIAS colony_platform_win)
-
-    target_compile_features(colony_platform_win PUBLIC cxx_std_23)
-    target_include_directories(colony_platform_win PUBLIC
-      "${CMAKE_SOURCE_DIR}/include"
-      "${CMAKE_SOURCE_DIR}"
-    )
-    if(MSVC)
-      target_compile_definitions(colony_platform_win PRIVATE UNICODE _UNICODE)
-    endif()
-
-    # Common Win32 libs used by typical platform helpers / crash dumps / path utils.
-    target_link_libraries(colony_platform_win PRIVATE
-      dbghelp
-      shlwapi
-      shell32
-    )
-
-    if(COLONY_USE_PCH)
-      target_precompile_headers(colony_platform_win PRIVATE "${COLONY_PCH_HEADER}")
-    endif()
-
-    colony_apply_msvc_runtime(colony_platform_win)
-    colony_apply_debug_runtime_checks(colony_platform_win)
-  endif()
-endif()
-
-# ------------------------------------------------------------------------------
-# Link third-party deps to core
+# C) Third-party wiring update (recommended)
+#   - spdlog + tracy -> core
+#   - SDL2 + imgui   -> renderer
 # ------------------------------------------------------------------------------
 if(TARGET colony_core)
-  # IMPORTANT: colony_core is a library target; if it's STATIC (common), consumers must see its deps.
-  # Use PUBLIC so executables/tests linking colony_core also link these.
-  target_link_libraries(colony_core PUBLIC
-    SDL2::SDL2
-    imgui::imgui
-    ${COLONY_SPDLOG_TARGET}
-  )
-
-  if(TARGET colony_platform_win)
-    # Link platform lib as PUBLIC so dependents (EXEs/tests) pull it in automatically.
-    target_link_libraries(colony_core PUBLIC colony::platform_win)
-  endif()
+  target_link_libraries(colony_core PUBLIC ${COLONY_SPDLOG_TARGET})
 
   if(COLONY_TRACY_TARGET AND COLONY_ENABLE_TRACY)
     target_link_libraries(colony_core PUBLIC ${COLONY_TRACY_TARGET})
@@ -733,19 +585,20 @@ if(TARGET colony_core)
     target_link_options(colony_core PRIVATE /WX)
   endif()
 
-  if(TARGET colony_path)
-    target_link_libraries(colony_core PUBLIC colony::path)
+  # Convenience: make platform lib transitive from core so EXEs/tests get it automatically.
+  if(TARGET colony_platform_win)
+    target_link_libraries(colony_core PUBLIC colony::platform_win)
   endif()
-
-  if(COLONY_USE_PCH)
-    target_precompile_headers(colony_core PRIVATE "${COLONY_PCH_HEADER}")
-  endif()
-
-  colony_apply_msvc_runtime(colony_core)
-  colony_apply_debug_runtime_checks(colony_core)
 
   # Ensure CrashDumpWin.cpp (if present) is compiled with /EHa, regardless of which target owns it.
   colony_apply_seh_for_crashdump(colony_core)
+endif()
+
+if(TARGET colony_renderer)
+  target_link_libraries(colony_renderer PUBLIC
+    SDL2::SDL2
+    imgui::imgui
+  )
 endif()
 
 # Also apply /EHa to CrashDumpWin.cpp if it lives in the platform lib.
@@ -754,38 +607,15 @@ if(TARGET colony_platform_win)
 endif()
 
 # ------------------------------------------------------------------------------
-# Procedural generation add-ons (procgen)
+# Final game target post-link fixups (works whether ColonyGame comes from src/ or CGGameTarget)
 # ------------------------------------------------------------------------------
-add_library(procgen
-  src/procgen/WorldGen.cpp
-  src/procgen/Rivers.cpp
-  src/procgen/PoissonDisk.cpp
-  src/procgen/ThermalErosion.cpp
-  src/procgen/ResourceGen.cpp
-  src/procgen/SettlementGen.cpp
-)
-target_include_directories(procgen PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
-colony_apply_msvc_runtime(procgen)
-colony_apply_debug_runtime_checks(procgen)
-
-if(TARGET colony_core)
-  target_link_libraries(colony_core PRIVATE procgen)
-endif()
-
-# ------------------------------------------------------------------------------
-# Final game target
-# ------------------------------------------------------------------------------
-include(CGGameTarget)
-
 if(TARGET ColonyGame AND TARGET SDL2::SDL2main)
   target_link_libraries(ColonyGame PRIVATE SDL2::SDL2main)
 endif()
 
-if(TARGET ColonyGame AND TARGET colony_path)
-  target_link_libraries(ColonyGame PRIVATE colony::path)
-endif()
-if(COLONY_GAME_TARGET AND TARGET "${COLONY_GAME_TARGET}" AND TARGET colony_path)
-  target_link_libraries("${COLONY_GAME_TARGET}" PRIVATE colony::path)
+# If you still use COLONY_GAME_TARGET for alternate main exe names:
+if(COLONY_GAME_TARGET AND TARGET "${COLONY_GAME_TARGET}" AND TARGET SDL2::SDL2main)
+  target_link_libraries("${COLONY_GAME_TARGET}" PRIVATE SDL2::SDL2main)
 endif()
 
 # If the platform lib exists, link it into executables as a safety net even if colony_core isn't linked.
@@ -863,7 +693,7 @@ if(WIN32)
     endif()
   endif()
   target_link_libraries(ColonyMapViewer PRIVATE
-    procgen
+    colony::engine
     user32
     gdi32
     comdlg32
@@ -894,11 +724,17 @@ if(EXISTS "${CMAKE_SOURCE_DIR}/cmake/CGSummary.cmake")
 endif()
 
 # ------------------------------------------------------------------------------
+# D) Install rules
+# ------------------------------------------------------------------------------
+include("${CMAKE_SOURCE_DIR}/cmake/CGInstallRules.cmake")
+colony_install_all()
+
+# ------------------------------------------------------------------------------
 # Guard & auto-fix: ensure no flags/genex slipped into SOURCES (after targets)
 # ------------------------------------------------------------------------------
 include(cmake/NoFlagsInSources.cmake OPTIONAL)
 if(COMMAND colony_fixup_sources)
-  foreach(_t colony_path procgen colony_core colony_platform_win ColonyGame ColonyMapViewer)
+  foreach(_t colony_nav colony_renderer colony_engine colony_core colony_platform_win ColonyGame ColonyMapViewer)
     if(TARGET ${_t})
       colony_fixup_sources(${_t})
     endif()
@@ -971,7 +807,7 @@ function(colony_prune_sources tgt)
 endfunction()
 
 # Apply pruning to common targets (only those that exist)
-foreach(_t colony_path procgen colony_platform_win colony_core ColonyGame ColonyLauncher ColonyMapViewer)
+foreach(_t colony_nav colony_renderer colony_engine colony_platform_win colony_core ColonyGame ColonyLauncher ColonyMapViewer)
   if(TARGET ${_t})
     colony_prune_sources(${_t})
   endif()
@@ -991,11 +827,11 @@ endif()
 # ------------------------------------------------------------------------------
 # Local Unity guard for CI offenders
 # ------------------------------------------------------------------------------
-if(TARGET procgen)
-  set_target_properties(procgen PROPERTIES UNITY_BUILD OFF)
+if(TARGET colony_engine)
+  set_target_properties(colony_engine PROPERTIES UNITY_BUILD OFF)
 endif()
-if(TARGET colony_path)
-  set_target_properties(colony_path PROPERTIES UNITY_BUILD OFF)
+if(TARGET colony_nav)
+  set_target_properties(colony_nav PROPERTIES UNITY_BUILD OFF)
 endif()
 if(TARGET colony_platform_win)
   set_target_properties(colony_platform_win PROPERTIES UNITY_BUILD OFF)
@@ -1240,7 +1076,7 @@ function(colony_remove_sources_already_in_lib consumer lib)
 endfunction()
 
 # Apply normalization/dedup to common targets
-foreach(_t colony_path procgen colony_platform_win colony_core ColonyGame ColonyLauncher ColonyMapViewer)
+foreach(_t colony_nav colony_renderer colony_engine colony_platform_win colony_core ColonyGame ColonyLauncher ColonyMapViewer)
   if(TARGET ${_t})
     colony_normalize_and_dedupe_sources(${_t})
   endif()
@@ -1279,15 +1115,15 @@ endif()
 # ------------------------------------------------------------------------------
 # MSB8027 happens when two or more sources share the same basename and MSBuild places
 # all .obj outputs into the same $(IntDir), overwriting earlier outputs. Microsoft’s
-# suggested fix is to change Object File Name to $(IntDir)%(RelativeDir). :contentReference[oaicite:4]{index=4}
+# suggested fix is to change Object File Name to $(IntDir)%(RelativeDir).
 #
 # With CMake-generated VS projects, <ClCompile Include="..."> is often an absolute path,
-# and MSBuild documents that %(RelativeDir) begins with %(RootDir) in that case. :contentReference[oaicite:5]{index=5}
+# and MSBuild documents that %(RelativeDir) begins with %(RootDir) in that case.
 # To avoid "C:\" appearing inside $(IntDir), we use %(Directory), which is the directory
-# of the item without the root directory. :contentReference[oaicite:6]{index=6}
+# of the item without the root directory.
 #
 # We import a generated *.user.props file into every generated vcxproj using CMake's
-# VS_USER_PROPS target property. :contentReference[oaicite:7]{index=7}
+# VS_USER_PROPS target property.
 option(COLONY_VS_UNIQUE_OBJ_OUTPUTS
   "Visual Studio only: route object files into unique per-source directories to avoid MSB8027 collisions"
   ON
