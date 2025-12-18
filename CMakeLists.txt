@@ -39,13 +39,55 @@ list(APPEND CMAKE_MODULE_PATH "${CMAKE_SOURCE_DIR}/cmake")
 include(CGPolicies)
 include(CGToolchain)
 
+# ------------------------------------------------------------------------------
+# vcpkg manifest feature wiring (MUST be set before first project() call)
+# ------------------------------------------------------------------------------
+# This option maps to the vcpkg.json manifest feature "imgui-freetype".
+# Enabling it will cause vcpkg to install imgui[freetype] (and thus freetype),
+# which is sometimes flaky to download in CI. Leave OFF unless you need it.
+option(COLONY_ENABLE_IMGUI_FREETYPE
+  "Enable ImGui FreeType font rasterization (enables vcpkg manifest feature 'imgui-freetype')"
+  OFF
+)
+
+# Optional escape hatches: allow setting cache strings that get forwarded to env vars
+# (useful for CI without having to edit workflow files).
+set(COLONY_VCPKG_ASSET_SOURCES "" CACHE STRING
+  "If set and X_VCPKG_ASSET_SOURCES is not already defined, sets it for this configure (vcpkg asset caching)."
+)
+set(COLONY_VCPKG_BINARY_SOURCES "" CACHE STRING
+  "If set and VCPKG_BINARY_SOURCES is not already defined, sets it for this configure (vcpkg binary caching)."
+)
+
+if(NOT "${COLONY_VCPKG_ASSET_SOURCES}" STREQUAL "" AND NOT DEFINED ENV{X_VCPKG_ASSET_SOURCES})
+  set(ENV{X_VCPKG_ASSET_SOURCES} "${COLONY_VCPKG_ASSET_SOURCES}")
+endif()
+if(NOT "${COLONY_VCPKG_BINARY_SOURCES}" STREQUAL "" AND NOT DEFINED ENV{VCPKG_BINARY_SOURCES})
+  set(ENV{VCPKG_BINARY_SOURCES} "${COLONY_VCPKG_BINARY_SOURCES}")
+endif()
+
+if(COLONY_ENABLE_IMGUI_FREETYPE)
+  list(APPEND VCPKG_MANIFEST_FEATURES "imgui-freetype")
+  list(REMOVE_DUPLICATES VCPKG_MANIFEST_FEATURES)
+endif()
+
+# CI-friendly hints (non-fatal)
+if(DEFINED ENV{CI})
+  if(COLONY_ENABLE_IMGUI_FREETYPE AND NOT DEFINED ENV{X_VCPKG_ASSET_SOURCES} AND "${COLONY_VCPKG_ASSET_SOURCES}" STREQUAL "")
+    message(STATUS "CI: COLONY_ENABLE_IMGUI_FREETYPE=ON. Consider setting X_VCPKG_ASSET_SOURCES (asset caching) to reduce external download flakiness.")
+  endif()
+  if(NOT DEFINED ENV{VCPKG_BINARY_SOURCES} AND "${COLONY_VCPKG_BINARY_SOURCES}" STREQUAL "")
+    message(STATUS "CI: Consider setting VCPKG_BINARY_SOURCES (binary caching) to speed up and stabilize vcpkg installs.")
+  endif()
+endif()
+
 project(ColonyGame LANGUAGES CXX)
 
 # --- Interprocedural optimization (LTO) for Release when supported -------------
 include(CheckIPOSupported)
 check_ipo_supported(RESULT _ipo_supported OUTPUT _ipo_err LANGUAGES CXX)
 if(_ipo_supported)
-  # CMake will map this to /GL at compile and /LTCG (non-incremental) at link on MSVC.
+  # CMake will map this to /GL at compile and /LTCG at link on MSVC.
   set(CMAKE_INTERPROCEDURAL_OPTIMIZATION_RELEASE ON)
 else()
   message(STATUS "IPO/LTO not supported by this toolchain: ${_ipo_err}")
@@ -70,8 +112,14 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 if(DEFINED CG_ENABLE_PCH AND NOT DEFINED COLONY_USE_PCH)
   set(COLONY_USE_PCH "${CG_ENABLE_PCH}" CACHE BOOL "Enable precompiled headers" FORCE)
 endif()
-if(DEFINED CG_ENABLE_UNITY AND NOT DEFINED COLONY_UNITY_BUILD)
-  set(COLONY_UNITY_BUILD "${CG_ENABLE_UNITY}" CACHE BOOL "Enable unity (jumbo) builds" FORCE)
+
+# Back-compat: legacy unity variables
+# - Some presets/scripts may set COLONY_UNITY_BUILD or CG_ENABLE_UNITY, but this root file uses COLONY_UNITY.
+if(NOT DEFINED COLONY_UNITY AND DEFINED COLONY_UNITY_BUILD)
+  set(COLONY_UNITY "${COLONY_UNITY_BUILD}" CACHE BOOL "Enable Unity/Jumbo builds for project targets (legacy: COLONY_UNITY_BUILD)" FORCE)
+endif()
+if(NOT DEFINED COLONY_UNITY AND DEFINED CG_ENABLE_UNITY)
+  set(COLONY_UNITY "${CG_ENABLE_UNITY}" CACHE BOOL "Enable Unity/Jumbo builds for project targets (legacy: CG_ENABLE_UNITY)" FORCE)
 endif()
 
 # ------------------------------------------------------------------------------
@@ -104,9 +152,28 @@ option(COLONY_STRICT_WIN_PLATFORM_DEDUP "Hard-fail if legacy platform/win duplic
 set(COLONY_GAME_TARGET "" CACHE STRING
   "Name of the game's main executable target (if different from 'ColonyGame') to link with colony_path")
 
+# Keep legacy cache var in sync so any other modules still reading it behave correctly.
+if(DEFINED COLONY_UNITY_BUILD AND NOT "${COLONY_UNITY_BUILD}" STREQUAL "${COLONY_UNITY}")
+  message(STATUS "COLONY_UNITY_BUILD is deprecated; using COLONY_UNITY=${COLONY_UNITY}.")
+endif()
+set(COLONY_UNITY_BUILD "${COLONY_UNITY}" CACHE BOOL "Deprecated alias (use COLONY_UNITY)" FORCE)
+
 if(COLONY_UNITY)
   set(CMAKE_UNITY_BUILD ON)
   set(CMAKE_UNITY_BUILD_BATCH_SIZE 8)
+endif()
+
+# ------------------------------------------------------------------------------
+# vcpkg + runtime linkage sanity (manifest is configured for dynamic CRT)
+# ------------------------------------------------------------------------------
+# Your vcpkg.json supports clause excludes staticcrt. If you turn on /MT here while
+# using vcpkg dynamic CRT triplets, you'll typically get runtime-library mismatch warnings
+# and potentially hard-to-debug crashes. Fail early when vcpkg toolchain is detected.
+if((COLONY_STATIC_RUNTIME OR COLONY_RELEASE_STATIC_CRT) AND DEFINED CMAKE_TOOLCHAIN_FILE AND CMAKE_TOOLCHAIN_FILE MATCHES "vcpkg\\.cmake$")
+  message(FATAL_ERROR
+    "Static MSVC runtime requested (COLONY_STATIC_RUNTIME or COLONY_RELEASE_STATIC_CRT), "
+    "but this repo's vcpkg manifest is constrained to dynamic CRT triplets (!staticcrt). "
+    "Fix: keep these OFF (recommended), or switch to a static CRT vcpkg triplet and update vcpkg.json supports accordingly.")
 endif()
 
 # ------------------------------------------------------------------------------
@@ -171,18 +238,16 @@ if(MSVC)
   add_compile_options($<$<OR:$<CONFIG:Debug>,$<CONFIG:RelWithDebInfo>>:/Zi>)
   add_link_options(   $<$<OR:$<CONFIG:Debug>,$<CONFIG:RelWithDebInfo>>:/DEBUG:FULL>)
 
-  # Release codegen & link-time opts (ONE FLAG PER GENEX)
+  # Release codegen & link opts (LTO flags are handled by IPO property above when supported)
   add_compile_options(
     $<$<CONFIG:Release>:/O2>
     $<$<CONFIG:Release>:/Oi>
     $<$<CONFIG:Release>:/Ot>
-    $<$<CONFIG:Release>:/GL>
     $<$<CONFIG:Release>:/Gw>
     $<$<CONFIG:Release>:/Gy>
   )
   add_link_options(
     $<$<CONFIG:Release>:/INCREMENTAL:NO>
-    $<$<CONFIG:Release>:/LTCG>
     $<$<CONFIG:Release>:/OPT:REF>
     $<$<CONFIG:Release>:/OPT:ICF>
   )
@@ -844,7 +909,7 @@ function(colony_prune_sources tgt)
     endif()
 
     # 1) Never allow process entry-points inside the core library.
-    if(${tgt} STREQUAL "colony_core")
+    if("${tgt}" STREQUAL "colony_core")
       if(_abs MATCHES "/(WinLauncher|AppMain|EntryWinMain)\\.(c|cpp)$")
         continue()
       endif()
