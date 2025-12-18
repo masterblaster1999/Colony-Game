@@ -83,26 +83,21 @@ endif()
 
 project(ColonyGame LANGUAGES CXX)
 
-# --------------------------------------------------------------------
-# Back-compat / preset hygiene:
-# Some presets/CI pass -DCOLONY_LTO=ON/OFF. Make it a real option and
-# actually use it so it isn't reported as "unused".
-# --------------------------------------------------------------------
-option(COLONY_LTO "Enable IPO/LTO for Release when supported" ON)
-
 # --- Interprocedural optimization (LTO) for Release when supported -------------
-include(CheckIPOSupported)
-check_ipo_supported(RESULT _ipo_supported OUTPUT _ipo_err LANGUAGES CXX)
+# Fixes: "Manually-specified variables were not used by the project: COLONY_LTO"
+option(COLONY_LTO "Enable IPO/LTO for Release builds when supported" ON)
+
 if(COLONY_LTO)
+  include(CheckIPOSupported)
+  check_ipo_supported(RESULT _ipo_supported OUTPUT _ipo_err LANGUAGES CXX)
   if(_ipo_supported)
     # CMake will map this to /GL at compile and /LTCG at link on MSVC.
     set(CMAKE_INTERPROCEDURAL_OPTIMIZATION_RELEASE ON)
   else()
-    message(STATUS "IPO/LTO not supported by this toolchain: ${_ipo_err}")
+    message(STATUS "IPO/LTO requested but not supported by this toolchain: ${_ipo_err}")
     set(CMAKE_INTERPROCEDURAL_OPTIMIZATION_RELEASE OFF)
   endif()
 else()
-  message(STATUS "IPO/LTO disabled (COLONY_LTO=OFF).")
   set(CMAKE_INTERPROCEDURAL_OPTIMIZATION_RELEASE OFF)
 endif()
 
@@ -559,43 +554,49 @@ endif()
 # B) Target-split modules (replace in-root target creation with add_subdirectory)
 # ------------------------------------------------------------------------------
 add_subdirectory(core)           # colony_core
-add_subdirectory(platform/win)   # colony_platform_win
-
-# ------------------------------------------------------------------------------
-# FIX: If colony_platform_win was created with no .c/.cpp sources, CMake cannot
-# infer a linker language and generation fails. Force CXX and (if needed) inject
-# a tiny dummy TU so the target is well-formed.
-# ------------------------------------------------------------------------------
-if(TARGET colony_platform_win)
-  get_target_property(_CG_PLAT_SOURCES colony_platform_win SOURCES)
-  if(NOT _CG_PLAT_SOURCES)
-    message(WARNING
-      "colony_platform_win target exists but has no SOURCES. "
-      "This usually means the source glob/list in platform/win/CMakeLists.txt matched nothing. "
-      "Injecting a tiny dummy TU so CMake can determine the linker language. "
-      "You should fix platform/win/CMakeLists.txt to include the real Win sources."
-    )
-    file(MAKE_DIRECTORY "${CMAKE_BINARY_DIR}/cmake")
-    set(_CG_PLAT_DUMMY "${CMAKE_BINARY_DIR}/cmake/colony_platform_win_dummy.cpp")
-    if(NOT EXISTS "${_CG_PLAT_DUMMY}")
-      file(WRITE "${_CG_PLAT_DUMMY}" "void colony_platform_win_dummy() {}\n")
-    endif()
-    target_sources(colony_platform_win PRIVATE "${_CG_PLAT_DUMMY}")
-    set_source_files_properties("${_CG_PLAT_DUMMY}"
-      PROPERTIES
-        GENERATED TRUE
-        SKIP_PRECOMPILE_HEADERS ON
-        SKIP_UNITY_BUILD_INCLUSION ON
-    )
-  endif()
-  set_target_properties(colony_platform_win PROPERTIES LINKER_LANGUAGE CXX)
+if(TARGET colony_core AND NOT TARGET colony::core)
+  add_library(colony::core ALIAS colony_core)
 endif()
-unset(_CG_PLAT_SOURCES)
-unset(_CG_PLAT_DUMMY)
+
+add_subdirectory(platform/win)   # colony_platform_win
+# FIX: Ensure the alias exists for consumers linking colony::platform_win
+if(TARGET colony_platform_win AND NOT TARGET colony::platform_win)
+  add_library(colony::platform_win ALIAS colony_platform_win)
+endif()
+# FIX: prevent "cannot determine linker language" if platform lib has zero sources
+if(TARGET colony_platform_win)
+  get_target_property(_cg_plat_type colony_platform_win TYPE)
+  if(_cg_plat_type AND NOT _cg_plat_type STREQUAL "INTERFACE_LIBRARY")
+    # If the platform lib is temporarily empty (bad glob, refactor in progress),
+    # force a safe language to avoid generator failure.
+    set_property(TARGET colony_platform_win PROPERTY LINKER_LANGUAGE CXX)
+
+    get_target_property(_cg_plat_srcs colony_platform_win SOURCES)
+    if(NOT _cg_plat_srcs)
+      message(WARNING
+        "colony_platform_win exists but has no SOURCES. "
+        "This typically means platform/win CMakeLists isn't globbing any .c/.cpp yet. "
+        "Build may later fail with undefined symbols if platform code is expected.")
+    endif()
+    unset(_cg_plat_srcs)
+  endif()
+  unset(_cg_plat_type)
+endif()
 
 add_subdirectory(pathfinding)    # colony_nav
+if(TARGET colony_nav AND NOT TARGET colony::nav)
+  add_library(colony::nav ALIAS colony_nav)
+endif()
+
 add_subdirectory(renderer)       # colony_renderer
+if(TARGET colony_renderer AND NOT TARGET colony::renderer)
+  add_library(colony::renderer ALIAS colony_renderer)
+endif()
+
 add_subdirectory(engine)         # colony_engine
+if(TARGET colony_engine AND NOT TARGET colony::engine)
+  add_library(colony::engine ALIAS colony_engine)
+endif()
 
 if(EXISTS "${CMAKE_SOURCE_DIR}/src/CMakeLists.txt")
   add_subdirectory(src)          # ColonyGame (preferred) + any game-only targets
@@ -633,6 +634,7 @@ if(TARGET colony_core)
 
   # Convenience: make platform lib transitive from core so EXEs/tests get it automatically.
   if(TARGET colony_platform_win)
+    # Alias is guaranteed above now.
     target_link_libraries(colony_core PUBLIC colony::platform_win)
   endif()
 
@@ -913,8 +915,20 @@ function(cg_wire_gpu_exports_to_exe exe)
     return()
   endif()
 
-  set(_gpu_src "${CMAKE_SOURCE_DIR}/src/platform/win/HighPerfGPU.cpp")
-  if(NOT EXISTS "${_gpu_src}")
+  # Support both historical paths:
+  #   - src/platform/win/HighPerfGPU.cpp (older layout)
+  #   - platform/win/HighPerfGPU.cpp     (post-split / current layout)
+  set(_gpu_src "")
+  foreach(_cand
+      "${CMAKE_SOURCE_DIR}/src/platform/win/HighPerfGPU.cpp"
+      "${CMAKE_SOURCE_DIR}/platform/win/HighPerfGPU.cpp")
+    if(EXISTS "${_cand}")
+      set(_gpu_src "${_cand}")
+      break()
+    endif()
+  endforeach()
+
+  if("${_gpu_src}" STREQUAL "")
     # Adjust this path if your tree stores the file elsewhere.
     return()
   endif()
