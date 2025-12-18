@@ -1,6 +1,6 @@
 {
   "$schema": "https://raw.githubusercontent.com/microsoft/vcpkg-tool/main/docs/vcpkg.schema.json",
-  "$comment": "Pinned baseline + tighter platform constraints to avoid common Windows/VS vcpkg build breaks (UWP/MinGW/Xbox/static CRT).",
+  "$comment": "Pinned baseline + tighter platform constraints to avoid common Windows/VS vcpkg build breaks (UWP/MinGW/Xbox/static CRT). FreeType is now opt-in to avoid brittle GitLab source downloads in CI.",
   "name": "colony-game",
   "version-string": "0.1.0",
   "description": "Windows-only colony sim / engine dependencies via vcpkg (DX11/DX12 toolchain, UI, profiling).",
@@ -11,6 +11,9 @@
   "overrides": [
     { "name": "tracy", "version": "0.11.1#1" }
   ],
+  "default-features": [
+    "dxc-runtime"
+  ],
   "dependencies": [
     "fmt",
     "spdlog",
@@ -19,17 +22,58 @@
     {
       "name": "imgui",
       "default-features": false,
-      "features": [ "docking-experimental", "win32-binding", "dx11-binding", "freetype" ]
+      "features": [
+        "docking-experimental",
+        "win32-binding",
+        "dx11-binding"
+      ]
     },
     "directx-headers",
-    { "$comment": "DXC tool used at build time (shader compilation).", "name": "directx-dxc", "host": true },
-    { "$comment": "DXC runtime/library (dxcompiler). Remove if you only need the tool.", "name": "directx-dxc" },
-    { "name": "directxtex", "features": [ "dx11" ] },
-    { "name": "tracy", "default-features": false },
-    { "name": "winpixevent", "platform": "windows & (x64 | arm64) & !staticcrt & !xbox" },
+    {
+      "$comment": "DXC tool used at build time (shader compilation). Mark as host to support cross builds (e.g. arm64-windows target on x64 host).",
+      "name": "directx-dxc",
+      "host": true
+    },
+    {
+      "name": "directxtex",
+      "features": [ "dx11" ]
+    },
+    {
+      "name": "tracy",
+      "default-features": false
+    },
+    {
+      "name": "winpixevent",
+      "platform": "windows & (x64 | arm64) & !staticcrt & !xbox"
+    },
     "taskflow",
     "doctest",
-    { "$comment": "Build-fix deps from CI", "name": "sdl2" },
-    { "name": "miniaudio" }
-  ]
+    {
+      "$comment": "Build-fix deps from CI (keep if actually used by your window/input layer; otherwise consider moving behind a feature).",
+      "name": "sdl2"
+    },
+    "miniaudio"
+  ],
+  "features": {
+    "dxc-runtime": {
+      "description": "Install DXC runtime library (dxcompiler). Disable/remove if you only need the dxc.exe tool at build time.",
+      "dependencies": [
+        { "name": "directx-dxc" }
+      ]
+    },
+    "imgui-freetype": {
+      "description": "Enable ImGui FreeType font rasterization. This pulls in freetype (hosted on gitlab.freedesktop.org), which can be brittle on CI without asset caching.",
+      "dependencies": [
+        {
+          "name": "imgui",
+          "default-features": false,
+          "features": [ "freetype" ]
+        },
+        {
+          "name": "freetype",
+          "default-features": false
+        }
+      ]
+    }
+  }
 }
