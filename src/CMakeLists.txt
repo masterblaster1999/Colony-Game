@@ -1,89 +1,59 @@
 # src/CMakeLists.txt
+# Target: ColonyGame (game executable)
+# IMPORTANT: this file should now ONLY define the EXE (no more monolithic "colony_core" build here).
 
-if(CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)
-  cmake_minimum_required(VERSION 3.27...3.31 FATAL_ERROR)
-  project(ColonyGame LANGUAGES CXX)
+if(NOT WIN32)
+  return()
 endif()
 
-get_filename_component(COLONY_ROOT_DIR "${CMAKE_CURRENT_LIST_DIR}/.." ABSOLUTE)
+set(COLONY_GAME_SOURCES "")
+if(EXISTS "${CMAKE_SOURCE_DIR}/src")
+  file(GLOB_RECURSE COLONY_GAME_SOURCES CONFIGURE_DEPENDS
+    "${CMAKE_SOURCE_DIR}/src/*.c"
+    "${CMAKE_SOURCE_DIR}/src/*.cpp"
+  )
+endif()
 
-# ------------------------------ Project defaults ------------------------------
-include("${COLONY_ROOT_DIR}/cmake/CGProjectDefaults.cmake")
-cg_project_defaults_init(PREDEFINED_TARGETS_FOLDER "CMakeTargets")
+# Exclude module-owned code if it sits under src/
+# (core, engine, renderer, procgen, platform)
+if(COLONY_GAME_SOURCES)
+  list(FILTER COLONY_GAME_SOURCES EXCLUDE REGEX "/src/(core|engine|renderer|procgen|platform)/")
+endif()
 
-# ------------------------------ Options ------------------------------
-include("${COLONY_ROOT_DIR}/cmake/CGOptions.cmake")
+# Prefer WinLauncher.cpp if you have it at repo root (or adjust to your actual entry TU).
+if(EXISTS "${CMAKE_SOURCE_DIR}/WinLauncher.cpp")
+  list(APPEND COLONY_GAME_SOURCES "${CMAKE_SOURCE_DIR}/WinLauncher.cpp")
+endif()
 
-# ------------------------------ Modules ------------------------------
-include("${COLONY_ROOT_DIR}/cmake/CGToolchainWin.cmake")
-include("${COLONY_ROOT_DIR}/cmake/CGSources.cmake")
-include("${COLONY_ROOT_DIR}/cmake/CGCoreTarget.cmake")
-include("${COLONY_ROOT_DIR}/cmake/CGExecutables.cmake")
-include("${COLONY_ROOT_DIR}/cmake/CGShadersPipeline.cmake")
-include("${COLONY_ROOT_DIR}/cmake/CGRuntimeLayout.cmake")
-include("${COLONY_ROOT_DIR}/cmake/CGInstall.cmake")
+list(REMOVE_DUPLICATES COLONY_GAME_SOURCES)
 
-# ------------------------------ Core sources ------------------------------
-cg_collect_core_sources(COLONY_CORE_SOURCES
-  ROOT_DIR "${COLONY_ROOT_DIR}"
-  FRONTEND "${FRONTEND}"
+if(NOT COLONY_GAME_SOURCES)
+  message(FATAL_ERROR "ColonyGame: no sources found. Ensure src/ contains your game entry and game-level code.")
+endif()
+
+add_executable(ColonyGame WIN32 ${COLONY_GAME_SOURCES})
+set_target_properties(ColonyGame PROPERTIES FOLDER "apps")
+
+if(MSVC)
+  target_compile_definitions(ColonyGame PRIVATE UNICODE _UNICODE)
+endif()
+
+target_include_directories(ColonyGame PRIVATE
+  "${CMAKE_SOURCE_DIR}/include"
+  "${CMAKE_SOURCE_DIR}"
 )
 
-# ------------------------------ Core target ------------------------------
-cg_setup_core_target(
-  TARGET colony_core
-  ROOT_DIR "${COLONY_ROOT_DIR}"
-  FRONTEND "${FRONTEND}"
-  SOURCES ${COLONY_CORE_SOURCES}
-  UNITY_BUILD ${COLONY_UNITY_BUILD}
-  USE_PCH ${COLONY_USE_PCH}
-  PCH_HEADER "${COLONY_PCH_HEADER}"
-  ENABLE_IMGUI ${ENABLE_IMGUI}
-  ENABLE_TRACY ${ENABLE_TRACY}
-  WERROR ${COLONY_WERROR}
+target_link_libraries(ColonyGame PRIVATE
+  colony::engine
+  colony::renderer
+  colony::nav
+  colony::platform_win
+  colony::core
 )
 
-# ------------------------------ Executables ------------------------------
-cg_setup_executables(
-  ROOT_DIR "${COLONY_ROOT_DIR}"
-  FRONTEND "${FRONTEND}"
-  SHOW_CONSOLE ${SHOW_CONSOLE}
-  UNITY_BUILD ${COLONY_UNITY_BUILD}
-  BUILD_LAUNCHER ${COLONY_BUILD_LAUNCHER}
-  CORE_TARGET colony_core
-  BUILD_OPTIONS_TARGET colony_build_options
-  OUT_TARGETS COLONY_EXECUTABLE_TARGETS
-)
+if(COLONY_USE_PCH)
+  target_precompile_headers(ColonyGame PRIVATE "${COLONY_PCH_HEADER}")
+endif()
 
-# ------------------------------ VS defaults / folders ------------------------------
-cg_project_set_vs_startup_project(ColonyGame)
-cg_project_apply_standard_folders(
-  LIB_TARGETS colony_core colony_build_options
-  APP_TARGETS ${COLONY_EXECUTABLE_TARGETS}
-)
-
-# ------------------------------ Runtime layout ------------------------------
-cg_configure_runtime_output(
-  TARGETS ${COLONY_EXECUTABLE_TARGETS}
-  BASE_DIR "${CMAKE_BINARY_DIR}/bin"
-)
-
-cg_add_post_build_content_copy(
-  TARGET ColonyGame
-  ROOT_DIR "${COLONY_ROOT_DIR}"
-)
-
-# ------------------------------ Shaders ------------------------------
-cg_setup_shaders_pipeline(
-  TARGET ColonyGame
-  ROOT_DIR "${COLONY_ROOT_DIR}"
-  ENABLE_COMPUTE_SHADERS ${COLONY_ENABLE_COMPUTE_SHADERS}
-)
-
-# ------------------------------ Install ------------------------------
-cg_install_colony_artifacts(
-  ROOT_DIR "${COLONY_ROOT_DIR}"
-  GAME_TARGET ColonyGame
-  LAUNCHER_TARGET ColonyLauncher
-  RUNTIME_DESTINATION "."
-)
+colony_apply_msvc_runtime(ColonyGame)
+colony_apply_debug_runtime_checks(ColonyGame)
