@@ -43,12 +43,12 @@ target_compile_features(colony_core ${_cg_core_pub} cxx_std_23)
 
 target_include_directories(colony_core ${_cg_core_pub}
   "$<BUILD_INTERFACE:${CMAKE_SOURCE_DIR}/include>"
+  "$<BUILD_INTERFACE:${CMAKE_SOURCE_DIR}/src>"
   "$<BUILD_INTERFACE:${CMAKE_SOURCE_DIR}>"
-  "$<BUILD_INTERFACE:${CMAKE_SOURCE_DIR}/src>"   # Added: lets "core/..." includes resolve for headers living under src/core/...
   "$<INSTALL_INTERFACE:${COLONY_INSTALL_INCLUDEDIR}>"
 )
 
-# PCH (CMake target_precompile_headers) :contentReference[oaicite:6]{index=6}
+# PCH (CMake target_precompile_headers)
 if(COLONY_USE_PCH AND NOT _cg_core_type STREQUAL "INTERFACE_LIBRARY")
   target_precompile_headers(colony_core PRIVATE "${COLONY_PCH_HEADER}")
 endif()
