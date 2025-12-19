@@ -1,142 +1,114 @@
 // core/Application.cpp
-
-#ifndef WIN32_LEAN_AND_MEAN
-#define WIN32_LEAN_AND_MEAN
-#endif
-#ifndef NOMINMAX
-#define NOMINMAX
-#endif
-#include <Windows.h>
-
-#include <chrono>
-#include <exception>
-
 #include "core/Application.hpp"
+
 #include "core/Game.hpp"
 #include "core/Window.hpp" // wraps HWND + message pump
 
+#include <chrono>
+#include <exception>
+#include <thread>
+
 namespace
 {
-    // Prefer a DPI-aware process so the window isn't blurry on high-DPI monitors.
-    // Microsoft recommends setting DPI awareness via manifest when possible; this is a safe runtime fallback.
-    void EnableDpiAwareness() noexcept
-    {
-#if defined(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2)
-        (void)::SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
-#elif defined(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE)
-        (void)::SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE);
-#else
-        (void)::SetProcessDPIAware();
-#endif
-    }
+    using Clock = std::chrono::steady_clock;
 
-    // Compile-time “adapter” so Application.cpp keeps working if you later change Game's API:
-    // - tick() OR tick(float) OR tick(double)
-    template <class GameT>
-    void TickGame(GameT& game, double dtSeconds)
-    {
-        if constexpr (requires(GameT& g, double dt) { g.tick(dt); })
-        {
-            game.tick(dtSeconds);
-        }
-        else if constexpr (requires(GameT& g, float dt) { g.tick(dt); })
-        {
-            game.tick(static_cast<float>(dtSeconds));
-        }
-        else if constexpr (requires(GameT& g) { g.tick(); })
-        {
-            (void)dtSeconds;
-            game.tick();
-        }
-        else
-        {
-            static_assert(requires(GameT& g) { g.tick(); },
-                          "Game must implement tick() (optionally with dt).");
-        }
-    }
+    // These "feature probes" keep this file compatible with both styles:
+    //   Game::tick() and Game::tick(dt)
+    //   Game::render() and Game::render(alpha)
+    template <class T>
+    constexpr bool HasTickDouble = requires(T& t, double dt) { t.tick(dt); };
 
-    // Same idea for render(): render() OR render(Window&)
-    template <class GameT, class WindowT>
-    void RenderGame(GameT& game, WindowT& window)
-    {
-        if constexpr (requires(GameT& g, WindowT& w) { g.render(w); })
-        {
-            game.render(window);
-        }
-        else if constexpr (requires(GameT& g) { g.render(); })
-        {
-            (void)window;
-            game.render();
-        }
-        else
-        {
-            static_assert(requires(GameT& g) { g.render(); },
-                          "Game must implement render() (optionally taking Window&).");
-        }
-    }
+    template <class T>
+    constexpr bool HasTickFloat = requires(T& t, float dt) { t.tick(dt); };
 
-    void ShowFatalErrorA(const char* msg) noexcept
-    {
-        ::MessageBoxA(nullptr,
-                      msg ? msg : "Unknown error",
-                      "Colony Game - Fatal Error",
-                      MB_OK | MB_ICONERROR);
-    }
+    template <class T>
+    constexpr bool HasRenderAlphaDouble = requires(T& t, double a) { t.render(a); };
 
-    void ShowFatalErrorW(const wchar_t* msg) noexcept
-    {
-        ::MessageBoxW(nullptr,
-                      msg ? msg : L"Unknown error",
-                      L"Colony Game - Fatal Error",
-                      MB_OK | MB_ICONERROR);
-    }
-} // namespace
+    template <class T>
+    constexpr bool HasRenderAlphaFloat = requires(T& t, float a) { t.render(a); };
+
+    template <class T>
+    constexpr bool HasRenderNoArgs = requires(T& t) { t.render(); };
+}
 
 int RunColonyGame(HINSTANCE hInstance)
 {
-    EnableDpiAwareness();
-
     try
     {
         Window window{hInstance, L"Colony Game", 1600, 900};
-        Game   game;
+        Game   game{};
 
-        using clock = std::chrono::steady_clock;
-        auto last = clock::now();
+        // Fixed timestep simulation (60Hz). Rendering can be variable-rate.
+        constexpr double kFixedDtSeconds = 1.0 / 60.0;
+        constexpr double kMaxFrameSeconds = 0.25; // clamp to prevent spiral-of-death after stalls
 
-        // Clamp huge delta times (breakpoints, window dragging, etc.) so simulation doesn't explode.
-        // This is the “semi-fixed timestep” safety trick (even if your sim stays variable-step). :contentReference[oaicite:0]{index=0}
-        constexpr double kMaxDeltaSeconds = 0.25;
+        double accumulator = 0.0;
+        auto   last = Clock::now();
 
-        while (true)
+        while (!window.shouldClose())
         {
             window.pollMessages();
-            if (window.shouldClose())
-                break;
 
-            const auto now = clock::now();
-            double dt = std::chrono::duration<double>(now - last).count();
+            const auto now = Clock::now();
+            std::chrono::duration<double> frame = now - last;
             last = now;
 
-            if (dt < 0.0)
-                dt = 0.0;
-            if (dt > kMaxDeltaSeconds)
-                dt = kMaxDeltaSeconds;
+            double dt = frame.count();
+            if (dt < 0.0) dt = 0.0;
+            if (dt > kMaxFrameSeconds) dt = kMaxFrameSeconds;
 
-            TickGame(game, dt);        // update simulation, AI, jobs
-            RenderGame(game, window);  // call renderer
+            accumulator += dt;
+
+            // Step the simulation in fixed increments.
+            while (accumulator >= kFixedDtSeconds)
+            {
+                if constexpr (HasTickDouble<Game>)
+                {
+                    game.tick(kFixedDtSeconds);
+                }
+                else if constexpr (HasTickFloat<Game>)
+                {
+                    game.tick(static_cast<float>(kFixedDtSeconds));
+                }
+                else
+                {
+                    game.tick();
+                }
+
+                accumulator -= kFixedDtSeconds;
+            }
+
+            // Optional interpolation alpha for smooth rendering if you support it later.
+            const double alpha = (kFixedDtSeconds > 0.0) ? (accumulator / kFixedDtSeconds) : 0.0;
+
+            if constexpr (HasRenderAlphaDouble<Game>)
+            {
+                game.render(alpha);
+            }
+            else if constexpr (HasRenderAlphaFloat<Game>)
+            {
+                game.render(static_cast<float>(alpha));
+            }
+            else if constexpr (HasRenderNoArgs<Game>)
+            {
+                game.render();
+            }
+
+            // If vsync is off, this prevents pegging a CPU core at 100%.
+            // (If your renderer already blocks on Present with vsync, this is basically free.)
+            std::this_thread::yield();
         }
 
         return 0;
     }
     catch (const std::exception& e)
     {
-        ShowFatalErrorA(e.what());
+        MessageBoxA(nullptr, e.what(), "Colony Game - Fatal Error", MB_OK | MB_ICONERROR);
         return 1;
     }
     catch (...)
     {
-        ShowFatalErrorW(L"An unknown exception occurred.");
-        return 2;
+        MessageBoxA(nullptr, "Unknown fatal error", "Colony Game - Fatal Error", MB_OK | MB_ICONERROR);
+        return 1;
     }
 }
