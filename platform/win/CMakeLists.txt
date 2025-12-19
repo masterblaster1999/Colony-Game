@@ -48,6 +48,22 @@ if(MSVC)
     endif()
 endif()
 
+# Keep Unity builds enabled for win_platform overall, but compile these
+# "touchy" translation units separately to avoid unity/ODR redefinition issues
+# when they get bucketed into the same unity TU.
+set(_WIN_PLATFORM_UNITY_EXCLUDE
+    "${PLATFORM_WIN_DIR}/win_entry.cpp"
+    "${PLATFORM_WIN_DIR}/win_present_gdi.cpp"
+)
+
+foreach(_src IN LISTS _WIN_PLATFORM_UNITY_EXCLUDE)
+    if(EXISTS "${_src}")
+        set_source_files_properties("${_src}" PROPERTIES
+            SKIP_UNITY_BUILD_INCLUSION ON
+        )
+    endif()
+endforeach()
+
 # ---------------------------------------------------------------------------
 # Library: colony_platform_win  (DX12 DeviceResources owner)
 # Compile DeviceResources.* exactly once here; link this lib ONCE in the EXE.
