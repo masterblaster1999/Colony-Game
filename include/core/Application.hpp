@@ -2,15 +2,16 @@
 #pragma once
 
 #if !defined(_WIN32)
-  #error "Colony-Game targets Windows only."
+#error "Colony-Game targets Windows only."
 #endif
 
 // Keep Windows headers lean + avoid min/max macro pollution.
 #ifndef WIN32_LEAN_AND_MEAN
-  #define WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
 #endif
+
 #ifndef NOMINMAX
-  #define NOMINMAX
+#define NOMINMAX
 #endif
 
 #include <Windows.h>
