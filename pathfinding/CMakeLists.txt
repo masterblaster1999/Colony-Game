@@ -51,8 +51,33 @@ target_include_directories(colony_nav ${_cg_nav_pub}
 
 target_link_libraries(colony_nav ${_cg_nav_pub} colony::core)
 
+# --- Patched PCH logic (robust against missing headers) ---
 if(COLONY_USE_PCH AND NOT _cg_nav_type STREQUAL "INTERFACE_LIBRARY")
-  target_precompile_headers(colony_nav PRIVATE "${COLONY_PCH_HEADER}")
+  # Prefer module-local PCH: pathfinding/src/pch.hpp
+  set(_cg_pch_local "${CMAKE_CURRENT_SOURCE_DIR}/src/pch.hpp")
+
+  # Fallback to global PCH if COLONY_PCH_HEADER is set to a repo-relative path.
+  set(_cg_pch_global "${COLONY_PCH_HEADER}")
+  if(_cg_pch_global AND NOT IS_ABSOLUTE "${_cg_pch_global}")
+    set(_cg_pch_global "${CMAKE_SOURCE_DIR}/${_cg_pch_global}")
+  endif()
+
+  if(EXISTS "${_cg_pch_local}")
+    target_precompile_headers(colony_nav PRIVATE "${_cg_pch_local}")
+  elseif(_cg_pch_global AND EXISTS "${_cg_pch_global}")
+    target_precompile_headers(colony_nav PRIVATE "${_cg_pch_global}")
+    message(STATUS "colony_nav: using global PCH header ${_cg_pch_global}")
+  else()
+    message(WARNING
+      "colony_nav: COLONY_USE_PCH=ON but no PCH header found.\n"
+      "  Tried: ${_cg_pch_local}\n"
+      "  Tried: ${_cg_pch_global}\n"
+      "  -> PCH disabled for this target."
+    )
+  endif()
+
+  unset(_cg_pch_local)
+  unset(_cg_pch_global)
 endif()
 
 if(NOT _cg_nav_type STREQUAL "INTERFACE_LIBRARY")
@@ -62,3 +87,4 @@ endif()
 
 unset(_cg_nav_type)
 unset(_cg_nav_pub)
+
