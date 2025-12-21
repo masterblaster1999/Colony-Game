@@ -1,27 +1,38 @@
+// src/platform/win/HiResClock.h
 #pragma once
+#ifndef NOMINMAX
+#  define NOMINMAX
+#endif
+#define WIN32_LEAN_AND_MEAN
 #include <windows.h>
 #include <cstdint>
 
-class HiResClock {
-public:
-    HiResClock() {
-        LARGE_INTEGER f{};
-        QueryPerformanceFrequency(&f);
-        freq_ = static_cast<double>(f.QuadPart);
-        Reset();
+struct HiResClock
+{
+    // Query timer frequency once, lazily, and cache it.
+    static int64_t freq() noexcept
+    {
+        static int64_t f = []{
+            LARGE_INTEGER li{};
+            ::QueryPerformanceFrequency(&li);
+            return li.QuadPart;
+        }();
+        return f;
     }
-    void Reset() {
-        QueryPerformanceCounter(&last_);
+
+    static int64_t ticks() noexcept
+    {
+        LARGE_INTEGER t{};
+        ::QueryPerformanceCounter(&t);
+        return t.QuadPart;
     }
-    // Seconds since last call to Tick()
-    double Tick() {
-        LARGE_INTEGER now{};
-        QueryPerformanceCounter(&now);
-        const double dt = (static_cast<double>(now.QuadPart - last_.QuadPart)) / freq_;
-        last_ = now;
-        return dt;
+
+    static double seconds() noexcept
+    {
+        // Convert to double only at the edge.
+        return static_cast<double>(ticks()) / static_cast<double>(freq());
     }
-private:
-    LARGE_INTEGER last_{};
-    double freq_{};
+
+    static double millis() noexcept { return seconds() * 1000.0; }
+    static double micros() noexcept { return seconds() * 1'000'000.0; }
 };
