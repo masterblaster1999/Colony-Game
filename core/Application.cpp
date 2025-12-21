@@ -1,318 +1,334 @@
 // core/Application.cpp
+//
+// Windows-only application loop with fixed-timestep simulation.
+// C++17-compatible (no C++20 requires-expressions).
+
 #include "core/Application.hpp"
-
-namespace core { class Window; } // allow referencing core::Window if Window.hpp uses that namespace
-class Window;                    // allow referencing ::Window if Window.hpp is global
-
 #include "core/Game.hpp"
 #include "core/Window.hpp"
 
 #include <chrono>
-#include <exception>
 #include <thread>
 #include <type_traits>
+#include <utility>
+#include <stdexcept>
+#include <string>
 
+namespace core
+{
 namespace
 {
-    using Clock = std::chrono::steady_clock;
+using Clock = std::chrono::steady_clock;
 
-    template <class>
-    struct always_false : std::false_type {};
+template <typename...>
+using void_t = void;
 
-    template <class T>
-    concept CompleteType = requires { sizeof(T); };
+template <class T>
+struct always_false : std::false_type {};
 
-    // Window might be in namespace core or global; support both without guessing.
-    using WindowT = std::conditional_t<CompleteType<core::Window>, core::Window, ::Window>;
-    using GameT   = core::Game;
+// -----------------------------
+// Win32 helpers
+// -----------------------------
 
-    // -----------------------------
-    // Compile-time “feature probes”
-    // -----------------------------
-    template <class T>
-    constexpr bool HasTickDouble = requires(T& t, double dt) { t.tick(dt); };
+inline void ShowFatalErrorW(const wchar_t* msg) noexcept
+{
+    ::MessageBoxW(nullptr,
+                  (msg && *msg) ? msg : L"Unknown error",
+                  L"Colony Game - Fatal Error",
+                  MB_OK | MB_ICONERROR);
+}
 
-    template <class T>
-    constexpr bool HasTickFloat = requires(T& t, float dt) { t.tick(dt); };
+// Best-effort thread naming (Win10+). Safe no-op if unavailable.
+inline void SetCurrentThreadDescriptionBestEffort(const wchar_t* name) noexcept
+{
+    using Fn = HRESULT(WINAPI*)(HANDLE, PCWSTR);
 
-    template <class T>
-    constexpr bool HasTickNoArgs = requires(T& t) { t.tick(); };
+    HMODULE kernel = ::GetModuleHandleW(L"Kernel32.dll");
+    if (!kernel)
+        return;
 
-    template <class T, class W>
-    constexpr bool HasRenderWindowAlphaDouble = requires(T& t, W& w, double a) { t.render(w, a); };
+    auto fn = reinterpret_cast<Fn>(::GetProcAddress(kernel, "SetThreadDescription"));
+    if (fn)
+        (void)fn(::GetCurrentThread(), name);
+}
 
-    template <class T, class W>
-    constexpr bool HasRenderWindowAlphaFloat = requires(T& t, W& w, float a) { t.render(w, a); };
-
-    template <class T, class W>
-    constexpr bool HasRenderWindowNoArgs = requires(T& t, W& w) { t.render(w); };
-
-    template <class T>
-    constexpr bool HasRenderAlphaDouble = requires(T& t, double a) { t.render(a); };
-
-    template <class T>
-    constexpr bool HasRenderAlphaFloat = requires(T& t, float a) { t.render(a); };
-
-    template <class T>
-    constexpr bool HasRenderNoArgs = requires(T& t) { t.render(); };
-
-    // -----------------------------
-    // Small Win32 helpers
-    // -----------------------------
-    void ShowFatalErrorA(const char* msg) noexcept
+// Thread-wide message pump. Returns false if WM_QUIT received.
+inline bool PumpWin32Messages(int& outExitCode) noexcept
+{
+    MSG msg{};
+    while (::PeekMessageW(&msg, nullptr, 0, 0, PM_REMOVE))
     {
-        ::MessageBoxA(nullptr,
-                      (msg && *msg) ? msg : "Unknown error",
-                      "Colony Game - Fatal Error",
-                      MB_OK | MB_ICONERROR);
-    }
-
-    void ShowFatalErrorW(const wchar_t* msg) noexcept
-    {
-        ::MessageBoxW(nullptr,
-                      (msg && *msg) ? msg : L"Unknown error",
-                      L"Colony Game - Fatal Error",
-                      MB_OK | MB_ICONERROR);
-    }
-
-    // -----------------------------
-    // Window API adapter helpers
-    // -----------------------------
-    template <class W>
-    void PumpMessages(W& window)
-    {
-        if constexpr (requires { window.pollMessages(); })
+        if (msg.message == WM_QUIT)
         {
-            window.pollMessages();
-        }
-        else if constexpr (requires { window.pumpMessages(); })
-        {
-            window.pumpMessages();
-        }
-        else if constexpr (requires { window.processMessages(); })
-        {
-            window.processMessages();
-        }
-        else
-        {
-            // If your Window wrapper uses a different name, add it above.
-            static_assert(always_false<W>::value, "Window must expose a message pump (pollMessages/pumpMessages/processMessages).");
-        }
-    }
-
-    template <class W>
-    bool ShouldClose(W& window)
-    {
-        if constexpr (requires { window.shouldClose(); })
-        {
-            return static_cast<bool>(window.shouldClose());
-        }
-        else if constexpr (requires { window.isOpen(); })
-        {
-            return !static_cast<bool>(window.isOpen());
-        }
-        else
-        {
-            // If you don’t have an explicit close flag, return false.
+            outExitCode = static_cast<int>(msg.wParam);
             return false;
         }
+        ::TranslateMessage(&msg);
+        ::DispatchMessageW(&msg);
     }
+    return true;
+}
 
-    template <class W>
-    void PresentIfSupported(W& window)
+// -----------------------------
+// Detection idiom (C++17) for Game API
+// -----------------------------
+
+template <class T, class = void>
+struct has_tick_double : std::false_type {};
+template <class T>
+struct has_tick_double<T, void_t<decltype(std::declval<T&>().tick(std::declval<double>()))>> : std::true_type {};
+
+template <class T, class = void>
+struct has_tick_float : std::false_type {};
+template <class T>
+struct has_tick_float<T, void_t<decltype(std::declval<T&>().tick(std::declval<float>()))>> : std::true_type {};
+
+template <class T, class = void>
+struct has_tick_noargs : std::false_type {};
+template <class T>
+struct has_tick_noargs<T, void_t<decltype(std::declval<T&>().tick())>> : std::true_type {};
+
+template <class T, class W, class = void>
+struct has_render_window_alpha_float : std::false_type {};
+template <class T, class W>
+struct has_render_window_alpha_float<T, W,
+    void_t<decltype(std::declval<T&>().render(std::declval<W&>(), std::declval<float>()))>> : std::true_type {};
+
+template <class T, class W, class = void>
+struct has_render_window_alpha_double : std::false_type {};
+template <class T, class W>
+struct has_render_window_alpha_double<T, W,
+    void_t<decltype(std::declval<T&>().render(std::declval<W&>(), std::declval<double>()))>> : std::true_type {};
+
+template <class T, class W, class = void>
+struct has_render_window_noargs : std::false_type {};
+template <class T, class W>
+struct has_render_window_noargs<T, W,
+    void_t<decltype(std::declval<T&>().render(std::declval<W&>()))>> : std::true_type {};
+
+template <class T, class = void>
+struct has_render_alpha_double : std::false_type {};
+template <class T>
+struct has_render_alpha_double<T, void_t<decltype(std::declval<T&>().render(std::declval<double>()))>> : std::true_type {};
+
+template <class T, class = void>
+struct has_render_noargs : std::false_type {};
+template <class T>
+struct has_render_noargs<T, void_t<decltype(std::declval<T&>().render())>> : std::true_type {};
+
+template <class GameT>
+void TickGame(GameT& game, double dtSeconds)
+{
+    if constexpr (has_tick_double<GameT>::value)
     {
-        if constexpr (requires { window.present(); })
-        {
-            window.present();
-        }
-        else if constexpr (requires { window.swapBuffers(); })
-        {
-            window.swapBuffers();
-        }
-        else if constexpr (requires { window.endFrame(); })
-        {
-            window.endFrame();
-        }
-        else
-        {
-            // No-op if presentation is handled elsewhere (e.g., renderer owns swapchain).
-            (void)window;
-        }
+        game.tick(dtSeconds);
     }
-
-    template <class W>
-    W MakeWindow(HINSTANCE hInstance)
+    else if constexpr (has_tick_float<GameT>::value)
     {
-        // Try common constructor/factory signatures.
-        if constexpr (requires { W{ hInstance }; })
-        {
-            return W{ hInstance };
-        }
-        else if constexpr (requires { W{ hInstance, 1280, 720, L"Colony Game" }; })
-        {
-            return W{ hInstance, 1280, 720, L"Colony Game" };
-        }
-        else if constexpr (requires { W{ hInstance, L"Colony Game", 1280, 720 }; })
-        {
-            return W{ hInstance, L"Colony Game", 1280, 720 };
-        }
-        else if constexpr (requires { W::Create(hInstance); })
-        {
-            return W::Create(hInstance);
-        }
-        else if constexpr (requires { W w{}; } && requires(W& w) { w.create(hInstance); })
-        {
-            W w{};
-            w.create(hInstance);
-            return w;
-        }
-        else
-        {
-            static_assert(always_false<W>::value,
-                          "No supported Window constructor found. Add your Window signature to MakeWindow().");
-        }
+        game.tick(static_cast<float>(dtSeconds));
     }
-
-    template <class G, class W>
-    G MakeGame(W& window)
+    else if constexpr (has_tick_noargs<GameT>::value)
     {
-        // Prefer constructors that take the window, but fall back to default construction.
-        if constexpr (requires { G{ window }; })
-        {
-            return G{ window };
-        }
-        else if constexpr (requires { G{ &window }; })
-        {
-            return G{ &window };
-        }
-        else if constexpr (requires { G{}; })
-        {
-            (void)window;
-            return G{};
-        }
-        else
-        {
-            static_assert(always_false<G>::value, "No supported Game constructor found.");
-        }
+        (void)dtSeconds;
+        game.tick();
     }
-
-    template <class G>
-    void FixedTick(G& game, double dtSeconds)
+    else
     {
-        if constexpr (HasTickDouble<G>)
-        {
-            game.tick(dtSeconds);
-        }
-        else if constexpr (HasTickFloat<G>)
-        {
-            game.tick(static_cast<float>(dtSeconds));
-        }
-        else if constexpr (HasTickNoArgs<G>)
-        {
-            (void)dtSeconds;
-            game.tick();
-        }
-        else
-        {
-            static_assert(always_false<G>::value, "Game must implement tick(), tick(float), or tick(double).");
-        }
+        static_assert(always_false<GameT>::value, "Game must provide tick(), tick(float) or tick(double).");
     }
+}
 
-    template <class G, class W>
-    void RenderFrame(G& game, W& window, double alpha)
+template <class GameT, class WindowT>
+void RenderGame(GameT& game, WindowT& window, double alpha)
+{
+    if constexpr (has_render_window_alpha_float<GameT, WindowT>::value)
     {
-        if constexpr (HasRenderWindowAlphaDouble<G, W>)
-        {
-            game.render(window, alpha);
-        }
-        else if constexpr (HasRenderWindowAlphaFloat<G, W>)
-        {
-            game.render(window, static_cast<float>(alpha));
-        }
-        else if constexpr (HasRenderWindowNoArgs<G, W>)
-        {
-            (void)alpha;
-            game.render(window);
-        }
-        else if constexpr (HasRenderAlphaDouble<G>)
-        {
-            game.render(alpha);
-        }
-        else if constexpr (HasRenderAlphaFloat<G>)
-        {
-            game.render(static_cast<float>(alpha));
-        }
-        else if constexpr (HasRenderNoArgs<G>)
-        {
-            (void)alpha;
-            game.render();
-        }
-        else
-        {
-            static_assert(always_false<G>::value, "Game must implement render() overload(s).");
-        }
+        game.render(window, static_cast<float>(alpha));
     }
-} // namespace
+    else if constexpr (has_render_window_alpha_double<GameT, WindowT>::value)
+    {
+        game.render(window, alpha);
+    }
+    else if constexpr (has_render_window_noargs<GameT, WindowT>::value)
+    {
+        (void)alpha;
+        game.render(window);
+    }
+    else if constexpr (has_render_alpha_double<GameT>::value)
+    {
+        game.render(alpha);
+    }
+    else if constexpr (has_render_noargs<GameT>::value)
+    {
+        (void)alpha;
+        game.render();
+    }
+    else
+    {
+        static_assert(always_false<GameT>::value,
+                      "Game must provide render(), render(alpha), render(window), or render(window, alpha).");
+    }
+}
 
-int RunColonyGame(HINSTANCE hInstance)
+// -----------------------------
+// Detection idiom (C++17) for Window API
+// -----------------------------
+
+template <class W, class = void>
+struct has_should_close : std::false_type {};
+template <class W>
+struct has_should_close<W, void_t<decltype(std::declval<W&>().shouldClose())>> : std::true_type {};
+
+template <class W, class = void>
+struct has_is_open : std::false_type {};
+template <class W>
+struct has_is_open<W, void_t<decltype(std::declval<W&>().isOpen())>> : std::true_type {};
+
+template <class W, class = void>
+struct has_present : std::false_type {};
+template <class W>
+struct has_present<W, void_t<decltype(std::declval<W&>().present())>> : std::true_type {};
+
+template <class W, class = void>
+struct has_swap_buffers : std::false_type {};
+template <class W>
+struct has_swap_buffers<W, void_t<decltype(std::declval<W&>().swapBuffers())>> : std::true_type {};
+
+template <class W, class = void>
+struct has_end_frame : std::false_type {};
+template <class W>
+struct has_end_frame<W, void_t<decltype(std::declval<W&>().endFrame())>> : std::true_type {};
+
+template <class W, class = void>
+struct has_show_cmd : std::false_type {};
+template <class W>
+struct has_show_cmd<W, void_t<decltype(std::declval<W&>().show(std::declval<int>()))>> : std::true_type {};
+
+template <class W, class = void>
+struct has_show_noargs : std::false_type {};
+template <class W>
+struct has_show_noargs<W, void_t<decltype(std::declval<W&>().show())>> : std::true_type {};
+
+template <class WindowT>
+bool ShouldClose(WindowT& window)
+{
+    if constexpr (has_should_close<WindowT>::value)
+        return static_cast<bool>(window.shouldClose());
+
+    if constexpr (has_is_open<WindowT>::value)
+        return !static_cast<bool>(window.isOpen());
+
+    return false; // fallback: WM_QUIT will still end loop
+}
+
+template <class WindowT>
+void PresentIfSupported(WindowT& window)
+{
+    if constexpr (has_present<WindowT>::value)
+        window.present();
+    else if constexpr (has_swap_buffers<WindowT>::value)
+        window.swapBuffers();
+    else if constexpr (has_end_frame<WindowT>::value)
+        window.endFrame();
+    else
+        (void)window;
+}
+
+template <class WindowT>
+void ShowIfSupported(WindowT& window, int nCmdShow)
+{
+    if constexpr (has_show_cmd<WindowT>::value)
+        window.show(nCmdShow);
+    else if constexpr (has_show_noargs<WindowT>::value)
+        window.show();
+    else
+        (void)window, (void)nCmdShow;
+}
+
+// -----------------------------
+// Main run loop
+// -----------------------------
+
+inline std::wstring Utf8ToWideBestEffort(const char* s)
+{
+    if (!s || !*s)
+        return L"Unknown error";
+
+    int len = ::MultiByteToWideChar(CP_UTF8, 0, s, -1, nullptr, 0);
+    if (len <= 0)
+        return L"Unknown error";
+
+    std::wstring out;
+    out.resize(static_cast<size_t>(len - 1));
+    ::MultiByteToWideChar(CP_UTF8, 0, s, -1, &out[0], len);
+    return out;
+}
+
+} // anonymous namespace
+
+int RunApplication(HINSTANCE hInstance, int nCmdShow, ApplicationDesc desc)
 {
     try
     {
-        WindowT window = MakeWindow<WindowT>(hInstance);
+        SetCurrentThreadDescriptionBestEffort(L"ColonyGame Main Thread");
 
-        GameT game = MakeGame<GameT>(window);
+        // Construct your engine window & game.
+        core::Window window(hInstance, desc.width, desc.height, desc.title);
+        ShowIfSupported(window, nCmdShow);
 
-        // Fixed timestep (60Hz) with accumulator.
-        constexpr double kFixedDtSeconds   = 1.0 / 60.0;
-        constexpr double kMaxFrameSeconds  = 0.25; // avoid spiral-of-death after breakpoint / hitch
+        core::Game game{};
+        // If you have an init(...) in Game, add it here later (keep this file build-safe).
 
-        auto last = Clock::now();
+        const double fixedDt = (desc.fixed_dt_seconds > 0.0) ? desc.fixed_dt_seconds : (1.0 / 60.0);
+        const double maxFrame = (desc.max_frame_time_seconds > 0.0) ? desc.max_frame_time_seconds : 0.25;
+
+        auto prev = Clock::now();
         double accumulator = 0.0;
 
-        while (!ShouldClose(window))
+        int exitCode = 0;
+
+        while (PumpWin32Messages(exitCode))
         {
-            PumpMessages(window);
             if (ShouldClose(window))
                 break;
 
             const auto now = Clock::now();
-            std::chrono::duration<double> frame = now - last;
-            last = now;
+            double frameTime = std::chrono::duration<double>(now - prev).count();
+            prev = now;
 
-            double dt = frame.count();
-            if (dt < 0.0) dt = 0.0;
-            if (dt > kMaxFrameSeconds) dt = kMaxFrameSeconds;
+            if (frameTime < 0.0) frameTime = 0.0;
+            if (frameTime > maxFrame) frameTime = maxFrame;
 
-            accumulator += dt;
+            accumulator += frameTime;
 
-            while (accumulator >= kFixedDtSeconds)
+            while (accumulator >= fixedDt)
             {
-                FixedTick(game, kFixedDtSeconds);
-                accumulator -= kFixedDtSeconds;
+                TickGame(game, fixedDt);
+                accumulator -= fixedDt;
             }
 
-            // Optional interpolation alpha for smoother rendering if supported.
-            const double alpha = (kFixedDtSeconds > 0.0) ? (accumulator / kFixedDtSeconds) : 0.0;
-
-            RenderFrame(game, window, alpha);
-
-            // Only present if your Window wrapper exposes it; otherwise no-op.
+            const double alpha = (fixedDt > 0.0) ? (accumulator / fixedDt) : 0.0;
+            RenderGame(game, window, alpha);
             PresentIfSupported(window);
 
-            // Friendly to CPU if present() doesn't block (optional).
-            std::this_thread::yield();
+            // If not vsynced, be nice to the CPU.
+            if (!desc.vsync)
+                std::this_thread::yield();
         }
 
-        return 0;
+        return exitCode;
     }
     catch (const std::exception& e)
     {
-        ShowFatalErrorA(e.what());
+        const std::wstring w = Utf8ToWideBestEffort(e.what());
+        ShowFatalErrorW(w.c_str());
+        return -1;
     }
     catch (...)
     {
-        ShowFatalErrorW(L"Unhandled unknown exception.");
+        ShowFatalErrorW(L"Unknown exception");
+        return -1;
     }
-
-    return -1;
 }
+
+} // namespace core
