@@ -219,13 +219,20 @@ struct has_show_noargs<W, void_t<decltype(std::declval<W&>().show())>> : std::tr
 template <class WindowT>
 bool ShouldClose(WindowT& window)
 {
+    // PATCH: use an else-if constexpr chain to prevent MSVC warning C4702
+    // (unreachable code) when one branch is known true at compile-time.
     if constexpr (has_should_close<WindowT>::value)
+    {
         return static_cast<bool>(window.shouldClose());
-
-    if constexpr (has_is_open<WindowT>::value)
+    }
+    else if constexpr (has_is_open<WindowT>::value)
+    {
         return !static_cast<bool>(window.isOpen());
-
-    return false;
+    }
+    else
+    {
+        return false;
+    }
 }
 
 template <class WindowT>
