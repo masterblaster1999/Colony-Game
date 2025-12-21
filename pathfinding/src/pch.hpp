@@ -1,27 +1,25 @@
 // pathfinding/src/pch.hpp
+// Precompiled header for colony_nav (pathfinding + HPA)
 //
-// Precompiled header for the pathfinding module.
-// Keep it platform-neutral (even though your project is Windows-only).
+// Keep it standard-library only to avoid pulling in heavy Windows/graphics headers.
 
 #pragma once
 
 #include <algorithm>
 #include <array>
 #include <cassert>
-#include <cstddef>
-#include <cstdint>
 #include <cmath>
+#include <cstdint>
+#include <cstdlib>
 #include <functional>
 #include <limits>
 #include <memory>
+#include <numeric>
 #include <optional>
 #include <queue>
 #include <string>
 #include <string_view>
-#include <tuple>
-#include <type_traits>
 #include <unordered_map>
 #include <unordered_set>
 #include <utility>
-#include <variant>
 #include <vector>
