@@ -59,8 +59,30 @@ if(TARGET imgui::imgui)
   target_link_libraries(colony_renderer ${_cg_r_pub} imgui::imgui)
 endif()
 
+# PCH: Prefer module-local renderer/src/pch.hpp. Fall back to COLONY_PCH_HEADER resolved from repo root.
+# If neither exists, disable PCH for this target instead of hard-failing at build time.
 if(COLONY_USE_PCH AND NOT _cg_r_type STREQUAL "INTERFACE_LIBRARY")
-  target_precompile_headers(colony_renderer PRIVATE "${COLONY_PCH_HEADER}")
+  set(_cg_pch_local  "${CMAKE_CURRENT_SOURCE_DIR}/src/pch.hpp")
+
+  set(_cg_pch_global "${COLONY_PCH_HEADER}")
+  if(_cg_pch_global AND NOT IS_ABSOLUTE "${_cg_pch_global}")
+    set(_cg_pch_global "${CMAKE_SOURCE_DIR}/${_cg_pch_global}")
+  endif()
+
+  if(EXISTS "${_cg_pch_local}")
+    target_precompile_headers(colony_renderer PRIVATE "${_cg_pch_local}")
+  elseif(_cg_pch_global AND EXISTS "${_cg_pch_global}")
+    target_precompile_headers(colony_renderer PRIVATE "${_cg_pch_global}")
+  else()
+    message(WARNING
+      "colony_renderer: COLONY_USE_PCH=ON but no PCH header found.\n"
+      "  Tried: ${_cg_pch_local}\n"
+      "  Tried: ${_cg_pch_global}\n"
+      "  -> PCH disabled for this target.")
+  endif()
+
+  unset(_cg_pch_local)
+  unset(_cg_pch_global)
 endif()
 
 if(NOT _cg_r_type STREQUAL "INTERFACE_LIBRARY")
@@ -70,4 +92,3 @@ endif()
 
 unset(_cg_r_type)
 unset(_cg_r_pub)
-
