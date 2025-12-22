@@ -1,65 +1,67 @@
-// src/worldgen/Hydrology.hpp
 #pragma once
 
-// Hydrology stage public API (implementation lives in Hydrology.cpp).
-//
-// IMPORTANT DESIGN NOTE (unity-build safe):
-// - HeightField is defined in HeightField.hpp (a small shared data header).
-// - This header intentionally does NOT include other worldgen algorithm headers
-//   (e.g., DomainWarp.hpp) to avoid transitive include bloat and unity-build ODR
-//   collision risks.
-
-#include "HeightField.hpp"
+// Hydrology stage API (Windows/MSVC-safe).
+// Keep this header stable: other modules (StagesConfig, worldgen stages, tests) include it.
 
 #include <cstdint>
 
+// Important: ClimateParams is expected to be visible to any TU that includes Hydrology.hpp
+// (StagesConfig.hpp stores it by value).
+#include "Climate.hpp"
+
+// HeightField lives in/behind DomainWarp.hpp in this project layout.
+#include "DomainWarp.hpp"
+
 namespace cg
 {
-    // Outputs produced by the hydrology simulation.
-    struct HydroOutputs
-    {
-        HeightField precip;       // precipitation field (input or derived)
-        HeightField temperature;  // optional (may be empty if not computed)
-        HeightField filled;       // filled terrain (lakes)
-        HeightField carved;       // carved terrain (rivers)
-        HeightField waterLevel;   // water surface level
-
-        [[nodiscard]] bool valid() const noexcept
-        {
-            return (filled.w > 0) && (filled.h > 0);
-        }
-
-        void clear() noexcept
-        {
-            precip      = {};
-            temperature = {};
-            filled      = {};
-            carved      = {};
-            waterLevel  = {};
-        }
-    };
-
-    // Parameters for the hydrology simulation.
+    // Parameters for hydrology. Some of these are configured by StagesConfig.cpp.
+    // Even if the current hydrology implementation only uses `iterations`,
+    // keeping the fields here prevents "missing member" compile failures and
+    // lets you evolve the algorithm later without churn.
     struct HydroParams
     {
-        float seaLevel            = 0.0f;   // absolute sea level in same units as height
-        float precipitationScale  = 1.0f;   // scales precip input to "water amount"
-        float evaporation         = 0.02f;  // fraction removed per iteration
-        float erosionRate         = 0.25f;  // carving strength per unit flow
-        float depositionRate      = 0.05f;  // deposition where flow slows
-        int   iterations          = 32;     // number of relaxation/transport passes
-        bool  carveBelowSea       = false;  // allow carving below sea level
+        // Primary knob used by existing code paths.
+        int iterations = 50;
+
+        // Used by worldgen StagesConfig (stream-power / incision tuning).
+        float incisionExpM = 0.5f;
+        float incisionExpN = 1.0f;
+
+        // Optional smoothing passes on derived fields (if/when implemented).
+        int smoothIterations = 0;
+
+        // Safe extension knobs (defaults keep behavior identical).
+        float seaLevel = 0.0f;
+        float rainScale = 1.0f;
+        float evaporation = 0.0f;
     };
 
-    // Run a simple heightfield hydrology pass.
-    // Requirements:
-    // - heightIn and precipIn must be same resolution.
-    HydroOutputs simulateHydrology(const HeightField& heightIn,
-                                  const HeightField& precipIn,
-                                  const HydroParams& params);
+    struct HydroOutputs
+    {
+        HeightField precip;
+        HeightField temperature;
 
-    // Compute a distance-to-coast field for a given sea level.
-    // Output units are in "cells" (you can scale externally).
-    HeightField distanceToCoast(const HeightField& heightIn, float seaLevel);
+        // Required by Hydrology.cpp (your build error says this member is missing).
+        HeightField flowAccum;
 
+        HeightField filled;
+        HeightField carved;
+        HeightField waterLevel;
+    };
+
+    // Original/legacy signature (widely referenced).
+    [[nodiscard]] HydroOutputs simulateHydrology(const HeightField& elev,
+                                                 const HeightField& precip,
+                                                 int iterations = 50);
+
+    // Convenience overload: allows StagesConfig to pass HydroParams without forcing
+    // a large refactor. This keeps linking safe even if only iterations is used.
+    [[nodiscard]] inline HydroOutputs simulateHydrology(const HeightField& elev,
+                                                        const HeightField& precip,
+                                                        const HydroParams& params)
+    {
+        return simulateHydrology(elev, precip, params.iterations);
+    }
+
+    [[nodiscard]] HeightField distanceToCoast(const HeightField& landmask);
 } // namespace cg
