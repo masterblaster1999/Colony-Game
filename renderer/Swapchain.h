@@ -10,7 +10,13 @@
 //   sc.Initialize(device, context, ci);
 //   sc.Present(vsync /*true/false*/);
 
+#ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
+#endif
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+
 #include <Windows.h>
 #include <d3d11.h>
 #include <dxgi1_6.h>
