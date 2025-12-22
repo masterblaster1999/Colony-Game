@@ -5,46 +5,93 @@
 
 #include "ShaderCompiler.hpp"
 
-#include <cassert>
 #include <cstring>    // std::memcpy
 #include <stdexcept>
 
 namespace colony::render
 {
-
-using ComPtr = Microsoft::WRL::ComPtr;
-
-// Helper: copy IDxcBlob contents into a std::vector<uint8_t>.
-static std::vector<std::uint8_t> CopyBlob(IDxcBlob* blob)
+namespace
 {
-    std::vector<std::uint8_t> result;
-    if (!blob)
-        return result;
+    // NOTE:
+    // We *intentionally* load dxcompiler.dll dynamically instead of linking dxcompiler.lib.
+    // This avoids link errors if the import lib isn't wired into CMake yet, and also means
+    // the game only requires dxcompiler.dll *if* runtime compilation is used.
+    using ShaderCompiler_DxcCreateInstanceProc = HRESULT(WINAPI*)(REFCLSID, REFIID, LPVOID*);
 
-    const SIZE_T size = blob->GetBufferSize();
-    if (size == 0)
-        return result;
+    struct ShaderCompiler_DxcModule
+    {
+        HMODULE                          dll    = nullptr;
+        ShaderCompiler_DxcCreateInstanceProc create = nullptr;
+    };
 
-    result.resize(size);
-    std::memcpy(result.data(), blob->GetBufferPointer(), size);
-    return result;
-}
+    // Keep dxcompiler.dll loaded for the lifetime of the process (avoid unload order issues).
+    ShaderCompiler_DxcModule& ShaderCompiler_GetDxcModule()
+    {
+        static ShaderCompiler_DxcModule* mod = []() -> ShaderCompiler_DxcModule* {
+            auto* m = new ShaderCompiler_DxcModule{};
+
+            m->dll = ::LoadLibraryW(L"dxcompiler.dll");
+            if (!m->dll)
+            {
+                throw std::runtime_error(
+                    "ShaderCompiler: dxcompiler.dll not found. "
+                    "Runtime shader compilation requires the DirectX Shader Compiler (DXC)."
+                );
+            }
+
+            m->create = reinterpret_cast<ShaderCompiler_DxcCreateInstanceProc>(
+                ::GetProcAddress(m->dll, "DxcCreateInstance")
+            );
+            if (!m->create)
+            {
+                throw std::runtime_error(
+                    "ShaderCompiler: dxcompiler.dll does not export DxcCreateInstance."
+                );
+            }
+
+            return m;
+        }();
+
+        return *mod;
+    }
+
+    // Helper: copy IDxcBlob contents into a std::vector<uint8_t>.
+    static std::vector<std::uint8_t> ShaderCompiler_CopyBlob(IDxcBlob* blob)
+    {
+        std::vector<std::uint8_t> result;
+        if (!blob)
+            return result;
+
+        const SIZE_T size = blob->GetBufferSize();
+        if (size == 0)
+            return result;
+
+        result.resize(static_cast<size_t>(size));
+        std::memcpy(result.data(), blob->GetBufferPointer(), size);
+        return result;
+    }
+} // namespace
 
 ShaderCompiler::ShaderCompiler()
 {
-    // Create IDxcUtils and IDxcCompiler3 instances via DxcCreateInstance. :contentReference[oaicite:2]{index=2}
-    HRESULT hr = DxcCreateInstance(CLSID_DxcUtils, IID_PPV_ARGS(m_utils.GetAddressOf()));
-    if (FAILED(hr) || !m_utils) {
-        throw std::runtime_error("ShaderCompiler: failed to create IDxcUtils (dxcompiler.dll missing?).");
+    // Create IDxcUtils and IDxcCompiler3 instances via dxcompiler.dll/DxcCreateInstance.
+    auto& dxc = ShaderCompiler_GetDxcModule();
+
+    HRESULT hr = dxc.create(CLSID_DxcUtils, IID_PPV_ARGS(m_utils.ReleaseAndGetAddressOf()));
+    if (FAILED(hr) || !m_utils)
+    {
+        throw std::runtime_error("ShaderCompiler: failed to create IDxcUtils.");
     }
 
-    hr = DxcCreateInstance(CLSID_DxcCompiler, IID_PPV_ARGS(m_compiler.GetAddressOf()));
-    if (FAILED(hr) || !m_compiler) {
+    hr = dxc.create(CLSID_DxcCompiler, IID_PPV_ARGS(m_compiler.ReleaseAndGetAddressOf()));
+    if (FAILED(hr) || !m_compiler)
+    {
         throw std::runtime_error("ShaderCompiler: failed to create IDxcCompiler3.");
     }
 
-    hr = m_utils->CreateDefaultIncludeHandler(m_includeHandler.GetAddressOf());
-    if (FAILED(hr) || !m_includeHandler) {
+    hr = m_utils->CreateDefaultIncludeHandler(m_includeHandler.ReleaseAndGetAddressOf());
+    if (FAILED(hr) || !m_includeHandler)
+    {
         throw std::runtime_error("ShaderCompiler: failed to create DXC default include handler.");
     }
 }
@@ -58,18 +105,31 @@ ShaderCompileResult ShaderCompiler::compileFromFile(
 {
     ShaderCompileResult result;
 
-    ComPtr<IDxcBlobEncoding> sourceBlob;
+    Microsoft::WRL::ComPtr<IDxcBlobEncoding> sourceBlob;
     HRESULT hr = m_utils->LoadFile(path.c_str(), nullptr, sourceBlob.GetAddressOf());
-    if (FAILED(hr) || !sourceBlob) {
+    if (FAILED(hr) || !sourceBlob)
+    {
         result.success      = false;
         result.errorMessage = "DXC: failed to load shader file.";
         return result;
     }
 
+    // Respect encoding when known (otherwise let DXC treat it as ACP).
+    UINT32 codePage = DXC_CP_ACP;
+    BOOL   known    = FALSE;
+    if (SUCCEEDED(sourceBlob->GetEncoding(&known, &codePage)) && known)
+    {
+        // codePage already set
+    }
+    else
+    {
+        codePage = DXC_CP_ACP;
+    }
+
     DxcBuffer buffer{};
     buffer.Ptr      = sourceBlob->GetBufferPointer();
     buffer.Size     = sourceBlob->GetBufferSize();
-    buffer.Encoding = DXC_CP_ACP; // Let DXC/autodetect handle encoding; HLSL is usually ASCII/UTF-8. :contentReference[oaicite:3]{index=3}
+    buffer.Encoding = codePage;
 
     return compileInternal(path, buffer, entryPoint, profile, options);
 }
@@ -84,20 +144,22 @@ ShaderCompileResult ShaderCompiler::compileFromSource(
 {
     ShaderCompileResult result;
 
-    if (sourceUtf8.data() == nullptr || sourceUtf8.size() == 0) {
+    if (sourceUtf8.data() == nullptr || sourceUtf8.size() == 0)
+    {
         result.success      = false;
         result.errorMessage = "DXC: empty shader source.";
         return result;
     }
 
-    ComPtr<IDxcBlobEncoding> sourceBlob;
+    Microsoft::WRL::ComPtr<IDxcBlobEncoding> sourceBlob;
     HRESULT hr = m_utils->CreateBlob(
         sourceUtf8.data(),
         static_cast<UINT32>(sourceUtf8.size()),
         DXC_CP_UTF8,
         sourceBlob.GetAddressOf()
     );
-    if (FAILED(hr) || !sourceBlob) {
+    if (FAILED(hr) || !sourceBlob)
+    {
         result.success      = false;
         result.errorMessage = "DXC: failed to create source blob.";
         return result;
@@ -126,7 +188,8 @@ ShaderCompileResult ShaderCompiler::compileInternal(
     // -------------------------------------------------------------------------
     std::vector<DxcDefine> dxcDefines;
     dxcDefines.reserve(options.defines.size());
-    for (const ShaderDefine& def : options.defines) {
+    for (const ShaderDefine& def : options.defines)
+    {
         DxcDefine d{};
         d.Name  = def.name.c_str();
         d.Value = def.value.c_str();
@@ -134,53 +197,44 @@ ShaderCompileResult ShaderCompiler::compileInternal(
     }
 
     // -------------------------------------------------------------------------
-    // Build argument list (similar to Simon Coenen's pattern, but via BuildArguments). :contentReference[oaicite:4]{index=4}
+    // Build argument list
     // -------------------------------------------------------------------------
     std::vector<LPCWSTR> argPtrs;
 
-    if (options.enableDebug) {
-        // -Zi
-        argPtrs.push_back(DXC_ARG_DEBUG);
-    }
-    if (options.warningsAreErrors) {
-        // -WX
-        argPtrs.push_back(DXC_ARG_WARNINGS_ARE_ERRORS);
+    if (options.enableDebug)
+        argPtrs.push_back(DXC_ARG_DEBUG); // -Zi
+
+    if (options.warningsAreErrors)
+        argPtrs.push_back(DXC_ARG_WARNINGS_ARE_ERRORS); // -WX
+
+    switch (options.optimizationLevel)
+    {
+        case 0: argPtrs.push_back(DXC_ARG_OPTIMIZATION_LEVEL0); break;
+        case 1: argPtrs.push_back(DXC_ARG_OPTIMIZATION_LEVEL1); break;
+        case 2: argPtrs.push_back(DXC_ARG_OPTIMIZATION_LEVEL2); break;
+        case 3: argPtrs.push_back(DXC_ARG_OPTIMIZATION_LEVEL3); break;
+        default: break; // DXC default
     }
 
-    // -O0..-O3
-    switch (options.optimizationLevel) {
-    case 0: argPtrs.push_back(DXC_ARG_OPTIMIZATION_LEVEL0); break;
-    case 1: argPtrs.push_back(DXC_ARG_OPTIMIZATION_LEVEL1); break;
-    case 2: argPtrs.push_back(DXC_ARG_OPTIMIZATION_LEVEL2); break;
-    case 3: argPtrs.push_back(DXC_ARG_OPTIMIZATION_LEVEL3); break;
-    default: break; // use DXC default (O3)
-    }
+    if (options.disableValidation)
+        argPtrs.push_back(DXC_ARG_SKIP_VALIDATION); // -Vd
 
-    if (options.disableValidation) {
-        // -Vd
-        argPtrs.push_back(DXC_ARG_SKIP_VALIDATION);
-    }
-
-    if (options.stripDebug) {
-        // Separate PDB via DXC_OUT_PDB, keep object slim. :contentReference[oaicite:5]{index=5}
+    if (options.stripDebug)
         argPtrs.push_back(L"-Qstrip_debug");
-    }
-    if (options.stripReflection) {
-        argPtrs.push_back(L"-Qstrip_reflect");
-    }
 
-    // -I <dir> paths
-    for (const std::wstring& dir : options.includeDirs) {
+    if (options.stripReflection)
+        argPtrs.push_back(L"-Qstrip_reflect");
+
+    for (const std::wstring& dir : options.includeDirs)
+    {
         argPtrs.push_back(L"-I");
         argPtrs.push_back(dir.c_str());
     }
 
-    // Extra raw args
-    for (const std::wstring& arg : options.extraArguments) {
+    for (const std::wstring& arg : options.extraArguments)
         argPtrs.push_back(arg.c_str());
-    }
 
-    ComPtr<IDxcCompilerArgs> compilerArgs;
+    Microsoft::WRL::ComPtr<IDxcCompilerArgs> compilerArgs;
     HRESULT hr = m_utils->BuildArguments(
         sourceName.c_str(),
         entryPoint.c_str(),
@@ -191,7 +245,8 @@ ShaderCompileResult ShaderCompiler::compileInternal(
         static_cast<UINT>(dxcDefines.size()),
         compilerArgs.GetAddressOf()
     );
-    if (FAILED(hr) || !compilerArgs) {
+    if (FAILED(hr) || !compilerArgs)
+    {
         result.success      = false;
         result.errorMessage = "DXC: BuildArguments() failed.";
         return result;
@@ -200,7 +255,7 @@ ShaderCompileResult ShaderCompiler::compileInternal(
     // -------------------------------------------------------------------------
     // Compile
     // -------------------------------------------------------------------------
-    ComPtr<IDxcResult> dxResult;
+    Microsoft::WRL::ComPtr<IDxcResult> dxResult;
     hr = m_compiler->Compile(
         &sourceBuffer,
         compilerArgs->GetArguments(),
@@ -208,15 +263,15 @@ ShaderCompileResult ShaderCompiler::compileInternal(
         m_includeHandler.Get(),
         IID_PPV_ARGS(dxResult.GetAddressOf())
     );
-
-    if (FAILED(hr) || !dxResult) {
+    if (FAILED(hr) || !dxResult)
+    {
         result.success      = false;
         result.errorMessage = "DXC: Compile() call failed.";
         return result;
     }
 
-    // Errors/warnings (DXC_OUT_ERRORS). This includes warnings unless disabled. :contentReference[oaicite:6]{index=6}
-    ComPtr<IDxcBlobUtf8> errors;
+    // Errors/warnings (DXC_OUT_ERRORS).
+    Microsoft::WRL::ComPtr<IDxcBlobUtf8> errors;
     if (SUCCEEDED(dxResult->GetOutput(DXC_OUT_ERRORS, IID_PPV_ARGS(errors.GetAddressOf()), nullptr)) &&
         errors && errors->GetStringLength() > 0)
     {
@@ -229,44 +284,44 @@ ShaderCompileResult ShaderCompiler::compileInternal(
     // Check compilation status.
     HRESULT status = S_OK;
     hr = dxResult->GetStatus(&status);
-    if (FAILED(hr) || FAILED(status)) {
+    if (FAILED(hr) || FAILED(status))
+    {
         result.success = false;
-        if (result.errorMessage.empty()) {
+        if (result.errorMessage.empty())
             result.errorMessage = "DXC: compilation failed (no error text).";
-        }
         return result;
     }
 
     // -------------------------------------------------------------------------
     // Extract DXIL object, PDB, reflection
     // -------------------------------------------------------------------------
-    ComPtr<IDxcBlob> object;
+    Microsoft::WRL::ComPtr<IDxcBlob> object;
     hr = dxResult->GetOutput(DXC_OUT_OBJECT, IID_PPV_ARGS(object.GetAddressOf()), nullptr);
-    if (FAILED(hr) || !object) {
-        result.success      = false;
-        if (result.errorMessage.empty()) {
+    if (FAILED(hr) || !object)
+    {
+        result.success = false;
+        if (result.errorMessage.empty())
             result.errorMessage = "DXC: failed to retrieve DXC_OUT_OBJECT.";
-        }
         return result;
     }
 
-    result.bytecode = CopyBlob(object.Get());
+    result.bytecode = ShaderCompiler_CopyBlob(object.Get());
 
     // PDB (optional)
-    ComPtr<IDxcBlob> pdbBlob;
-    ComPtr<IDxcBlobWide> pdbName;
+    Microsoft::WRL::ComPtr<IDxcBlob>     pdbBlob;
+    Microsoft::WRL::ComPtr<IDxcBlobWide> pdbName;
     if (SUCCEEDED(dxResult->GetOutput(DXC_OUT_PDB, IID_PPV_ARGS(pdbBlob.GetAddressOf()), pdbName.GetAddressOf())) &&
         pdbBlob)
     {
-        result.pdb = CopyBlob(pdbBlob.Get());
+        result.pdb = ShaderCompiler_CopyBlob(pdbBlob.Get());
     }
 
     // Reflection (optional)
-    ComPtr<IDxcBlob> reflectionBlob;
+    Microsoft::WRL::ComPtr<IDxcBlob> reflectionBlob;
     if (SUCCEEDED(dxResult->GetOutput(DXC_OUT_REFLECTION, IID_PPV_ARGS(reflectionBlob.GetAddressOf()), nullptr)) &&
         reflectionBlob)
     {
-        result.reflection = CopyBlob(reflectionBlob.Get());
+        result.reflection = ShaderCompiler_CopyBlob(reflectionBlob.Get());
     }
 
     result.success = true;
