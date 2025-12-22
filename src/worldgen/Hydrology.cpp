@@ -267,8 +267,8 @@ HydroOutputs simulateHydrology(const HeightField& elev,
         const float denom = (maxA > 0.0f) ? std::log1p(maxA) : 1.0f;
 
         // Scale carving by iterations (kept bounded).
-        // Avoid implicit int -> float conversion (C4244 under /W4 + /WX).
-        const float it = std::max(0.0f, static_cast<float>(iterations));
+        // FIX (/WX C4244): make the int->float conversion explicit.
+        const float it = static_cast<float>(std::max(0, iterations));
         const float carveScale = 0.02f * std::min(it / 50.0f, 4.0f);
 
         for (std::size_t i = 0; i < N; ++i)
