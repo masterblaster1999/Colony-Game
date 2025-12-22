@@ -8,9 +8,14 @@ using Microsoft::WRL::ComPtr;
 using namespace renderer;
 
 // Small helper: get factory from a D3D11 device.
-static HRESULT GetDXGIFactoryFromDevice(ID3D11Device* device, IDXGIFactory2** outFactory2)
+//
+// FIX: WRL::ComPtr::As(...) does NOT accept raw T**.
+//      It accepts ComPtr<U>* or ComPtrRef<ComPtr<U>>.
+//      So we take a ComPtr& and call factory1.As(&outFactory2).
+static HRESULT GetDXGIFactoryFromDevice(ID3D11Device* device, ComPtr<IDXGIFactory2>& outFactory2)
 {
-    if (!device || !outFactory2) return E_INVALIDARG;
+    if (!device) return E_INVALIDARG;
+    outFactory2.Reset();
 
     ComPtr<IDXGIDevice> dxgiDevice;
     HRESULT hr = device->QueryInterface(IID_PPV_ARGS(&dxgiDevice));
@@ -25,7 +30,7 @@ static HRESULT GetDXGIFactoryFromDevice(ID3D11Device* device, IDXGIFactory2** ou
     if (FAILED(hr)) return hr;
 
     // We want IDXGIFactory2 for CreateSwapChainForHwnd
-    return factory1.As(outFactory2);
+    return factory1.As(&outFactory2);
 }
 
 // Query support for tearing (VRR)
@@ -62,7 +67,7 @@ HRESULT Swapchain::Initialize(ID3D11Device* device,
     m_useSRGB = info.sRGB;
     m_bufferCount = info.tripleBuffer ? 3u : 2u;
 
-    HRESULT hr = GetDXGIFactoryFromDevice(m_device.Get(), &m_factory2);
+    HRESULT hr = GetDXGIFactoryFromDevice(m_device.Get(), m_factory2);
     if (FAILED(hr)) return hr;
 
     // Disable default Alt+Enter handling
@@ -190,7 +195,7 @@ HRESULT Swapchain::Resize(UINT width, UINT height)
     m_backBuffer.Reset();
     m_depth.Reset();
 
-    // Per VRR docs: ResizeBuffers must carry the same tearing flag used at creation. :contentReference[oaicite:3]{index=3}
+    // ResizeBuffers must carry the same tearing flag used at creation.
     HRESULT hr = m_swapChain->ResizeBuffers(
         m_bufferCount,
         m_width,
@@ -206,7 +211,7 @@ HRESULT Swapchain::Present(bool vsync)
 {
     if (!m_swapChain) return E_FAIL;
 
-    // syncInterval=1 => vsync; 0 => uncapped; if tearing supported, pass flag when uncapped. :contentReference[oaicite:4]{index=4}
+    // syncInterval=1 => vsync; 0 => uncapped; if tearing supported, pass flag when uncapped.
     const UINT syncInterval = vsync ? 1u : 0u;
 
     UINT flags = 0;
