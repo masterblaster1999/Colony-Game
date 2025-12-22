@@ -105,18 +105,19 @@ public:
 
     void rect(float x, float y, float w, float h, Color c)
     {
-        const float r = c.r, g = c.g, b = c.b, a = c.a;
+        // FIX: rename local `g` to avoid C4459 shadowing under unity builds
+        const float r = c.r, g_ = c.g, b = c.b, a = c.a;
         const float x0 = x,     y0 = y;
         const float x1 = x + w, y1 = y + h;
 
         // two triangles (0,1,2) (2,1,3)
-        m_cpu.push_back(Vertex{ x0, y0, r,g,b,a });
-        m_cpu.push_back(Vertex{ x1, y0, r,g,b,a });
-        m_cpu.push_back(Vertex{ x0, y1, r,g,b,a });
+        m_cpu.push_back(Vertex{ x0, y0, r,g_,b,a });
+        m_cpu.push_back(Vertex{ x1, y0, r,g_,b,a });
+        m_cpu.push_back(Vertex{ x0, y1, r,g_,b,a });
 
-        m_cpu.push_back(Vertex{ x0, y1, r,g,b,a });
-        m_cpu.push_back(Vertex{ x1, y0, r,g,b,a });
-        m_cpu.push_back(Vertex{ x1, y1, r,g,b,a });
+        m_cpu.push_back(Vertex{ x0, y1, r,g_,b,a });
+        m_cpu.push_back(Vertex{ x1, y0, r,g_,b,a });
+        m_cpu.push_back(Vertex{ x1, y1, r,g_,b,a });
     }
 
     void end()
