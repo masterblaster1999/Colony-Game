@@ -109,7 +109,8 @@ void SwapchainWin32::create_swapchain_()
 
     // We stay windowed (borderless when toggled); do not call SetFullscreenState(true).
 
-    throw_if_failed(swapchain1.As(m_swapchain.ReleaseAndGetAddressOf()),
+    // FIX: As() expects ComPtr<U>* or ComPtrRef<ComPtr<U>>, not U**
+    throw_if_failed(swapchain1.As(&m_swapchain),
                     "Query IDXGISwapChain3 failed");
 
     m_frameIndex = m_swapchain->GetCurrentBackBufferIndex();
