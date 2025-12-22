@@ -1,0 +1,146 @@
+CHATGPT_GENERAL_SEARCH_GUIDE.txt
+Version: 1.0
+
+PURPOSE
+This file is a “how to search my repo” operating guide for GPT-5.2 Pro (or any AI assistant)
+WITHOUT GitHub connector access.
+
+IMPORTANT LIMITATION
+You can only read/search files that I explicitly provide in this chat (upload/paste).
+This guide assumes I will upload my repo as “raw text bundles” (e.g., BUNDLE_part001.txt …).
+
+EXPECTED INPUT FILES (UPLOAD THESE TO CHATGPT)
+1) BUNDLE_part001.txt ... BUNDLE_partNNN.txt
+   - Each bundle contains many files wrapped in BEGIN/END markers.
+2) REPO_FILE_LIST.txt (optional but strongly recommended)
+   - Quick index of all exported files (path + size + modified).
+3) MANIFEST.json (optional but helpful)
+   - Hashes and metadata for verification / tracking.
+
+BUNDLE FORMAT (WHAT TO LOOK FOR)
+Each file in the bundle is delimited like:
+
+===== BEGIN FILE: <relative/path> | bytes=<n> | sha256=<hash> =====
+<file contents...>
+===== END FILE: <relative/path> =====
+
+SEARCH + READING PROTOCOL (GENERAL SEARCH)
+Follow this process whenever asked to “search the project”:
+
+PHASE 1 — BUILD A MENTAL INDEX (FAST)
+A) Read REPO_FILE_LIST.txt first (if provided).
+   - Infer folder structure and likely entrypoints.
+B) Skim the bundle headers (BEGIN FILE lines) to learn:
+   - languages, build system, main modules, tests, tools, assets.
+
+PHASE 2 — TARGETED SEARCH (FAST THEN DEEP)
+A) Start with broad keyword search across bundles:
+   - exact symbol (e.g., "DeviceResources", "WorldGen")
+   - error text (e.g., "vcpkg install failed")
+   - common synonyms (e.g., "init", "bootstrap", "startup")
+B) Narrow by path when possible:
+   - include/core/*
+   - src/render/*
+   - tools/*
+C) Once matches found:
+   - open the specific file(s) and read locally around the match
+   - identify definitions vs. references
+   - extract call chains and config interactions
+
+PHASE 3 — CONNECT THE DOTS (TRACE)
+When asked “how does X work?”:
+A) Identify entrypoint(s): main/app/bootstrap/launcher
+B) Find the first call into subsystem X
+C) Follow:
+   - interface → implementation
+   - factory/registration → runtime selection
+   - config → build flags → runtime toggles
+D) Track data ownership:
+   - who allocates / frees
+   - who owns pointers/resources
+   - threading expectations
+
+OUTPUT REQUIREMENTS (HOW TO RESPOND)
+When answering, ALWAYS provide:
+1) File path(s)
+2) What was found there (definition / call site / config / data structure)
+3) A short excerpt (only what is needed; do NOT dump entire files)
+4) A clear next-step list (what to inspect next / what change to make)
+
+RESPONSE TEMPLATE (USE THIS STRUCTURE)
+- Findings
+  - <path>: <what it is> (definition / usage)
+    Excerpt:
+      <few lines>
+  - <path>: <what it is>
+    Excerpt:
+      <few lines>
+
+- Interpretation
+  - <explain how the pieces connect>
+
+- Next steps
+  1) <action>
+  2) <action>
+
+QUERY LANGUAGE / SEARCH TRICKS
+Use these patterns for robust “general search”:
+- Exact string: "SymbolName"
+- Case-insensitive guess: try "symbolname" and "SymbolName"
+- Related terms: search both "init" and "initialize", "config" and "settings"
+- Path filter: prioritize matches in:
+  - CMakeLists.txt / *.cmake for build issues
+  - include/ for public APIs
+  - src/ or core/ for implementations
+  - tests/ for usage examples
+
+COMMON TASK PLAYBOOKS
+
+1) “Where is X defined?”
+- Search for: "class X", "struct X", "X::", "typedef X", "using X"
+- Return:
+  - canonical definition file
+  - forward decls (if relevant)
+  - primary include path
+
+2) “Find all call sites of function F”
+- Search for: "F(" plus "Class::F(" if method
+- Summarize call sites by module/folder
+- If too many, group by directory and show top 10 most relevant.
+
+3) “Trace the execution path for feature Y”
+- Start from entrypoint
+- Find the first reference to Y
+- Walk outward/inward along calls until:
+  - configuration → init → runtime update loop → rendering/output
+
+4) “Fix this build error”
+- Search for the exact error line first
+- Then search for the failing target/package in:
+  - CMakeLists.txt
+  - vcpkg manifests
+  - CI configs
+- Propose smallest patch first.
+
+SCALING RULES (BIG REPOS / MANY BUNDLES)
+- Prefer file-path narrowing early.
+- Prefer “definition first, then call sites”.
+- Avoid dumping entire files; quote only the necessary excerpt.
+- If the question is broad, produce:
+  - quick map of relevant files
+  - then ask the user to choose which sub-area to go deep on (only if required).
+  (Otherwise proceed with best guess and state assumptions.)
+
+PRIVACY / SECRETS SAFETY
+- If you encounter content that looks like secrets (tokens, private keys, passwords):
+  - Do NOT reproduce the secret value.
+  - Replace with [REDACTED] in excerpts.
+  - Recommend removing/rotating secrets and adding to .gitignore.
+
+CONFIRMATION CHECK (BEFORE FINAL ANSWER)
+- Did you cite file paths for every key claim?
+- Did you distinguish “definition” vs “usage”?
+- Did you avoid excessive copying?
+- Did you provide concrete next steps?
+
+END
