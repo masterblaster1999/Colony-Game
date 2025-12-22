@@ -324,11 +324,32 @@ function(colony_enable_pch tgt)
   if(NOT COLONY_USE_PCH)
     return()
   endif()
-  # Expected: colony_enable_pch(<target> <PUBLIC|PRIVATE|INTERFACE> <header...>)
+
+  # Expected: colony_enable_pch(<tgt> <PUBLIC|PRIVATE|INTERFACE> <pch_header> [...])
   if(ARGC LESS 3)
-    message(FATAL_ERROR "colony_enable_pch(<target> <PUBLIC|PRIVATE|INTERFACE> <header...>)")
+    message(FATAL_ERROR "colony_enable_pch(<tgt> <PUBLIC|PRIVATE|INTERFACE> <pch_header> [...])")
   endif()
-  target_precompile_headers(${tgt} ${ARGN})
+
+  set(_args ${ARGN})
+  list(POP_FRONT _args _vis)
+
+  set(_resolved_headers "")
+  foreach(_h IN LISTS _args)
+    # Pass-through generator expressions.
+    if(_h MATCHES "^\\$<")
+      list(APPEND _resolved_headers "${_h}")
+    elseif(IS_ABSOLUTE "${_h}")
+      list(APPEND _resolved_headers "${_h}")
+    elseif(EXISTS "${CMAKE_SOURCE_DIR}/${_h}")
+      # Treat repo-relative headers as relative to the source root.
+      list(APPEND _resolved_headers "${CMAKE_SOURCE_DIR}/${_h}")
+    else()
+      # Fallback: keep original behavior.
+      list(APPEND _resolved_headers "${_h}")
+    endif()
+  endforeach()
+
+  target_precompile_headers(${tgt} ${_vis} ${_resolved_headers})
 endfunction()
 
 function(colony_apply_msvc_runtime tgt)
