@@ -1,164 +1,122 @@
 # tests/CMakeLists.txt
-#
-# Builds colony_tests (Windows/MSVC-focused).
-#
-# Fixes:
-#  - CMake 4.x + CMP0169: avoids FetchContent_Populate(<name>) single-arg form
-#  - Visual Studio/MSBuild MSB8027: duplicate basenames -> .obj collisions
-#  - Visual Studio/MSBuild MSB3191: invalid intermediate dirs when %(RelativeDir) expands to an absolute path
-#  - Broken object-library injection ("$" -> proper $<TARGET_OBJECTS:...>)
+
+# ------------------------------------------------------------
+# Doctest (header-only fetch). Avoids running doctest's CMake.
+# ------------------------------------------------------------
+if(POLICY CMP0169)
+  # CMake 4.2+: calling FetchContent_Populate directly is deprecated under NEW.
+  # We keep the header-only approach and allow it via OLD for now.
+  cmake_policy(SET CMP0169 OLD)
+endif()
 
 include(FetchContent)
 
-# ------------------------------------------------------------------------------
-# Dependency: doctest (header-only, avoids doctest's own CMakeLists constraints)
-# ------------------------------------------------------------------------------
-if(NOT TARGET doctest::doctest)
-  # NOTE:
-  #  We intentionally do NOT call FetchContent_MakeAvailable(doctest)
-  #  to avoid bringing doctest's CMake project into ours.
-  #
-  #  We also intentionally do NOT call FetchContent_Populate(doctest) with ONLY
-  #  the name, because under CMP0169 NEW that form is a hard error. We use the
-  #  "full details" form, which remains supported.
-  set(_doctest_src "${CMAKE_BINARY_DIR}/_deps/doctest-src")
-  set(_doctest_bin "${CMAKE_BINARY_DIR}/_deps/doctest-subbuild")
+FetchContent_Declare(doctest
+  GIT_REPOSITORY https://github.com/doctest/doctest.git
+  GIT_TAG        v2.4.11
+  GIT_SHALLOW    TRUE
+)
 
-  FetchContent_Populate(
-    doctest
-    GIT_REPOSITORY https://github.com/doctest/doctest.git
-    GIT_TAG        v2.4.11
-    SOURCE_DIR     "${_doctest_src}"
-    BINARY_DIR     "${_doctest_bin}"
-  )
-
-  add_library(doctest INTERFACE)
-  add_library(doctest::doctest ALIAS doctest)
-
-  # doctest is header-only; include its repo root.
-  target_include_directories(doctest INTERFACE "${doctest_SOURCE_DIR}")
+FetchContent_GetProperties(doctest)
+if(NOT doctest_POPULATED)
+  FetchContent_Populate(doctest)
 endif()
 
-# ------------------------------------------------------------------------------
-# Helper: MSB8027 + MSB3191 safe object file naming for Visual Studio generators
-#
-# Why:
-#  - MSB8027 happens when two .cpp files share the same basename and therefore
-#    default to the same .obj name in $(IntDir).
-#  - A common workaround is ObjectFileName=$(IntDir)%(RelativeDir) ...
-#    But if a source is *absolute*, %(RelativeDir) can become "D:\...".
-#    That produces invalid paths like "$(IntDir)D:\..." -> MSB3191.
-#
-# Fix:
-#  - For each source, compute a *repo-relative* subdir using CMake, and set
-#    ObjectFileName explicitly to "$(IntDir)<repo-relative-dir>\<basename>.obj".
-#  - If the file is outside the repo root, put it under a stable hashed folder
-#    inside IntDir to avoid ".." escaping.
-# ------------------------------------------------------------------------------
-function(colony_msvc_unique_objnames)
-  if(NOT (MSVC AND CMAKE_GENERATOR MATCHES "Visual Studio"))
+add_library(doctest INTERFACE)
+add_library(doctest::doctest ALIAS doctest)
+# doctest header is usually included as: #include <doctest/doctest.h>
+target_include_directories(doctest INTERFACE "${doctest_SOURCE_DIR}")
+
+# ------------------------------------------------------------
+# Helper: unique, drive-letter-safe .obj naming for MSVC/VS
+# ------------------------------------------------------------
+function(colony_msvc_unique_objnames_for_sources sources_list)
+  if(NOT MSVC OR NOT CMAKE_GENERATOR MATCHES "Visual Studio")
+    return()
+  endif()
+  if(NOT CMAKE_VERSION VERSION_GREATER_EQUAL "3.22")
+    message(WARNING "CMake < 3.22: per-source VS_SETTINGS may not be honored reliably.")
     return()
   endif()
 
-  foreach(_src IN LISTS ARGN)
+  foreach(_src IN LISTS ${sources_list})
     if(NOT _src MATCHES "\\.(c|cc|cpp|cxx)$")
       continue()
     endif()
 
     get_filename_component(_abs "${_src}" ABSOLUTE)
-    get_filename_component(_base "${_abs}" NAME_WE)
 
-    # Compute path relative to repo root
+    # Make a stable relative path under the repo root.
     file(RELATIVE_PATH _rel "${CMAKE_SOURCE_DIR}" "${_abs}")
 
-    # Normalize to forward slashes for checks
-    string(REPLACE "\\" "/" _rel "${_rel}")
-
-    # If outside repo, use a hashed folder under IntDir to keep outputs contained
-    if(_rel MATCHES "^\\.\\./" OR _rel MATCHES "^\\.\\.$" OR _rel MATCHES "^\\.\\.")
-      string(MD5 _hash "${_abs}")
-      set(_subdir "_external/${_hash}")
-    else()
-      get_filename_component(_subdir "${_rel}" DIRECTORY)
+    # If the file is outside the repo root, hash it into a safe bucket.
+    if(_rel MATCHES "^\\.\\.")
+      string(MD5 _h "${_abs}")
+      set(_rel "_external/${_h}/${_src}")
     endif()
 
-    # Sanitize just in case
+    get_filename_component(_subdir "${_rel}" DIRECTORY)
+    get_filename_component(_base   "${_src}" NAME_WE)
+
+    # Sanitize (no ':' allowed inside the path).
     string(REPLACE ":" "_" _subdir "${_subdir}")
     string(REPLACE ".." "__" _subdir "${_subdir}")
-
-    # Back to Windows slashes for MSBuild
     string(REPLACE "/" "\\" _subdir_win "${_subdir}")
 
-    if(_subdir_win STREQUAL "" OR _subdir_win STREQUAL ".")
+    if(_subdir_win STREQUAL ".")
+      set(_subdir_win "")
+    endif()
+
+    if(_subdir_win STREQUAL "")
       set(_obj "$(IntDir)${_base}.obj")
     else()
       set(_obj "$(IntDir)${_subdir_win}\\${_base}.obj")
     endif()
 
-    # CMake 3.22+ honors VS_SETTINGS for C/C++ files
-    if(CMAKE_VERSION VERSION_GREATER_EQUAL "3.22")
-      set_property(SOURCE "${_src}" PROPERTY VS_SETTINGS "ObjectFileName=${_obj}")
-    else()
-      # Fallback: explicit /Fo path (rarely needed for you, but safe)
-      set_property(SOURCE "${_src}" APPEND PROPERTY COMPILE_OPTIONS "/Fo${_obj}")
-    endif()
+    set_property(SOURCE "${_src}" PROPERTY VS_SETTINGS "ObjectFileName=${_obj}")
   endforeach()
 endfunction()
 
-# ------------------------------------------------------------------------------
-# Test sources
-# ------------------------------------------------------------------------------
-file(GLOB_RECURSE TEST_SOURCES CONFIGURE_DEPENDS
-  "${CMAKE_CURRENT_LIST_DIR}/*.cpp"
-  "${CMAKE_CURRENT_LIST_DIR}/*.cc"
-  "${CMAKE_CURRENT_LIST_DIR}/*.cxx"
+# ------------------------------------------------------------
+# Test executable
+# ------------------------------------------------------------
+file(GLOB CONFIGURE_DEPENDS COLONY_TEST_SOURCES
+  "${CMAKE_CURRENT_SOURCE_DIR}/*.cpp"
+  "${CMAKE_CURRENT_SOURCE_DIR}/*.cxx"
 )
 
-if(NOT TEST_SOURCES)
-  message(FATAL_ERROR "colony_tests: no test sources found in ${CMAKE_CURRENT_LIST_DIR}")
-endif()
-
-# Apply unique obj naming to test sources
-colony_msvc_unique_objnames(${TEST_SOURCES})
-
-add_executable(colony_tests ${TEST_SOURCES})
+add_executable(colony_tests ${COLONY_TEST_SOURCES})
 set_target_properties(colony_tests PROPERTIES FOLDER "tests")
 target_compile_features(colony_tests PRIVATE cxx_std_23)
-
-target_include_directories(colony_tests PRIVATE
-  "${CMAKE_SOURCE_DIR}/include"
-  "${CMAKE_SOURCE_DIR}/src"
-  "${CMAKE_SOURCE_DIR}"
-)
+target_compile_definitions(colony_tests PRIVATE DOCTEST_CONFIG_IMPLEMENT_WITH_MAIN)
 
 target_link_libraries(colony_tests PRIVATE doctest::doctest)
 
-# Project-wide options (if present)
-if(TARGET colony_build_options)
-  target_link_libraries(colony_tests PRIVATE colony_build_options)
-endif()
-
-# Core library
+# Link project libs when present
 if(TARGET colony::core)
   target_link_libraries(colony_tests PRIVATE colony::core)
 elseif(TARGET colony_core)
   target_link_libraries(colony_tests PRIVATE colony_core)
 endif()
 
-# Nav/path library (from pathfinding/)
 if(TARGET colony::nav)
   target_link_libraries(colony_tests PRIVATE colony::nav)
-elseif(TARGET colony::path)
-  target_link_libraries(colony_tests PRIVATE colony::path)
 elseif(TARGET colony_nav)
   target_link_libraries(colony_tests PRIVATE colony_nav)
 endif()
 
-# ------------------------------------------------------------------------------
-# Worldgen implementation fallback (fixes unresolved externals in tests)
-# ------------------------------------------------------------------------------
-set(COLONY_WORLDGEN_SOURCES "")
+if(TARGET colony::platform_win)
+  target_link_libraries(colony_tests PRIVATE colony::platform_win)
+elseif(TARGET colony_platform_win)
+  target_link_libraries(colony_tests PRIVATE colony_platform_win)
+elseif(TARGET win_platform)
+  target_link_libraries(colony_tests PRIVATE win_platform)
+endif()
 
+# ------------------------------------------------------------
+# Worldgen objects for tests (fix unresolved externals + keep tests hermetic)
+# ------------------------------------------------------------
+set(COLONY_WORLDGEN_SOURCES "")
 if(EXISTS "${CMAKE_SOURCE_DIR}/src/worldgen")
   file(GLOB_RECURSE _wg CONFIGURE_DEPENDS
     "${CMAKE_SOURCE_DIR}/src/worldgen/*.c"
@@ -182,35 +140,33 @@ endif()
 list(REMOVE_DUPLICATES COLONY_WORLDGEN_SOURCES)
 
 if(COLONY_WORLDGEN_SOURCES)
-  # Apply unique obj naming to worldgen sources too (prevents MSB8027 in OBJECT lib)
-  colony_msvc_unique_objnames(${COLONY_WORLDGEN_SOURCES})
-
   add_library(colony_worldgen_obj OBJECT ${COLONY_WORLDGEN_SOURCES})
-  set_target_properties(colony_worldgen_obj PROPERTIES FOLDER "tests")
-  target_compile_features(colony_worldgen_obj PUBLIC cxx_std_23)
-
-  target_include_directories(colony_worldgen_obj PUBLIC
-    "${CMAKE_SOURCE_DIR}/include"
-    "${CMAKE_SOURCE_DIR}/src"
-    "${CMAKE_SOURCE_DIR}"
+  set_target_properties(colony_worldgen_obj PROPERTIES
+    FOLDER "tests"
+    UNITY_BUILD OFF          # <-- critical: prevents stage helper collisions
   )
 
+  target_compile_features(colony_worldgen_obj PUBLIC cxx_std_23)
+
+  # Inherit include dirs from the main project layout.
+  target_include_directories(colony_worldgen_obj PUBLIC
+    "${CMAKE_SOURCE_DIR}/src"
+    "${CMAKE_SOURCE_DIR}/include"
+  )
+
+  # Link Core if it exists (types/utilities used by worldgen).
   if(TARGET colony::core)
     target_link_libraries(colony_worldgen_obj PUBLIC colony::core)
   elseif(TARGET colony_core)
     target_link_libraries(colony_worldgen_obj PUBLIC colony_core)
   endif()
 
-  # Inject the compiled object files into the test executable
-  target_sources(colony_tests PRIVATE
-    $<TARGET_OBJECTS:colony_worldgen_obj>
-  )
+  # Fix MSB3191/MSB8027 for this object lib in VS/MSVC
+  colony_msvc_unique_objnames_for_sources(COLONY_WORLDGEN_SOURCES)
+
+  # Actually link the compiled objects into the test executable
+  target_sources(colony_tests PRIVATE $<TARGET_OBJECTS:colony_worldgen_obj>)
 endif()
 
-# Optional repo helper hooks (only if defined)
-if(COMMAND colony_apply_msvc_runtime)
-  colony_apply_msvc_runtime(colony_tests)
-endif()
-if(COMMAND colony_apply_debug_runtime_checks)
-  colony_apply_debug_runtime_checks(colony_tests)
-endif()
+# Fix MSB8027 for the tests' own sources too
+colony_msvc_unique_objnames_for_sources(COLONY_TEST_SOURCES)
