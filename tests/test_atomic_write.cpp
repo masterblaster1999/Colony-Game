@@ -48,6 +48,10 @@ static void remove_with_retry(const std::filesystem::path& p) {
     // Still failed after retries: throw for visibility.
     throw std::filesystem::filesystem_error("remove", p, ec);
 }
+
+// FIX: prevent C4505 (static function removed as unreferenced under /WX)
+[[maybe_unused]] static auto* s_keep_remove_with_retry = &remove_with_retry;
+
 #else
 #include <filesystem>
 #include <system_error>
@@ -59,4 +63,7 @@ static void remove_with_retry(const std::filesystem::path& p) {
         throw std::filesystem::filesystem_error("remove", p, ec);
     }
 }
+
+[[maybe_unused]] static auto* s_keep_remove_with_retry_nonwin = &remove_with_retry;
+
 #endif
