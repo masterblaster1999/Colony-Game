@@ -1,0 +1,78 @@
+CHATGPT_REPO_SEARCH_GUIDE.txt
+Version: 1.0
+
+PURPOSE
+- This file is a navigation + prompt guide for AI assistants (ChatGPT) to understand this repository fast.
+- IMPORTANT: Committing this file does NOT grant ChatGPT access to the repo.
+  To let ChatGPT search/read this repo, you must connect GitHub in ChatGPT and authorize this repository.
+
+HOW TO MAKE THIS REPO SEARCHABLE IN CHATGPT (REQUIRED)
+1) In ChatGPT: Settings → (Connected apps / Connectors) → GitHub → Connect
+2) Authorize GitHub and allow access to THIS repository (or the org containing it)
+3) Back in chat, ask questions like:
+   - "Search my GitHub repo for where <feature> is implemented."
+   - "Find the code path that handles <X> and explain it."
+   - "List the key modules involved in <system> and their responsibilities."
+
+NOTES / LIMITATIONS (GOOD TO KNOW)
+- The GitHub connector works by forming search queries from your prompt and retrieving relevant code/docs.
+- If a repo doesn't appear, it may not be indexed by GitHub yet. Triggering a GitHub search can help indexing.
+
+REPO SUMMARY (FILL THIS IN)
+- What this project does:
+  <one paragraph>
+
+- Primary language(s) / platform(s):
+  <e.g., C++23 on Windows, etc.>
+
+- How to build/run (very short):
+  <commands or steps>
+
+- Coding conventions / architecture style:
+  <bullets>
+
+"START HERE" ENTRY POINTS (FILL THIS IN)
+- README:
+  <path>
+- Main entrypoint / app bootstrap:
+  <path(s)>
+- Build system:
+  <path(s)>
+- Core modules:
+  <path(s)>
+- Tests / tools:
+  <path(s)>
+
+DIRECTORY MAP (FILL THIS IN)
+- /src (or equivalent):
+  - responsibility:
+- /include:
+  - responsibility:
+- /assets:
+  - responsibility:
+- /tools:
+  - responsibility:
+- /docs:
+  - responsibility:
+
+AI TASK SHORTCUTS (COPY/PASTE PROMPTS)
+- Bug hunt:
+  "Search this repo for <error text or symbol>. Identify the root cause and propose a minimal patch."
+
+- Refactor safely:
+  "Find all call sites of <function/class>. Propose a refactor plan with step-by-step patches and tests."
+
+- Architecture overview:
+  "Trace the execution from <entrypoint> through <major subsystem>. Summarize data flow and ownership."
+
+- Build help:
+  "Inspect build scripts and dependencies. Suggest fixes for <build error> and explain why."
+
+OPTIONAL: KEEP AN UP-TO-DATE FILE LIST (HIGHLY RECOMMENDED)
+- Generate a file list on Windows (PowerShell):
+  git ls-files | Sort-Object | Out-File -Encoding utf8 REPO_FILE_LIST.txt
+
+- Generate a quick tree (PowerShell):
+  tree /f /a > REPO_TREE.txt
+
+Add those generated files to the repo if you want the AI (and humans) to quickly see what's there.
