@@ -4,7 +4,7 @@ cmake_minimum_required(VERSION 3.20)
 include(FetchContent)
 
 # ----------------------------
-# Dependencies (doctest)
+# Dependency: doctest
 # ----------------------------
 if(NOT TARGET doctest::doctest)
   FetchContent_Declare(
@@ -16,14 +16,23 @@ if(NOT TARGET doctest::doctest)
 endif()
 
 # ----------------------------
-# Helper: MSB8027 fix (MSVC+VS)
+# Helper: MSB8027 fix (MSVC+Visual Studio generator)
+# - MSBuild recommends ObjectFileName: $(IntDir)%(RelativeDir)
+# - Use VS_SETTINGS when possible (CMake 3.22+ honors for built sources).
 # ----------------------------
 function(colony_msvc_unique_objdirs)
   if(MSVC AND CMAKE_GENERATOR MATCHES "Visual Studio")
     foreach(_src IN LISTS ARGN)
       if(_src MATCHES "\\.(c|cc|cpp|cxx)$")
-        # MSBuild recommended fix for MSB8027:
-        set_property(SOURCE "${_src}" PROPERTY VS_SETTINGS "ObjectFileName=$(IntDir)%(RelativeDir)")
+        if(CMAKE_VERSION VERSION_GREATER_EQUAL "3.22")
+          set_property(SOURCE "${_src}" PROPERTY VS_SETTINGS
+            "ObjectFileName=$(IntDir)%(RelativeDir)"
+          )
+        else()
+          set_property(SOURCE "${_src}" APPEND PROPERTY COMPILE_OPTIONS
+            "/Fo$(IntDir)%(RelativeDir)"
+          )
+        endif()
       endif()
     endforeach()
   endif()
@@ -80,15 +89,21 @@ elseif(TARGET colony_nav)
 endif()
 
 # ---------------------------------------------------------
-# Worldgen implementation fallback
-# Fixes unresolved externals for StageContext + stages.
+# Worldgen implementation fallback (fixes unresolved externals)
+#
+# Your test link errors include StageContext and multiple stages'
+# generate() vfuncs, which means the implementation .cpps are not being linked.
+#
+# This builds worldgen/pcg sources into an OBJECT library and injects the
+# objects into colony_tests via $<TARGET_OBJECTS:...>.
 # ---------------------------------------------------------
 set(COLONY_WORLDGEN_SOURCES "")
+
 if(EXISTS "${CMAKE_SOURCE_DIR}/src/worldgen")
   file(GLOB_RECURSE _wg CONFIGURE_DEPENDS
     "${CMAKE_SOURCE_DIR}/src/worldgen/*.c"
-    "${CMAKE_SOURCE_DIR}/src/worldgen/*.cpp"
     "${CMAKE_SOURCE_DIR}/src/worldgen/*.cc"
+    "${CMAKE_SOURCE_DIR}/src/worldgen/*.cpp"
     "${CMAKE_SOURCE_DIR}/src/worldgen/*.cxx"
   )
   list(APPEND COLONY_WORLDGEN_SOURCES ${_wg})
@@ -97,8 +112,8 @@ endif()
 if(EXISTS "${CMAKE_SOURCE_DIR}/src/pcg")
   file(GLOB_RECURSE _pcg CONFIGURE_DEPENDS
     "${CMAKE_SOURCE_DIR}/src/pcg/*.c"
-    "${CMAKE_SOURCE_DIR}/src/pcg/*.cpp"
     "${CMAKE_SOURCE_DIR}/src/pcg/*.cc"
+    "${CMAKE_SOURCE_DIR}/src/pcg/*.cpp"
     "${CMAKE_SOURCE_DIR}/src/pcg/*.cxx"
   )
   list(APPEND COLONY_WORLDGEN_SOURCES ${_pcg})
@@ -125,13 +140,15 @@ if(COLONY_WORLDGEN_SOURCES)
     target_link_libraries(colony_worldgen_obj PUBLIC colony_core)
   endif()
 
+  # Inject objects into the test exe link.
   target_sources(colony_tests PRIVATE $<TARGET_OBJECTS:colony_worldgen_obj>)
 endif()
 
-# Optional repo helpers (only if defined)
+# Optional repo helper hooks (only if defined)
 if(COMMAND colony_apply_msvc_runtime)
   colony_apply_msvc_runtime(colony_tests)
 endif()
+
 if(COMMAND colony_apply_debug_runtime_checks)
   colony_apply_debug_runtime_checks(colony_tests)
 endif()
