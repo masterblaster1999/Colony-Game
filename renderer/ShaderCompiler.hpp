@@ -9,7 +9,7 @@
 //
 //   ShaderCompiler compiler;
 //   CompileOptions opts;
-//   opts.enableDebug      = true;
+//   opts.enableDebug       = true;
 //   opts.warningsAreErrors = true;
 //   opts.optimizationLevel = 3;
 //   opts.stripDebug        = false;       // keep debug in DXC_OUT_OBJECT or separate PDB
@@ -79,22 +79,22 @@ struct ShaderDefine
 struct CompileOptions
 {
     // -Zi / no -Zi
-    bool enableDebug        = true;
+    bool enableDebug = true;
 
     // -WX
-    bool warningsAreErrors  = true;
+    bool warningsAreErrors = true;
 
     // 0..3 -> -O0..-O3, or negative to use DXC default (O3).
-    int  optimizationLevel  = 3;
+    int optimizationLevel = 3;
 
     // -Qstrip_debug, -Qstrip_reflect
-    bool stripDebug         = false;
-    bool stripReflection    = false;
+    bool stripDebug      = false;
+    bool stripReflection = false;
 
     // -Vd (skip validator)
-    bool disableValidation  = false;
+    bool disableValidation = false;
 
-    // "-I <dir>" per element.
+    // "-I " per element.
     std::vector<std::wstring> includeDirs;
 
     // -D NAME=VALUE per element.
@@ -125,7 +125,6 @@ struct ShaderCompileResult
 // Wraps IDxcUtils + IDxcCompiler3 for basic HLSL compilation.
 // Not thread-safe by itself; either create one instance per thread or
 // ensure external synchronization around Compile() calls.
-// (DXC docs explicitly recommend one compiler/utils instance per thread.) :contentReference[oaicite:1]{index=1}
 class ShaderCompiler
 {
 public:
@@ -159,7 +158,9 @@ public:
     ) const;
 
 private:
-    using ComPtr = Microsoft::WRL::ComPtr;
+    // FIX: Microsoft::WRL::ComPtr is a template; alias it as a template.
+    template <class T>
+    using ComPtr = Microsoft::WRL::ComPtr<T>;
 
     ShaderCompileResult compileInternal(
         const std::wstring& sourceName,
