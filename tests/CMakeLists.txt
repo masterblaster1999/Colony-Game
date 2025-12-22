@@ -2,32 +2,32 @@
 #
 # Builds colony_tests (Windows-focused, MSVC-friendly).
 # Uses doctest as header-only (FetchContent without add_subdirectory)
-# to avoid CMake 4.x failing on doctest's old cmake_minimum_required().
-#
-# Also includes an MSB8027 mitigation for Visual Studio generators.
+# and avoids the deprecated FetchContent_Populate(<name>) single-arg form
+# (CMP0169=NEW makes that a fatal error).
 
 include(FetchContent)
 
 # ----------------------------
-# Dependency: doctest (header-only, CMake-4-safe)
+# Dependency: doctest (header-only, CMP0169-safe)
 # ----------------------------
 if(NOT TARGET doctest::doctest)
-  FetchContent_Declare(
+  # IMPORTANT:
+  # - Do NOT call FetchContent_Populate(doctest) with a single argument.
+  #   CMP0169=NEW turns that into a fatal error.
+  # - Instead call the "self-contained" form where at least one option
+  #   follows the name (GIT_REPOSITORY/GIT_TAG/etc). This form is supported.
+  FetchContent_Populate(
     doctest
+    SOURCE_DIR "${CMAKE_BINARY_DIR}/_deps/doctest-src"
+    BINARY_DIR "${CMAKE_BINARY_DIR}/_deps/doctest-build"
     GIT_REPOSITORY https://github.com/doctest/doctest.git
     GIT_TAG        v2.4.11
   )
 
-  FetchContent_GetProperties(doctest)
-  if(NOT doctest_POPULATED)
-    FetchContent_Populate(doctest)
-  endif()
-
-  # doctest is header-only; create our own interface target.
   add_library(doctest INTERFACE)
   add_library(doctest::doctest ALIAS doctest)
 
-  # The header is included as <doctest/doctest.h>, so the repo root is the include dir.
+  # doctest is included as <doctest/doctest.h>, so its repo root is the include dir.
   target_include_directories(doctest INTERFACE "${doctest_SOURCE_DIR}")
 endif()
 
@@ -107,12 +107,6 @@ endif()
 
 # ---------------------------------------------------------
 # Worldgen implementation fallback (fixes unresolved externals)
-#
-# Your test link errors include StageContext and stage generate() vfuncs.
-# That usually means the implementation .cpps are not being linked into tests.
-#
-# This builds worldgen+pcg sources into an OBJECT library and injects them into
-# colony_tests via $<TARGET_OBJECTS:...>.
 # ---------------------------------------------------------
 set(COLONY_WORLDGEN_SOURCES "")
 
@@ -158,7 +152,7 @@ if(COLONY_WORLDGEN_SOURCES)
     target_link_libraries(colony_worldgen_obj PUBLIC colony_core)
   endif()
 
-  # ✅ Correct generator expression (your current file had a broken "$")
+  # ✅ Correct generator expression
   target_sources(colony_tests PRIVATE $<TARGET_OBJECTS:colony_worldgen_obj>)
 endif()
 
