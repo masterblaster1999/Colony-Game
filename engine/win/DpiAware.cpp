@@ -1,22 +1,29 @@
-#include "DpiAware.h"
-#define WIN32_LEAN_AND_MEAN
-#include <windows.h>
+// engine/win/DpiAware.cpp
+#ifndef WIN32_LEAN_AND_MEAN
+  #define WIN32_LEAN_AND_MEAN
+#endif
+#ifndef NOMINMAX
+  #define NOMINMAX
+#endif
+#include <Windows.h>
 
-namespace winplat {
-bool EnablePerMonitorV2DpiAwareness() {
-    // Prefer manifest (PMv2) but also try programmatic opt-in for safety
-    // Note: Microsoft recommends manifest, programmatic is ok if done very early.
-    // Docs: "Setting the default DPI awareness for a process"
-    // and SetProcessDpiAwarenessContext.
-    // https://learn.microsoft.com/windows/win32/hidpi/setting-the-default-dpi-awareness-for-a-process
-    // https://learn.microsoft.com/windows/win32/api/winuser/nf-winuser-setprocessdpiawarenesscontext
-    auto pSet = reinterpret_cast<BOOL(WINAPI*)(HANDLE)>(
-        GetProcAddress(GetModuleHandleW(L"user32.dll"), "SetProcessDpiAwarenessContext"));
-    if (pSet) {
-        if (pSet(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2)) {
-            return true;
-        }
-    }
-    return false;
+#include "DpiAware.h"
+
+namespace winplat
+{
+bool EnablePerMonitorV2DpiAwareness()
+{
+    // Prefer a manifest, but this is a safe runtime opt-in if called early.
+    HMODULE user32 = ::GetModuleHandleW(L"user32.dll");
+    if (!user32)
+        return false;
+
+    using Fn = BOOL(WINAPI*)(DPI_AWARENESS_CONTEXT);
+
+    auto fn = reinterpret_cast<Fn>(::GetProcAddress(user32, "SetProcessDpiAwarenessContext"));
+    if (!fn)
+        return false;
+
+    return fn(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2) != FALSE;
 }
 } // namespace winplat
