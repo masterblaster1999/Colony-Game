@@ -1,9 +1,10 @@
 #include "AppWindow.h"
 
+#include "game/PrototypeGame.h"
+#include "input/InputQueue.h"
 #include "platform/win32/RawMouseInput.h"
 #include "platform/win32/Win32Window.h"
 
-#include "loop/DebugCamera.h"
 #include "loop/FramePacer.h"
 
 #include <windowsx.h> // GET_X_LPARAM, GET_Y_LPARAM
@@ -17,7 +18,8 @@
 struct AppWindow::Impl {
     colony::appwin::win32::RawMouseInput        mouse;
     colony::appwin::win32::BorderlessFullscreen fullscreen;
-    colony::appwin::DebugCameraController      camera;
+    colony::input::InputQueue                  input;
+    colony::game::PrototypeGame                game;
     colony::appwin::FramePacer                 pacer;
 };
 
@@ -93,7 +95,7 @@ void AppWindow::UpdateTitle()
     const double fps = m_impl->pacer.Fps();
 
 #ifndef NDEBUG
-    const auto& cam = m_impl->camera.State();
+    const auto cam = m_impl->game.GetDebugCameraInfo();
     wchar_t title[256];
     swprintf_s(title,
                L"Colony Game | %.0f FPS | VSync %s | %s | yaw %.1f pitch %.1f pan(%.1f, %.1f) zoom %.2f",
@@ -275,10 +277,15 @@ LRESULT AppWindow::HandleMsg(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam)
             if (m_impl->mouse.OnMouseMove(hWnd, GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam), dx, dy))
             {
                 const auto b = m_impl->mouse.Buttons();
-                const bool changed = m_impl->camera.ApplyDrag(dx, dy, b.left, (b.middle || b.right));
-                if (changed) {
-                    UpdateTitle();
-                }
+                colony::input::InputEvent ev{};
+                ev.type = colony::input::InputEventType::MouseDelta;
+                ev.dx = static_cast<std::int32_t>(dx);
+                ev.dy = static_cast<std::int32_t>(dy);
+                ev.buttons = 0;
+                if (b.left)   ev.buttons |= colony::input::MouseButtonsMask::MouseLeft;
+                if (b.right)  ev.buttons |= colony::input::MouseButtonsMask::MouseRight;
+                if (b.middle) ev.buttons |= colony::input::MouseButtonsMask::MouseMiddle;
+                m_impl->input.Push(ev);
             }
         }
         return 0;
@@ -287,9 +294,10 @@ LRESULT AppWindow::HandleMsg(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam)
         if (m_impl)
         {
             const int detents = m_impl->mouse.OnMouseWheel(wParam);
-            if (m_impl->camera.ApplyWheelDetents(detents)) {
-                UpdateTitle();
-            }
+            colony::input::InputEvent ev{};
+            ev.type = colony::input::InputEventType::MouseWheel;
+            ev.wheelDetents = detents;
+            m_impl->input.Push(ev);
         }
         return 0;
 
@@ -304,10 +312,15 @@ LRESULT AppWindow::HandleMsg(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam)
             if (m_impl->mouse.OnRawInput(hWnd, reinterpret_cast<HRAWINPUT>(lParam), dx, dy))
             {
                 const auto b = m_impl->mouse.Buttons();
-                const bool changed = m_impl->camera.ApplyDrag(dx, dy, b.left, (b.middle || b.right));
-                if (changed) {
-                    UpdateTitle();
-                }
+                colony::input::InputEvent ev{};
+                ev.type = colony::input::InputEventType::MouseDelta;
+                ev.dx = static_cast<std::int32_t>(dx);
+                ev.dy = static_cast<std::int32_t>(dy);
+                ev.buttons = 0;
+                if (b.left)   ev.buttons |= colony::input::MouseButtonsMask::MouseLeft;
+                if (b.right)  ev.buttons |= colony::input::MouseButtonsMask::MouseRight;
+                if (b.middle) ev.buttons |= colony::input::MouseButtonsMask::MouseMiddle;
+                m_impl->input.Push(ev);
             }
         }
         return 0;
@@ -364,6 +377,17 @@ int AppWindow::MessageLoop()
             if (msg.message == WM_QUIT) return static_cast<int>(msg.wParam);
             TranslateMessage(&msg);
             DispatchMessageW(&msg);
+        }
+
+        // Apply input events to the game even if we end up skipping rendering
+        // this iteration (e.g., vsync OFF + not time to render yet).
+        if (m_impl)
+        {
+            const bool changed = m_impl->game.OnInput(m_impl->input.Events());
+            m_impl->input.Clear();
+            if (changed) {
+                UpdateTitle();
+            }
         }
 
         // Re-check minimized state after message pump.

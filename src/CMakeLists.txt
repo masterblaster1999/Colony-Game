@@ -24,6 +24,12 @@ set(_colony_game_sources
     ${CMAKE_CURRENT_SOURCE_DIR}/AppWindow.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/AppWindow.h
 
+    # Input + temporary game module (keeps app layer thin)
+    ${CMAKE_CURRENT_SOURCE_DIR}/input/InputEvent.h
+    ${CMAKE_CURRENT_SOURCE_DIR}/input/InputQueue.h
+    ${CMAKE_CURRENT_SOURCE_DIR}/game/PrototypeGame.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/game/PrototypeGame.h
+
     # Extracted modules (platform + loop) used by AppWindow
     ${CMAKE_CURRENT_SOURCE_DIR}/platform/win32/Win32Window.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/platform/win32/Win32Window.h
