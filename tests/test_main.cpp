@@ -28,6 +28,17 @@
     #include <windows.h> // IsDebuggerPresent
 #endif
 
+// Unity/jumbo builds concatenate multiple .cpp files into a single translation
+// unit. If ANY earlier included file pulled in SDL headers without
+// SDL_MAIN_HANDLED, SDL can `#define main SDL_main`, which breaks the linker
+// (no real `main` symbol).
+//
+// Even though we *try* to keep this file out of unity builds via CMake, we add
+// this belt-and-suspenders undef to make the runner robust.
+#ifdef main
+  #undef main
+#endif
+
 namespace {
 
 bool env_truthy(const char* v) {

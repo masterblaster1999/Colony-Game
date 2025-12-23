@@ -95,13 +95,28 @@ file(GLOB CONFIGURE_DEPENDS COLONY_TEST_SOURCES
 )
 
 # Legacy runner kept in-tree for reference; the actual runner is test_main.cpp.
-list(FILTER COLONY_TEST_SOURCES EXCLUDE REGEX ".*/main\\.cpp$")
+list(FILTER COLONY_TEST_SOURCES EXCLUDE REGEX "([/\\\\])main\\.cpp$")
+
+# Be explicit about the runner TU so CI / VS generators never accidentally drop
+# it when unity builds are enabled globally.
+set(_COLONY_TEST_MAIN "${CMAKE_CURRENT_SOURCE_DIR}/test_main.cpp")
+if(EXISTS "${_COLONY_TEST_MAIN}")
+  get_filename_component(_COLONY_TEST_MAIN_ABS "${_COLONY_TEST_MAIN}" ABSOLUTE)
+  list(REMOVE_ITEM COLONY_TEST_SOURCES "${_COLONY_TEST_MAIN_ABS}")
+  list(APPEND COLONY_TEST_SOURCES "${_COLONY_TEST_MAIN_ABS}")
+endif()
 
 list(SORT COLONY_TEST_SOURCES)
 
 add_executable(colony_tests ${COLONY_TEST_SOURCES})
 set_target_properties(colony_tests PROPERTIES FOLDER "tests")
 target_compile_features(colony_tests PRIVATE cxx_std_23)
+
+# Tests are a bad fit for unity/jumbo builds: macros from unrelated translation
+# units can leak into the runner and even rewrite `main()` (e.g., SDL2's
+# historical `#define main SDL_main`). Disable unity builds for the test target
+# even if they are enabled project-wide.
+set_target_properties(colony_tests PROPERTIES UNITY_BUILD OFF)
 
 target_link_libraries(colony_tests PRIVATE doctest::doctest)
 
@@ -139,15 +154,26 @@ endif()
 # ------------------------------------------------------------
 # Worldgen objects for tests (fix unresolved externals + keep tests hermetic)
 # ------------------------------------------------------------
-set(COLONY_WORLDGEN_SOURCES "")
+set(COLONY_WORLDGEN_CORE_SOURCES "")
+set(COLONY_WORLDGEN_STAGE_SOURCES "")
+set(COLONY_PCG_SOURCES "")
+
 if(EXISTS "${CMAKE_SOURCE_DIR}/src/worldgen")
-  file(GLOB_RECURSE _wg CONFIGURE_DEPENDS
+  # Split worldgen into multiple OBJECT libs to avoid MSVC .obj name collisions
+  # (e.g. Biomes.cpp, Noise.cpp, Hydrology.cpp exist in multiple subfolders).
+  file(GLOB_RECURSE _wg_all CONFIGURE_DEPENDS
     "${CMAKE_SOURCE_DIR}/src/worldgen/*.c"
     "${CMAKE_SOURCE_DIR}/src/worldgen/*.cc"
     "${CMAKE_SOURCE_DIR}/src/worldgen/*.cpp"
     "${CMAKE_SOURCE_DIR}/src/worldgen/*.cxx"
   )
-  list(APPEND COLONY_WORLDGEN_SOURCES ${_wg})
+  foreach(_f IN LISTS _wg_all)
+    if(_f MATCHES "[/\\\\]stages[/\\\\]")
+      list(APPEND COLONY_WORLDGEN_STAGE_SOURCES "${_f}")
+    else()
+      list(APPEND COLONY_WORLDGEN_CORE_SOURCES  "${_f}")
+    endif()
+  endforeach()
 endif()
 
 if(EXISTS "${CMAKE_SOURCE_DIR}/src/pcg")
@@ -157,42 +183,45 @@ if(EXISTS "${CMAKE_SOURCE_DIR}/src/pcg")
     "${CMAKE_SOURCE_DIR}/src/pcg/*.cpp"
     "${CMAKE_SOURCE_DIR}/src/pcg/*.cxx"
   )
-  list(APPEND COLONY_WORLDGEN_SOURCES ${_pcg})
+  list(APPEND COLONY_PCG_SOURCES ${_pcg})
 endif()
 
-list(REMOVE_DUPLICATES COLONY_WORLDGEN_SOURCES)
+list(REMOVE_DUPLICATES COLONY_WORLDGEN_CORE_SOURCES)
+list(REMOVE_DUPLICATES COLONY_WORLDGEN_STAGE_SOURCES)
+list(REMOVE_DUPLICATES COLONY_PCG_SOURCES)
 
-if(COLONY_WORLDGEN_SOURCES)
-  add_library(colony_worldgen_obj OBJECT ${COLONY_WORLDGEN_SOURCES})
-  set_target_properties(colony_worldgen_obj PROPERTIES
+function(_colony_tests_add_objlib _name _srcs)
+  if(NOT _srcs)
+    return()
+  endif()
+
+  add_library(${_name} OBJECT ${_srcs})
+  set_target_properties(${_name} PROPERTIES
     FOLDER "tests"
-    UNITY_BUILD OFF          # <-- critical: prevents stage helper collisions
+    UNITY_BUILD OFF  # critical: prevents stage helper collisions
   )
 
-  target_compile_features(colony_worldgen_obj PUBLIC cxx_std_23)
+  target_compile_features(${_name} PUBLIC cxx_std_23)
 
-  # Inherit include dirs from the main project layout.
-  target_include_directories(colony_worldgen_obj PUBLIC
+  target_include_directories(${_name} PUBLIC
     "${CMAKE_SOURCE_DIR}/src"
     "${CMAKE_SOURCE_DIR}/include"
   )
 
-  # Link Core if it exists (types/utilities used by worldgen).
+  # Link Core if it exists (types/utilities used by worldgen / pcg).
   if(TARGET colony::core)
-    target_link_libraries(colony_worldgen_obj PUBLIC colony::core)
+    target_link_libraries(${_name} PUBLIC colony::core)
   elseif(TARGET colony_core)
-    target_link_libraries(colony_worldgen_obj PUBLIC colony_core)
+    target_link_libraries(${_name} PUBLIC colony_core)
   endif()
 
-  # Note: avoid per-source ObjectFileName overrides on OBJECT libraries.
-# Some MSVC/VS generators can end up with a link-time path mismatch (LNK1104)
-# when consuming $<TARGET_OBJECTS:...>.
-# If you hit MSB3191/MSB8027 collisions here, prefer splitting the object lib
-# or switch it to a STATIC library instead of overriding ObjectFileName per-source.
+  # Actually link the compiled objects into the test executable.
+  target_sources(colony_tests PRIVATE $<TARGET_OBJECTS:${_name}>)
+endfunction()
 
-  # Actually link the compiled objects into the test executable
-  target_sources(colony_tests PRIVATE $<TARGET_OBJECTS:colony_worldgen_obj>)
-endif()
+_colony_tests_add_objlib(colony_worldgen_core_obj   "${COLONY_WORLDGEN_CORE_SOURCES}")
+_colony_tests_add_objlib(colony_worldgen_stages_obj "${COLONY_WORLDGEN_STAGE_SOURCES}")
+_colony_tests_add_objlib(colony_pcg_obj             "${COLONY_PCG_SOURCES}")
 
 # Fix MSB8027 for the tests' own sources too
 colony_msvc_unique_objnames_for_sources(COLONY_TEST_SOURCES)
