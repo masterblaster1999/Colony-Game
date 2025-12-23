@@ -75,46 +75,67 @@ struct Params {
     // scattering (trees/rocks)
     float scatter_radius = 8.0f;
 
-    // --- Optional: improved hydrology (lakes) + moisture-from-water ---
-    bool  enable_depression_fill     = true;
-    float fill_epsilon               = 0.01f;  // world units; prevents tiny float fills
-    int   lake_min_area              = 40;     // cells (connected component size)
-    float lake_min_depth             = 0.75f;  // world units of fill to classify as lake
 
-    bool  moisture_from_water        = true;
-    float moisture_water_strength    = 0.35f;  // blend factor [0..1]
-    float moisture_water_radius      = 64.0f;  // in cells (distance falloff)
-    bool  moisture_include_ocean     = false;  // if true, coasts get very wet
+// ---------------- settlement / roads layer ----------------
+// Produces: start site, settlements, road network, fertility/resources masks.
+bool  enable_settlement_layer = true;
 
-    // --- Optional: terrain stamps (craters/volcanoes/etc.) ---
-    bool  enable_stamps              = false;
+// start site scoring (0..1 factors combined)
+int   site_sample_step      = 4;     // evaluate score every N cells (speed/quality)
+int   top_site_candidates   = 2048;  // keep best N scored samples
+float water_preferred_dist  = 10.0f; // cells; "too close" penalty inside this
+float water_max_dist        = 96.0f; // cells; beyond this water gives no benefit
+float max_slope_for_sites   = 0.55f; // normalized; above this score is heavily penalized
 
-    int   crater_count               = 0;
-    float crater_radius_min          = 10.0f;  // cells
-    float crater_radius_max          = 35.0f;  // cells
-    float crater_depth               = 8.0f;   // world units
-    float crater_rim_height          = 2.5f;   // world units
+// score weights
+float w_water    = 1.40f;
+float w_slope    = 1.20f;
+float w_biome    = 1.00f;
+float w_resource = 0.85f;
+float w_flood    = 1.10f;
 
-    int   volcano_count              = 0;
-    float volcano_radius_min         = 15.0f;  // cells
-    float volcano_radius_max         = 50.0f;  // cells
-    float volcano_height             = 18.0f;  // world units
-    float volcano_crater_ratio       = 0.22f;  // crater radius = ratio * volcano radius
+// settlements (Poisson-ish dart throwing from the scored candidates)
+int   settlements_min       = 3;
+int   settlements_max       = 8;
+float settlement_min_dist   = 120.0f; // cells
+float settlement_score_cut  = 0.55f;  // normalized [0..1]
+int   settlement_try_budget = 60000;
 
-    float stamp_min_spacing          = 0.80f;  // multiplier for (rA + rB) center separation
+// roads
+bool  build_roads       = true;
+float road_base_cost    = 1.0f;
+float road_slope_cost   = 22.0f;   // slope weight (normalized slope)
+float road_river_penalty= 30.0f;   // crossing rivers is allowed but discouraged
+float road_ocean_penalty= 1.0e9f;  // effectively blocked
+float road_biome_penalty= 4.0f;    // generic "unpleasant biome" penalty
+int   road_max_expansions = 900000;
+
+// farmland / forest stamping
+bool  stamp_farmland = true;
+float farmland_radius = 26.0f;          // cells from freshwater
+std::uint8_t farmland_min_fertility = 145; // 0..255
+
+bool  stamp_forest = true;
+std::uint8_t forest_min_moisture = 165; // 0..255
 };
 
 struct Instance { float x{}, y{}; std::uint8_t kind{}; };
 
-// Water classification for optional hydrology overlays.
-enum class WaterKind : std::uint8_t { Land=0, Ocean=1, River=2, Lake=3 };
 
-// Optional terrain stamp metadata (craters/volcanoes/etc.)
-struct Stamp {
-    float x{}, y{};      // center in grid coordinates
-    float radius{};      // radius in cells
-    float strength{};    // height delta scale (interpret by type)
-    std::uint8_t type{}; // 0=crater, 1=volcano
+
+struct SettlementSite {
+    Vec2  pos{};
+    float score      = 0.0f; // 0..1
+    float water_dist = 0.0f; // cells
+    float slope_n    = 0.0f; // normalized 0..1
+    float fertility  = 0.0f; // 0..1
+    std::uint8_t biome = 0;
+};
+
+struct RoadSegment {
+    Vec2 a{};
+    Vec2 b{};
+    std::uint8_t kind = 0; // 0=dirt/track (debug)
 };
 
 struct Outputs {
@@ -123,9 +144,24 @@ struct Outputs {
     Map2D  moisture;
     Map2D  temperature;
     U8Map  biomes;
-    U8Map  water;          // WaterKind per cell (optional overlay)
     std::vector<Vec2> trees;
-    std::vector<Stamp> stamps;
+
+
+    // ----- settlement / roads layer -----
+    SettlementSite start{};
+    std::vector<SettlementSite> settlements;
+    std::vector<RoadSegment>   roads;
+
+    // debug masks (0..255)
+    U8Map fertility;   // fertility score
+    U8Map farmland;    // farmland stamp
+    U8Map forest;      // forest stamp
+    U8Map road_mask;   // rasterized roads
+
+    // simple resource presence masks (0..255)
+    U8Map res_wood;
+    U8Map res_stone;
+    U8Map res_ore;
 };
 
 struct GraphResult { Outputs out; };

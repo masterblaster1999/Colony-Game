@@ -4,6 +4,16 @@
 
 namespace cg {
 
+static inline float lerp(float a, float b, float t) { return a + (b - a) * t; }
+static inline void blend_rgb(float& r, float& g, float& b,
+                             float tr, float tg, float tb,
+                             float t) {
+    r = lerp(r, tr, t);
+    g = lerp(g, tg, t);
+    b = lerp(b, tb, t);
+}
+
+
 static inline void biomeColor(uint8_t b, float& r,float& g,float& bl,float& a) {
     // Tweak to taste; gives quick visual feedback
     switch (static_cast<pg::Biome>(b)) {
@@ -51,21 +61,33 @@ TerrainMeshData BuildTerrainMesh(const pg::Outputs& W, float xyScale, float zSca
 
             float r,g,b,a;
             biomeColor(W.biomes.at(x,y), r,g,b,a);
+            
+// Debug overlays: roads / farmland / forest / sites
+if (W.farmland.w == Ww && W.farmland.h == Wh && W.farmland.at(x,y) > 0) {
+    blend_rgb(r,g,b, 0.88f, 0.78f, 0.25f, 0.55f);
+}
+if (W.forest.w == Ww && W.forest.h == Wh && W.forest.at(x,y) > 0) {
+    blend_rgb(r,g,b, 0.10f, 0.35f, 0.10f, 0.35f);
+}
+if (W.road_mask.w == Ww && W.road_mask.h == Wh && W.road_mask.at(x,y) > 0) {
+    r = 0.18f; g = 0.18f; b = 0.18f;
+}
 
-            // Optional water overlay (rivers / lakes) for quick visual feedback.
-            if (W.water.w == Ww && W.water.h == Wh) {
-                const auto wk = static_cast<pg::WaterKind>(W.water.at(x,y));
-                if (wk == pg::WaterKind::River) {
-                    r = r * 0.15f + 0.10f;
-                    g = g * 0.15f + 0.35f;
-                    b = b * 0.15f + 0.95f;
-                } else if (wk == pg::WaterKind::Lake) {
-                    r = r * 0.10f + 0.08f;
-                    g = g * 0.10f + 0.28f;
-                    b = b * 0.10f + 0.85f;
-                }
-            }
-
+// settlement markers (small radius in grid cells)
+{
+    const int sx = static_cast<int>(std::floor(W.start.pos.x));
+    const int sy = static_cast<int>(std::floor(W.start.pos.y));
+    const int dx = x - sx;
+    const int dy = y - sy;
+    if (dx*dx + dy*dy <= 9) { r = 0.20f; g = 0.90f; b = 0.90f; }
+}
+for (const auto& s : W.settlements) {
+    const int sx = static_cast<int>(std::floor(s.pos.x));
+    const int sy = static_cast<int>(std::floor(s.pos.y));
+    const int dx = x - sx;
+    const int dy = y - sy;
+    if (dx*dx + dy*dy <= 9) { r = 0.95f; g = 0.25f; b = 0.95f; }
+}
             v.r=r; v.g=g; v.b=b; v.a=a;
         }
     }
