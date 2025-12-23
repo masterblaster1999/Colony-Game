@@ -23,6 +23,16 @@ set(_colony_game_sources
     ${CMAKE_CURRENT_SOURCE_DIR}/AppMain.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/AppWindow.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/AppWindow.h
+
+    # Extracted modules (platform + loop) used by AppWindow
+    ${CMAKE_CURRENT_SOURCE_DIR}/platform/win32/Win32Window.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/platform/win32/Win32Window.h
+    ${CMAKE_CURRENT_SOURCE_DIR}/platform/win32/RawMouseInput.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/platform/win32/RawMouseInput.h
+    ${CMAKE_CURRENT_SOURCE_DIR}/loop/DebugCamera.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/loop/DebugCamera.h
+    ${CMAKE_CURRENT_SOURCE_DIR}/loop/FramePacer.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/loop/FramePacer.h
     ${CMAKE_CURRENT_SOURCE_DIR}/DxDevice.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/DxDevice.h
 )
