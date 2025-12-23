@@ -51,6 +51,21 @@ TerrainMeshData BuildTerrainMesh(const pg::Outputs& W, float xyScale, float zSca
 
             float r,g,b,a;
             biomeColor(W.biomes.at(x,y), r,g,b,a);
+
+            // Optional water overlay (rivers / lakes) for quick visual feedback.
+            if (W.water.w == Ww && W.water.h == Wh) {
+                const auto wk = static_cast<pg::WaterKind>(W.water.at(x,y));
+                if (wk == pg::WaterKind::River) {
+                    r = r * 0.15f + 0.10f;
+                    g = g * 0.15f + 0.35f;
+                    b = b * 0.15f + 0.95f;
+                } else if (wk == pg::WaterKind::Lake) {
+                    r = r * 0.10f + 0.08f;
+                    g = g * 0.10f + 0.28f;
+                    b = b * 0.10f + 0.85f;
+                }
+            }
+
             v.r=r; v.g=g; v.b=b; v.a=a;
         }
     }
