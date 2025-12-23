@@ -1,9 +1,12 @@
 #include "procgen/ProceduralGraph.hpp" // adjust include path if needed
+#include "procgen/PriorityFlood.hpp"
+#include "procgen/TerrainStamps.hpp"
 
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
 #include <limits>
+#include <deque>
 #include <queue>
 #include <random>
 #include <tuple>
@@ -69,7 +72,7 @@ inline float fbm2(float x, float y, int oct, float lac, float gain, std::uint32_
 
 namespace { // high-level helpers that use pg:: types --------------------------------
 
-using pg::Map2D; using pg::U8Map; using pg::Params; using pg::Biome; using pg::Vec2;
+using pg::Map2D; using pg::U8Map; using pg::Params; using pg::Biome; using pg::WaterKind; using pg::Vec2; using pg::Stamp;
 
 Map2D generate_height(const Params& P) {
     Map2D H(P.width, P.height, 0.f);
@@ -149,7 +152,7 @@ Map2D flow_accumulation_D8(const Map2D& H) {
     }
     std::vector<int> order(static_cast<size_t>(W) * L);
     for (int i=0; i<W*L; ++i) order[static_cast<size_t>(i)] = i;
-    std::sort(order.begin(), order.end(), [&](int a,int b){ return H.v[static_cast<size_t>(a)] < H.v[static_cast<size_t>(b)]; });
+    std::sort(order.begin(), order.end(), [&](int a,int b){ return H.v[static_cast<size_t>(a)] > H.v[static_cast<size_t>(b)]; });
     for (int p : order) {
         const int to = dir[static_cast<size_t>(p)];
         if (to>=0) flow.v[static_cast<size_t>(to)] += flow.v[static_cast<size_t>(p)];
@@ -157,8 +160,20 @@ Map2D flow_accumulation_D8(const Map2D& H) {
     return flow;
 }
 
-void carve_rivers(Map2D& H, const Map2D& flow, float threshold, float depth) {
+void carve_rivers(Map2D& H,
+                 const Map2D& flow,
+                 float threshold,
+                 float depth,
+                 const U8Map* water_skip = nullptr)
+{
+    // Carve only on land unless caller opts out.
+    // (Prevents turning lakes/ocean into deep trenches.)
     for (int y=0; y<H.h; ++y) for (int x=0; x<H.w; ++x) {
+        if (water_skip) {
+            const auto wk = static_cast<WaterKind>(water_skip->at(x,y));
+            if (wk != WaterKind::Land) continue;
+        }
+
         const float f = flow.at(x,y);
         if (f >= threshold) {
             const float d = depth * std::log2(f / threshold + 1.0f);
@@ -166,6 +181,182 @@ void carve_rivers(Map2D& H, const Map2D& flow, float threshold, float depth) {
         }
     }
 }
+
+// Convert the Priority-Flood "filled mask" into a more usable "lake mask":
+//  - only cells above ocean_level
+//  - only where (filled - original) >= min_depth
+//  - only components with area >= min_area
+U8Map compute_lake_mask(const Map2D& original,
+                        const Map2D& filled,
+                        const U8Map& filled_mask,
+                        float ocean_level,
+                        float min_depth,
+                        int   min_area)
+{
+    const int W = original.w, Hh = original.h;
+    U8Map lake(W, Hh, 0);
+    if (W<=0 || Hh<=0) return lake;
+    if (filled.w != W || filled.h != Hh || filled_mask.w != W || filled_mask.h != Hh) return lake;
+    if (min_area <= 0) return lake;
+
+    std::vector<std::uint8_t> seen(static_cast<size_t>(W) * Hh, 0);
+    std::vector<int> q;
+    q.reserve(static_cast<size_t>(W) * Hh / 16);
+
+    auto idx = [W](int x,int y){ return y*W + x; };
+    auto inside = [W,Hh](int x,int y){ return (unsigned)x < (unsigned)W && (unsigned)y < (unsigned)Hh; };
+
+    for (int y=0; y<Hh; ++y) for (int x=0; x<W; ++x) {
+        const int i = idx(x,y);
+        if (seen[static_cast<size_t>(i)]) continue;
+        seen[static_cast<size_t>(i)] = 1;
+
+        if (!filled_mask.at(x,y)) continue;
+        if (original.at(x,y) <= ocean_level) continue;
+        const float depth = filled.at(x,y) - original.at(x,y);
+        if (depth < min_depth) continue;
+
+        // BFS component
+        std::vector<int> comp;
+        comp.reserve(256);
+        comp.push_back(i);
+
+        q.clear();
+        q.push_back(i);
+
+        for (size_t qi=0; qi<q.size(); ++qi) {
+            const int cur = q[qi];
+            const int cx = cur % W;
+            const int cy = cur / W;
+
+            static const int dx4[4] = {+1,-1,0,0};
+            static const int dy4[4] = {0,0,+1,-1};
+
+            for (int k=0; k<4; ++k) {
+                const int nx = cx + dx4[k];
+                const int ny = cy + dy4[k];
+                if (!inside(nx,ny)) continue;
+                const int ni = idx(nx,ny);
+                if (seen[static_cast<size_t>(ni)]) continue;
+
+                seen[static_cast<size_t>(ni)] = 1;
+
+                if (!filled_mask.at(nx,ny)) continue;
+                if (original.at(nx,ny) <= ocean_level) continue;
+                const float d2 = filled.at(nx,ny) - original.at(nx,ny);
+                if (d2 < min_depth) continue;
+
+                q.push_back(ni);
+                comp.push_back(ni);
+            }
+        }
+
+        if ((int)comp.size() >= min_area) {
+            for (int ci : comp) lake.v[static_cast<size_t>(ci)] = 1;
+        }
+    }
+
+    return lake;
+}
+
+U8Map build_water_map(const Map2D& height_before_carve,
+                      const Map2D& flow,
+                      const U8Map& lake_mask,
+                      float ocean_level,
+                      float river_threshold)
+{
+    const int W = height_before_carve.w, Hh = height_before_carve.h;
+    U8Map water(W, Hh, static_cast<std::uint8_t>(WaterKind::Land));
+    if (W<=0 || Hh<=0) return water;
+
+    // Ocean first
+    for (int y=0; y<Hh; ++y) for (int x=0; x<W; ++x) {
+        if (height_before_carve.at(x,y) <= ocean_level) {
+            water.at(x,y) = static_cast<std::uint8_t>(WaterKind::Ocean);
+        }
+    }
+
+    // Lakes
+    if (lake_mask.w == W && lake_mask.h == Hh) {
+        for (int y=0; y<Hh; ++y) for (int x=0; x<W; ++x) {
+            if (lake_mask.at(x,y) && water.at(x,y) == static_cast<std::uint8_t>(WaterKind::Land)) {
+                water.at(x,y) = static_cast<std::uint8_t>(WaterKind::Lake);
+            }
+        }
+    }
+
+    // Rivers
+    for (int y=0; y<Hh; ++y) for (int x=0; x<W; ++x) {
+        if (water.at(x,y) != static_cast<std::uint8_t>(WaterKind::Land)) continue;
+        if (flow.at(x,y) >= river_threshold) {
+            water.at(x,y) = static_cast<std::uint8_t>(WaterKind::River);
+        }
+    }
+
+    return water;
+}
+
+void apply_moisture_from_water(Map2D& moisture,
+                               const U8Map& water,
+                               float strength,
+                               float radius_cells,
+                               bool include_ocean)
+{
+    if (strength <= 0.0f || radius_cells <= 0.0f) return;
+    const int W = moisture.w, Hh = moisture.h;
+    if (W<=0 || Hh<=0) return;
+    if (water.w != W || water.h != Hh) return;
+
+    // Multi-source BFS distance transform (Manhattan distance).
+    std::vector<int> dist(static_cast<size_t>(W) * Hh, -1);
+    std::deque<int> q;
+
+    auto push = [&](int i){
+        dist[static_cast<size_t>(i)] = 0;
+        q.push_back(i);
+    };
+
+    for (int y=0; y<Hh; ++y) for (int x=0; x<W; ++x) {
+        const int i = y*W + x;
+        const auto wk = static_cast<WaterKind>(water.at(x,y));
+        const bool is_source =
+            (wk == WaterKind::River) || (wk == WaterKind::Lake) || (include_ocean && wk == WaterKind::Ocean);
+        if (is_source) push(i);
+    }
+
+    if (q.empty()) return;
+
+    static const int dx4[4] = {+1,-1,0,0};
+    static const int dy4[4] = {0,0,+1,-1};
+
+    while (!q.empty()) {
+        const int cur = q.front(); q.pop_front();
+        const int cx = cur % W;
+        const int cy = cur / W;
+        const int cd = dist[static_cast<size_t>(cur)];
+
+        for (int k=0; k<4; ++k) {
+            const int nx = cx + dx4[k];
+            const int ny = cy + dy4[k];
+            if ((unsigned)nx >= (unsigned)W || (unsigned)ny >= (unsigned)Hh) continue;
+            const int ni = ny*W + nx;
+            if (dist[static_cast<size_t>(ni)] != -1) continue;
+            dist[static_cast<size_t>(ni)] = cd + 1;
+            q.push_back(ni);
+        }
+    }
+
+    // Blend in an exponential falloff from water.
+    const float invR = 1.0f / radius_cells;
+    for (int y=0; y<Hh; ++y) for (int x=0; x<W; ++x) {
+        const int i = y*W + x;
+        const int d = dist[static_cast<size_t>(i)];
+        if (d < 0) continue;
+        const float w = std::exp(-static_cast<float>(d) * invR);
+        moisture.at(x,y) = clampf(lerpf(moisture.at(x,y), w, strength), 0.0f, 1.0f);
+    }
+}
+
 
 Map2D make_moisture(const Params& P) {
     Map2D M(P.width, P.height, 0.f);
@@ -213,7 +404,7 @@ pg::U8Map classify_biomes(const Map2D& T, const Map2D& M, const Map2D& H, float 
     return B;
 }
 
-std::vector<Vec2> poisson_disk(const pg::U8Map& biomes, float radius, std::uint32_t seed) {
+std::vector<Vec2> poisson_disk(const pg::U8Map& biomes, const pg::U8Map* water, float radius, std::uint32_t seed) {
     const int W = biomes.w, H = biomes.h;
     const float R = radius, cell = R / std::sqrt(2.0f);
     const int gw = static_cast<int>(std::ceil(W / cell)), gh = static_cast<int>(std::ceil(H / cell));
@@ -238,6 +429,10 @@ std::vector<Vec2> poisson_disk(const pg::U8Map& biomes, float radius, std::uint3
         return true;
     };
     auto biome_allows_tree = [&](int x,int y){
+        if (water) {
+            const auto wk = static_cast<WaterKind>(water->at(x,y));
+            if (wk != WaterKind::Land) return false;
+        }
         const pg::Biome b = static_cast<pg::Biome>(biomes.at(x,y));
         return b==pg::Biome::TemperateForest || b==pg::Biome::BorealForest || b==pg::Biome::TropicalForest || b==pg::Biome::Savanna;
     };
@@ -279,23 +474,81 @@ std::vector<Vec2> poisson_disk(const pg::U8Map& biomes, float radius, std::uint3
 namespace pg {
 
 Outputs run_procedural_graph(const Params& P) {
+    // 1) Base height
     Map2D height = generate_height(P);
+
+    // 1b) Optional landmark stamps (craters/volcanoes)
+    std::vector<Stamp> stamps;
+    if (P.enable_stamps && (P.crater_count > 0 || P.volcano_count > 0)) {
+        pg::stamps::StampParams S;
+        S.enable = true;
+        S.seed   = P.seed ^ 0x31415926u;
+        S.min_spacing = P.stamp_min_spacing;
+
+        S.crater_count      = P.crater_count;
+        S.crater_radius_min = P.crater_radius_min;
+        S.crater_radius_max = P.crater_radius_max;
+        S.crater_depth      = P.crater_depth;
+        S.crater_rim_height = P.crater_rim_height;
+
+        S.volcano_count        = P.volcano_count;
+        S.volcano_radius_min   = P.volcano_radius_min;
+        S.volcano_radius_max   = P.volcano_radius_max;
+        S.volcano_height       = P.volcano_height;
+        S.volcano_crater_ratio = P.volcano_crater_ratio;
+
+        stamps = pg::stamps::generate(P.width, P.height, S);
+        pg::stamps::apply(height, stamps, S);
+    }
+
+    // 2) Erosion
     thermal_erosion(height, P.thermal_iters, P.talus, P.thermal_strength);
 
-    Map2D flow = flow_accumulation_D8(height);
-    carve_rivers(height, flow, P.river_threshold, P.river_depth);
+    // Keep a copy before carving rivers (used for water classification).
+    const Map2D height_before_rivers = height;
 
+    // 3) Hydrology / rivers
+    const float ocean_level = 0.0f; // in this pipeline, sea floor is clamped to 0 during height mapping
+
+    Map2D flow_input = height_before_rivers;
+    U8Map lake_mask(P.width, P.height, 0);
+
+    if (P.enable_depression_fill) {
+        auto filled = pg::hydro::priority_flood_fill(flow_input, ocean_level, P.fill_epsilon, /*seed water*/true);
+        flow_input = std::move(filled.filled);
+        lake_mask  = compute_lake_mask(height_before_rivers, flow_input, filled.filled_mask,
+                                       ocean_level, P.lake_min_depth, P.lake_min_area);
+    }
+
+    Map2D flow = flow_accumulation_D8(flow_input);
+
+    // WaterKind map (ocean / lakes / rivers)
+    U8Map water = build_water_map(height_before_rivers, flow, lake_mask, ocean_level, P.river_threshold);
+
+    // Carve rivers only on land.
+    carve_rivers(height, flow, P.river_threshold, P.river_depth, &water);
+
+    // 4) Climate
     Map2D moisture = make_moisture(P);
+    if (P.moisture_from_water) {
+        apply_moisture_from_water(moisture, water, P.moisture_water_strength, P.moisture_water_radius, P.moisture_include_ocean);
+    }
     Map2D temp     = make_temperature(P, height);
-    U8Map  biomes  = classify_biomes(temp, moisture, height, /*sea (world units)*/ 0.5f);
 
+    // 5) Biomes
+    U8Map  biomes  = classify_biomes(temp, moisture, height, /*sea (world units)*/ ocean_level);
+
+    // 6) Scatter
     Outputs out;
     out.height      = std::move(height);
     out.flow        = std::move(flow);
     out.moisture    = std::move(moisture);
     out.temperature = std::move(temp);
     out.biomes      = std::move(biomes);
-    out.trees       = poisson_disk(out.biomes, P.scatter_radius, P.seed ^ 0xBADCAFEu);
+    out.water       = std::move(water);
+    out.stamps      = std::move(stamps);
+
+    out.trees       = poisson_disk(out.biomes, &out.water, P.scatter_radius, P.seed ^ 0xBADCAFEu);
     return out;
 }
 

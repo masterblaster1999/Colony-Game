@@ -74,9 +74,48 @@ struct Params {
 
     // scattering (trees/rocks)
     float scatter_radius = 8.0f;
+
+    // --- Optional: improved hydrology (lakes) + moisture-from-water ---
+    bool  enable_depression_fill     = true;
+    float fill_epsilon               = 0.01f;  // world units; prevents tiny float fills
+    int   lake_min_area              = 40;     // cells (connected component size)
+    float lake_min_depth             = 0.75f;  // world units of fill to classify as lake
+
+    bool  moisture_from_water        = true;
+    float moisture_water_strength    = 0.35f;  // blend factor [0..1]
+    float moisture_water_radius      = 64.0f;  // in cells (distance falloff)
+    bool  moisture_include_ocean     = false;  // if true, coasts get very wet
+
+    // --- Optional: terrain stamps (craters/volcanoes/etc.) ---
+    bool  enable_stamps              = false;
+
+    int   crater_count               = 0;
+    float crater_radius_min          = 10.0f;  // cells
+    float crater_radius_max          = 35.0f;  // cells
+    float crater_depth               = 8.0f;   // world units
+    float crater_rim_height          = 2.5f;   // world units
+
+    int   volcano_count              = 0;
+    float volcano_radius_min         = 15.0f;  // cells
+    float volcano_radius_max         = 50.0f;  // cells
+    float volcano_height             = 18.0f;  // world units
+    float volcano_crater_ratio       = 0.22f;  // crater radius = ratio * volcano radius
+
+    float stamp_min_spacing          = 0.80f;  // multiplier for (rA + rB) center separation
 };
 
 struct Instance { float x{}, y{}; std::uint8_t kind{}; };
+
+// Water classification for optional hydrology overlays.
+enum class WaterKind : std::uint8_t { Land=0, Ocean=1, River=2, Lake=3 };
+
+// Optional terrain stamp metadata (craters/volcanoes/etc.)
+struct Stamp {
+    float x{}, y{};      // center in grid coordinates
+    float radius{};      // radius in cells
+    float strength{};    // height delta scale (interpret by type)
+    std::uint8_t type{}; // 0=crater, 1=volcano
+};
 
 struct Outputs {
     Map2D  height;
@@ -84,7 +123,9 @@ struct Outputs {
     Map2D  moisture;
     Map2D  temperature;
     U8Map  biomes;
+    U8Map  water;          // WaterKind per cell (optional overlay)
     std::vector<Vec2> trees;
+    std::vector<Stamp> stamps;
 };
 
 struct GraphResult { Outputs out; };
