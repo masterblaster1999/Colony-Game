@@ -161,8 +161,18 @@ if(COLONY_WORLDGEN_SOURCES)
     target_link_libraries(colony_worldgen_obj PUBLIC colony_core)
   endif()
 
-  # Fix MSB3191/MSB8027 for this object lib in VS/MSVC
-  colony_msvc_unique_objnames_for_sources(COLONY_WORLDGEN_SOURCES)
+  # NOTE:
+  # Do NOT override per-source ObjectFileName for OBJECT libraries consumed via
+  # $<TARGET_OBJECTS:...> when using the Visual Studio generator.
+  #
+  # CMake expands $<TARGET_OBJECTS> to the *default* object paths it expects
+  # (e.g. ...\Biomes.cpp.obj). If we force ObjectFileName to something else
+  # (e.g. ...\Biomes.obj), MSBuild will compile the objects to the new path,
+  # but the consumer still tries to link the default path -> LNK1104.
+  #
+  # Rely on CMake's default per-source object paths here, which already include
+  # relative directories (and thus avoid MSB8027 collisions for files that share
+  # the same basename, such as worldgen/Biomes.cpp vs pcg/Biomes.cpp).
 
   # Actually link the compiled objects into the test executable
   target_sources(colony_tests PRIVATE $<TARGET_OBJECTS:colony_worldgen_obj>)

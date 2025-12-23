@@ -12,6 +12,15 @@
 
 namespace {
 
+// Cached app name used for the dump directory.
+// Stored as a std::wstring so callers can pass stack pointers safely.
+static std::wstring g_app_name = L"Colony Game";
+
+static const wchar_t* AppName() noexcept
+{
+    return g_app_name.empty() ? L"Colony Game" : g_app_name.c_str();
+}
+
 std::filesystem::path SavedGamesDir(const wchar_t* appName)
 {
     PWSTR path = nullptr;
@@ -30,7 +39,7 @@ std::filesystem::path SavedGamesDir(const wchar_t* appName)
 
 LONG WINAPI VectoredHandler(EXCEPTION_POINTERS* ep)
 {
-    const auto dir = SavedGamesDir(L"Colony Game");
+    const auto dir = SavedGamesDir(AppName());
 
     SYSTEMTIME st{}; GetLocalTime(&st);
     wchar_t fileName[128]{};
@@ -68,8 +77,11 @@ LONG WINAPI VectoredHandler(EXCEPTION_POINTERS* ep)
 
 namespace wincrash
 {
-    void InitCrashHandler(const wchar_t* /*appName*/)
+    void InitCrashHandler(const wchar_t* appName)
     {
+        if (appName && *appName)
+            g_app_name = appName;
+
         // First handler in chain to maximize chances of running.
         AddVectoredExceptionHandler(/*First=*/1, VectoredHandler);
     }

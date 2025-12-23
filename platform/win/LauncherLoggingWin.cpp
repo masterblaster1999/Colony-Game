@@ -18,6 +18,7 @@
 #include "platform/win/WinCommon.h" // Windows headers + safe defines
 
 #include <algorithm>
+#include <cwctype>   // towlower
 #include <filesystem>
 #include <string>
 #include <vector>

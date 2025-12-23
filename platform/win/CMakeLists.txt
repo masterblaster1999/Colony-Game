@@ -1,7 +1,8 @@
 # platform/win/CMakeLists.txt
 # Windows platform library targets.
 #
-# colony_platform_win : owns DeviceResources.* (DX12 bootstrap) once
+# colony_platform_win : Windows-only utility library shared by executables.
+#                     (Crash handler, early logging, path helpers, optional DeviceResources)
 # win_platform        : Win32 window/entry + presentation helpers
 
 cmake_minimum_required(VERSION 3.20)
@@ -30,32 +31,64 @@ set_source_files_properties("${PLATFORM_WIN_DIR}/win_entry.cpp"
 # --------------------------
 # colony_platform_win
 # --------------------------
-# Best practice: compile DeviceResources.* once and link it wherever needed.
-set(COLONY_DEVICE_SOURCES)
-colony_append_existing(COLONY_DEVICE_SOURCES
+## Sources for the Windows platform utility lib.
+## Keep this list small and intentional: this repo contains multiple experimental/legacy
+## Windows implementations under different folders.
+set(COLONY_PLATFORM_WIN_SOURCES)
+set(COLONY_PLATFORM_WIN_HEADERS)
+
+# Early-file logging used by AppMain / launcher startup.
+colony_append_existing(COLONY_PLATFORM_WIN_SOURCES
+    "${PLATFORM_WIN_DIR}/LauncherLoggingWin.cpp"
+    "${PLATFORM_WIN_DIR}/PathUtilWin.cpp"  # header-only impl; TU kept for IDE + build hygiene
+)
+colony_append_existing(COLONY_PLATFORM_WIN_HEADERS
+    "${PLATFORM_WIN_DIR}/LauncherLoggingWin.h"
+    "${PLATFORM_WIN_DIR}/LauncherLogSingletonWin.h"
+    "${PLATFORM_WIN_DIR}/PathUtilWin.h"
+    "${PLATFORM_WIN_DIR}/WinCommon.h"
+)
+
+# Minimal crash handler providing wincrash::InitCrashHandler().
+colony_append_existing(COLONY_PLATFORM_WIN_SOURCES
+    "${PLATFORM_WIN_DIR}/CrashHandlerWin.cpp"
+)
+colony_append_existing(COLONY_PLATFORM_WIN_HEADERS
+    "${PLATFORM_WIN_DIR}/CrashHandlerWin.h"
+)
+
+# Optional: DX bootstrap (only if present).
+colony_append_existing(COLONY_PLATFORM_WIN_SOURCES
     "${PLATFORM_WIN_DIR}/DeviceResources.cpp"
+)
+colony_append_existing(COLONY_PLATFORM_WIN_HEADERS
     "${PLATFORM_WIN_DIR}/DeviceResources.h"
 )
 
+set(COLONY_PLATFORM_WIN_ALL
+    ${COLONY_PLATFORM_WIN_SOURCES}
+    ${COLONY_PLATFORM_WIN_HEADERS}
+)
+
 # Determine whether we have at least one compilable translation unit.
-set(_cg_has_device_cpp OFF)
-foreach(_f IN LISTS COLONY_DEVICE_SOURCES)
+set(_cg_has_plat_cpp OFF)
+foreach(_f IN LISTS COLONY_PLATFORM_WIN_ALL)
     if(_f MATCHES "\\.(c|cc|cpp|cxx)$")
-        set(_cg_has_device_cpp ON)
+        set(_cg_has_plat_cpp ON)
     endif()
 endforeach()
 
-if(_cg_has_device_cpp)
-    add_library(colony_platform_win STATIC ${COLONY_DEVICE_SOURCES})
+if(_cg_has_plat_cpp)
+    add_library(colony_platform_win STATIC ${COLONY_PLATFORM_WIN_ALL})
 else()
     # IMPORTANT:
     # If we create a STATIC library with only headers, MSVC/VS can end up not emitting a .lib,
     # and dependents fail with LNK1104 trying to open colony_platform_win.lib.
     add_library(colony_platform_win INTERFACE)
-    if(COLONY_DEVICE_SOURCES)
-        target_sources(colony_platform_win INTERFACE ${COLONY_DEVICE_SOURCES})
+    if(COLONY_PLATFORM_WIN_ALL)
+        target_sources(colony_platform_win INTERFACE ${COLONY_PLATFORM_WIN_ALL})
     endif()
-    message(STATUS "colony_platform_win: DeviceResources.cpp not found; created INTERFACE target.")
+    message(STATUS "colony_platform_win: no .cpp sources found; created INTERFACE target.")
 endif()
 
 add_library(Colony::PlatformWin ALIAS colony_platform_win)
@@ -77,6 +110,9 @@ target_link_libraries(colony_platform_win ${_cg_plat_pub}
     d3d12
     dxgi
     dxguid
+    shell32
+    ole32
+    dbghelp
 )
 
 if(MSVC)
@@ -89,7 +125,7 @@ endif()
 
 unset(_cg_plat_type)
 unset(_cg_plat_pub)
-unset(_cg_has_device_cpp)
+unset(_cg_has_plat_cpp)
 
 # --------------------------
 # win_platform
