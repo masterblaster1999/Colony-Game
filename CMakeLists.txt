@@ -320,6 +320,32 @@ if(MSVC)
 endif()
 
 # ---- Helpers ------------------------------------------------------------------
+
+# Optional legacy helper (kept for backward-compat with older CMakeLists snippets).
+# Provides enable_msvc_warnings(<target>) if the module exists.
+include(EnableWarningsMSVC OPTIONAL)
+
+# Back-compat: some subdirectories call colony_enable_warnings(<tgt>).
+# Keep this helper even though this root file already applies warnings globally.
+function(colony_enable_warnings tgt)
+  if(NOT TARGET "${tgt}")
+    return()
+  endif()
+
+  if(MSVC)
+    # If the repo provides a dedicated helper, prefer it.
+    if(COMMAND enable_msvc_warnings)
+      enable_msvc_warnings(${tgt})
+    endif()
+
+    # Mirror project-wide warnings-as-errors behavior.
+    if(DEFINED COLONY_WERROR AND COLONY_WERROR)
+      target_compile_options(${tgt} PRIVATE /WX)
+    endif()
+  endif()
+endfunction()
+
+
 function(colony_enable_pch tgt)
   if(NOT COLONY_USE_PCH)
     return()

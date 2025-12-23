@@ -11,6 +11,12 @@
 #   - tooling entrypoints (map viewer, etc.)
 # which then breaks unity builds and/or causes duplicate symbols.
 
+
+# Defensive: this CMakeLists.txt is meant to be included from the repo root.
+if(CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)
+  message(FATAL_ERROR "Please configure from the repository root (top-level CMakeLists.txt), not from src/.")
+endif()
+
 set(_colony_game_sources
     # Windows entrypoint + thin app layer
     ${CMAKE_CURRENT_SOURCE_DIR}/app/EntryWinMain.cpp
@@ -68,7 +74,7 @@ endif()
 # Project-wide helper hooks (defined in the root CMakeLists.txt)
 colony_apply_msvc_runtime(ColonyGame)
 colony_enable_warnings(ColonyGame)
-colony_enable_pch(ColonyGame "${PROJECT_SOURCE_DIR}/src/pch.h")
+colony_enable_pch(ColonyGame PRIVATE "${PROJECT_SOURCE_DIR}/src/pch.h")
 
 set_property(DIRECTORY PROPERTY VS_STARTUP_PROJECT ColonyGame)
 

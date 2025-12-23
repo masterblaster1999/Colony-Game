@@ -1,1 +1,38 @@
-Just a personal project, learning programming and trying to make a colony sim that is at least playable in a very basic sense, im a beginner programmer so no grand goals with this one
+# Colony Game (Windows-only)
+
+A personal learning project: a colony-sim prototype built in modern C++ (C++23) with a Windows/DirectX/SDL2 toolchain.
+
+## Status
+
+This repository is under active iteration and contains a mix of:
+- the main game executable (`ColonyGame`)
+- experimental tools / demos
+- a modular “engine/core/platform” split in progress
+
+Expect rough edges and refactors.
+
+## Build (Windows)
+
+### Prerequisites
+- Windows 10/11
+- Visual Studio 2022 (or Build Tools) with **Desktop development with C++**
+- CMake 3.27+
+- Ninja (recommended)
+- vcpkg (manifest mode; repo contains `vcpkg.json`)
+
+### Quick start (recommended)
+From a **Developer PowerShell** (or regular PowerShell if VS is installed and on PATH):
+
+```powershell
+# Bootstraps VS dev shell, resolves vcpkg, installs manifest deps, and configures a build folder
+pwsh -File tools/setup-dev.ps1 -InstallMissingTools -InstallVSBuildTools -InstallVcpkg -ManifestInstall -Configure -BuildDir out/build/windows-msvc-x64
+
+# Build
+cmake --build out/build/windows-msvc-x64 --config Debug
+```
+
+If you prefer CMake presets in Visual Studio / VS Code, see `CMakePresets.json`.
+
+## Notes
+- This project intentionally **does not support Linux/macOS** at the moment.
+- If you hit CMake errors about missing helper commands, ensure you are configuring from the repository root (not a subfolder).
