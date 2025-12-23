@@ -1,7 +1,8 @@
 #include "input/InputMapper.h"
 
+#include "input/InputBindingParse.h"
+
 #include <algorithm>
-#include <cctype>
 #include <fstream>
 #include <optional>
 #include <system_error>
@@ -12,66 +13,6 @@
 #include <nlohmann/json.hpp>
 
 namespace {
-
-// Win32 virtual-key codes we want for defaults/config parsing, but without including <windows.h>
-// (this input layer remains platform-agnostic).
-// IMPORTANT: We intentionally do *not* name these like VK_*.
-// On Windows, <Windows.h> defines VK_* as macros. This translation unit is built with
-// a project-wide PCH that includes <Windows.h>, and naming collisions would produce
-// invalid macro-expanded declarations (e.g. "constexpr std::uint32_t 0x10 = 0x10;").
-//
-// Using a prefix avoids brittle #undefs and keeps this file platform-agnostic.
-constexpr std::uint32_t kVK_SHIFT    = 0x10;
-constexpr std::uint32_t kVK_CONTROL  = 0x11;
-constexpr std::uint32_t kVK_MENU     = 0x12; // Alt
-
-constexpr std::uint32_t kVK_LSHIFT   = 0xA0;
-constexpr std::uint32_t kVK_RSHIFT   = 0xA1;
-constexpr std::uint32_t kVK_LCONTROL = 0xA2;
-constexpr std::uint32_t kVK_RCONTROL = 0xA3;
-constexpr std::uint32_t kVK_LMENU    = 0xA4;
-constexpr std::uint32_t kVK_RMENU    = 0xA5;
-
-constexpr std::uint32_t kVK_LEFT  = 0x25;
-constexpr std::uint32_t kVK_UP    = 0x26;
-constexpr std::uint32_t kVK_RIGHT = 0x27;
-constexpr std::uint32_t kVK_DOWN  = 0x28;
-
-constexpr std::uint32_t kVK_SPACE = 0x20;
-
-// Common navigation/utility keys (useful for config files / future gameplay actions).
-constexpr std::uint32_t kVK_ESCAPE = 0x1B;
-constexpr std::uint32_t kVK_TAB    = 0x09;
-constexpr std::uint32_t kVK_RETURN = 0x0D;
-constexpr std::uint32_t kVK_BACK   = 0x08; // Backspace
-
-constexpr std::uint32_t kVK_INSERT = 0x2D;
-constexpr std::uint32_t kVK_DELETE = 0x2E;
-constexpr std::uint32_t kVK_HOME   = 0x24;
-constexpr std::uint32_t kVK_END    = 0x23;
-constexpr std::uint32_t kVK_PRIOR  = 0x21; // Page Up
-constexpr std::uint32_t kVK_NEXT   = 0x22; // Page Down
-
-static inline bool IsWhitespace(char c) noexcept
-{
-    return c == ' ' || c == '\t' || c == '\r' || c == '\n';
-}
-
-static std::string_view Trim(std::string_view s) noexcept
-{
-    while (!s.empty() && IsWhitespace(s.front())) s.remove_prefix(1);
-    while (!s.empty() && IsWhitespace(s.back())) s.remove_suffix(1);
-    return s;
-}
-
-static std::string ToLowerCopy(std::string_view s)
-{
-    std::string out;
-    out.reserve(s.size());
-    for (char c : s)
-        out.push_back(static_cast<char>(std::tolower(static_cast<unsigned char>(c))));
-    return out;
-}
 
 static bool ReadFileToString(const std::filesystem::path& path, std::string& out) noexcept
 {
@@ -94,7 +35,7 @@ static bool ReadFileToString(const std::filesystem::path& path, std::string& out
 
 static std::optional<colony::input::Action> ParseActionName(std::string_view name)
 {
-    const std::string n = ToLowerCopy(Trim(name));
+    const std::string n = colony::input::bindings::ToLowerCopy(colony::input::bindings::Trim(name));
 
     using A = colony::input::Action;
 
@@ -115,84 +56,6 @@ static std::optional<colony::input::Action> ParseActionName(std::string_view nam
     return std::nullopt;
 }
 
-static std::optional<std::uint32_t> ParseInputCodeToken(std::string_view token)
-{
-    const std::string t = ToLowerCopy(Trim(token));
-    if (t.empty())
-        return std::nullopt;
-
-    // Function keys: F1..F24
-    // VK_F1 starts at 0x70.
-    if (t.size() >= 2 && t[0] == 'f')
-    {
-        int n = 0;
-        bool ok = true;
-        for (std::size_t i = 1; i < t.size(); ++i)
-        {
-            const unsigned char c = static_cast<unsigned char>(t[i]);
-            if (!std::isdigit(c)) { ok = false; break; }
-            n = n * 10 + static_cast<int>(c - '0');
-            if (n > 24) { ok = false; break; }
-        }
-
-        if (ok && n >= 1 && n <= 24)
-        {
-            return static_cast<std::uint32_t>(0x6Fu + static_cast<std::uint32_t>(n));
-        }
-    }
-
-    // Single character: treat as ASCII key. Normalize to uppercase.
-    if (t.size() == 1)
-    {
-        const unsigned char c = static_cast<unsigned char>(t[0]);
-        if (std::isalnum(c))
-            return static_cast<std::uint32_t>(std::toupper(c));
-    }
-
-    // Arrow keys
-    if (t == "up" || t == "arrowup") return kVK_UP;
-    if (t == "down" || t == "arrowdown") return kVK_DOWN;
-    if (t == "left" || t == "arrowleft") return kVK_LEFT;
-    if (t == "right" || t == "arrowright") return kVK_RIGHT;
-
-    // Common named keys
-    if (t == "space" || t == "spacebar") return kVK_SPACE;
-
-    // Common utility/navigation keys
-    if (t == "esc" || t == "escape") return kVK_ESCAPE;
-    if (t == "tab") return kVK_TAB;
-    if (t == "enter" || t == "return") return kVK_RETURN;
-    if (t == "backspace" || t == "bksp" || t == "bs") return kVK_BACK;
-    if (t == "ins" || t == "insert") return kVK_INSERT;
-    if (t == "del" || t == "delete") return kVK_DELETE;
-    if (t == "home") return kVK_HOME;
-    if (t == "end") return kVK_END;
-    if (t == "pageup" || t == "pgup") return kVK_PRIOR;
-    if (t == "pagedown" || t == "pgdn") return kVK_NEXT;
-
-    // Modifiers
-    if (t == "shift") return kVK_SHIFT;
-    if (t == "lshift" || t == "leftshift") return kVK_LSHIFT;
-    if (t == "rshift" || t == "rightshift") return kVK_RSHIFT;
-
-    if (t == "ctrl" || t == "control") return kVK_CONTROL;
-    if (t == "lctrl" || t == "leftctrl" || t == "lcontrol" || t == "leftcontrol") return kVK_LCONTROL;
-    if (t == "rctrl" || t == "rightctrl" || t == "rcontrol" || t == "rightcontrol") return kVK_RCONTROL;
-
-    if (t == "alt" || t == "menu") return kVK_MENU;
-    if (t == "lalt" || t == "leftalt" || t == "lmenu" || t == "leftmenu") return kVK_LMENU;
-    if (t == "ralt" || t == "rightalt" || t == "rmenu" || t == "rightmenu") return kVK_RMENU;
-
-    // Mouse buttons (mapped into the unified input code space)
-    if (t == "mouseleft" || t == "lmb" || t == "mouse1") return colony::input::kMouseButtonLeft;
-    if (t == "mouseright" || t == "rmb" || t == "mouse2") return colony::input::kMouseButtonRight;
-    if (t == "mousemiddle" || t == "mmb" || t == "mouse3") return colony::input::kMouseButtonMiddle;
-    if (t == "mousex1" || t == "x1" || t == "mouse4" || t == "mb4") return colony::input::kMouseButtonX1;
-    if (t == "mousex2" || t == "x2" || t == "mouse5" || t == "mb5") return colony::input::kMouseButtonX2;
-
-    return std::nullopt;
-}
-
 static bool SplitOnce(std::string_view s, char delim, std::string_view& left, std::string_view& right) noexcept
 {
     const std::size_t pos = s.find(delim);
@@ -202,54 +65,6 @@ static bool SplitOnce(std::string_view s, char delim, std::string_view& left, st
     left = s.substr(0, pos);
     right = s.substr(pos + 1);
     return true;
-}
-
-static std::vector<std::string_view> Split(std::string_view s, char delim)
-{
-    std::vector<std::string_view> out;
-    while (true)
-    {
-        const std::size_t pos = s.find(delim);
-        if (pos == std::string_view::npos)
-        {
-            out.push_back(s);
-            break;
-        }
-        out.push_back(s.substr(0, pos));
-        s.remove_prefix(pos + 1);
-    }
-    return out;
-}
-
-// Parses a chord string like: "Shift+W" or "Shift+MouseLeft".
-// Returns a sorted, de-duplicated list of input codes.
-static bool ParseChordString(std::string_view chordStr, std::vector<std::uint32_t>& outCodes)
-{
-    outCodes.clear();
-    chordStr = Trim(chordStr);
-    if (chordStr.empty())
-        return false;
-
-    const auto parts = Split(chordStr, '+');
-    for (auto part : parts)
-    {
-        part = Trim(part);
-        if (part.empty())
-            continue;
-
-        const auto code = ParseInputCodeToken(part);
-        if (!code)
-            return false;
-
-        outCodes.push_back(*code);
-    }
-
-    if (outCodes.empty())
-        return false;
-
-    std::sort(outCodes.begin(), outCodes.end());
-    outCodes.erase(std::unique(outCodes.begin(), outCodes.end()), outCodes.end());
-    return !outCodes.empty();
 }
 
 } // namespace
@@ -264,6 +79,8 @@ InputMapper::InputMapper() noexcept
 
 void InputMapper::SetDefaultBinds() noexcept
 {
+    namespace bindings = colony::input::bindings;
+
     // Clear all binds.
     for (std::size_t i = 0; i < kActionCount; ++i)
     {
@@ -276,30 +93,30 @@ void InputMapper::SetDefaultBinds() noexcept
 
     // Classic free-cam movement defaults + arrow key alternatives.
     AddBinding(Action::MoveForward,  static_cast<std::uint32_t>('W'));
-    AddBinding(Action::MoveForward,  kVK_UP);
+    AddBinding(Action::MoveForward,  bindings::kVK_UP);
 
     AddBinding(Action::MoveBackward, static_cast<std::uint32_t>('S'));
-    AddBinding(Action::MoveBackward, kVK_DOWN);
+    AddBinding(Action::MoveBackward, bindings::kVK_DOWN);
 
     AddBinding(Action::MoveLeft,     static_cast<std::uint32_t>('A'));
-    AddBinding(Action::MoveLeft,     kVK_LEFT);
+    AddBinding(Action::MoveLeft,     bindings::kVK_LEFT);
 
     AddBinding(Action::MoveRight,    static_cast<std::uint32_t>('D'));
-    AddBinding(Action::MoveRight,    kVK_RIGHT);
+    AddBinding(Action::MoveRight,    bindings::kVK_RIGHT);
 
     AddBinding(Action::MoveDown,     static_cast<std::uint32_t>('Q'));
     AddBinding(Action::MoveUp,       static_cast<std::uint32_t>('E'));
 
     // Example chord binding: Shift+W as a distinct action.
     {
-        const std::uint32_t chord[] = { kVK_SHIFT, static_cast<std::uint32_t>('W') };
+        const std::uint32_t chord[] = { bindings::kVK_SHIFT, static_cast<std::uint32_t>('W') };
         AddBinding(Action::MoveForwardFast, std::span<const std::uint32_t>(chord, 2));
     }
 
     // Speed boost modifier (either shift).
-    AddBinding(Action::SpeedBoost, kVK_SHIFT);
-    AddBinding(Action::SpeedBoost, kVK_LSHIFT);
-    AddBinding(Action::SpeedBoost, kVK_RSHIFT);
+    AddBinding(Action::SpeedBoost, bindings::kVK_SHIFT);
+    AddBinding(Action::SpeedBoost, bindings::kVK_LSHIFT);
+    AddBinding(Action::SpeedBoost, bindings::kVK_RSHIFT);
 
     // Mouse-driven camera actions.
     AddBinding(Action::CameraOrbit, kMouseButtonLeft);
@@ -308,7 +125,7 @@ void InputMapper::SetDefaultBinds() noexcept
 
     // Optional chord example: Shift+MouseLeft => pan.
     {
-        const std::uint32_t chord[] = { kVK_SHIFT, kMouseButtonLeft };
+        const std::uint32_t chord[] = { bindings::kVK_SHIFT, kMouseButtonLeft };
         AddBinding(Action::CameraPan, std::span<const std::uint32_t>(chord, 2));
     }
 
@@ -333,7 +150,7 @@ bool InputMapper::LoadFromFile(const std::filesystem::path& path) noexcept
         // Best-effort format sniff.
         const std::string_view sv = text;
         std::size_t i = 0;
-        while (i < sv.size() && IsWhitespace(sv[i])) ++i;
+        while (i < sv.size() && colony::input::bindings::IsWhitespace(sv[i])) ++i;
         if (i < sv.size() && sv[i] == '{')
             ok = LoadFromJsonText(text);
         else
@@ -680,13 +497,13 @@ bool InputMapper::LoadFromJsonText(std::string_view text) noexcept
         auto considerBindStr = [&](std::string_view bindStr)
         {
             // Allow comma-separated binds in a single string for convenience.
-            for (auto part : Split(bindStr, ','))
+            for (auto part : colony::input::bindings::Split(bindStr, ','))
             {
-                part = Trim(part);
+                part = colony::input::bindings::Trim(part);
                 if (part.empty())
                     continue;
 
-                if (!ParseChordString(part, chordCodes))
+                if (!colony::input::bindings::ParseChordString(part, chordCodes))
                     continue;
 
                 parsedChords.emplace_back(chordCodes.begin(), chordCodes.end());
@@ -747,6 +564,7 @@ bool InputMapper::LoadFromIniText(std::string_view text) noexcept
             line.remove_suffix(1);
 
         line = Trim(line);
+        line = colony::input::bindings::Trim(line);
         if (line.empty())
             continue;
 
@@ -758,6 +576,7 @@ bool InputMapper::LoadFromIniText(std::string_view text) noexcept
         if (line.front() == '[' && line.back() == ']')
         {
             currentSection = Trim(line.substr(1, line.size() - 2));
+            currentSection = colony::input::bindings::Trim(line.substr(1, line.size() - 2));
             continue;
         }
 
@@ -765,6 +584,7 @@ bool InputMapper::LoadFromIniText(std::string_view text) noexcept
         if (!currentSection.empty())
         {
             const std::string secLower = ToLowerCopy(currentSection);
+            const std::string secLower = colony::input::bindings::ToLowerCopy(currentSection);
             if (secLower != "bindings")
                 continue;
         }
@@ -774,8 +594,8 @@ bool InputMapper::LoadFromIniText(std::string_view text) noexcept
         if (!SplitOnce(line, '=', key, value) && !SplitOnce(line, ':', key, value))
             continue;
 
-        key = Trim(key);
-        value = Trim(value);
+        key = colony::input::bindings::Trim(key);
+        value = colony::input::bindings::Trim(value);
 
         // Strip trailing inline comments (simple, but good enough).
         const std::size_t hashPos = value.find('#');
@@ -784,7 +604,7 @@ bool InputMapper::LoadFromIniText(std::string_view text) noexcept
         if (hashPos != std::string_view::npos) cut = hashPos;
         if (semiPos != std::string_view::npos) cut = (cut == std::string_view::npos) ? semiPos : std::min(cut, semiPos);
         if (cut != std::string_view::npos)
-            value = Trim(value.substr(0, cut));
+            value = colony::input::bindings::Trim(value.substr(0, cut));
 
         const auto act = ParseActionName(key);
         if (!act)
@@ -792,13 +612,13 @@ bool InputMapper::LoadFromIniText(std::string_view text) noexcept
 
         parsedChords.clear();
 
-        for (auto bindStr : Split(value, ','))
+        for (auto bindStr : colony::input::bindings::Split(value, ','))
         {
-            bindStr = Trim(bindStr);
+            bindStr = colony::input::bindings::Trim(bindStr);
             if (bindStr.empty())
                 continue;
 
-            if (!ParseChordString(bindStr, chordCodes))
+            if (!colony::input::bindings::ParseChordString(bindStr, chordCodes))
                 continue;
 
             parsedChords.emplace_back(chordCodes.begin(), chordCodes.end());

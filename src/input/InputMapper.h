@@ -101,7 +101,7 @@ public:
     // Adds a chord binding for an action. A chord is "all of these codes down".
     //
     // Example:
-    //   { VK_SHIFT, 'W' }
+    //   { colony::input::bindings::kVK_SHIFT, 'W' }
     //   { kMouseButtonLeft }
     void AddBinding(Action action, std::span<const std::uint32_t> chord) noexcept;
 

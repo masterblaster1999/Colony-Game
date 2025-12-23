@@ -1,13 +1,125 @@
 #include "game/PrototypeGame.h"
 
+#include "input/InputBindingParse.h"
 #include "input/InputMapper.h"
 #include "loop/DebugCamera.h"
-#include "platform/win32/AppPaths.h"
+
+#include "platform/win/LauncherLogSingletonWin.h"
+#include "platform/win/WinFiles.h"
 
 #include <chrono>
 #include <cmath>
 #include <filesystem>
 #include <new>
+#include <string>
+#include <vector>
+
+namespace fs = std::filesystem;
+
+namespace {
+
+// Best-effort logging to the same process-wide log stream used by AppMain/launcher.
+static void LogLine(const std::wstring& line) noexcept
+{
+    try
+    {
+        auto& log = LauncherLog();
+        WriteLog(log, line);
+    }
+    catch (...)
+    {
+        // Logging must never take down the game.
+    }
+}
+
+static void AddUnique(std::vector<fs::path>& out, const fs::path& p)
+{
+    const auto ps = p.generic_wstring();
+    for (const auto& e : out)
+    {
+        if (e.generic_wstring() == ps)
+            return;
+    }
+    out.push_back(p);
+}
+
+static std::vector<fs::path> BuildBindingsCandidates()
+{
+    std::vector<fs::path> out;
+
+    // 1) Dev-friendly search: walk up from the current working directory.
+    //    This mirrors InputMapper::LoadFromDefaultPaths(), but we need the
+    //    successful path for logging + hot-reload.
+    constexpr int kMaxParents = 5;
+    std::error_code ec;
+
+    fs::path base = fs::current_path(ec);
+    if (ec || base.empty())
+        base = fs::path(L".");
+
+    for (int depth = 0; depth <= kMaxParents; ++depth)
+    {
+        AddUnique(out, base / L"assets" / L"config" / L"input_bindings.json");
+        AddUnique(out, base / L"assets" / L"config" / L"input_bindings.ini");
+        AddUnique(out, base / L"input_bindings.json");
+        AddUnique(out, base / L"input_bindings.ini");
+
+        if (!base.has_parent_path())
+            break;
+        const auto parent = base.parent_path();
+        if (parent == base)
+            break;
+        base = parent;
+    }
+
+    // 2) Shipping-friendly search: paths relative to the executable.
+    const fs::path exeDir = platform::win::GetExeDir();
+    if (!exeDir.empty())
+    {
+        AddUnique(out, exeDir / L"assets" / L"config" / L"input_bindings.json");
+        AddUnique(out, exeDir / L"assets" / L"config" / L"input_bindings.ini");
+        AddUnique(out, exeDir / L"input_bindings.json");
+        AddUnique(out, exeDir / L"input_bindings.ini");
+
+        // Common "bin next to repo" layouts.
+        AddUnique(out, exeDir.parent_path() / L"assets" / L"config" / L"input_bindings.json");
+        AddUnique(out, exeDir.parent_path() / L"assets" / L"config" / L"input_bindings.ini");
+    }
+
+    return out;
+}
+
+static bool TryGetLastWriteTime(const fs::path& p, fs::file_time_type& outTime) noexcept
+{
+    std::error_code ec;
+    outTime = fs::last_write_time(p, ec);
+    return !ec;
+}
+
+static bool TryLoadBindings(colony::input::InputMapper& mapper,
+                            const std::vector<fs::path>& candidates,
+                            fs::path& outLoadedPath) noexcept
+{
+    std::error_code ec;
+    for (const auto& p : candidates)
+    {
+        ec.clear();
+        if (!fs::exists(p, ec) || ec)
+            continue;
+
+        if (mapper.LoadFromFile(p))
+        {
+            outLoadedPath = p;
+            return true;
+        }
+
+        // File exists but did not parse.
+        LogLine(L"[Input] Failed to parse bindings file: " + p.wstring());
+    }
+    return false;
+}
+
+} // namespace
 
 namespace colony::game {
 
@@ -19,6 +131,18 @@ struct PrototypeGame::Impl {
     std::chrono::steady_clock::time_point lastTick{};
     bool                                  hasLastTick = false;
     float                                 keyboardTitleAccum = 0.f;
+
+    // Input bindings hot-reload
+    std::vector<fs::path>                 bindingsCandidates;
+    fs::path                              bindingsPath;
+    fs::file_time_type                    bindingsWriteTime{};
+    fs::file_time_type                    lastFailedWriteTime{};
+    bool                                  hasBindingsPath = false;
+    bool                                  hasBindingsWriteTime = false;
+    bool                                  hasLastFailedWriteTime = false;
+    bool                                  loggedMissing = false;
+    float                                 bindingsPollAccum = 0.f;   // seconds
+    float                                 bindingsSearchAccum = 0.f; // seconds
 };
 
 PrototypeGame::PrototypeGame()
@@ -27,26 +151,30 @@ PrototypeGame::PrototypeGame()
 
     // Optional: allow developers to override bindings without recompiling.
     // If no config file is found, defaults remain.
-    if (m_impl) {
-        // Prefer search relative to CWD (useful while iterating in an IDE), but also
-        // fall back to the executable directory so launching the game from an arbitrary
-        // working directory (or after install) still finds assets.
-        if (!m_impl->mapper.LoadFromDefaultPaths())
-        {
-            const std::filesystem::path exeDir = std::filesystem::path(winqol::ExeDir());
-            const std::filesystem::path candidates[] = {
-                exeDir / "assets" / "config" / "input_bindings.json",
-                exeDir / "assets" / "config" / "input_bindings.ini",
-                exeDir / "input_bindings.json",
-                exeDir / "input_bindings.ini",
-            };
+    if (!m_impl)
+        return;
 
-            for (const auto& c : candidates)
-            {
-                if (m_impl->mapper.LoadFromFile(c))
-                    break;
-            }
+    m_impl->bindingsCandidates = BuildBindingsCandidates();
+
+    fs::path loaded;
+    if (TryLoadBindings(m_impl->mapper, m_impl->bindingsCandidates, loaded))
+    {
+        m_impl->bindingsPath = loaded;
+        m_impl->hasBindingsPath = true;
+
+        fs::file_time_type ft{};
+        if (TryGetLastWriteTime(loaded, ft))
+        {
+            m_impl->bindingsWriteTime = ft;
+            m_impl->hasBindingsWriteTime = true;
         }
+
+        LogLine(L"[Input] Loaded bindings: " + loaded.wstring());
+    }
+    else
+    {
+        LogLine(L"[Input] No input_bindings.json/.ini found (using compiled defaults)."
+                L" Expected e.g. assets\\config\\input_bindings.json");
     }
 }
 
@@ -73,6 +201,106 @@ bool PrototypeGame::OnInput(std::span<const colony::input::InputEvent> events) n
     }
     m_impl->lastTick = now;
     m_impl->hasLastTick = true;
+
+    // --------------------------------------------------------------------------------------------
+    // Input bindings hot-reload
+    //  - Manual: press F5 to reload
+    //  - Automatic: reload when the loaded file changes on disk (polled)
+    //
+    // This is intentionally simple and dependency-free (no Win32 change notifications).
+    // --------------------------------------------------------------------------------------------
+    bool forceReload = false;
+    {
+        constexpr std::uint32_t kVK_F5 = colony::input::bindings::kVK_F1 + 4;
+        for (const auto& ev : events)
+        {
+            if (ev.type == colony::input::InputEventType::KeyDown && ev.key == kVK_F5 && !ev.repeat)
+            {
+                forceReload = true;
+                break;
+            }
+        }
+    }
+
+    // Throttle the filesystem checks to keep the hot path lightweight.
+    m_impl->bindingsPollAccum += dt;
+    m_impl->bindingsSearchAccum += dt;
+
+    const bool shouldPoll = forceReload || (m_impl->bindingsPollAccum >= 0.25f);
+    const bool shouldSearch = forceReload || (!m_impl->hasBindingsPath && (m_impl->bindingsSearchAccum >= 1.0f));
+
+    if (shouldPoll)
+        m_impl->bindingsPollAccum = 0.f;
+    if (shouldSearch)
+        m_impl->bindingsSearchAccum = 0.f;
+
+    if (forceReload)
+    {
+        LogLine(L"[Input] Hot-reload requested (F5)");
+    }
+
+    if (m_impl->hasBindingsPath && shouldPoll)
+    {
+        std::error_code ec;
+        if (!fs::exists(m_impl->bindingsPath, ec) || ec)
+        {
+            if (!m_impl->loggedMissing)
+            {
+                LogLine(L"[Input] Bindings file missing (continuing with last loaded binds): " + m_impl->bindingsPath.wstring());
+                m_impl->loggedMissing = true;
+            }
+        }
+        else
+        {
+            m_impl->loggedMissing = false;
+
+            fs::file_time_type ft{};
+            if (TryGetLastWriteTime(m_impl->bindingsPath, ft))
+            {
+                const bool changed = !m_impl->hasBindingsWriteTime || (ft != m_impl->bindingsWriteTime);
+                if (forceReload || changed)
+                {
+                    if (m_impl->mapper.LoadFromFile(m_impl->bindingsPath))
+                    {
+                        m_impl->bindingsWriteTime = ft;
+                        m_impl->hasBindingsWriteTime = true;
+                        m_impl->hasLastFailedWriteTime = false;
+                        LogLine(L"[Input] Reloaded bindings: " + m_impl->bindingsPath.wstring());
+                    }
+                    else
+                    {
+                        // Keep the old bindings. Avoid spamming the log for the same on-disk timestamp.
+                        const bool newFail = !m_impl->hasLastFailedWriteTime || (ft != m_impl->lastFailedWriteTime);
+                        if (newFail)
+                        {
+                            m_impl->lastFailedWriteTime = ft;
+                            m_impl->hasLastFailedWriteTime = true;
+                            LogLine(L"[Input] Failed to reload bindings (parse error). Keeping previous binds. File: " + m_impl->bindingsPath.wstring());
+                        }
+                    }
+                }
+            }
+        }
+    }
+    else if (!m_impl->hasBindingsPath && shouldSearch)
+    {
+        fs::path loaded;
+        if (TryLoadBindings(m_impl->mapper, m_impl->bindingsCandidates, loaded))
+        {
+            m_impl->bindingsPath = loaded;
+            m_impl->hasBindingsPath = true;
+            m_impl->loggedMissing = false;
+
+            fs::file_time_type ft{};
+            if (TryGetLastWriteTime(loaded, ft))
+            {
+                m_impl->bindingsWriteTime = ft;
+                m_impl->hasBindingsWriteTime = true;
+            }
+
+            LogLine(L"[Input] Loaded bindings: " + loaded.wstring());
+        }
+    }
 
     bool changed = false;
     bool actionsChanged = false;
