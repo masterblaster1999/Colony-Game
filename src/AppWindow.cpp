@@ -279,10 +279,57 @@ LRESULT AppWindow::HandleMsg(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam)
         break;
 
     case WM_SYSKEYDOWN:
+    {
         // Alt+Enter (bit 29 = context code / Alt key down)
         if (wParam == VK_RETURN && (lParam & (1 << 29))) {
             ToggleFullscreen();
             return 0;
+        }
+
+        // Forward system keys (notably Alt) to the input queue so action-chords
+        // like Alt+MouseLeft can be bound in InputMapper.
+        if (m_impl)
+        {
+            const std::uint32_t vk = static_cast<std::uint32_t>(wParam);
+            if (vk < 256)
+            {
+                colony::input::InputEvent ev{};
+                ev.type = colony::input::InputEventType::KeyDown;
+                ev.key = vk;
+                ev.alt = (lParam & (1 << 29)) != 0;
+                ev.repeat = (lParam & (1 << 30)) != 0;
+                m_impl->input.Push(ev);
+            }
+
+            // Prevent the classic Alt-key menu activation when using Alt as a modifier in-game.
+            if (vk == static_cast<std::uint32_t>(VK_MENU) || vk == static_cast<std::uint32_t>(VK_LMENU) || vk == static_cast<std::uint32_t>(VK_RMENU))
+            {
+                return 0;
+            }
+        }
+
+        // Let the system handle other Alt combos (Alt+F4, etc.).
+        break;
+    }
+
+    case WM_SYSKEYUP:
+        if (m_impl)
+        {
+            const std::uint32_t vk = static_cast<std::uint32_t>(wParam);
+            if (vk < 256)
+            {
+                colony::input::InputEvent ev{};
+                ev.type = colony::input::InputEventType::KeyUp;
+                ev.key = vk;
+                ev.alt = (lParam & (1 << 29)) != 0;
+                ev.repeat = false;
+                m_impl->input.Push(ev);
+            }
+
+            if (vk == static_cast<std::uint32_t>(VK_MENU) || vk == static_cast<std::uint32_t>(VK_LMENU) || vk == static_cast<std::uint32_t>(VK_RMENU))
+            {
+                return 0;
+            }
         }
         break;
 
@@ -300,34 +347,91 @@ LRESULT AppWindow::HandleMsg(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam)
         SetFocus(hWnd);
         if (m_impl) {
             m_impl->mouse.OnLButtonDown(hWnd, GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam));
+
+            colony::input::InputEvent bev{};
+            bev.type = colony::input::InputEventType::MouseButtonDown;
+            bev.key  = colony::input::kMouseButtonLeft;
+            m_impl->input.Push(bev);
         }
         return 0;
 
     case WM_LBUTTONUP:
-        if (m_impl) m_impl->mouse.OnLButtonUp(hWnd);
+        if (m_impl) {
+            m_impl->mouse.OnLButtonUp(hWnd);
+
+            colony::input::InputEvent bev{};
+            bev.type = colony::input::InputEventType::MouseButtonUp;
+            bev.key  = colony::input::kMouseButtonLeft;
+            m_impl->input.Push(bev);
+        }
         return 0;
 
     case WM_RBUTTONDOWN:
         SetFocus(hWnd);
         if (m_impl) {
             m_impl->mouse.OnRButtonDown(hWnd, GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam));
+
+            colony::input::InputEvent bev{};
+            bev.type = colony::input::InputEventType::MouseButtonDown;
+            bev.key  = colony::input::kMouseButtonRight;
+            m_impl->input.Push(bev);
         }
         return 0;
 
     case WM_RBUTTONUP:
-        if (m_impl) m_impl->mouse.OnRButtonUp(hWnd);
+        if (m_impl) {
+            m_impl->mouse.OnRButtonUp(hWnd);
+
+            colony::input::InputEvent bev{};
+            bev.type = colony::input::InputEventType::MouseButtonUp;
+            bev.key  = colony::input::kMouseButtonRight;
+            m_impl->input.Push(bev);
+        }
         return 0;
 
     case WM_MBUTTONDOWN:
         SetFocus(hWnd);
         if (m_impl) {
             m_impl->mouse.OnMButtonDown(hWnd, GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam));
+
+            colony::input::InputEvent bev{};
+            bev.type = colony::input::InputEventType::MouseButtonDown;
+            bev.key  = colony::input::kMouseButtonMiddle;
+            m_impl->input.Push(bev);
         }
         return 0;
 
     case WM_MBUTTONUP:
-        if (m_impl) m_impl->mouse.OnMButtonUp(hWnd);
+        if (m_impl) {
+            m_impl->mouse.OnMButtonUp(hWnd);
+
+            colony::input::InputEvent bev{};
+            bev.type = colony::input::InputEventType::MouseButtonUp;
+            bev.key  = colony::input::kMouseButtonMiddle;
+            m_impl->input.Push(bev);
+        }
         return 0;
+
+    case WM_XBUTTONDOWN:
+        SetFocus(hWnd);
+        if (m_impl) {
+            const WORD xb = GET_XBUTTON_WPARAM(wParam);
+            colony::input::InputEvent bev{};
+            bev.type = colony::input::InputEventType::MouseButtonDown;
+            bev.key  = (xb == XBUTTON1) ? colony::input::kMouseButtonX1 : colony::input::kMouseButtonX2;
+            m_impl->input.Push(bev);
+        }
+        return TRUE;
+
+    case WM_XBUTTONUP:
+        if (m_impl) {
+            const WORD xb = GET_XBUTTON_WPARAM(wParam);
+            colony::input::InputEvent bev{};
+            bev.type = colony::input::InputEventType::MouseButtonUp;
+            bev.key  = (xb == XBUTTON1) ? colony::input::kMouseButtonX1 : colony::input::kMouseButtonX2;
+            m_impl->input.Push(bev);
+        }
+        return TRUE;
 
     case WM_MOUSEMOVE:
         if (m_impl)

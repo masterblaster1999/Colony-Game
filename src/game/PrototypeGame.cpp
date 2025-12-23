@@ -22,6 +22,12 @@ struct PrototypeGame::Impl {
 PrototypeGame::PrototypeGame()
 {
     m_impl = new (std::nothrow) Impl{};
+
+    // Optional: allow developers to override bindings without recompiling.
+    // If no config file is found, defaults remain.
+    if (m_impl) {
+        (void)m_impl->mapper.LoadFromDefaultPaths();
+    }
 }
 
 PrototypeGame::~PrototypeGame()
@@ -49,24 +55,27 @@ bool PrototypeGame::OnInput(std::span<const colony::input::InputEvent> events) n
     m_impl->hasLastTick = true;
 
     bool changed = false;
+    bool actionsChanged = false;
 
-    // Update high-level actions first. If any action transitions happened
-    // (pressed/released), refresh the title immediately.
-    const bool actionsChanged = m_impl->mapper.Consume(events);
-    if (actionsChanged)
-        changed = true;
+    // Process events in order so action-chords + mouse-drag decisions are made
+    // against the *current* button state (not just the final state for the frame).
+    m_impl->mapper.BeginFrame();
 
     for (const auto& ev : events)
     {
+        if (m_impl->mapper.ConsumeEvent(ev))
+            actionsChanged = true;
+
         using colony::input::InputEventType;
-        using colony::input::MouseButtonsMask;
 
         switch (ev.type)
         {
         case InputEventType::MouseDelta:
         {
-            const bool orbit = (ev.buttons & MouseButtonsMask::MouseLeft) != 0;
-            const bool pan   = (ev.buttons & (MouseButtonsMask::MouseMiddle | MouseButtonsMask::MouseRight)) != 0;
+            // Orbit/Pan are now fully action-driven (mouse buttons are bound through InputMapper).
+            // If both actions are down (e.g., due to an overlapping bind), prefer pan.
+            const bool pan = m_impl->mapper.IsDown(colony::input::Action::CameraPan);
+            const bool orbit = m_impl->mapper.IsDown(colony::input::Action::CameraOrbit) && !pan;
 
             if (m_impl->camera.ApplyDrag(static_cast<long>(ev.dx), static_cast<long>(ev.dy), orbit, pan)) {
                 changed = true;
@@ -81,10 +90,12 @@ bool PrototypeGame::OnInput(std::span<const colony::input::InputEvent> events) n
             break;
 
         default:
-            // Ignore for now.
             break;
         }
     }
+
+    if (actionsChanged)
+        changed = true;
 
     // Continuous keyboard movement (WASD + QE) in camera-relative space.
     //
@@ -111,7 +122,9 @@ bool PrototypeGame::OnInput(std::span<const colony::input::InputEvent> events) n
         const float rightX = cosY;
         const float rightY = -sinY;
 
-        const bool boost = m_impl->mapper.IsDown(colony::input::Action::SpeedBoost);
+        // Boost can be a modifier action, or it can be implied by chord actions.
+        const bool boost = m_impl->mapper.IsDown(colony::input::Action::SpeedBoost) ||
+                           m_impl->mapper.IsDown(colony::input::Action::MoveForwardFast);
         const float speedMul = boost ? 3.0f : 1.0f;
 
         // Pan speed is "world" units per second. Tune later.

@@ -1,0 +1,21 @@
+{
+  "version": 1,
+  "bindings": {
+    "MoveForward": ["W", "Up"],
+    "MoveBackward": ["S", "Down"],
+    "MoveLeft": ["A", "Left"],
+    "MoveRight": ["D", "Right"],
+    "MoveDown": ["Q"],
+    "MoveUp": ["E"],
+
+    // Example chord binding (distinct action):
+    "MoveForwardFast": ["Shift+W"],
+
+    // Modifier action:
+    "SpeedBoost": ["Shift"],
+
+    // Mouse buttons are now bindable too:
+    "CameraOrbit": ["MouseLeft"],
+    "CameraPan": ["MouseMiddle", "MouseRight", "Shift+MouseLeft"]
+  }
+}

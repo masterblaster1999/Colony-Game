@@ -18,7 +18,24 @@ enum class InputEventType : std::uint8_t {
     KeyUp      = 3,
     WindowResize = 4,
     FocusLost    = 5,
+    MouseButtonDown = 6,
+    MouseButtonUp   = 7,
 };
+
+// Unified input code space used by InputMapper.
+//
+//  - Keyboard: Win32 virtual-key codes (0..255)
+//  - Mouse buttons: codes starting at kMouseCodeBase
+constexpr std::uint32_t kKeyboardCodeCount = 256;
+constexpr std::uint32_t kMouseCodeBase = kKeyboardCodeCount;
+
+constexpr std::uint32_t kMouseButtonLeft   = kMouseCodeBase + 0;
+constexpr std::uint32_t kMouseButtonRight  = kMouseCodeBase + 1;
+constexpr std::uint32_t kMouseButtonMiddle = kMouseCodeBase + 2;
+constexpr std::uint32_t kMouseButtonX1     = kMouseCodeBase + 3;
+constexpr std::uint32_t kMouseButtonX2     = kMouseCodeBase + 4;
+
+constexpr std::uint32_t kInputCodeCount = kMouseCodeBase + 5;
 
 enum MouseButtonsMask : std::uint8_t {
     MouseLeft   = 1u << 0,
@@ -33,13 +50,16 @@ struct InputEvent {
     // MouseDelta
     std::int32_t dx = 0;
     std::int32_t dy = 0;
-    std::uint8_t buttons = 0; // MouseButtonsMask
+    std::uint8_t buttons = 0; // MouseButtonsMask snapshot (buttons held for this delta)
 
     // MouseWheel
     std::int32_t wheelDetents = 0;
 
-    // KeyDown/KeyUp
-    std::uint32_t key = 0; // Virtual-key code (Win32), but stored as an engine-agnostic integer.
+    // KeyDown/KeyUp and MouseButtonDown/MouseButtonUp
+    //
+    // - keyboard: Win32 virtual-key code (0..255)
+    // - mouse: one of kMouseButton* codes (>= kMouseCodeBase)
+    std::uint32_t key = 0;
     bool alt = false;
     bool repeat = false;
 
