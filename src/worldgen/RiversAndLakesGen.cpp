@@ -25,23 +25,9 @@
 #include <limits>
 #include <cmath>
 
+#include "worldgen/Grid2D.hpp"
+
 namespace colony { namespace worldgen {
-
-// ------------------------ basic grid -------------------------------------------------------------
-template <typename T>
-struct Grid2D {
-    int w = 0, h = 0;
-    std::vector<T> v;
-
-    Grid2D() = default;
-    Grid2D(int W, int H, const T& init = T{}) : w(W), h(H), v(static_cast<size_t>(W*H), init) {}
-
-    inline bool inBounds(int x, int y) const noexcept { return (unsigned)x < (unsigned)w && (unsigned)y < (unsigned)h; }
-    inline int  idx(int x, int y) const noexcept { return y * w + x; }
-
-    inline T& at(int x, int y)             { return v[idx(x,y)]; }
-    inline const T& at(int x, int y) const { return v[idx(x,y)]; }
-};
 
 struct Vec2i { int x=0, y=0; };
 
@@ -78,7 +64,8 @@ struct PQNode {
 // Build a filled surface E so every cell can drain to the boundary; flats slope by +eps away from outlets.
 static Grid2D<float> PriorityFloodFill(const Grid2D<float>& H, float seaLevel, float epsSlope)
 {
-    const int W = H.w, Hh = H.h;
+    const int W  = H.width();
+    const int Hh = H.height();
     Grid2D<float> E(W, Hh, 0.0f);
     Grid2D<uint8_t> visited(W, Hh, 0);
 
@@ -127,7 +114,8 @@ static Grid2D<float> PriorityFloodFill(const Grid2D<float>& H, float seaLevel, f
 // ------------------------ flow routing & accumulation -------------------------------------------
 static Grid2D<int> BuildOutflowD8(const Grid2D<float>& E)
 {
-    const int W = E.w, Hh = E.h;
+    const int W  = E.width();
+    const int Hh = E.height();
     Grid2D<int> out(W, Hh, -1);
 
     for (int y = 0; y < Hh; ++y) {
@@ -152,18 +140,24 @@ static Grid2D<int> BuildOutflowD8(const Grid2D<float>& E)
 
 static Grid2D<float> FlowAccumulation(const Grid2D<float>& E, const Grid2D<int>& out, float rainfallPerCell)
 {
-    const int N = E.w * E.h;
-    Grid2D<float> acc(E.w, E.h, rainfallPerCell);
+    const int W  = E.width();
+    const int Hh = E.height();
+    const int N  = W * Hh;
+
+    Grid2D<float> acc(W, Hh, rainfallPerCell);
 
     // Topological order: process from high->low E so upstream contributes before downstream propagates.
     std::vector<int> order(N);
     order.reserve(N);
     for (int i = 0; i < N; ++i) order[i] = i;
-    std::stable_sort(order.begin(), order.end(), [&](int a, int b){ return E.v[a] > E.v[b]; }); // descending by E
+    const float* eData = E.data();
+    std::stable_sort(order.begin(), order.end(), [&](int a, int b){ return eData[a] > eData[b]; }); // descending by E
 
+    const int* outData = out.data();
+    float* accData = acc.data();
     for (int i : order) {
-        int j = out.v[i];
-        if (j >= 0) acc.v[j] += acc.v[i];
+        const int j = outData[i];
+        if (j >= 0) accData[j] += accData[i];
     }
     return acc;
 }
@@ -171,7 +165,8 @@ static Grid2D<float> FlowAccumulation(const Grid2D<float>& E, const Grid2D<int>&
 // ------------------------ lake detection (size filter) ------------------------------------------
 static Grid2D<uint8_t> DetectLakes(const Grid2D<float>& H, const Grid2D<float>& E, int minLakeCells, float seaLevel)
 {
-    const int W = H.w, Hh = H.h;
+    const int W  = H.width();
+    const int Hh = H.height();
     Grid2D<uint8_t> lake(W, Hh, 0);
     Grid2D<uint8_t> candidate(W, Hh, 0);
     const float eps = 1e-6f;
@@ -216,7 +211,8 @@ RiversOut GenerateRiversAndLakes(const Grid2D<float>& height, const RiversParams
     out.outIndex = BuildOutflowD8(out.filled);
     out.accum = FlowAccumulation(out.filled, out.outIndex, P.rainfallPerCell);
 
-    const int W = height.w, Hh = height.h;
+    const int W  = height.width();
+    const int Hh = height.height();
     out.ocean = Grid2D<uint8_t>(W, Hh, 0);
     out.river = Grid2D<uint8_t>(W, Hh, 0);
     out.lake  = DetectLakes(height, out.filled, P.minLakeCells, P.seaLevel);
@@ -236,7 +232,8 @@ RiversOut GenerateRiversAndLakes(const Grid2D<float>& height, const RiversParams
 void CarveRiversInPlace(Grid2D<float>& height, const RiversOut& R, float carveDepth, int carveRadiusCells)
 {
     if (carveDepth <= 0.0f) return;
-    const int W = height.w, Hh = height.h;
+    const int W  = height.width();
+    const int Hh = height.height();
     const int r = std::max(0, carveRadiusCells);
     const float depth = carveDepth;
 
@@ -253,7 +250,7 @@ void CarveRiversInPlace(Grid2D<float>& height, const RiversOut& R, float carveDe
             for (int dy = -r; dy <= r; ++dy) {
                 for (int dx = -r; dx <= r; ++dx) {
                     int nx = x + dx, ny = y + dy;
-                    if (!height.inBounds(nx,ny)) continue;
+                    if ((unsigned)nx >= (unsigned)W || (unsigned)ny >= (unsigned)Hh) continue;
                     float d2 = float(dx*dx + dy*dy);
                     float t = std::max(0.0f, 1.0f - d2 / float(r*r + 1)); // smooth falloff
                     lowerCell(nx, ny, depth * t);
@@ -267,8 +264,11 @@ void CarveRiversInPlace(Grid2D<float>& height, const RiversOut& R, float carveDe
 // Convert a mask into walk cost (example): 255 for blocked, otherwise 1.
 Grid2D<uint16_t> BuildNavCostFromWater(const RiversOut& R, uint16_t riverCost, uint16_t lakeCost, uint16_t oceanCost)
 {
-    Grid2D<uint16_t> cost(R.filled.w, R.filled.h, 1);
-    for (int y = 0; y < R.filled.h; ++y) for (int x = 0; x < R.filled.w; ++x) {
+    const int W  = R.filled.width();
+    const int Hh = R.filled.height();
+
+    Grid2D<uint16_t> cost(W, Hh, 1);
+    for (int y = 0; y < Hh; ++y) for (int x = 0; x < W; ++x) {
         if (R.ocean.at(x,y))      cost.at(x,y) = oceanCost;
         else if (R.lake.at(x,y))  cost.at(x,y) = lakeCost;
         else if (R.river.at(x,y)) cost.at(x,y) = riverCost;
