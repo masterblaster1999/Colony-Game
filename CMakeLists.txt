@@ -141,13 +141,41 @@ if(DEFINED ENV{CI})
 endif()
 
 option(COLONY_WERROR         "Treat warnings as errors on MSVC (defaults ON in CI)" ${_CG_DEFAULT_WERROR})
-option(COLONY_UNITY          "Enable Unity/Jumbo builds for project targets" ON)
+# Default unity/jumbo builds to ON in CI (fast clean builds), OFF locally (better incremental iteration).
+set(_CG_DEFAULT_UNITY OFF)
+if(DEFINED ENV{CI})
+  set(_CG_DEFAULT_UNITY ON)
+endif()
+
+# Unity builds (CMake's UNITY_BUILD / "jumbo" builds) reduce full rebuild times,
+# but increase the "blast radius" of incremental rebuilds.
+option(COLONY_UNITY          "Enable Unity/Jumbo builds for project targets (Unity/Jumbo)" ${_CG_DEFAULT_UNITY})
+
+# When unity builds are enabled, this controls how many sources are combined per unity TU.
+# Smaller values reduce incremental rebuild scope at the cost of slower clean builds.
+set(_CG_DEFAULT_UNITY_BATCH_SIZE 4)
+if(DEFINED ENV{CI})
+  set(_CG_DEFAULT_UNITY_BATCH_SIZE 8)
+endif()
+set(COLONY_UNITY_BATCH_SIZE "${_CG_DEFAULT_UNITY_BATCH_SIZE}" CACHE STRING
+  "Unity build batch size (only used when COLONY_UNITY=ON). Smaller => better incremental rebuild granularity.")
 option(COLONY_STATIC_RUNTIME "Link static MSVC runtime (/MT) instead of DLL" OFF)
 
 if(NOT DEFINED COLONY_USE_PCH)
   option(COLONY_USE_PCH "Enable precompiled headers" ON)
 endif()
 set(COLONY_PCH_HEADER "src/pch.hpp" CACHE STRING "Path to the common precompiled header used by game targets")
+# Developer iteration helpers (MSVC):
+# - /DEBUG:FASTLINK speeds up link times in Debug/RelWithDebInfo (at the cost of a "partial" PDB until debug time).
+# - /Z7 keeps debug info in .obj files which can reduce PDB write contention in parallel builds.
+set(_CG_DEFAULT_DEBUG_FASTLINK OFF)
+set(_CG_DEFAULT_DEBUG_Z7 OFF)
+if(NOT DEFINED ENV{CI})
+  set(_CG_DEFAULT_DEBUG_FASTLINK ON)
+endif()
+
+option(COLONY_DEBUG_FASTLINK "MSVC: Use /DEBUG:FASTLINK for Debug/RelWithDebInfo (faster links)" ${_CG_DEFAULT_DEBUG_FASTLINK})
+option(COLONY_DEBUG_Z7       "MSVC: Use /Z7 instead of /Zi for Debug/RelWithDebInfo (often faster parallel compiles)" ${_CG_DEFAULT_DEBUG_Z7})
 
 option(COLONY_ENABLE_TIDY "Run clang-tidy static analysis during build" OFF)
 option(COLONY_ENABLE_ASAN "Enable AddressSanitizer for supported compilers/configs" OFF)
@@ -175,7 +203,9 @@ set(COLONY_UNITY_BUILD "${COLONY_UNITY}" CACHE BOOL "Deprecated alias (use COLON
 
 if(COLONY_UNITY)
   set(CMAKE_UNITY_BUILD ON)
-  set(CMAKE_UNITY_BUILD_BATCH_SIZE 8)
+  set(CMAKE_UNITY_BUILD_BATCH_SIZE "${COLONY_UNITY_BATCH_SIZE}")
+else()
+  set(CMAKE_UNITY_BUILD OFF)
 endif()
 
 # ------------------------------------------------------------------------------
@@ -265,9 +295,18 @@ if(MSVC)
     $<$<BOOL:${COLONY_WERROR}>:/WX>
   )
 
-  # PDBs in Debug/RelWithDebInfo
-  add_compile_options($<$<OR:$<CONFIG:Debug>,$<CONFIG:RelWithDebInfo>>:/Zi>)
-  add_link_options(   $<$<OR:$<CONFIG:Debug>,$<CONFIG:RelWithDebInfo>>:/DEBUG:FULL>)
+  # Debug info & link PDBs (Debug/RelWithDebInfo)
+  if(COLONY_DEBUG_Z7)
+    add_compile_options($<$<OR:$<CONFIG:Debug>,$<CONFIG:RelWithDebInfo>>:/Z7>)
+  else()
+    add_compile_options($<$<OR:$<CONFIG:Debug>,$<CONFIG:RelWithDebInfo>>:/Zi>)
+  endif()
+
+  if(COLONY_DEBUG_FASTLINK)
+    add_link_options($<$<OR:$<CONFIG:Debug>,$<CONFIG:RelWithDebInfo>>:/DEBUG:FASTLINK>)
+  else()
+    add_link_options($<$<OR:$<CONFIG:Debug>,$<CONFIG:RelWithDebInfo>>:/DEBUG:FULL>)
+  endif()
 
   # Release codegen & link opts (LTO flags are handled by IPO property above when supported)
   add_compile_options(

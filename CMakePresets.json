@@ -13,10 +13,54 @@
       },
       "vendor": {
         "microsoft.com/VisualStudioSettings/CMake/1.0": {
-          "hostOS": ["Windows"]
+          "hostOS": [
+            "Windows"
+          ]
+        }
+      }
+    },
+    {
+      "name": "windows-msvc-x64-fast",
+      "inherits": "windows-msvc-x64",
+      "binaryDir": "${sourceDir}/out/build/${presetName}",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "COLONY_UNITY": "OFF",
+        "COLONY_DEBUG_FASTLINK": "ON",
+        "COLONY_DEBUG_Z7": "ON",
+        "COLONY_BUILD_TESTS": "OFF"
+      },
+      "vendor": {
+        "microsoft.com/VisualStudioSettings/CMake/1.0": {
+          "hostOS": [
+            "Windows"
+          ]
+        }
+      }
+    },
+    {
+      "name": "windows-vs2022-x64-fast",
+      "generator": "Visual Studio 17 2022",
+      "binaryDir": "${sourceDir}/out/build/${presetName}",
+      "architecture": "x64",
+      "cacheVariables": {
+        "CMAKE_CXX_STANDARD": "23",
+        "CMAKE_MSVC_RUNTIME_LIBRARY": "MultiThreaded$<$<CONFIG:Debug>:Debug>DLL",
+        "USE_PIX": "ON",
+        "USE_RAWINPUT": "ON",
+        "COLONY_UNITY": "OFF",
+        "COLONY_DEBUG_FASTLINK": "ON",
+        "COLONY_DEBUG_Z7": "ON",
+        "COLONY_BUILD_TESTS": "OFF",
+        "COLONY_LTO": "OFF"
+      },
+      "vendor": {
+        "microsoft.com/VisualStudioSettings/CMake/1.0": {
+          "hostOS": [
+            "Windows"
+          ]
         }
       }
     }
   ]
 }
-
