@@ -15,23 +15,42 @@ namespace {
 
 // Win32 virtual-key codes we want for defaults/config parsing, but without including <windows.h>
 // (this input layer remains platform-agnostic).
-constexpr std::uint32_t VK_SHIFT    = 0x10;
-constexpr std::uint32_t VK_CONTROL  = 0x11;
-constexpr std::uint32_t VK_MENU     = 0x12; // Alt
+// IMPORTANT: We intentionally do *not* name these like VK_*.
+// On Windows, <Windows.h> defines VK_* as macros. This translation unit is built with
+// a project-wide PCH that includes <Windows.h>, and naming collisions would produce
+// invalid macro-expanded declarations (e.g. "constexpr std::uint32_t 0x10 = 0x10;").
+//
+// Using a prefix avoids brittle #undefs and keeps this file platform-agnostic.
+constexpr std::uint32_t kVK_SHIFT    = 0x10;
+constexpr std::uint32_t kVK_CONTROL  = 0x11;
+constexpr std::uint32_t kVK_MENU     = 0x12; // Alt
 
-constexpr std::uint32_t VK_LSHIFT   = 0xA0;
-constexpr std::uint32_t VK_RSHIFT   = 0xA1;
-constexpr std::uint32_t VK_LCONTROL = 0xA2;
-constexpr std::uint32_t VK_RCONTROL = 0xA3;
-constexpr std::uint32_t VK_LMENU    = 0xA4;
-constexpr std::uint32_t VK_RMENU    = 0xA5;
+constexpr std::uint32_t kVK_LSHIFT   = 0xA0;
+constexpr std::uint32_t kVK_RSHIFT   = 0xA1;
+constexpr std::uint32_t kVK_LCONTROL = 0xA2;
+constexpr std::uint32_t kVK_RCONTROL = 0xA3;
+constexpr std::uint32_t kVK_LMENU    = 0xA4;
+constexpr std::uint32_t kVK_RMENU    = 0xA5;
 
-constexpr std::uint32_t VK_LEFT  = 0x25;
-constexpr std::uint32_t VK_UP    = 0x26;
-constexpr std::uint32_t VK_RIGHT = 0x27;
-constexpr std::uint32_t VK_DOWN  = 0x28;
+constexpr std::uint32_t kVK_LEFT  = 0x25;
+constexpr std::uint32_t kVK_UP    = 0x26;
+constexpr std::uint32_t kVK_RIGHT = 0x27;
+constexpr std::uint32_t kVK_DOWN  = 0x28;
 
-constexpr std::uint32_t VK_SPACE = 0x20;
+constexpr std::uint32_t kVK_SPACE = 0x20;
+
+// Common navigation/utility keys (useful for config files / future gameplay actions).
+constexpr std::uint32_t kVK_ESCAPE = 0x1B;
+constexpr std::uint32_t kVK_TAB    = 0x09;
+constexpr std::uint32_t kVK_RETURN = 0x0D;
+constexpr std::uint32_t kVK_BACK   = 0x08; // Backspace
+
+constexpr std::uint32_t kVK_INSERT = 0x2D;
+constexpr std::uint32_t kVK_DELETE = 0x2E;
+constexpr std::uint32_t kVK_HOME   = 0x24;
+constexpr std::uint32_t kVK_END    = 0x23;
+constexpr std::uint32_t kVK_PRIOR  = 0x21; // Page Up
+constexpr std::uint32_t kVK_NEXT   = 0x22; // Page Down
 
 static inline bool IsWhitespace(char c) noexcept
 {
@@ -102,6 +121,26 @@ static std::optional<std::uint32_t> ParseInputCodeToken(std::string_view token)
     if (t.empty())
         return std::nullopt;
 
+    // Function keys: F1..F24
+    // VK_F1 starts at 0x70.
+    if (t.size() >= 2 && t[0] == 'f')
+    {
+        int n = 0;
+        bool ok = true;
+        for (std::size_t i = 1; i < t.size(); ++i)
+        {
+            const unsigned char c = static_cast<unsigned char>(t[i]);
+            if (!std::isdigit(c)) { ok = false; break; }
+            n = n * 10 + static_cast<int>(c - '0');
+            if (n > 24) { ok = false; break; }
+        }
+
+        if (ok && n >= 1 && n <= 24)
+        {
+            return static_cast<std::uint32_t>(0x6Fu + static_cast<std::uint32_t>(n));
+        }
+    }
+
     // Single character: treat as ASCII key. Normalize to uppercase.
     if (t.size() == 1)
     {
@@ -111,26 +150,38 @@ static std::optional<std::uint32_t> ParseInputCodeToken(std::string_view token)
     }
 
     // Arrow keys
-    if (t == "up" || t == "arrowup") return VK_UP;
-    if (t == "down" || t == "arrowdown") return VK_DOWN;
-    if (t == "left" || t == "arrowleft") return VK_LEFT;
-    if (t == "right" || t == "arrowright") return VK_RIGHT;
+    if (t == "up" || t == "arrowup") return kVK_UP;
+    if (t == "down" || t == "arrowdown") return kVK_DOWN;
+    if (t == "left" || t == "arrowleft") return kVK_LEFT;
+    if (t == "right" || t == "arrowright") return kVK_RIGHT;
 
     // Common named keys
-    if (t == "space" || t == "spacebar") return VK_SPACE;
+    if (t == "space" || t == "spacebar") return kVK_SPACE;
+
+    // Common utility/navigation keys
+    if (t == "esc" || t == "escape") return kVK_ESCAPE;
+    if (t == "tab") return kVK_TAB;
+    if (t == "enter" || t == "return") return kVK_RETURN;
+    if (t == "backspace" || t == "bksp" || t == "bs") return kVK_BACK;
+    if (t == "ins" || t == "insert") return kVK_INSERT;
+    if (t == "del" || t == "delete") return kVK_DELETE;
+    if (t == "home") return kVK_HOME;
+    if (t == "end") return kVK_END;
+    if (t == "pageup" || t == "pgup") return kVK_PRIOR;
+    if (t == "pagedown" || t == "pgdn") return kVK_NEXT;
 
     // Modifiers
-    if (t == "shift") return VK_SHIFT;
-    if (t == "lshift" || t == "leftshift") return VK_LSHIFT;
-    if (t == "rshift" || t == "rightshift") return VK_RSHIFT;
+    if (t == "shift") return kVK_SHIFT;
+    if (t == "lshift" || t == "leftshift") return kVK_LSHIFT;
+    if (t == "rshift" || t == "rightshift") return kVK_RSHIFT;
 
-    if (t == "ctrl" || t == "control") return VK_CONTROL;
-    if (t == "lctrl" || t == "leftctrl" || t == "lcontrol" || t == "leftcontrol") return VK_LCONTROL;
-    if (t == "rctrl" || t == "rightctrl" || t == "rcontrol" || t == "rightcontrol") return VK_RCONTROL;
+    if (t == "ctrl" || t == "control") return kVK_CONTROL;
+    if (t == "lctrl" || t == "leftctrl" || t == "lcontrol" || t == "leftcontrol") return kVK_LCONTROL;
+    if (t == "rctrl" || t == "rightctrl" || t == "rcontrol" || t == "rightcontrol") return kVK_RCONTROL;
 
-    if (t == "alt" || t == "menu") return VK_MENU;
-    if (t == "lalt" || t == "leftalt" || t == "lmenu" || t == "leftmenu") return VK_LMENU;
-    if (t == "ralt" || t == "rightalt" || t == "rmenu" || t == "rightmenu") return VK_RMENU;
+    if (t == "alt" || t == "menu") return kVK_MENU;
+    if (t == "lalt" || t == "leftalt" || t == "lmenu" || t == "leftmenu") return kVK_LMENU;
+    if (t == "ralt" || t == "rightalt" || t == "rmenu" || t == "rightmenu") return kVK_RMENU;
 
     // Mouse buttons (mapped into the unified input code space)
     if (t == "mouseleft" || t == "lmb" || t == "mouse1") return colony::input::kMouseButtonLeft;
@@ -225,30 +276,30 @@ void InputMapper::SetDefaultBinds() noexcept
 
     // Classic free-cam movement defaults + arrow key alternatives.
     AddBinding(Action::MoveForward,  static_cast<std::uint32_t>('W'));
-    AddBinding(Action::MoveForward,  VK_UP);
+    AddBinding(Action::MoveForward,  kVK_UP);
 
     AddBinding(Action::MoveBackward, static_cast<std::uint32_t>('S'));
-    AddBinding(Action::MoveBackward, VK_DOWN);
+    AddBinding(Action::MoveBackward, kVK_DOWN);
 
     AddBinding(Action::MoveLeft,     static_cast<std::uint32_t>('A'));
-    AddBinding(Action::MoveLeft,     VK_LEFT);
+    AddBinding(Action::MoveLeft,     kVK_LEFT);
 
     AddBinding(Action::MoveRight,    static_cast<std::uint32_t>('D'));
-    AddBinding(Action::MoveRight,    VK_RIGHT);
+    AddBinding(Action::MoveRight,    kVK_RIGHT);
 
     AddBinding(Action::MoveDown,     static_cast<std::uint32_t>('Q'));
     AddBinding(Action::MoveUp,       static_cast<std::uint32_t>('E'));
 
     // Example chord binding: Shift+W as a distinct action.
     {
-        const std::uint32_t chord[] = { VK_SHIFT, static_cast<std::uint32_t>('W') };
+        const std::uint32_t chord[] = { kVK_SHIFT, static_cast<std::uint32_t>('W') };
         AddBinding(Action::MoveForwardFast, std::span<const std::uint32_t>(chord, 2));
     }
 
     // Speed boost modifier (either shift).
-    AddBinding(Action::SpeedBoost, VK_SHIFT);
-    AddBinding(Action::SpeedBoost, VK_LSHIFT);
-    AddBinding(Action::SpeedBoost, VK_RSHIFT);
+    AddBinding(Action::SpeedBoost, kVK_SHIFT);
+    AddBinding(Action::SpeedBoost, kVK_LSHIFT);
+    AddBinding(Action::SpeedBoost, kVK_RSHIFT);
 
     // Mouse-driven camera actions.
     AddBinding(Action::CameraOrbit, kMouseButtonLeft);
@@ -257,7 +308,7 @@ void InputMapper::SetDefaultBinds() noexcept
 
     // Optional chord example: Shift+MouseLeft => pan.
     {
-        const std::uint32_t chord[] = { VK_SHIFT, kMouseButtonLeft };
+        const std::uint32_t chord[] = { kVK_SHIFT, kMouseButtonLeft };
         AddBinding(Action::CameraPan, std::span<const std::uint32_t>(chord, 2));
     }
 

@@ -35,6 +35,8 @@ set(_colony_game_sources
     # Extracted modules (platform + loop) used by AppWindow
     ${CMAKE_CURRENT_SOURCE_DIR}/platform/win32/Win32Window.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/platform/win32/Win32Window.h
+    ${CMAKE_CURRENT_SOURCE_DIR}/platform/win32/AppPaths.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/platform/win32/AppPaths.h
     ${CMAKE_CURRENT_SOURCE_DIR}/platform/win32/RawMouseInput.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/platform/win32/RawMouseInput.h
     ${CMAKE_CURRENT_SOURCE_DIR}/loop/DebugCamera.cpp

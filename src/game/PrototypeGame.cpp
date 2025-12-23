@@ -2,9 +2,11 @@
 
 #include "input/InputMapper.h"
 #include "loop/DebugCamera.h"
+#include "platform/win32/AppPaths.h"
 
 #include <chrono>
 #include <cmath>
+#include <filesystem>
 #include <new>
 
 namespace colony::game {
@@ -26,7 +28,25 @@ PrototypeGame::PrototypeGame()
     // Optional: allow developers to override bindings without recompiling.
     // If no config file is found, defaults remain.
     if (m_impl) {
-        (void)m_impl->mapper.LoadFromDefaultPaths();
+        // Prefer search relative to CWD (useful while iterating in an IDE), but also
+        // fall back to the executable directory so launching the game from an arbitrary
+        // working directory (or after install) still finds assets.
+        if (!m_impl->mapper.LoadFromDefaultPaths())
+        {
+            const std::filesystem::path exeDir = std::filesystem::path(winqol::ExeDir());
+            const std::filesystem::path candidates[] = {
+                exeDir / "assets" / "config" / "input_bindings.json",
+                exeDir / "assets" / "config" / "input_bindings.ini",
+                exeDir / "input_bindings.json",
+                exeDir / "input_bindings.ini",
+            };
+
+            for (const auto& c : candidates)
+            {
+                if (m_impl->mapper.LoadFromFile(c))
+                    break;
+            }
+        }
     }
 }
 
