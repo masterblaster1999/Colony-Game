@@ -1,7 +1,12 @@
 // Minimal-but-useful smoke test for Colony-Game on Windows.
 // Uses doctest (header-only) and EnTT from vcpkg.
 
-#define DOCTEST_CONFIG_IMPLEMENT_WITH_MAIN
+// NOTE:
+// This file is not currently part of the default colony_tests target (the
+// main tests target only globs tests/*.cpp). If you later add recursive test
+// collection, keep this file free of DOCTEST_CONFIG_IMPLEMENT* macros.
+// The doctest implementation + main() must live in a single TU (tests/test_main.cpp).
+
 #include <doctest/doctest.h>
 #include <entt/entt.hpp>
 

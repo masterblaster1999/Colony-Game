@@ -10,6 +10,11 @@
 #define DOCTEST_CONFIG_IMPLEMENT
 #include <doctest/doctest.h>
 
+// Defensive: avoid leaking implementation macros into other files when tests are
+// built in unity/jumbo mode. CMake also excludes this file from unity builds,
+// but keeping this here makes the TU safe even if that property is removed.
+#undef DOCTEST_CONFIG_IMPLEMENT
+
 #include <cstdlib> // std::getenv
 #include <cstring> // std::strcmp
 

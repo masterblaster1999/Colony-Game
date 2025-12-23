@@ -1,31 +1,40 @@
 # tests/CMakeLists.txt
 
 # ------------------------------------------------------------
-# Doctest (header-only fetch). Avoids running doctest's CMake.
+# Doctest
+#
+# Prefer vcpkg's manifest-provided doctest (already listed in vcpkg.json)
+# to avoid network fetches during configure/build.
+#
+# Fallback to FetchContent header-only if doctest isn't available.
 # ------------------------------------------------------------
-if(POLICY CMP0169)
-  # CMake 4.2+: calling FetchContent_Populate directly is deprecated under NEW.
-  # We keep the header-only approach and allow it via OLD for now.
-  cmake_policy(SET CMP0169 OLD)
+find_package(doctest CONFIG QUIET)
+
+if(NOT doctest_FOUND)
+  if(POLICY CMP0169)
+    # CMake 4.2+: calling FetchContent_Populate directly is deprecated under NEW.
+    # We keep the header-only approach and allow it via OLD for now.
+    cmake_policy(SET CMP0169 OLD)
+  endif()
+
+  include(FetchContent)
+
+  FetchContent_Declare(doctest
+    GIT_REPOSITORY https://github.com/doctest/doctest.git
+    GIT_TAG        v2.4.11
+    GIT_SHALLOW    TRUE
+  )
+
+  FetchContent_GetProperties(doctest)
+  if(NOT doctest_POPULATED)
+    FetchContent_Populate(doctest)
+  endif()
+
+  add_library(doctest INTERFACE)
+  add_library(doctest::doctest ALIAS doctest)
+  # doctest header is usually included as: #include <doctest/doctest.h>
+  target_include_directories(doctest INTERFACE "${doctest_SOURCE_DIR}")
 endif()
-
-include(FetchContent)
-
-FetchContent_Declare(doctest
-  GIT_REPOSITORY https://github.com/doctest/doctest.git
-  GIT_TAG        v2.4.11
-  GIT_SHALLOW    TRUE
-)
-
-FetchContent_GetProperties(doctest)
-if(NOT doctest_POPULATED)
-  FetchContent_Populate(doctest)
-endif()
-
-add_library(doctest INTERFACE)
-add_library(doctest::doctest ALIAS doctest)
-# doctest header is usually included as: #include <doctest/doctest.h>
-target_include_directories(doctest INTERFACE "${doctest_SOURCE_DIR}")
 
 # ------------------------------------------------------------
 # Helper: unique, drive-letter-safe .obj naming for MSVC/VS
@@ -85,12 +94,26 @@ file(GLOB CONFIGURE_DEPENDS COLONY_TEST_SOURCES
   "${CMAKE_CURRENT_SOURCE_DIR}/*.cxx"
 )
 
+# Legacy runner kept in-tree for reference; the actual runner is test_main.cpp.
+list(FILTER COLONY_TEST_SOURCES EXCLUDE REGEX ".*/main\\.cpp$")
+
+list(SORT COLONY_TEST_SOURCES)
+
 add_executable(colony_tests ${COLONY_TEST_SOURCES})
 set_target_properties(colony_tests PROPERTIES FOLDER "tests")
 target_compile_features(colony_tests PRIVATE cxx_std_23)
-target_compile_definitions(colony_tests PRIVATE DOCTEST_CONFIG_IMPLEMENT_WITH_MAIN)
 
 target_link_libraries(colony_tests PRIVATE doctest::doctest)
+
+# Ensure the doctest implementation + custom main() TU never ends up inside a
+# unity/jumbo TU. Otherwise its implementation macros can leak into other test
+# TUs and/or cause ODR issues.
+if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/test_main.cpp")
+  set_source_files_properties("${CMAKE_CURRENT_SOURCE_DIR}/test_main.cpp"
+    PROPERTIES
+      SKIP_UNITY_BUILD_INCLUSION ON
+  )
+endif()
 
 # Link project libs when present
 if(TARGET colony::core)
@@ -173,3 +196,6 @@ endif()
 
 # Fix MSB8027 for the tests' own sources too
 colony_msvc_unique_objnames_for_sources(COLONY_TEST_SOURCES)
+
+# Register with CTest (`ctest --test-dir <build>`).
+add_test(NAME colony_tests COMMAND colony_tests)

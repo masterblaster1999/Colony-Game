@@ -804,6 +804,12 @@ if(EXISTS "${CMAKE_SOURCE_DIR}/cmake/CGTests.cmake")
   include(CGTests)
 endif()
 
+# Make `ctest --test-dir <build>` work (CI already calls this).
+# CMake recommends enable_testing() at the top level.
+if(COLONY_BUILD_TESTS)
+  enable_testing()
+endif()
+
 if(COLONY_BUILD_TESTS AND EXISTS "${CMAKE_SOURCE_DIR}/tests/CMakeLists.txt")
   if(NOT DEFINED COLONY_TESTS_ADDED)
     add_subdirectory("${CMAKE_SOURCE_DIR}/tests" "${CMAKE_BINARY_DIR}/tests")
