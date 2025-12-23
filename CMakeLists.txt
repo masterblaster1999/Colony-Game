@@ -605,7 +605,7 @@ if(TARGET colony_core AND NOT TARGET colony::core)
   add_library(colony::core ALIAS colony_core)
 endif()
 
-add_subdirectory(platform/win)   # colony_platform_win
+add_subdirectory(src/platform/win)   # colony_platform_win (canonical)
 # FIX: Ensure the alias exists for consumers linking colony::platform_win
 if(TARGET colony_platform_win AND NOT TARGET colony::platform_win)
   add_library(colony::platform_win ALIAS colony_platform_win)

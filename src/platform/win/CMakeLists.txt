@@ -1,220 +1,197 @@
 # =====================================
 # File: src/platform/win/CMakeLists.txt
 # =====================================
-cmake_minimum_required(VERSION 3.27...3.31 FATAL_ERROR)
+#
+# Canonical Windows platform implementation lives under:
+#   src/platform/win
+#
+# A historical/legacy implementation also exists under:
+#   platform/win
+#
+# To prevent the classic “header exists but .cpp never builds” failure mode, the
+# canonical platform target (colony_platform_win) is defined from the sources in
+# THIS directory. Legacy code is opt-in.
+#
 
-include_guard(GLOBAL)
+set(_WIN_DIR "${CMAKE_SOURCE_DIR}/src/platform/win")
+set(_LEGACY_DIR "${CMAKE_SOURCE_DIR}/platform/win") # legacy (optional)
 
-if(NOT WIN32)
-  message(FATAL_ERROR "src/platform/win is Windows-only.")
-endif()
-
-# Standalone convenience (rare).
-if(CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)
-  project(colony_platform_win LANGUAGES CXX)
-  set(CMAKE_CXX_STANDARD 23)
-  set(CMAKE_CXX_STANDARD_REQUIRED ON)
-  set(CMAKE_CXX_EXTENSIONS OFF)
-endif()
-
-set(_WIN_DIR "${CMAKE_CURRENT_LIST_DIR}")
-set(_LEGACY_DIR "${CMAKE_SOURCE_DIR}/platform/win") # optional legacy folder
-
-# ---- Collect src/platform/win -------------------------------------------------
-file(GLOB_RECURSE _SRC_WIN_TU CONFIGURE_DEPENDS
-  "${_WIN_DIR}/*.cpp"
+# -----------------------------------------------------
+# Source discovery (canonical)
+# -----------------------------------------------------
+file(GLOB_RECURSE _WIN_TU CONFIGURE_DEPENDS
   "${_WIN_DIR}/*.c"
-)
-file(GLOB_RECURSE _SRC_WIN_HDR CONFIGURE_DEPENDS
-  "${_WIN_DIR}/*.hpp"
-  "${_WIN_DIR}/*.h"
+  "${_WIN_DIR}/*.cpp"
 )
 
-# ---- Collect legacy platform/win (optional) -----------------------------------
+# Exclude entrypoints / executable glue that should not live in the platform lib.
+set(_cg_exclude_regex "(^|/)(HighPerfGPU|GpuPreference|WinLauncher|AppMain|EntryWinMain|EntryPoint|WinMain|win32_main|main_win|Bootstrap|WinBootstrap)\.(c|cpp)$")
+list(FILTER _WIN_TU EXCLUDE REGEX "${_cg_exclude_regex}")
+
+# Headers (IDE visibility)
+file(GLOB_RECURSE _WIN_HDR CONFIGURE_DEPENDS
+  "${_WIN_DIR}/*.h"
+  "${_WIN_DIR}/*.hpp"
+  "${_WIN_DIR}/*.hh"
+  "${_WIN_DIR}/*.inl"
+)
+
+# -----------------------------------------------------
+# Legacy (opt-in)
+# -----------------------------------------------------
+option(
+  COLONY_PLATFORM_WIN_INCLUDE_LEGACY
+  "Also compile legacy sources from /platform/win into colony_platform_win (temporary migration aid)."
+  OFF
+)
+
 set(_LEG_WIN_TU "")
 set(_LEG_WIN_HDR "")
-if(EXISTS "${_LEGACY_DIR}")
+
+if(COLONY_PLATFORM_WIN_INCLUDE_LEGACY AND EXISTS "${_LEGACY_DIR}")
   file(GLOB_RECURSE _LEG_WIN_TU CONFIGURE_DEPENDS
-    "${_LEGACY_DIR}/*.cpp"
     "${_LEGACY_DIR}/*.c"
+    "${_LEGACY_DIR}/*.cpp"
   )
+  list(FILTER _LEG_WIN_TU EXCLUDE REGEX "${_cg_exclude_regex}")
+
   file(GLOB_RECURSE _LEG_WIN_HDR CONFIGURE_DEPENDS
-    "${_LEGACY_DIR}/*.hpp"
     "${_LEGACY_DIR}/*.h"
+    "${_LEGACY_DIR}/*.hpp"
+    "${_LEGACY_DIR}/*.hh"
+    "${_LEGACY_DIR}/*.inl"
   )
-endif()
 
-# Normalize paths to forward slashes.
-function(_cg_norm_list out_var)
-  set(_out "")
-  foreach(_f IN LISTS ARGN)
-    file(TO_CMAKE_PATH "${_f}" _n)
-    list(APPEND _out "${_n}")
+  # Prefer canonical implementations when a basename exists in both trees.
+  set(_canon_basenames "")
+  foreach(_s IN LISTS _WIN_TU)
+    get_filename_component(_bn "${_s}" NAME)
+    list(APPEND _canon_basenames "${_bn}")
   endforeach()
-  set(${out_var} "${_out}" PARENT_SCOPE)
-endfunction()
+  list(REMOVE_DUPLICATES _canon_basenames)
 
-_cg_norm_list(_SRC_WIN_TU_N ${_SRC_WIN_TU})
-_cg_norm_list(_SRC_WIN_HDR_N ${_SRC_WIN_HDR})
-_cg_norm_list(_LEG_WIN_TU_N ${_LEG_WIN_TU})
-_cg_norm_list(_LEG_WIN_HDR_N ${_LEG_WIN_HDR})
+  set(_LEG_KEEP "")
+  set(_dup_basenames "")
+  foreach(_s IN LISTS _LEG_WIN_TU)
+    get_filename_component(_bn "${_s}" NAME)
+    if(_bn IN_LIST _canon_basenames)
+      list(APPEND _dup_basenames "${_bn}")
+    else()
+      list(APPEND _LEG_KEEP "${_s}")
+    endif()
+  endforeach()
+  set(_LEG_WIN_TU "${_LEG_KEEP}")
+  list(REMOVE_DUPLICATES _dup_basenames)
 
-unset(_SRC_WIN_TU)
-unset(_SRC_WIN_HDR)
-unset(_LEG_WIN_TU)
-unset(_LEG_WIN_HDR)
-
-# ---- Exclusions ---------------------------------------------------------------
-# Keep these out of the platform library:
-# - EXE entrypoints (WinMain / launcher mains)
-# - GPU preference exports (must live in the EXE)
-# - Bootstrap "app glue" TUs (should live in the EXE)
-set(_EXCLUDE_REGEX "(^|/)(HighPerfGPU|GpuPreference|WinLauncher|AppMain|EntryWinMain|EntryPoint|WinMain|win32_main|main_win|Bootstrap|WinBootstrap)\\.(c|cpp)$")
-
-list(FILTER _SRC_WIN_TU_N EXCLUDE REGEX "${_EXCLUDE_REGEX}")
-list(FILTER _LEG_WIN_TU_N EXCLUDE REGEX "${_EXCLUDE_REGEX}")
-
-# ---- Dedup legacy vs src by basename ------------------------------------------
-# If the same basename exists in BOTH trees, keep src/platform/win and drop legacy.
-set(_SRC_BASENAMES "")
-foreach(_f IN LISTS _SRC_WIN_TU_N)
-  get_filename_component(_bn "${_f}" NAME)
-  list(APPEND _SRC_BASENAMES "${_bn}")
-endforeach()
-list(REMOVE_DUPLICATES _SRC_BASENAMES)
-
-set(_LEG_KEEP "")
-set(_DUP_BASENAMES "")
-foreach(_f IN LISTS _LEG_WIN_TU_N)
-  get_filename_component(_bn "${_f}" NAME)
-  list(FIND _SRC_BASENAMES "${_bn}" _idx)
-  if(_idx EQUAL -1)
-    list(APPEND _LEG_KEEP "${_f}")
-  else()
-    list(APPEND _DUP_BASENAMES "${_bn}")
-  endif()
-endforeach()
-list(REMOVE_DUPLICATES _DUP_BASENAMES)
-
-if(_DUP_BASENAMES)
-  if(DEFINED COLONY_STRICT_WIN_PLATFORM_DEDUP AND COLONY_STRICT_WIN_PLATFORM_DEDUP)
-    message(FATAL_ERROR
-      "Duplicate Win platform TU basenames exist in BOTH:\n"
-      "  ${_WIN_DIR}\n"
-      "  ${_LEGACY_DIR}\n"
-      "Duplicates:\n  ${_DUP_BASENAMES}\n"
-      "Fix: delete/move the legacy copies under platform/win."
-    )
-  else()
-    message(WARNING
-      "Duplicate Win platform TU basenames exist in BOTH:\n"
-      "  ${_WIN_DIR}\n"
-      "  ${_LEGACY_DIR}\n"
-      "Legacy duplicates will be ignored:\n  ${_DUP_BASENAMES}\n"
-      "Recommendation: delete/move the legacy copies under platform/win."
-    )
+  if(_dup_basenames)
+    if(COLONY_STRICT_WIN_PLATFORM_DEDUP)
+      message(FATAL_ERROR
+        "Duplicate Windows platform .cpp basenames found in BOTH trees:\n"
+        "  src/platform/win AND platform/win\n"
+        "Duplicates:\n  ${_dup_basenames}\n"
+        "Fix: delete/move the legacy copies under platform/win (preferred), or disable COLONY_STRICT_WIN_PLATFORM_DEDUP."
+      )
+    else()
+      message(WARNING
+        "Duplicate Windows platform .cpp basenames found in BOTH trees; legacy duplicates will be ignored.\n"
+        "Duplicates:\n  ${_dup_basenames}\n"
+        "Tip: delete/move the legacy copies under platform/win and enable COLONY_STRICT_WIN_PLATFORM_DEDUP to enforce."
+      )
+    endif()
   endif()
 endif()
 
-set(_PLAT_TU ${_SRC_WIN_TU_N} ${_LEG_KEEP})
-set(_PLAT_HDR ${_SRC_WIN_HDR_N} ${_LEG_WIN_HDR_N})
-
-list(REMOVE_DUPLICATES _PLAT_TU)
-list(REMOVE_DUPLICATES _PLAT_HDR)
-
-unset(_LEG_KEEP)
-unset(_DUP_BASENAMES)
-unset(_SRC_BASENAMES)
-unset(_idx)
-unset(_bn)
-unset(_f)
-
-# ---- Target -------------------------------------------------------------------
-if(NOT TARGET colony_platform_win)
-  add_library(colony_platform_win STATIC)
-  add_library(colony::platform_win ALIAS colony_platform_win)
-endif()
-
-target_sources(colony_platform_win PRIVATE ${_PLAT_TU} ${_PLAT_HDR})
-
-target_compile_features(colony_platform_win PUBLIC cxx_std_23)
-
-target_include_directories(colony_platform_win
-  PUBLIC
-    "${CMAKE_SOURCE_DIR}/include"
-    "${CMAKE_SOURCE_DIR}"
-    "${CMAKE_SOURCE_DIR}/src"
-  PRIVATE
-    "${_WIN_DIR}"
+set(_PLAT_SOURCES
+  ${_WIN_TU}
+  ${_LEG_WIN_TU}
+  ${_WIN_HDR}
+  ${_LEG_WIN_HDR}
 )
 
-if(MSVC)
-  target_compile_definitions(colony_platform_win PRIVATE UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX)
-endif()
-
-# Common Win32 libs used by typical platform helpers / crash utils / path utils.
-target_link_libraries(colony_platform_win PRIVATE dbghelp shlwapi shell32)
-
-# Unity build: default OFF for platform code unless explicitly enabled.
-if(DEFINED COLONY_UNITY_BUILD AND COLONY_UNITY_BUILD)
-  set_target_properties(colony_platform_win PROPERTIES UNITY_BUILD ON UNITY_BUILD_BATCH_SIZE 16)
-else()
-  set_target_properties(colony_platform_win PROPERTIES UNITY_BUILD OFF)
-endif()
-
-set_target_properties(colony_platform_win PROPERTIES FOLDER "colony/libs")
-
-# PCH (best-effort)
-if(DEFINED COLONY_USE_PCH AND COLONY_USE_PCH)
-  set(_PCH "")
-  if(DEFINED COLONY_PCH_HEADER AND EXISTS "${CMAKE_SOURCE_DIR}/${COLONY_PCH_HEADER}")
-    set(_PCH "${CMAKE_SOURCE_DIR}/${COLONY_PCH_HEADER}")
-  elseif(EXISTS "${CMAKE_SOURCE_DIR}/src/pch.hpp")
-    set(_PCH "${CMAKE_SOURCE_DIR}/src/pch.hpp")
-  elseif(EXISTS "${CMAKE_SOURCE_DIR}/src/pch.h")
-    set(_PCH "${CMAKE_SOURCE_DIR}/src/pch.h")
+# -----------------------------------------------------
+# Target
+# -----------------------------------------------------
+if(NOT TARGET colony_platform_win)
+  if(_PLAT_SOURCES)
+    add_library(colony_platform_win STATIC)
+    target_sources(colony_platform_win PRIVATE ${_PLAT_SOURCES})
+  else()
+    add_library(colony_platform_win INTERFACE)
+    message(STATUS "colony_platform_win: no sources found; created INTERFACE target.")
   endif()
 
-  if(_PCH)
-    if(COMMAND colony_enable_pch)
-      colony_enable_pch(colony_platform_win PRIVATE "${_PCH}")
-    else()
-      target_precompile_headers(colony_platform_win PRIVATE "${_PCH}")
-    endif()
+  # Provide both the new and legacy alias spellings used around the repo.
+  add_library(colony::platform_win ALIAS colony_platform_win)
+  add_library(Colony::PlatformWin ALIAS colony_platform_win)
+
+  get_target_property(_cg_type colony_platform_win TYPE)
+  if(_cg_type STREQUAL "INTERFACE_LIBRARY")
+    set(_cg_pub INTERFACE)
+  else()
+    set(_cg_pub PUBLIC)
   endif()
-  unset(_PCH)
-endif()
 
-# Ensure CrashDumpWin.cpp uses /EHa if repo enables that pattern.
-if(COMMAND colony_apply_seh_for_crashdump)
-  colony_apply_seh_for_crashdump(colony_platform_win)
-elseif(MSVC AND (NOT DEFINED COLONY_SEH_CRASHDUMP OR COLONY_SEH_CRASHDUMP))
-  foreach(_s IN LISTS _PLAT_TU)
-    if(_s MATCHES "CrashDumpWin\\.cpp$")
-      set_source_files_properties("${_s}" PROPERTIES COMPILE_OPTIONS "/EHa")
+  target_compile_features(colony_platform_win ${_cg_pub} cxx_std_23)
+
+  # Include order matters:
+  #  - include/ : public headers
+  #  - src/     : canonical internal headers (including src/platform/win)
+  #  - repo root: legacy fallback (platform/win) for transitional builds / tools
+  target_include_directories(colony_platform_win ${_cg_pub}
+    "$<BUILD_INTERFACE:${CMAKE_SOURCE_DIR}/include>"
+    "$<BUILD_INTERFACE:${CMAKE_SOURCE_DIR}/src>"
+    "$<BUILD_INTERFACE:${CMAKE_SOURCE_DIR}>"
+    "$<INSTALL_INTERFACE:${COLONY_INSTALL_INCLUDEDIR}>"
+  )
+
+  if(NOT _cg_type STREQUAL "INTERFACE_LIBRARY")
+    # Allow local includes like "WinCommon.h" inside src/platform/win/*.cpp
+    target_include_directories(colony_platform_win PRIVATE "${_WIN_DIR}")
+
+    target_compile_definitions(colony_platform_win ${_cg_pub}
+      WIN32_LEAN_AND_MEAN
+      NOMINMAX
+    )
+
+    # Propagate Win32 import libs required by the platform objects to consumers.
+    # (Static libs need these to be PUBLIC so final EXEs link cleanly.)
+    target_link_libraries(colony_platform_win ${_cg_pub}
+      dbghelp
+      shlwapi
+      shell32
+      ole32
+    )
+
+    # Enable async exception handling for CrashDumpWin.cpp when legacy is enabled.
+    if(MSVC)
+      foreach(_s IN LISTS _WIN_TU _LEG_WIN_TU)
+        if(_s MATCHES "(^|/)(CrashDumpWin)\.cpp$")
+          set_source_files_properties("${_s}" PROPERTIES COMPILE_OPTIONS "/EHa")
+        endif()
+      endforeach()
     endif()
-  endforeach()
-endif()
 
-# Repo helpers (safe if missing)
-if(COMMAND colony_apply_msvc_runtime)
-  colony_apply_msvc_runtime(colony_platform_win)
-endif()
-if(COMMAND colony_apply_debug_runtime_checks)
-  colony_apply_debug_runtime_checks(colony_platform_win)
-endif()
+    colony_enable_warnings(colony_platform_win)
+    colony_apply_msvc_runtime(colony_platform_win)
+    colony_apply_debug_runtime_checks(colony_platform_win)
 
-# IDE grouping
-if(_PLAT_TU OR _PLAT_HDR)
-  source_group(TREE "${CMAKE_SOURCE_DIR}" PREFIX "Platform\\Win" FILES ${_PLAT_TU} ${_PLAT_HDR})
+    if(COLONY_ENABLE_PCH)
+      target_precompile_headers(colony_platform_win PRIVATE "${CMAKE_SOURCE_DIR}/cmake/pch.hpp")
+    endif()
+
+    # For /std:c++latest compatibility and better incremental linking behavior.
+    set_property(TARGET colony_platform_win PROPERTY UNITY_BUILD OFF)
+  endif()
+
+  unset(_cg_type)
+  unset(_cg_pub)
 endif()
 
 unset(_WIN_DIR)
 unset(_LEGACY_DIR)
-unset(_PLAT_TU)
-unset(_PLAT_HDR)
-unset(_SRC_WIN_TU_N)
-unset(_SRC_WIN_HDR_N)
-unset(_LEG_WIN_TU_N)
-unset(_LEG_WIN_HDR_N)
-unset(_EXCLUDE_REGEX)
+unset(_WIN_TU)
+unset(_LEG_WIN_TU)
+unset(_WIN_HDR)
+unset(_LEG_WIN_HDR)
+unset(_PLAT_SOURCES)
+unset(_cg_exclude_regex)
