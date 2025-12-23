@@ -1,21 +1,34 @@
-# Patch 4: InputMapper + WASD/QE Camera Movement
+# Patch 5: InputMapper multi-binds + action events + Shift speed boost
 
-This patch builds on the previous refactors (AppWindow split + InputQueue + PrototypeGame).
+## What this patch adds
 
-## What it adds
+- **Multiple bindings per action** in `src/input/InputMapper.*`
+  - Default bindings now include **Arrow keys** as alternatives to WASD.
+- **ActionEvent stream (Pressed/Released)**
+  - The mapper emits action transition events each frame, so gameplay can react to actions.
+  - Gameplay never needs to inspect raw key codes.
+- **Shift speed boost**
+  - `Action::SpeedBoost` bound to Shift.
+  - `PrototypeGame` multiplies pan/zoom speed while boost is held.
+
+## What changed
+
+- `src/AppWindow.cpp`
+  - Forwards **all non-system** key down/up messages into the input queue (instead of whitelisting only WASD/QE).
+  - System keys remain handled in the window layer: **Esc**, **V**, **F11**, **Alt+Enter**.
 
 - `src/input/InputMapper.h/.cpp`
-  - Action enum + simple key binds
-  - Tracks key state from `InputEvent` (`KeyDown/KeyUp`)
-  - Exposes movement axes (WASD + QE)
+  - Adds `Action::SpeedBoost`.
+  - Supports multiple bindings per action.
+  - Produces an `ActionEvent` stream (`Pressed` / `Released`).
 
-## What it changes
+- `src/game/PrototypeGame.cpp`
+  - Uses `Action::SpeedBoost` to apply a movement speed multiplier.
 
-- AppWindow now forwards **W/A/S/D/Q/E** as `InputEventType::KeyDown/KeyUp` into the queue.
-- AppWindow emits `InputEventType::FocusLost` on focus loss to clear held keys.
-- PrototypeGame now uses InputMapper to apply **continuous** keyboard movement to the debug camera.
+## New/updated controls
 
-## Apply order
-
-Apply after Patch 3 (InputQueue + PrototypeGame decoupling).
+- Movement:
+  - **WASD** or **Arrow keys** for pan
+  - **Q/E** for zoom
+  - **Shift** = speed boost
 

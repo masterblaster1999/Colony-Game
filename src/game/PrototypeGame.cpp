@@ -50,9 +50,10 @@ bool PrototypeGame::OnInput(std::span<const colony::input::InputEvent> events) n
 
     bool changed = false;
 
-    // Update key state first. If keys changed, refresh title immediately.
-    const bool keyStateChanged = m_impl->mapper.Consume(events);
-    if (keyStateChanged)
+    // Update high-level actions first. If any action transitions happened
+    // (pressed/released), refresh the title immediately.
+    const bool actionsChanged = m_impl->mapper.Consume(events);
+    if (actionsChanged)
         changed = true;
 
     for (const auto& ev : events)
@@ -110,10 +111,14 @@ bool PrototypeGame::OnInput(std::span<const colony::input::InputEvent> events) n
         const float rightX = cosY;
         const float rightY = -sinY;
 
+        const bool boost = m_impl->mapper.IsDown(colony::input::Action::SpeedBoost);
+        const float speedMul = boost ? 3.0f : 1.0f;
+
         // Pan speed is "world" units per second. Tune later.
         constexpr float kPanSpeed = 3.0f;
-        const float worldX = (rightX * axes.x + fwdX * axes.y) * (kPanSpeed * dt);
-        const float worldY = (rightY * axes.x + fwdY * axes.y) * (kPanSpeed * dt);
+        const float panSpeed = kPanSpeed * speedMul;
+        const float worldX = (rightX * axes.x + fwdX * axes.y) * (panSpeed * dt);
+        const float worldY = (rightY * axes.x + fwdY * axes.y) * (panSpeed * dt);
 
         bool movedThisFrame = false;
         if (m_impl->camera.ApplyPan(worldX, worldY)) {
@@ -124,15 +129,16 @@ bool PrototypeGame::OnInput(std::span<const colony::input::InputEvent> events) n
         {
             // Exponential zoom is stable (always positive) and feels consistent.
             constexpr float kZoomSpeed = 1.5f; // per second
-            const float factor = std::exp(axes.z * kZoomSpeed * dt);
+            const float zoomSpeed = kZoomSpeed * (boost ? 2.0f : 1.0f);
+            const float factor = std::exp(axes.z * zoomSpeed * dt);
             if (m_impl->camera.ApplyZoomFactor(factor)) {
                 movedThisFrame = true;
             }
         }
 
         // Avoid spamming SetWindowTextW every frame while keys are held.
-        // Update immediately on a key state change (handled above), otherwise at ~10Hz.
-        if (movedThisFrame && !keyStateChanged)
+        // Update immediately on an action transition (pressed/released), otherwise at ~10Hz.
+        if (movedThisFrame && !actionsChanged)
         {
             m_impl->keyboardTitleAccum += dt;
             if (m_impl->keyboardTitleAccum >= 0.10f) {
@@ -141,7 +147,7 @@ bool PrototypeGame::OnInput(std::span<const colony::input::InputEvent> events) n
             }
         }
 
-        if (movedThisFrame && keyStateChanged)
+        if (movedThisFrame && actionsChanged)
         {
             // Reset the accumulator so we don't immediately trigger another forced update.
             m_impl->keyboardTitleAccum = 0.f;

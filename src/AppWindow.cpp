@@ -234,12 +234,16 @@ LRESULT AppWindow::HandleMsg(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam)
             break;
         }
 
-        // Forward gameplay keys to the input queue. The app/window layer does not
+        // Forward non-system keys to the input queue. The app/window layer does not
         // interpret them (it only does system-level toggles).
         if (m_impl)
         {
             const std::uint32_t vk = static_cast<std::uint32_t>(wParam);
-            if (vk == 'W' || vk == 'A' || vk == 'S' || vk == 'D' || vk == 'Q' || vk == 'E')
+            const bool isSystem = (vk == static_cast<std::uint32_t>(VK_ESCAPE)) ||
+                                  (vk == static_cast<std::uint32_t>(VK_F11)) ||
+                                  (vk == static_cast<std::uint32_t>('V'));
+
+            if (vk < 256 && !isSystem)
             {
                 colony::input::InputEvent ev{};
                 ev.type = colony::input::InputEventType::KeyDown;
@@ -257,7 +261,11 @@ LRESULT AppWindow::HandleMsg(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam)
         if (m_impl)
         {
             const std::uint32_t vk = static_cast<std::uint32_t>(wParam);
-            if (vk == 'W' || vk == 'A' || vk == 'S' || vk == 'D' || vk == 'Q' || vk == 'E')
+            const bool isSystem = (vk == static_cast<std::uint32_t>(VK_ESCAPE)) ||
+                                  (vk == static_cast<std::uint32_t>(VK_F11)) ||
+                                  (vk == static_cast<std::uint32_t>('V'));
+
+            if (vk < 256 && !isSystem)
             {
                 colony::input::InputEvent ev{};
                 ev.type = colony::input::InputEventType::KeyUp;
