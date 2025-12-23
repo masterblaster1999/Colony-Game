@@ -1,11 +1,13 @@
 #include "AppWindow.h"
+
 #include <shellscalingapi.h> // AdjustWindowRectExForDpi, GetDpiForSystem
 #include <windowsx.h>        // GET_X_LPARAM, GET_Y_LPARAM, GET_WHEEL_DELTA_WPARAM
 #include <vector>
 #include <string>
+
 #pragma comment(lib, "Shcore.lib")
 
-// Local, file-private input/camera scratch so we don't change AppWindow.h yet.
+// Local, file-private input/camera scratch so we don't change broader engine code yet.
 namespace {
     struct MouseState {
         bool left   = false;
@@ -31,7 +33,7 @@ namespace {
     float g_panY  = 0.f;
     float g_zoom  = 1.f;
 
-    inline void ClampPitch() {
+    inline void ClampPitch() noexcept {
         if (g_pitch >  89.f) g_pitch =  89.f;
         if (g_pitch < -89.f) g_pitch = -89.f;
     }
@@ -65,74 +67,92 @@ namespace {
         return g_hasFocus || (GetCapture() == hwnd);
     }
 
-    inline void UpdateDebugTitle(HWND hwnd) {
-#ifndef NDEBUG
-        wchar_t title[256];
-        swprintf_s(title, L"Colony Game  |  yaw %.1f  pitch %.1f  pan(%.1f, %.1f)  zoom %.2f",
-                   g_yaw, g_pitch, g_panX, g_panY, g_zoom);
-        SetWindowTextW(hwnd, title);
-#else
-        (void)hwnd;
-#endif
-    }
-
-    // This is the "use dx/dy in the dispatch" piece: route raw/cursor deltas to actions.
-    inline void ApplyDragFromDelta(HWND hwnd, LONG dx, LONG dy) {
-        if (dx == 0 && dy == 0) return;
+    // Route raw/cursor deltas to actions. Returns true if state changed.
+    inline bool ApplyDragFromDelta(LONG dx, LONG dy) {
+        if (dx == 0 && dy == 0) return false;
 
         if (g_mouse.left) {
             // LMB drag = orbit
             g_yaw   += static_cast<float>(dx) * 0.15f;
             g_pitch += static_cast<float>(dy) * 0.15f;
             ClampPitch();
-        } else if (g_mouse.middle || g_mouse.right) {
+            return true;
+        }
+
+        if (g_mouse.middle || g_mouse.right) {
             // MMB/RMB drag = pan
             g_panX += static_cast<float>(dx) * 0.02f;
             g_panY += static_cast<float>(dy) * 0.02f;
+            return true;
         }
 
-        UpdateDebugTitle(hwnd);
+        return false;
     }
-}
+} // namespace
+
+// ----------------------------------------------------------------------------
+// AppWindow
+// ----------------------------------------------------------------------------
 
 bool AppWindow::Create(HINSTANCE hInst, int nCmdShow, int width, int height)
 {
     const wchar_t* kClass = L"ColonyWindowClass";
+
     WNDCLASSEXW wc{ sizeof(WNDCLASSEXW) };
     wc.style         = CS_HREDRAW | CS_VREDRAW | CS_OWNDC;
     wc.lpfnWndProc   = &AppWindow::WndProc;
-    wc.cbClsExtra    = 0;
-    wc.cbWndExtra    = 0;
     wc.hInstance     = hInst;
     wc.hCursor       = LoadCursor(nullptr, IDC_ARROW);
     wc.lpszClassName = kClass;
 
+    // RegisterClassExW fails if already registered; that's not fatal for us.
     if (!RegisterClassExW(&wc)) {
-        return false;
+        const DWORD err = GetLastError();
+        if (err != ERROR_CLASS_ALREADY_EXISTS) {
+            return false;
+        }
     }
 
-    RECT r{0,0,(LONG)width,(LONG)height};
+    RECT r{ 0, 0, static_cast<LONG>(width), static_cast<LONG>(height) };
+
     // High-DPI aware rect sizing for the client area.
     AdjustWindowRectExForDpi(&r, WS_OVERLAPPEDWINDOW, FALSE, 0, GetDpiForSystem());
 
     m_hwnd = CreateWindowExW(
-        0, kClass, L"Colony Game",
+        0,
+        kClass,
+        L"Colony Game",
         WS_OVERLAPPEDWINDOW | WS_VISIBLE,
-        CW_USEDEFAULT, CW_USEDEFAULT, r.right - r.left, r.bottom - r.top,
-        nullptr, nullptr, hInst, this);
+        CW_USEDEFAULT, CW_USEDEFAULT,
+        r.right - r.left,
+        r.bottom - r.top,
+        nullptr,
+        nullptr,
+        hInst,
+        this);
 
-    if (!m_hwnd) return false;
+    if (!m_hwnd)
+        return false;
+
+    // Snapshot the initial windowed placement for fullscreen toggling.
+    m_windowStyle   = static_cast<DWORD>(GetWindowLongW(m_hwnd, GWL_STYLE));
+    m_windowExStyle = static_cast<DWORD>(GetWindowLongW(m_hwnd, GWL_EXSTYLE));
+    GetWindowRect(m_hwnd, &m_windowRect);
 
     RegisterRawMouse(m_hwnd); // enables WM_INPUT raw deltas (docs require registration).
 
     RECT cr{};
     GetClientRect(m_hwnd, &cr);
-    m_width = cr.right; m_height = cr.bottom;
+    m_width  = static_cast<UINT>(cr.right);
+    m_height = static_cast<UINT>(cr.bottom);
 
-    if (!m_gfx.Init(m_hwnd, m_width, m_height)) return false;
+    if (!m_gfx.Init(m_hwnd, m_width, m_height))
+        return false;
 
     ShowWindow(m_hwnd, nCmdShow);
     UpdateWindow(m_hwnd);
+
+    UpdateTitle();
     return true;
 }
 
@@ -150,17 +170,107 @@ void AppWindow::RegisterRawMouse(HWND hwnd)
     g_rawMouseRegistered = (RegisterRawInputDevices(&rid, 1, sizeof(rid)) != FALSE);
 }
 
+void AppWindow::ToggleVsync()
+{
+    m_vsync = !m_vsync;
+    UpdateTitle();
+}
+
+void AppWindow::ToggleFullscreen()
+{
+    if (!m_hwnd)
+        return;
+
+    if (!m_fullscreen)
+    {
+        // Save windowed placement.
+        m_windowStyle   = static_cast<DWORD>(GetWindowLongW(m_hwnd, GWL_STYLE));
+        m_windowExStyle = static_cast<DWORD>(GetWindowLongW(m_hwnd, GWL_EXSTYLE));
+        GetWindowRect(m_hwnd, &m_windowRect);
+
+        MONITORINFO mi{ sizeof(mi) };
+        if (GetMonitorInfoW(MonitorFromWindow(m_hwnd, MONITOR_DEFAULTTONEAREST), &mi))
+        {
+            // Borderless fullscreen.
+            const DWORD newStyle = (m_windowStyle & ~WS_OVERLAPPEDWINDOW) | WS_POPUP;
+
+            SetWindowLongW(m_hwnd, GWL_STYLE, static_cast<LONG>(newStyle));
+            SetWindowLongW(m_hwnd, GWL_EXSTYLE, static_cast<LONG>(m_windowExStyle));
+
+            SetWindowPos(
+                m_hwnd,
+                HWND_TOP,
+                mi.rcMonitor.left,
+                mi.rcMonitor.top,
+                mi.rcMonitor.right - mi.rcMonitor.left,
+                mi.rcMonitor.bottom - mi.rcMonitor.top,
+                SWP_NOOWNERZORDER | SWP_FRAMECHANGED
+            );
+
+            m_fullscreen = true;
+        }
+    }
+    else
+    {
+        // Restore windowed placement.
+        SetWindowLongW(m_hwnd, GWL_STYLE, static_cast<LONG>(m_windowStyle));
+        SetWindowLongW(m_hwnd, GWL_EXSTYLE, static_cast<LONG>(m_windowExStyle));
+
+        SetWindowPos(
+            m_hwnd,
+            nullptr,
+            m_windowRect.left,
+            m_windowRect.top,
+            m_windowRect.right - m_windowRect.left,
+            m_windowRect.bottom - m_windowRect.top,
+            SWP_NOOWNERZORDER | SWP_FRAMECHANGED
+        );
+
+        m_fullscreen = false;
+    }
+
+    UpdateTitle();
+}
+
+void AppWindow::UpdateTitle()
+{
+    if (!m_hwnd)
+        return;
+
+    const wchar_t* vs = m_vsync ? L"ON" : L"OFF";
+    const wchar_t* fs = m_fullscreen ? L"FULL" : L"WIN";
+
+#ifndef NDEBUG
+    wchar_t title[256];
+    swprintf_s(title,
+               L"Colony Game | %.0f FPS | VSync %s | %s | yaw %.1f pitch %.1f pan(%.1f, %.1f) zoom %.2f",
+               m_fps, vs, fs, g_yaw, g_pitch, g_panX, g_panY, g_zoom);
+    SetWindowTextW(m_hwnd, title);
+#else
+    wchar_t title[128];
+    swprintf_s(title, L"Colony Game | %.0f FPS | VSync %s | %s", m_fps, vs, fs);
+    SetWindowTextW(m_hwnd, title);
+#endif
+}
+
 LRESULT CALLBACK AppWindow::WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam)
 {
     AppWindow* self = nullptr;
-    if (msg == WM_NCCREATE) {
+
+    if (msg == WM_NCCREATE)
+    {
         CREATESTRUCTW* cs = reinterpret_cast<CREATESTRUCTW*>(lParam);
         self = reinterpret_cast<AppWindow*>(cs->lpCreateParams);
         SetWindowLongPtrW(hWnd, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(self));
-    } else {
+    }
+    else
+    {
         self = reinterpret_cast<AppWindow*>(GetWindowLongPtrW(hWnd, GWLP_USERDATA));
     }
-    if (self) return self->HandleMsg(hWnd, msg, wParam, lParam);
+
+    if (self)
+        return self->HandleMsg(hWnd, msg, wParam, lParam);
+
     return DefWindowProcW(hWnd, msg, wParam, lParam);
 }
 
@@ -169,24 +279,16 @@ LRESULT AppWindow::HandleMsg(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam)
     switch (msg)
     {
     case WM_SETFOCUS:
-    {
         g_hasFocus = true;
-        // Reset cursor delta history to avoid a huge "first move" delta after refocus.
-        g_mouse.hasPos = false;
+        g_mouse.hasPos = false; // avoid huge delta after refocus
         return 0;
-    }
 
     case WM_KILLFOCUS:
-    {
         g_hasFocus = false;
-        // Focus lost while dragging can prevent mouse-up from arriving -> clear state.
         ClearMouseStateAndCapture(hWnd);
         return 0;
-    }
 
     case WM_ACTIVATEAPP:
-    {
-        // App-level activation toggles (alt-tab etc).
         if (wParam) {
             g_hasFocus = true;
             g_mouse.hasPos = false;
@@ -195,12 +297,9 @@ LRESULT AppWindow::HandleMsg(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam)
             ClearMouseStateAndCapture(hWnd);
         }
         return 0;
-    }
 
     case WM_CAPTURECHANGED:
     {
-        // lParam is the window gaining capture (can be nullptr). If it isn't us,
-        // we should clear our internal button state to avoid "stuck dragging".
         const HWND newCapture = reinterpret_cast<HWND>(lParam);
         if (newCapture != hWnd) {
             ClearMouseStateAndCapture(hWnd);
@@ -209,17 +308,27 @@ LRESULT AppWindow::HandleMsg(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam)
     }
 
     case WM_CANCELMODE:
-    {
-        // Cancels modes such as mouse capture (e.g., modal loops).
         ClearMouseStateAndCapture(hWnd);
         return 0;
-    }
+
+    case WM_CLOSE:
+        DestroyWindow(hWnd);
+        return 0;
+
+    case WM_DESTROY:
+        PostQuitMessage(0);
+        return 0;
 
     case WM_SIZE:
     {
-        UINT w = LOWORD(lParam), h = HIWORD(lParam);
-        m_width = w; m_height = h;
-        if (w > 0 && h > 0) m_gfx.Resize(w, h);
+        const UINT w = LOWORD(lParam);
+        const UINT h = HIWORD(lParam);
+        m_width = w;
+        m_height = h;
+
+        if (w > 0 && h > 0)
+            m_gfx.Resize(w, h);
+
         return 0;
     }
 
@@ -229,28 +338,69 @@ LRESULT AppWindow::HandleMsg(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam)
 
     case WM_DPICHANGED:
     {
-        // Resize/move suggested rect for PMv2
         // Per MS guidance, apply the suggested rectangle.
-        RECT* const prcNewWindow = (RECT*)lParam;
-        SetWindowPos(hWnd, nullptr,
-            prcNewWindow->left, prcNewWindow->top,
+        RECT* const prcNewWindow = reinterpret_cast<RECT*>(lParam);
+        SetWindowPos(
+            hWnd,
+            nullptr,
+            prcNewWindow->left,
+            prcNewWindow->top,
             prcNewWindow->right - prcNewWindow->left,
             prcNewWindow->bottom - prcNewWindow->top,
-            SWP_NOZORDER | SWP_NOACTIVATE);
+            SWP_NOZORDER | SWP_NOACTIVATE
+        );
         return 0;
     }
 
     case WM_SETCURSOR:
-    {
         if (LOWORD(lParam) == HTCLIENT) {
             if (g_mouse.middle || g_mouse.right) { SetCursor(LoadCursor(nullptr, IDC_SIZEALL)); return TRUE; }
             if (g_mouse.left)                    { SetCursor(LoadCursor(nullptr, IDC_HAND));    return TRUE; }
         }
         break;
-    }
 
-    // --- Mouse buttons & move (cursor deltas) --------------------------------
-    case WM_LBUTTONDOWN: {
+    // ---------------------------------------------------------------------
+    // Keyboard
+    // ---------------------------------------------------------------------
+    case WM_KEYDOWN:
+        switch (wParam)
+        {
+        case VK_ESCAPE:
+            PostQuitMessage(0);
+            return 0;
+
+        case VK_F11:
+            ToggleFullscreen();
+            return 0;
+
+        case 'V':
+            ToggleVsync();
+            return 0;
+
+        default:
+            break;
+        }
+        break;
+
+    case WM_SYSKEYDOWN:
+        // Alt+Enter (bit 29 = context code / Alt key down)
+        if (wParam == VK_RETURN && (lParam & (1 << 29))) {
+            ToggleFullscreen();
+            return 0;
+        }
+        break;
+
+    case WM_SYSCHAR:
+        // Prevent the system beep on Alt+Enter.
+        if (wParam == VK_RETURN && (lParam & (1 << 29))) {
+            return 0;
+        }
+        break;
+
+    // ---------------------------------------------------------------------
+    // Mouse buttons & move (cursor deltas)
+    // ---------------------------------------------------------------------
+    case WM_LBUTTONDOWN:
         SetFocus(hWnd);
         g_mouse.left = true;
         BeginCapture(hWnd);
@@ -258,13 +408,13 @@ LRESULT AppWindow::HandleMsg(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam)
         g_mouse.y = GET_Y_LPARAM(lParam);
         g_mouse.hasPos = true;
         return 0;
-    }
-    case WM_LBUTTONUP: {
+
+    case WM_LBUTTONUP:
         g_mouse.left = false;
         MaybeEndCapture(hWnd);
         return 0;
-    }
-    case WM_RBUTTONDOWN: {
+
+    case WM_RBUTTONDOWN:
         SetFocus(hWnd);
         g_mouse.right = true;
         BeginCapture(hWnd);
@@ -272,13 +422,13 @@ LRESULT AppWindow::HandleMsg(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam)
         g_mouse.y = GET_Y_LPARAM(lParam);
         g_mouse.hasPos = true;
         return 0;
-    }
-    case WM_RBUTTONUP: {
+
+    case WM_RBUTTONUP:
         g_mouse.right = false;
         MaybeEndCapture(hWnd);
         return 0;
-    }
-    case WM_MBUTTONDOWN: {
+
+    case WM_MBUTTONDOWN:
         SetFocus(hWnd);
         g_mouse.middle = true;
         BeginCapture(hWnd);
@@ -286,12 +436,12 @@ LRESULT AppWindow::HandleMsg(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam)
         g_mouse.y = GET_Y_LPARAM(lParam);
         g_mouse.hasPos = true;
         return 0;
-    }
-    case WM_MBUTTONUP: {
+
+    case WM_MBUTTONUP:
         g_mouse.middle = false;
         MaybeEndCapture(hWnd);
         return 0;
-    }
+
     case WM_MOUSEMOVE:
     {
         const int x = GET_X_LPARAM(lParam);
@@ -304,13 +454,16 @@ LRESULT AppWindow::HandleMsg(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam)
             if ((g_mouse.left || g_mouse.right || g_mouse.middle) && InputActive(hWnd)) {
                 // If raw input is registered, prefer WM_INPUT deltas and avoid double-applying.
                 if (!g_rawMouseRegistered) {
-                    // Use cursor-space deltas when dragging (works w/o raw input too).
-                    ApplyDragFromDelta(hWnd, dx, dy);
+                    if (ApplyDragFromDelta(dx, dy)) {
+                        UpdateTitle();
+                    }
                 }
             }
         }
 
-        g_mouse.x = x; g_mouse.y = y; g_mouse.hasPos = true;
+        g_mouse.x = x;
+        g_mouse.y = y;
+        g_mouse.hasPos = true;
         return 0;
     }
 
@@ -322,12 +475,14 @@ LRESULT AppWindow::HandleMsg(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam)
             g_zoom *= (1.0f + 0.10f * static_cast<float>(detents));
             if (g_zoom < 0.1f) g_zoom = 0.1f;
             if (g_zoom > 10.f) g_zoom = 10.f;
-            UpdateDebugTitle(hWnd);
+            UpdateTitle();
         }
         return 0;
     }
 
-    // --- Raw input (high-resolution mouse deltas) -----------------------------
+    // ---------------------------------------------------------------------
+    // Raw input (high-resolution mouse deltas)
+    // ---------------------------------------------------------------------
     case WM_INPUT:
     {
         // Only process raw input when the window is active or owns capture,
@@ -337,7 +492,6 @@ LRESULT AppWindow::HandleMsg(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam)
             return 0;
         }
 
-        // Per docs, use GetRawInputData to fetch RAWINPUT for this HRAWINPUT.
         UINT dwSize = 0;
         GetRawInputData(reinterpret_cast<HRAWINPUT>(lParam), RID_INPUT, nullptr, &dwSize, sizeof(RAWINPUTHEADER));
         if (dwSize) {
@@ -358,20 +512,19 @@ LRESULT AppWindow::HandleMsg(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam)
                     const LONG dx = raw->data.mouse.lLastX;
                     const LONG dy = raw->data.mouse.lLastY;
 
-                    // Use dx/dy in the dispatch.
-                    ApplyDragFromDelta(hWnd, dx, dy);
+                    if (ApplyDragFromDelta(dx, dy)) {
+                        UpdateTitle();
+                    }
                 }
             }
         }
-        return 0; // indicate we processed WM_INPUT
-    }
-
-    case WM_DESTROY:
-        PostQuitMessage(0);
         return 0;
-
-    default: break;
     }
+
+    default:
+        break;
+    }
+
     return DefWindowProcW(hWnd, msg, wParam, lParam);
 }
 
@@ -379,18 +532,21 @@ int AppWindow::MessageLoop()
 {
     MSG msg{};
 
-    // High-resolution timing for a lightweight frame limiter (vsync OFF).
+    // High-resolution timing for frame pacing + FPS.
     LARGE_INTEGER qpcFreq{};
     QueryPerformanceFrequency(&qpcFreq);
 
     // When vsync is OFF, cap to avoid pegging a CPU core at 100%.
-    // (Keep this conservative-high; you can wire it to a setting later.)
     constexpr int kMaxFpsWhenVsyncOff = 240;
     const LONGLONG ticksPerFrame =
         (kMaxFpsWhenVsyncOff > 0) ? (qpcFreq.QuadPart / kMaxFpsWhenVsyncOff) : 0;
 
     LONGLONG nextFrameQpc = 0;
     bool lastVsync = m_vsync;
+
+    LARGE_INTEGER fpsStart{};
+    QueryPerformanceCounter(&fpsStart);
+    int fpsFrames = 0;
 
     while (true)
     {
@@ -431,7 +587,6 @@ int AppWindow::MessageLoop()
                 const DWORD waitMs = static_cast<DWORD>((remaining * 1000) / qpcFreq.QuadPart);
 
                 if (waitMs > 0) {
-                    // Wait for either messages or timeout.
                     MsgWaitForMultipleObjectsEx(
                         0, nullptr,
                         waitMs,
@@ -439,7 +594,6 @@ int AppWindow::MessageLoop()
                         MWMO_INPUTAVAILABLE
                     );
                 } else {
-                    // Very small remainder; yield to avoid hot spinning.
                     Sleep(0);
                 }
             }
@@ -471,12 +625,21 @@ int AppWindow::MessageLoop()
         // Render one frame (your sim tick could go here too).
         m_gfx.Render(m_vsync);
 
+        // FPS counter (update about once per second).
+        ++fpsFrames;
+        LARGE_INTEGER now{};
+        QueryPerformanceCounter(&now);
+        const double elapsed = double(now.QuadPart - fpsStart.QuadPart) / double(qpcFreq.QuadPart);
+        if (elapsed >= 1.0) {
+            m_fps = (elapsed > 0.0) ? (double(fpsFrames) / elapsed) : 0.0;
+            fpsFrames = 0;
+            fpsStart = now;
+            UpdateTitle();
+        }
+
         // Advance pacing schedule (vsync OFF).
         if (!m_vsync && ticksPerFrame > 0)
         {
-            LARGE_INTEGER now{};
-            QueryPerformanceCounter(&now);
-
             if (nextFrameQpc == 0) {
                 nextFrameQpc = now.QuadPart;
             }

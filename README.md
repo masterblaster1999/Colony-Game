@@ -33,6 +33,15 @@ cmake --build out/build/windows-msvc-x64 --config Debug
 
 If you prefer CMake presets in Visual Studio / VS Code, see `CMakePresets.json`.
 
+## Runtime controls (current prototype)
+
+In the current window prototype (`AppWindow`):
+
+- **Esc**: quit
+- **V**: toggle VSync (when off, frame rate is capped to avoid 100% CPU)
+- **F11** or **Alt+Enter**: toggle borderless fullscreen
+- Mouse drag (LMB/RMB/MMB): camera placeholder controls (debug title shows values)
+
 ## Notes
 - This project intentionally **does not support Linux/macOS** at the moment.
 - If you hit CMake errors about missing helper commands, ensure you are configuring from the repository root (not a subfolder).

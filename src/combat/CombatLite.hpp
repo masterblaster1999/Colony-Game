@@ -31,7 +31,7 @@
 #include <utility>
 
 // Must expose cg::pf::{GridView,Point,Result,aStar}
-#include "Pathfinding.hpp"
+#include "ai/Pathfinding.hpp"
 
 #ifndef CG_COMBAT_ASSERT
   #include <cassert>

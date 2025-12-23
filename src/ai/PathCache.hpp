@@ -8,6 +8,9 @@
 #include <cstddef>
 #include <cstdint>
 #include <algorithm>
+#include <climits>      // INT_MIN
+#include <cstdlib>      // std::abs
+#include <mutex>        // std::unique_lock
 
 #include "Pathfinding.hpp" // GridView, Point, PFResult, aStar()
 
