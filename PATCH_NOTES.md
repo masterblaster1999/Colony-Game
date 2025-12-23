@@ -1,15 +1,21 @@
-# Colony-Game patch notes
+# Patch 4: InputMapper + WASD/QE Camera Movement
 
-This zip contains **only the changed/new files** from the suggested improvements.
+This patch builds on the previous refactors (AppWindow split + InputQueue + PrototypeGame).
 
-## One manual delete is required (Windows-safe repo fix)
+## What it adds
 
-Please delete this file from your repo (it conflicts with Windows case-insensitive paths):
+- `src/input/InputMapper.h/.cpp`
+  - Action enum + simple key binds
+  - Tracks key state from `InputEvent` (`KeyDown/KeyUp`)
+  - Exposes movement axes (WASD + QE)
 
-- `src/ai/pathfinding.hpp`
+## What it changes
 
-It has been replaced by:
+- AppWindow now forwards **W/A/S/D/Q/E** as `InputEventType::KeyDown/KeyUp` into the queue.
+- AppWindow emits `InputEventType::FocusLost` on focus loss to clear held keys.
+- PrototypeGame now uses InputMapper to apply **continuous** keyboard movement to the debug camera.
 
-- `src/ai/TimeSlicedPathfinder.hpp`
+## Apply order
 
-If you do not delete the old file on GitHub, Windows checkouts can break and CI will fail the new check.
+Apply after Patch 3 (InputQueue + PrototypeGame decoupling).
+

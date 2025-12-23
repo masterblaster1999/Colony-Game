@@ -143,11 +143,27 @@ LRESULT AppWindow::HandleMsg(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam)
         return 0;
 
     case WM_KILLFOCUS:
-        if (m_impl) m_impl->mouse.OnKillFocus(hWnd);
+        if (m_impl) {
+            m_impl->mouse.OnKillFocus(hWnd);
+
+            // Flush keyboard state on focus loss to avoid "stuck key" behavior
+            // (KeyUp may not be delivered once focus is gone).
+            colony::input::InputEvent ev{};
+            ev.type = colony::input::InputEventType::FocusLost;
+            m_impl->input.Push(ev);
+        }
         return 0;
 
     case WM_ACTIVATEAPP:
-        if (m_impl) m_impl->mouse.OnActivateApp(hWnd, wParam != 0);
+        if (m_impl) {
+            const bool active = wParam != 0;
+            m_impl->mouse.OnActivateApp(hWnd, active);
+            if (!active) {
+                colony::input::InputEvent ev{};
+                ev.type = colony::input::InputEventType::FocusLost;
+                m_impl->input.Push(ev);
+            }
+        }
         return 0;
 
     case WM_CAPTURECHANGED:
@@ -199,6 +215,7 @@ LRESULT AppWindow::HandleMsg(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam)
     // Keyboard
     // ---------------------------------------------------------------------
     case WM_KEYDOWN:
+    {
         switch (wParam)
         {
         case VK_ESCAPE:
@@ -215,6 +232,41 @@ LRESULT AppWindow::HandleMsg(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam)
 
         default:
             break;
+        }
+
+        // Forward gameplay keys to the input queue. The app/window layer does not
+        // interpret them (it only does system-level toggles).
+        if (m_impl)
+        {
+            const std::uint32_t vk = static_cast<std::uint32_t>(wParam);
+            if (vk == 'W' || vk == 'A' || vk == 'S' || vk == 'D' || vk == 'Q' || vk == 'E')
+            {
+                colony::input::InputEvent ev{};
+                ev.type = colony::input::InputEventType::KeyDown;
+                ev.key = vk;
+                ev.alt = (lParam & (1 << 29)) != 0;
+                ev.repeat = (lParam & (1 << 30)) != 0;
+                m_impl->input.Push(ev);
+                return 0;
+            }
+        }
+        break;
+    }
+
+    case WM_KEYUP:
+        if (m_impl)
+        {
+            const std::uint32_t vk = static_cast<std::uint32_t>(wParam);
+            if (vk == 'W' || vk == 'A' || vk == 'S' || vk == 'D' || vk == 'Q' || vk == 'E')
+            {
+                colony::input::InputEvent ev{};
+                ev.type = colony::input::InputEventType::KeyUp;
+                ev.key = vk;
+                ev.alt = (lParam & (1 << 29)) != 0;
+                ev.repeat = false;
+                m_impl->input.Push(ev);
+                return 0;
+            }
         }
         break;
 

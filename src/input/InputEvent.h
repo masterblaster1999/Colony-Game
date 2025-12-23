@@ -17,6 +17,7 @@ enum class InputEventType : std::uint8_t {
     KeyDown    = 2,
     KeyUp      = 3,
     WindowResize = 4,
+    FocusLost    = 5,
 };
 
 enum MouseButtonsMask : std::uint8_t {

@@ -40,7 +40,30 @@ bool DebugCameraController::ApplyWheelDetents(int detents) noexcept
     if (detents == 0)
         return false;
 
-    m_state.zoom *= (1.0f + 0.10f * static_cast<float>(detents));
+    float factor = 1.0f + 0.10f * static_cast<float>(detents);
+    // Be defensive: if someone passes a huge negative detent count, don't flip.
+    if (factor <= 0.01f)
+        factor = 0.01f;
+
+    return ApplyZoomFactor(factor);
+}
+
+bool DebugCameraController::ApplyPan(float dx, float dy) noexcept
+{
+    if (dx == 0.f && dy == 0.f)
+        return false;
+
+    m_state.panX += dx;
+    m_state.panY += dy;
+    return true;
+}
+
+bool DebugCameraController::ApplyZoomFactor(float factor) noexcept
+{
+    if (factor == 1.0f)
+        return false;
+
+    m_state.zoom *= factor;
     if (m_state.zoom < 0.1f) m_state.zoom = 0.1f;
     if (m_state.zoom > 10.f) m_state.zoom = 10.f;
     return true;

@@ -27,6 +27,8 @@ set(_colony_game_sources
     # Input + temporary game module (keeps app layer thin)
     ${CMAKE_CURRENT_SOURCE_DIR}/input/InputEvent.h
     ${CMAKE_CURRENT_SOURCE_DIR}/input/InputQueue.h
+    ${CMAKE_CURRENT_SOURCE_DIR}/input/InputMapper.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/input/InputMapper.h
     ${CMAKE_CURRENT_SOURCE_DIR}/game/PrototypeGame.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/game/PrototypeGame.h
 

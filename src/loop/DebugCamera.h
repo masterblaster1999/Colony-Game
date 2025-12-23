@@ -27,6 +27,14 @@ public:
     // Apply wheel detents (positive or negative). Returns true if state changed.
     bool ApplyWheelDetents(int detents) noexcept;
 
+    // Apply a direct pan delta in the controller's "world" units.
+    // Useful for keyboard movement (WASD) without fabricating pixel deltas.
+    bool ApplyPan(float dx, float dy) noexcept;
+
+    // Apply a multiplicative zoom factor (1.0f = no change).
+    // Useful for continuous keyboard zoom (Q/E).
+    bool ApplyZoomFactor(float factor) noexcept;
+
     [[nodiscard]] const DebugCameraState& State() const noexcept { return m_state; }
 
 private:
