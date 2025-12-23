@@ -27,6 +27,38 @@ inline bool WorldPanel(cg::WorldSystem& world,
         S.dirty |= ImGui::SliderFloat("Talus", &P.talus, 0.1f, 2.0f);
         S.dirty |= ImGui::SliderFloat("Sea level", &P.sea_level, 0.0f, 0.9f);
 
+        if (ImGui::CollapsingHeader("Hydrology / Lakes")) {
+            S.dirty |= ImGui::Checkbox("Depression fill (lakes)", &P.enable_depression_fill);
+            S.dirty |= ImGui::SliderFloat("Fill epsilon", &P.fill_epsilon, 0.0f, 0.10f, "%.3f");
+            S.dirty |= ImGui::SliderFloat("Lake min depth", &P.lake_min_depth, 0.0f, 10.0f, "%.2f");
+            S.dirty |= ImGui::SliderInt("Lake min area (cells)", &P.lake_min_area, 0, 400);
+        }
+
+        if (ImGui::CollapsingHeader("Moisture from Water")) {
+            S.dirty |= ImGui::Checkbox("Enable moisture-from-water", &P.moisture_from_water);
+            S.dirty |= ImGui::SliderFloat("Water moisture strength", &P.moisture_water_strength, 0.0f, 1.0f);
+            S.dirty |= ImGui::SliderFloat("Water moisture radius", &P.moisture_water_radius, 4.0f, 256.0f, "%.0f");
+            S.dirty |= ImGui::Checkbox("Include ocean as moisture source", &P.moisture_include_ocean);
+        }
+
+        if (ImGui::CollapsingHeader("Terrain Stamps")) {
+            S.dirty |= ImGui::Checkbox("Enable stamps", &P.enable_stamps);
+
+            S.dirty |= ImGui::SliderInt("Crater count", &P.crater_count, 0, 64);
+            S.dirty |= ImGui::SliderFloat("Crater radius min", &P.crater_radius_min, 2.0f, 128.0f, "%.0f");
+            S.dirty |= ImGui::SliderFloat("Crater radius max", &P.crater_radius_max, 2.0f, 256.0f, "%.0f");
+            S.dirty |= ImGui::SliderFloat("Crater depth", &P.crater_depth, 0.0f, 40.0f, "%.1f");
+            S.dirty |= ImGui::SliderFloat("Crater rim height", &P.crater_rim_height, 0.0f, 20.0f, "%.1f");
+
+            S.dirty |= ImGui::SliderInt("Volcano count", &P.volcano_count, 0, 32);
+            S.dirty |= ImGui::SliderFloat("Volcano radius min", &P.volcano_radius_min, 2.0f, 160.0f, "%.0f");
+            S.dirty |= ImGui::SliderFloat("Volcano radius max", &P.volcano_radius_max, 2.0f, 320.0f, "%.0f");
+            S.dirty |= ImGui::SliderFloat("Volcano height", &P.volcano_height, 0.0f, 60.0f, "%.1f");
+            S.dirty |= ImGui::SliderFloat("Volcano crater ratio", &P.volcano_crater_ratio, 0.05f, 0.60f, "%.2f");
+
+            S.dirty |= ImGui::SliderFloat("Stamp spacing", &P.stamp_min_spacing, 0.50f, 1.50f, "%.2f");
+        }
+
         if (ImGui::Button("Rebuild") || S.dirty) {
             world.rebuild();
             auto mesh = BuildTerrainMesh(world.data(), xyScale, zScale);
