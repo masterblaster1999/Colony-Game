@@ -4,16 +4,19 @@
 /*
     SliceRendererD3D11
     -----------------
-    D3D11 renderer/resources extracted from the original monolithic VerticalSlice.cpp.
+    Thin facade for the Vertical Slice D3D11 renderer.
 
-    This module owns:
-      - D3D11 device/swapchain/RT/DS
-      - Shaders, meshes, constant buffers
-      - GPU timestamp profiling queries
-      - OrbitalRenderer instance (GPU resources)
-      - Screenshot capture
+    Patch4 refactor goal:
+      - keep the public API stable (SliceAppWin32 / SliceSimulation do not change)
+      - split the heavy renderer implementation into:
+          * TerrainRendererD3D11.*      (grid + height texture + terrain/cube draw)
+          * OrbitalRendererAdapter.*    (glue around colony::space::OrbitalRenderer)
+          * ScreenshotCaptureD3D11.*    (backbuffer readback + BMP write)
 
-    It consumes SliceSimulation state (cameras, toggles, orbital system, etc.).
+    This file keeps only:
+      - the swapchain/device wrapper (Device)
+      - GPU timers exposed for the title bar
+      - a small forwarding API used by the app loop
 */
 
 #ifndef WIN32_LEAN_AND_MEAN
@@ -27,16 +30,19 @@
 #include <d3d11.h>
 #include <dxgi.h>
 #include <wrl/client.h>
-#include <DirectXMath.h>
 
 #include <cstdint>
+#include <memory>
 #include <vector>
-
-#include "render/OrbitalRenderer.h"
 
 namespace slice {
 
 class SliceSimulation;
+
+// Internal split modules (opaque here; owned via unique_ptr)
+class TerrainRendererD3D11;
+class OrbitalRendererAdapter;
+class ScreenshotCaptureD3D11;
 
 struct Device {
     HWND hwnd{};
@@ -58,26 +64,6 @@ struct Device {
 
     void toggleFullscreen();
 };
-
-// Height texture (R32_FLOAT)
-struct HeightTexture {
-    Microsoft::WRL::ComPtr<ID3D11Texture2D> tex;
-    Microsoft::WRL::ComPtr<ID3D11ShaderResourceView> srv;
-    int W{}, H{};
-
-    void create(ID3D11Device* dev, const std::vector<float>& h, int w, int hgt);
-};
-
-struct Vtx { DirectX::XMFLOAT3 pos; DirectX::XMFLOAT2 uv; };
-struct VtxN { DirectX::XMFLOAT3 pos; DirectX::XMFLOAT3 nrm; };
-
-struct Mesh {
-    Microsoft::WRL::ComPtr<ID3D11Buffer> vbo;
-    Microsoft::WRL::ComPtr<ID3D11Buffer> ibo;
-    UINT indexCount{};
-};
-
-struct FPSCounter;
 
 struct GPUTimer {
     struct Set {
@@ -101,36 +87,17 @@ public:
     // Device / swapchain wrapper
     Device d;
 
-    // Terrain
-    Mesh grid{};
-    HeightTexture heightTex{};
-    Microsoft::WRL::ComPtr<ID3D11VertexShader> terrainVS;
-    Microsoft::WRL::ComPtr<ID3D11PixelShader>  terrainPS;
-    Microsoft::WRL::ComPtr<ID3D11InputLayout>  terrainIL;
-    Microsoft::WRL::ComPtr<ID3D11Buffer>       cbCamera;
-    Microsoft::WRL::ComPtr<ID3D11Buffer>       cbTerrain;
-    Microsoft::WRL::ComPtr<ID3D11SamplerState> sampLinear;
-
-    // Cube
-    Mesh cube{};
-    Microsoft::WRL::ComPtr<ID3D11VertexShader> colorVS;
-    Microsoft::WRL::ComPtr<ID3D11PixelShader>  colorPS;
-    Microsoft::WRL::ComPtr<ID3D11InputLayout>  colorIL;
-    Microsoft::WRL::ComPtr<ID3D11Buffer>       cbCameraCube;
-    Microsoft::WRL::ComPtr<ID3D11Buffer>       cbColor;
-
-    // States
-    Microsoft::WRL::ComPtr<ID3D11BlendState>      blendAlpha;
-    Microsoft::WRL::ComPtr<ID3D11RasterizerState> rsSolid;
-    Microsoft::WRL::ComPtr<ID3D11RasterizerState> rsWire;
-
-    // Orbital renderer (owns D3D resources)
-    colony::space::OrbitalRenderer orender;
-
-    // Profiling
+    // Profiling (read by SliceAppWin32 for window title text)
     GPUTimer timerFrame, timerTerrain, timerCube, timerOrbital;
 
 public:
+    SliceRendererD3D11();
+    ~SliceRendererD3D11();
+
+    // Non-copyable (owns D3D resources)
+    SliceRendererD3D11(const SliceRendererD3D11&) = delete;
+    SliceRendererD3D11& operator=(const SliceRendererD3D11&) = delete;
+
     void create(HWND hwnd, UINT w, UINT h, const SliceSimulation& sim);
     void resize(UINT w, UINT h);
 
@@ -147,6 +114,16 @@ public:
 
     // Screenshot (BMP, 32bpp BGRA, top-down)
     bool saveScreenshotBMP();
+
+private:
+    // Common render states used across sub-renderers
+    Microsoft::WRL::ComPtr<ID3D11RasterizerState> rsSolid;
+    Microsoft::WRL::ComPtr<ID3D11RasterizerState> rsWire;
+
+    // Split implementation modules
+    std::unique_ptr<TerrainRendererD3D11> terrain_;
+    std::unique_ptr<OrbitalRendererAdapter> orbital_;
+    std::unique_ptr<ScreenshotCaptureD3D11> screenshot_;
 };
 
 } // namespace slice

@@ -7,16 +7,24 @@
 
 add_executable(ColonySlice WIN32
     ${CMAKE_CURRENT_SOURCE_DIR}/VerticalSlice.cpp
-    
+
     # Split modules (extracted from VerticalSlice.cpp)
     ${CMAKE_CURRENT_SOURCE_DIR}/SliceAppWin32.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/SliceSimulation.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/SliceRendererD3D11.cpp
 
+    # Patch4: split the heavy renderer implementation further
+    ${CMAKE_CURRENT_SOURCE_DIR}/TerrainRendererD3D11.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/OrbitalRendererAdapter.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/ScreenshotCaptureD3D11.cpp
+
     # (Optional) list headers for IDE browsing
     ${CMAKE_CURRENT_SOURCE_DIR}/SliceAppWin32.h
     ${CMAKE_CURRENT_SOURCE_DIR}/SliceSimulation.h
     ${CMAKE_CURRENT_SOURCE_DIR}/SliceRendererD3D11.h
+    ${CMAKE_CURRENT_SOURCE_DIR}/TerrainRendererD3D11.h
+    ${CMAKE_CURRENT_SOURCE_DIR}/OrbitalRendererAdapter.h
+    ${CMAKE_CURRENT_SOURCE_DIR}/ScreenshotCaptureD3D11.h
 
     ${CMAKE_CURRENT_SOURCE_DIR}/ObjectiveTracker.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/ObjectiveTypes.h
