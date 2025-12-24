@@ -7,6 +7,17 @@
 
 add_executable(ColonySlice WIN32
     ${CMAKE_CURRENT_SOURCE_DIR}/VerticalSlice.cpp
+    
+    # Split modules (extracted from VerticalSlice.cpp)
+    ${CMAKE_CURRENT_SOURCE_DIR}/SliceAppWin32.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/SliceSimulation.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/SliceRendererD3D11.cpp
+
+    # (Optional) list headers for IDE browsing
+    ${CMAKE_CURRENT_SOURCE_DIR}/SliceAppWin32.h
+    ${CMAKE_CURRENT_SOURCE_DIR}/SliceSimulation.h
+    ${CMAKE_CURRENT_SOURCE_DIR}/SliceRendererD3D11.h
+
     ${CMAKE_CURRENT_SOURCE_DIR}/ObjectiveTracker.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/ObjectiveTypes.h
 
