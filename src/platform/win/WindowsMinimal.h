@@ -1,9 +1,8 @@
-+++ b/src/platform/win/WindowsMinimal.h
-+#pragma once
-+#ifndef NOMINMAX
-+#  define NOMINMAX
-+#endif
-+#ifndef WIN32_LEAN_AND_MEAN
-+#  define WIN32_LEAN_AND_MEAN
-+#endif
-+#include <Windows.h>
+#pragma once
+#ifndef NOMINMAX
+#  define NOMINMAX 1
+#endif
+#ifndef WIN32_LEAN_AND_MEAN
+#  define WIN32_LEAN_AND_MEAN 1
+#endif
+#include <Windows.h>
