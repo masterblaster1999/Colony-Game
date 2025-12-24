@@ -25,10 +25,10 @@
       "binaryDir": "${sourceDir}/out/build/${presetName}",
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "Debug",
-        "COLONY_UNITY": "OFF",
+        "COLONY_UNITY_BUILD": "OFF",
         "COLONY_DEBUG_FASTLINK": "ON",
         "COLONY_DEBUG_Z7": "ON",
-        "COLONY_BUILD_TESTS": "OFF"
+        "BUILD_TESTING": "OFF"
       },
       "vendor": {
         "microsoft.com/VisualStudioSettings/CMake/1.0": {
@@ -48,11 +48,11 @@
         "CMAKE_MSVC_RUNTIME_LIBRARY": "MultiThreaded$<$<CONFIG:Debug>:Debug>DLL",
         "USE_PIX": "ON",
         "USE_RAWINPUT": "ON",
-        "COLONY_UNITY": "OFF",
+        "COLONY_UNITY_BUILD": "OFF",
         "COLONY_DEBUG_FASTLINK": "ON",
         "COLONY_DEBUG_Z7": "ON",
-        "COLONY_BUILD_TESTS": "OFF",
-        "COLONY_LTO": "OFF"
+        "BUILD_TESTING": "OFF",
+        "COLONY_ENABLE_LTO": "OFF"
       },
       "vendor": {
         "microsoft.com/VisualStudioSettings/CMake/1.0": {

@@ -1,31 +1,30 @@
 // src/platform/win/GpuPreference.cpp
-// Hint hybrid‑GPU drivers to prefer the high‑performance (discrete) GPU.
+// -------------------------------------------------------------------------------------------------
+// Hybrid GPU hint exports (Optimus / PowerXpress)
+//
+// Why this exists:
+//   On systems with an iGPU + dGPU, some drivers decide which GPU to run the process on.
+//   Exporting these well-known variables provides a best-effort hint to prefer the high-performance
+//   (usually discrete) GPU.
 //
 // IMPORTANT:
-//  * Compile this file into the FINAL GAME EXE ONLY (not a static lib, not the launcher)
-//    to avoid duplicate definitions at link time.
-//  * These exports are best‑effort hints; users and OEM/global settings can still override.
-//
-// References:
-//  - NVIDIA Optimus: "Global Variable NvOptimusEnablement" (Release 302+). 
-//  - AMD PowerXpress: AmdPowerXpressRequestHighPerformance must be defined in the GAME PROCESS.
-//    (See vendor docs cited in the PR/commit message.)
+//   * Compile this file into the FINAL GAME EXE ONLY (not a static library, not the launcher),
+//     otherwise you'll get duplicate symbol definitions at link time.
+//   * These are only hints; OS / driver / OEM settings can still override.
+// -------------------------------------------------------------------------------------------------
 
 #if defined(_WIN32)
 
-  #include <windows.h> // for DWORD
+  #include <windows.h> // DWORD
   static_assert(sizeof(DWORD) == 4, "DWORD must be 32-bit");
 
   extern "C" {
 
-  // NVIDIA Optimus: prefer High Performance Graphics GPU.
-  // Doc: "Enabling High Performance Graphics Rendering on Optimus Systems", TB-05942-003 (Release 302+).
-  // Value semantics: only the LSB is considered; 1 = prefer discrete GPU.
-  __declspec(dllexport) DWORD NvOptimusEnablement = 0x00000001;  // :contentReference[oaicite:1]{index=1}
+    // NVIDIA Optimus hint (Release 302+): 1 = prefer discrete GPU
+    __declspec(dllexport) DWORD NvOptimusEnablement = 0x00000001;
 
-  // AMD PowerXpress: prefer High Performance GPU.
-  // Doc: AMD CrossFire guide (D3D11) — MUST be exported by the game process (not a launcher).
-  __declspec(dllexport) DWORD AmdPowerXpressRequestHighPerformance = 0x00000001;  // :contentReference[oaicite:2]{index=2}
+    // AMD PowerXpress hint: 1 = prefer high-performance GPU
+    __declspec(dllexport) DWORD AmdPowerXpressRequestHighPerformance = 0x00000001;
 
   } // extern "C"
 

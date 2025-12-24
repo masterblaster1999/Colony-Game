@@ -26,6 +26,13 @@ set(_colony_game_sources
     ${CMAKE_CURRENT_SOURCE_DIR}/UserSettings.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/UserSettings.h
 
+    # Crash handling / diagnostics
+    ${CMAKE_CURRENT_SOURCE_DIR}/CrashDump.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/CrashDump.h
+
+    # GPU preference exports (helps laptops pick the discrete GPU)
+    ${CMAKE_CURRENT_SOURCE_DIR}/platform/win/GpuPreference.cpp
+
     # Input + temporary game module (keeps app layer thin)
     ${CMAKE_CURRENT_SOURCE_DIR}/input/InputEvent.h
     ${CMAKE_CURRENT_SOURCE_DIR}/input/InputQueue.h
@@ -67,10 +74,13 @@ target_include_directories(ColonyGame BEFORE PRIVATE
     ${PROJECT_SOURCE_DIR}/include
 )
 
+# Third-party deps
+find_package(nlohmann_json CONFIG REQUIRED)
+
 # Link against the modular libraries (engine/core/platform) + DirectX for the window layer.
 target_link_libraries(ColonyGame PRIVATE
-    colony::engine
     colony::platform_win
+    nlohmann_json::nlohmann_json
     d3d11
     dxgi
     dxguid
@@ -93,9 +103,18 @@ if(MSVC)
 endif()
 
 # Project-wide helper hooks (defined in the root CMakeLists.txt)
+colony_apply_debug_runtime_checks(ColonyGame)
 colony_apply_msvc_runtime(ColonyGame)
 colony_enable_warnings(ColonyGame)
-colony_enable_pch(ColonyGame PRIVATE "${PROJECT_SOURCE_DIR}/src/pch.h")
+
+# Precompiled headers
+if(DEFINED COLONY_USE_PCH AND COLONY_USE_PCH)
+    set(_cg_pch "${PROJECT_SOURCE_DIR}/${COLONY_PCH_HEADER}")
+    if(NOT EXISTS "${_cg_pch}")
+        set(_cg_pch "${PROJECT_SOURCE_DIR}/src/pch.h")
+    endif()
+    colony_enable_pch(ColonyGame PRIVATE "${_cg_pch}")
+endif()
 
 set_property(DIRECTORY PROPERTY VS_STARTUP_PROJECT ColonyGame)
 
@@ -122,3 +141,22 @@ if(DEFINED COLONY_BUILD_LAUNCHER AND COLONY_BUILD_LAUNCHER)
     colony_apply_msvc_runtime(ColonyLauncher)
     colony_enable_warnings(ColonyLauncher)
 endif()
+
+
+# Make it easy to run from Visual Studio / the build output dir:
+# - copy runtime assets next to the executable
+# - set a sensible working directory in the VS debugger
+set_target_properties(ColonyGame PROPERTIES
+    VS_DEBUGGER_WORKING_DIRECTORY "${PROJECT_SOURCE_DIR}"
+)
+
+add_custom_command(TARGET ColonyGame POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:ColonyGame>/assets"
+    COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:ColonyGame>/res"
+    COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:ColonyGame>/shaders"
+    COMMAND ${CMAKE_COMMAND} -E copy_directory "${PROJECT_SOURCE_DIR}/assets" "$<TARGET_FILE_DIR:ColonyGame>/assets"
+    COMMAND ${CMAKE_COMMAND} -E copy_directory "${PROJECT_SOURCE_DIR}/res"    "$<TARGET_FILE_DIR:ColonyGame>/res"
+    COMMAND ${CMAKE_COMMAND} -E copy_directory "${PROJECT_SOURCE_DIR}/shaders" "$<TARGET_FILE_DIR:ColonyGame>/shaders"
+    VERBATIM
+)
+

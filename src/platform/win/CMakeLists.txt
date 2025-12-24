@@ -181,8 +181,17 @@ if(NOT TARGET colony_platform_win)
     colony_apply_msvc_runtime(colony_platform_win)
     colony_apply_debug_runtime_checks(colony_platform_win)
 
-    if(COLONY_ENABLE_PCH)
-      target_precompile_headers(colony_platform_win PRIVATE "${CMAKE_SOURCE_DIR}/cmake/pch.hpp")
+    if(DEFINED COLONY_USE_PCH AND COLONY_USE_PCH)
+      # Use the repo-wide PCH header (defaults to src/pch.h from CGOptions).
+      set(_cg_pch "${CMAKE_SOURCE_DIR}/${COLONY_PCH_HEADER}")
+      if(NOT EXISTS "${_cg_pch}")
+        set(_cg_pch "${CMAKE_SOURCE_DIR}/src/pch.h")
+      endif()
+      if(COMMAND colony_enable_pch)
+        colony_enable_pch(colony_platform_win PRIVATE "${_cg_pch}")
+      else()
+        target_precompile_headers(colony_platform_win PRIVATE "${_cg_pch}")
+      endif()
     endif()
 
     # For /std:c++latest compatibility and better incremental linking behavior.
