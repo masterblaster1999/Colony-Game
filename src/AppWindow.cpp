@@ -26,6 +26,16 @@ struct AppWindow::Impl {
     colony::appwin::UserSettings               settings;
     bool                                      settingsLoaded = false;
     bool                                      settingsDirty = false;
+
+    // Window state
+    bool                                      active = true;
+
+    // When resizing via the window frame, defer swapchain resizes until the
+    // user finishes the drag (WM_EXITSIZEMOVE). This avoids hammering
+    // ResizeBuffers on every mouse move during sizing.
+    bool                                      inSizeMove = false;
+    UINT                                      pendingResizeW = 0;
+    UINT                                      pendingResizeH = 0;
 };
 
 AppWindow::AppWindow() = default;
@@ -45,6 +55,8 @@ bool AppWindow::Create(HINSTANCE hInst, int nCmdShow, int width, int height)
     m_impl->settings.vsync = m_vsync;
     m_impl->settings.fullscreen = false;
     m_impl->settings.maxFpsWhenVsyncOff = m_impl->pacer.MaxFpsWhenVsyncOff();
+    m_impl->settings.pauseWhenUnfocused = true;
+    m_impl->settings.maxFpsWhenUnfocused = m_impl->pacer.MaxFpsWhenUnfocused();
 
     // Best-effort load: if it fails, we keep the defaults above.
     {
@@ -59,6 +71,7 @@ bool AppWindow::Create(HINSTANCE hInst, int nCmdShow, int width, int height)
     // Apply persisted settings.
     m_vsync = m_impl->settings.vsync;
     m_impl->pacer.SetMaxFpsWhenVsyncOff(m_impl->settings.maxFpsWhenVsyncOff);
+    m_impl->pacer.SetMaxFpsWhenUnfocused(m_impl->settings.maxFpsWhenUnfocused);
 
     const wchar_t* kClass = L"ColonyWindowClass";
 
@@ -144,21 +157,24 @@ void AppWindow::UpdateTitle()
 
     const wchar_t* vs = m_vsync ? L"ON" : L"OFF";
     const wchar_t* fs = m_impl->fullscreen.IsFullscreen() ? L"FULL" : L"WIN";
+    const wchar_t* act = m_impl->active
+                             ? L"ACTIVE"
+                             : (m_impl->settings.pauseWhenUnfocused ? L"BG (PAUSED)" : L"BG");
     const double fps = m_impl->pacer.Fps();
 
 #ifndef NDEBUG
     const auto cam = m_impl->game.GetDebugCameraInfo();
     wchar_t title[256];
     swprintf_s(title,
-               L"Colony Game | %.0f FPS | VSync %s | %s | yaw %.1f pitch %.1f pan(%.1f, %.1f) zoom %.2f",
-               fps, vs, fs,
+               L"Colony Game | %.0f FPS | VSync %s | %s | %s | yaw %.1f pitch %.1f pan(%.1f, %.1f) zoom %.2f",
+               fps, vs, fs, act,
                cam.yaw, cam.pitch,
                cam.panX, cam.panY,
                cam.zoom);
     SetWindowTextW(m_hwnd, title);
 #else
     wchar_t title[128];
-    swprintf_s(title, L"Colony Game | %.0f FPS | VSync %s | %s", fps, vs, fs);
+    swprintf_s(title, L"Colony Game | %.0f FPS | VSync %s | %s | %s", fps, vs, fs, act);
     SetWindowTextW(m_hwnd, title);
 #endif
 }
@@ -209,10 +225,48 @@ LRESULT AppWindow::HandleMsg(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam)
     case WM_ACTIVATEAPP:
         if (m_impl) {
             const bool active = wParam != 0;
+            m_impl->active = active;
             m_impl->mouse.OnActivateApp(hWnd, active);
             if (!active) {
                 colony::input::InputEvent ev{};
                 ev.type = colony::input::InputEventType::FocusLost;
+                m_impl->input.Push(ev);
+            }
+
+            // Reflect active/background state in the debug title.
+            UpdateTitle();
+        }
+        return 0;
+
+    case WM_ENTERSIZEMOVE:
+        if (m_impl) {
+            m_impl->inSizeMove = true;
+            m_impl->pendingResizeW = 0;
+            m_impl->pendingResizeH = 0;
+        }
+        return 0;
+
+    case WM_EXITSIZEMOVE:
+        if (m_impl) {
+            m_impl->inSizeMove = false;
+
+            // If we deferred swapchain resizing during the sizing drag, apply the
+            // final size once.
+            if (m_impl->pendingResizeW > 0 && m_impl->pendingResizeH > 0)
+            {
+                const UINT finalW = m_impl->pendingResizeW;
+                const UINT finalH = m_impl->pendingResizeH;
+
+                m_gfx.Resize(finalW, finalH);
+                m_impl->pendingResizeW = 0;
+                m_impl->pendingResizeH = 0;
+
+                // Notify the game layer once (final size). This is useful for
+                // future UI/layout code without spamming events during the drag.
+                colony::input::InputEvent ev{};
+                ev.type = colony::input::InputEventType::WindowResize;
+                ev.width = finalW;
+                ev.height = finalH;
                 m_impl->input.Push(ev);
             }
         }
@@ -256,8 +310,30 @@ LRESULT AppWindow::HandleMsg(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam)
         m_width = w;
         m_height = h;
 
-        if (w > 0 && h > 0)
-            m_gfx.Resize(w, h);
+        // During interactive sizing drags, resizing the swapchain on every WM_SIZE can
+        // cause stutter and (with debug layers) spew DXGI warnings. Defer until
+        // WM_EXITSIZEMOVE so we only resize once at the final dimensions.
+        if (m_impl && m_impl->inSizeMove)
+        {
+            m_impl->pendingResizeW = w;
+            m_impl->pendingResizeH = h;
+        }
+        else
+        {
+            if (w > 0 && h > 0)
+                m_gfx.Resize(w, h);
+        }
+
+        // Notify the game layer immediately when the resize isn't part of an
+        // interactive sizing drag (those are emitted once from WM_EXITSIZEMOVE).
+        if (m_impl && w > 0 && h > 0 && !m_impl->inSizeMove)
+        {
+            colony::input::InputEvent ev{};
+            ev.type = colony::input::InputEventType::WindowResize;
+            ev.width = w;
+            ev.height = h;
+            m_impl->input.Push(ev);
+        }
 
         // Persist windowed dimensions only (fullscreen sizes are monitor-dependent).
         if (m_impl && w > 0 && h > 0 && !m_impl->fullscreen.IsFullscreen())
@@ -281,7 +357,7 @@ LRESULT AppWindow::HandleMsg(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam)
     case WM_SETCURSOR:
         if (LOWORD(lParam) == HTCLIENT && m_impl) {
             const auto b = m_impl->mouse.Buttons();
-            if (b.middle || b.right) { SetCursor(LoadCursor(nullptr, IDC_SIZEALL)); return TRUE; }
+            if (b.middle || b.right || b.x1 || b.x2) { SetCursor(LoadCursor(nullptr, IDC_SIZEALL)); return TRUE; }
             if (b.left)              { SetCursor(LoadCursor(nullptr, IDC_HAND));    return TRUE; }
         }
         break;
@@ -491,6 +567,10 @@ LRESULT AppWindow::HandleMsg(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam)
         SetFocus(hWnd);
         if (m_impl) {
             const WORD xb = GET_XBUTTON_WPARAM(wParam);
+            m_impl->mouse.OnXButtonDown(hWnd,
+                                        xb == XBUTTON1,
+                                        GET_X_LPARAM(lParam),
+                                        GET_Y_LPARAM(lParam));
             colony::input::InputEvent bev{};
             bev.type = colony::input::InputEventType::MouseButtonDown;
             bev.key  = (xb == XBUTTON1) ? colony::input::kMouseButtonX1 : colony::input::kMouseButtonX2;
@@ -501,6 +581,7 @@ LRESULT AppWindow::HandleMsg(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam)
     case WM_XBUTTONUP:
         if (m_impl) {
             const WORD xb = GET_XBUTTON_WPARAM(wParam);
+            m_impl->mouse.OnXButtonUp(hWnd, xb == XBUTTON1);
             colony::input::InputEvent bev{};
             bev.type = colony::input::InputEventType::MouseButtonUp;
             bev.key  = (xb == XBUTTON1) ? colony::input::kMouseButtonX1 : colony::input::kMouseButtonX2;
@@ -524,6 +605,8 @@ LRESULT AppWindow::HandleMsg(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam)
                 if (b.left)   ev.buttons |= colony::input::MouseButtonsMask::MouseLeft;
                 if (b.right)  ev.buttons |= colony::input::MouseButtonsMask::MouseRight;
                 if (b.middle) ev.buttons |= colony::input::MouseButtonsMask::MouseMiddle;
+                if (b.x1)     ev.buttons |= colony::input::MouseButtonsMask::MouseX1;
+                if (b.x2)     ev.buttons |= colony::input::MouseButtonsMask::MouseX2;
                 m_impl->input.Push(ev);
             }
         }
@@ -559,6 +642,8 @@ LRESULT AppWindow::HandleMsg(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam)
                 if (b.left)   ev.buttons |= colony::input::MouseButtonsMask::MouseLeft;
                 if (b.right)  ev.buttons |= colony::input::MouseButtonsMask::MouseRight;
                 if (b.middle) ev.buttons |= colony::input::MouseButtonsMask::MouseMiddle;
+                if (b.x1)     ev.buttons |= colony::input::MouseButtonsMask::MouseX1;
+                if (b.x2)     ev.buttons |= colony::input::MouseButtonsMask::MouseX2;
                 m_impl->input.Push(ev);
             }
         }
@@ -584,17 +669,26 @@ int AppWindow::MessageLoop()
     m_impl->pacer.ResetFps();
 
     bool lastVsync = m_vsync;
+    bool lastUnfocused = m_impl ? !m_impl->active : false;
 
     while (true)
     {
-        // Reset pacing if vsync changes at runtime.
-        if (lastVsync != m_vsync) {
+        const bool unfocused = m_impl ? !m_impl->active : false;
+        const bool pauseInBackground = m_impl ? (unfocused && m_impl->settings.pauseWhenUnfocused) : false;
+
+        // Reset pacing when the pacing mode changes (vsync toggled, or we moved
+        // between foreground/background). This prevents long sleeps after e.g.
+        // Alt+Tab.
+        if (lastVsync != m_vsync || lastUnfocused != unfocused) {
             m_impl->pacer.ResetSchedule();
             lastVsync = m_vsync;
+            lastUnfocused = unfocused;
         }
 
-        // If minimized, don't render; just block until something happens.
-        if (m_width == 0 || m_height == 0)
+        // If minimized or intentionally paused in the background, don't render;
+        // block until something happens. We still consume any queued input events
+        // so FocusLost (etc.) reaches the game layer.
+        if (m_width == 0 || m_height == 0 || pauseInBackground)
         {
             while (PeekMessageW(&msg, nullptr, 0, 0, PM_REMOVE))
             {
@@ -602,13 +696,22 @@ int AppWindow::MessageLoop()
                 TranslateMessage(&msg);
                 DispatchMessageW(&msg);
             }
+
+            if (m_impl)
+            {
+                const bool changed = m_impl->game.OnInput(m_impl->input.Events());
+                m_impl->input.Clear();
+                if (changed)
+                    UpdateTitle();
+            }
+
             WaitMessage();
             continue;
         }
 
-        // Frame pacing (vsync OFF): wait until either the next frame time arrives
-        // or we receive input/messages.
-        m_impl->pacer.ThrottleBeforeMessagePump(m_vsync);
+        // Frame pacing: wait until either the next frame time arrives (when a
+        // cap is active) or we receive input/messages.
+        m_impl->pacer.ThrottleBeforeMessagePump(m_vsync, unfocused);
 
         // Pump all queued messages.
         while (PeekMessageW(&msg, nullptr, 0, 0, PM_REMOVE))
@@ -630,12 +733,14 @@ int AppWindow::MessageLoop()
         }
 
         // Re-check minimized state after message pump.
-        if (m_width == 0 || m_height == 0) {
+        const bool unfocusedAfterPump = m_impl ? !m_impl->active : false;
+        const bool pauseInBackgroundAfterPump = m_impl ? (unfocusedAfterPump && m_impl->settings.pauseWhenUnfocused) : false;
+        if (m_width == 0 || m_height == 0 || pauseInBackgroundAfterPump) {
             continue;
         }
 
-        // If vsync is OFF and we woke due to messages, don't render early.
-        if (!m_impl->pacer.IsTimeToRender(m_vsync)) {
+        // If a cap is active and we woke due to messages, don't render early.
+        if (!m_impl->pacer.IsTimeToRender(m_vsync, unfocusedAfterPump)) {
             continue;
         }
 
@@ -643,7 +748,7 @@ int AppWindow::MessageLoop()
         m_gfx.Render(m_vsync);
 
         // FPS counter (update about once per second).
-        if (m_impl->pacer.OnFramePresented(m_vsync)) {
+        if (m_impl->pacer.OnFramePresented(m_vsync, unfocusedAfterPump)) {
             UpdateTitle();
         }
     }

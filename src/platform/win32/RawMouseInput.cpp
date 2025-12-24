@@ -80,6 +80,8 @@ void RawMouseInput::ClearStateAndCapture(HWND hwnd) noexcept
     m_buttons.left = false;
     m_buttons.right = false;
     m_buttons.middle = false;
+    m_buttons.x1 = false;
+    m_buttons.x2 = false;
     m_hasPos = false;
 
     if (GetCapture() == hwnd) {
@@ -89,11 +91,34 @@ void RawMouseInput::ClearStateAndCapture(HWND hwnd) noexcept
 
 void RawMouseInput::MaybeEndCapture(HWND hwnd) noexcept
 {
-    if (!(m_buttons.left || m_buttons.right || m_buttons.middle)) {
+    if (!(m_buttons.left || m_buttons.right || m_buttons.middle || m_buttons.x1 || m_buttons.x2)) {
         if (GetCapture() == hwnd) {
             ReleaseCapture();
         }
     }
+}
+
+void RawMouseInput::OnXButtonDown(HWND hwnd, bool x1, int x, int y) noexcept
+{
+    if (x1)
+        m_buttons.x1 = true;
+    else
+        m_buttons.x2 = true;
+
+    BeginCapture(hwnd);
+    m_lastX = x;
+    m_lastY = y;
+    m_hasPos = true;
+}
+
+void RawMouseInput::OnXButtonUp(HWND hwnd, bool x1) noexcept
+{
+    if (x1)
+        m_buttons.x1 = false;
+    else
+        m_buttons.x2 = false;
+
+    MaybeEndCapture(hwnd);
 }
 
 void RawMouseInput::OnLButtonDown(HWND hwnd, int x, int y) noexcept
@@ -154,7 +179,7 @@ bool RawMouseInput::OnMouseMove(HWND hwnd, int x, int y, LONG& outDx, LONG& outD
         const LONG dx = static_cast<LONG>(x - m_lastX);
         const LONG dy = static_cast<LONG>(y - m_lastY);
 
-        if ((m_buttons.left || m_buttons.right || m_buttons.middle) && InputActive(hwnd)) {
+        if ((m_buttons.left || m_buttons.right || m_buttons.middle || m_buttons.x1 || m_buttons.x2) && InputActive(hwnd)) {
             // If raw input is registered, prefer WM_INPUT deltas and avoid double-applying.
             if (!m_rawRegistered) {
                 outDx = dx;
@@ -187,7 +212,7 @@ bool RawMouseInput::OnRawInput(HWND hwnd, HRAWINPUT hRawInput, LONG& outDx, LONG
     // Only process raw input when the window is active or owns capture,
     // and only while dragging (buttons down). This avoids background movement
     // and reduces per-message overhead.
-    if (!InputActive(hwnd) || !(m_buttons.left || m_buttons.right || m_buttons.middle)) {
+    if (!InputActive(hwnd) || !(m_buttons.left || m_buttons.right || m_buttons.middle || m_buttons.x1 || m_buttons.x2)) {
         return false;
     }
 

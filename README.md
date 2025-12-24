@@ -42,6 +42,28 @@ In the current window prototype (`AppWindow`):
 - **F11** or **Alt+Enter**: toggle borderless fullscreen
 - Mouse drag (LMB/RMB/MMB): camera placeholder controls (debug title shows values)
 
+### Per-user settings
+
+The prototype persists a small settings file at:
+
+- `%LOCALAPPDATA%\ColonyGame\settings.json`
+
+New in this patch:
+
+- `runtime.pauseWhenUnfocused` (default `true`): when you Alt+Tab away, the game pauses rendering/sim to save CPU/GPU.
+- `runtime.maxFpsWhenUnfocused` (default `30`): if `pauseWhenUnfocused` is `false`, this caps the background FPS.
+
+Example snippet:
+
+```json
+{
+  "runtime": {
+    "pauseWhenUnfocused": false,
+    "maxFpsWhenUnfocused": 30
+  }
+}
+```
+
 ## Notes
 - This project intentionally **does not support Linux/macOS** at the moment.
 - If you hit CMake errors about missing helper commands, ensure you are configuring from the repository root (not a subfolder).

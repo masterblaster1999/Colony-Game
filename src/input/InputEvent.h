@@ -41,6 +41,12 @@ enum MouseButtonsMask : std::uint8_t {
     MouseLeft   = 1u << 0,
     MouseRight  = 1u << 1,
     MouseMiddle = 1u << 2,
+
+    // Extra mouse buttons (typically "Mouse4" / "Mouse5").
+    // These are useful for bindable actions (e.g., camera pan/orbit) and for
+    // consistent button-state snapshots when producing MouseDelta events.
+    MouseX1     = 1u << 3,
+    MouseX2     = 1u << 4,
 };
 
 // NOTE: Keep this POD/trivial. It is intentionally "wide" so we can avoid unions/variants.

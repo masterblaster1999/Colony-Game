@@ -87,6 +87,14 @@ bool LoadUserSettings(UserSettings& out) noexcept
             tmp.maxFpsWhenVsyncOff = ClampMaxFps(m->get<int>());
     }
 
+    if (const auto it = j.find("runtime"); it != j.end() && it->is_object())
+    {
+        if (auto p = it->find("pauseWhenUnfocused"); p != it->end() && p->is_boolean())
+            tmp.pauseWhenUnfocused = p->get<bool>();
+        if (auto m = it->find("maxFpsWhenUnfocused"); m != it->end() && m->is_number_integer())
+            tmp.maxFpsWhenUnfocused = ClampMaxFps(m->get<int>());
+    }
+
     out = tmp;
     return true;
 }
@@ -99,7 +107,7 @@ bool SaveUserSettings(const UserSettings& settings) noexcept
     std::filesystem::create_directories(UserSettingsPath().parent_path(), ec);
 
     nlohmann::json j;
-    j["version"] = 1;
+    j["version"] = 2;
     j["window"] = {
         {"width", settings.windowWidth},
         {"height", settings.windowHeight},
@@ -108,6 +116,11 @@ bool SaveUserSettings(const UserSettings& settings) noexcept
         {"vsync", settings.vsync},
         {"fullscreen", settings.fullscreen},
         {"maxFpsWhenVsyncOff", settings.maxFpsWhenVsyncOff},
+    };
+
+    j["runtime"] = {
+        {"pauseWhenUnfocused", settings.pauseWhenUnfocused},
+        {"maxFpsWhenUnfocused", settings.maxFpsWhenUnfocused},
     };
 
     std::string payload = j.dump(4);

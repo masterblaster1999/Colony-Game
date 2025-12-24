@@ -28,13 +28,47 @@ void FramePacer::SetMaxFpsWhenVsyncOff(int maxFpsWhenVsyncOff) noexcept
     ResetSchedule();
 }
 
+void FramePacer::SetMaxFpsWhenUnfocused(int maxFpsWhenUnfocused) noexcept
+{
+    // Clamp to a sane range. (0 == uncapped.)
+    if (maxFpsWhenUnfocused < 0)
+        maxFpsWhenUnfocused = 0;
+    if (maxFpsWhenUnfocused > 1000)
+        maxFpsWhenUnfocused = 1000;
+
+    if (m_maxFpsWhenUnfocused == maxFpsWhenUnfocused)
+        return;
+
+    m_maxFpsWhenUnfocused = maxFpsWhenUnfocused;
+    RecomputeTicksPerFrame();
+    ResetSchedule();
+}
+
 void FramePacer::RecomputeTicksPerFrame() noexcept
 {
     if (m_maxFpsWhenVsyncOff > 0) {
-        m_ticksPerFrame = m_freq.QuadPart / static_cast<LONGLONG>(m_maxFpsWhenVsyncOff);
+        m_ticksPerFrameVsyncOff = m_freq.QuadPart / static_cast<LONGLONG>(m_maxFpsWhenVsyncOff);
     } else {
-        m_ticksPerFrame = 0;
+        m_ticksPerFrameVsyncOff = 0;
     }
+
+    if (m_maxFpsWhenUnfocused > 0) {
+        m_ticksPerFrameUnfocused = m_freq.QuadPart / static_cast<LONGLONG>(m_maxFpsWhenUnfocused);
+    } else {
+        m_ticksPerFrameUnfocused = 0;
+    }
+}
+
+LONGLONG FramePacer::ActiveTicksPerFrame(bool vsync, bool unfocused) const noexcept
+{
+    // Background cap takes precedence over the vsync-off cap.
+    if (unfocused)
+        return m_ticksPerFrameUnfocused;
+
+    if (!vsync)
+        return m_ticksPerFrameVsyncOff;
+
+    return 0;
 }
 
 void FramePacer::ResetSchedule() noexcept
@@ -49,9 +83,10 @@ void FramePacer::ResetFps() noexcept
     // Keep m_fps as-is; it will update after ~1 second.
 }
 
-void FramePacer::ThrottleBeforeMessagePump(bool vsync) noexcept
+void FramePacer::ThrottleBeforeMessagePump(bool vsync, bool unfocused) noexcept
 {
-    if (vsync || m_ticksPerFrame <= 0)
+    const LONGLONG ticksPerFrame = ActiveTicksPerFrame(vsync, unfocused);
+    if (ticksPerFrame <= 0)
         return;
 
     LARGE_INTEGER now{};
@@ -81,9 +116,10 @@ void FramePacer::ThrottleBeforeMessagePump(bool vsync) noexcept
     }
 }
 
-bool FramePacer::IsTimeToRender(bool vsync) noexcept
+bool FramePacer::IsTimeToRender(bool vsync, bool unfocused) noexcept
 {
-    if (vsync || m_ticksPerFrame <= 0)
+    const LONGLONG ticksPerFrame = ActiveTicksPerFrame(vsync, unfocused);
+    if (ticksPerFrame <= 0)
         return true;
 
     LARGE_INTEGER now{};
@@ -97,7 +133,7 @@ bool FramePacer::IsTimeToRender(bool vsync) noexcept
     return true;
 }
 
-bool FramePacer::OnFramePresented(bool vsync) noexcept
+bool FramePacer::OnFramePresented(bool vsync, bool unfocused) noexcept
 {
     ++m_fpsFrames;
 
@@ -113,17 +149,18 @@ bool FramePacer::OnFramePresented(bool vsync) noexcept
         fpsUpdated = true;
     }
 
-    if (!vsync && m_ticksPerFrame > 0)
+    const LONGLONG ticksPerFrame = ActiveTicksPerFrame(vsync, unfocused);
+    if (ticksPerFrame > 0)
     {
         if (m_nextFrameQpc == 0) {
             m_nextFrameQpc = now.QuadPart;
         }
 
-        m_nextFrameQpc += m_ticksPerFrame;
+        m_nextFrameQpc += ticksPerFrame;
 
         // If we're far behind (breakpoints / long hitch), resync to avoid a spiral.
-        if (now.QuadPart > m_nextFrameQpc + (m_ticksPerFrame * 8)) {
-            m_nextFrameQpc = now.QuadPart + m_ticksPerFrame;
+        if (now.QuadPart > m_nextFrameQpc + (ticksPerFrame * 8)) {
+            m_nextFrameQpc = now.QuadPart + ticksPerFrame;
         }
     }
 

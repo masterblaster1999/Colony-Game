@@ -8,6 +8,10 @@ struct MouseButtons {
     bool left   = false;
     bool right  = false;
     bool middle = false;
+
+    // Extra mouse buttons (typically mouse4/mouse5).
+    bool x1     = false;
+    bool x2     = false;
 };
 
 // Raw mouse input helper for the prototype AppWindow.
@@ -35,6 +39,9 @@ public:
     void OnRButtonUp(HWND hwnd) noexcept;
     void OnMButtonDown(HWND hwnd, int x, int y) noexcept;
     void OnMButtonUp(HWND hwnd) noexcept;
+
+    void OnXButtonDown(HWND hwnd, bool x1, int x, int y) noexcept;
+    void OnXButtonUp(HWND hwnd, bool x1) noexcept;
 
     // Cursor-based delta. Returns true and outputs dx/dy if the delta should be applied.
     bool OnMouseMove(HWND hwnd, int x, int y, LONG& outDx, LONG& outDy) noexcept;

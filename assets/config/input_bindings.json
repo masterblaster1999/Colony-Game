@@ -16,6 +16,9 @@
 
     // Mouse buttons are now bindable too:
     "CameraOrbit": ["MouseLeft"],
-    "CameraPan": ["MouseMiddle", "MouseRight", "Shift+MouseLeft"]
+    "CameraPan": ["MouseMiddle", "MouseRight", "Shift+MouseLeft"],
+
+    // Developer quality of life:
+    "ReloadBindings": ["F5"]
   }
 }

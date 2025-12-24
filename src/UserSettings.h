@@ -26,6 +26,15 @@ struct UserSettings
     // Safety cap to avoid pegging a CPU core when vsync is off.
     // 0 = uncapped (not recommended for laptops).
     int maxFpsWhenVsyncOff = 240;
+
+    // If true, the game stops rendering/sim ticking when the window is not the
+    // foreground app (Alt+Tab). This saves a lot of CPU/GPU and avoids
+    // surprising background input.
+    bool pauseWhenUnfocused = true;
+
+    // If pauseWhenUnfocused is false, this is an optional FPS cap used while the
+    // window is unfocused. 0 = uncapped.
+    int maxFpsWhenUnfocused = 30;
 };
 
 [[nodiscard]] std::filesystem::path UserSettingsPath();

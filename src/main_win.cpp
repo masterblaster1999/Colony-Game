@@ -141,9 +141,18 @@ namespace {
     files.reserve(count);
     for (UINT i = 0; i < count; ++i) {
       const UINT len = ::DragQueryFileW(hDrop, i, nullptr, 0);
-      std::wstring path(len, L'\0');
-      ::DragQueryFileW(hDrop, i, path.data(), len + 1);
-      if (!path.empty() && path.back() == L'\0') path.pop_back();
+      // DragQueryFileW writes a NUL terminator. Allocate len+1 to avoid
+      // writing past the end of the string buffer.
+      std::wstring path;
+      path.resize(len + 1, L'\0');
+      const UINT copied = ::DragQueryFileW(hDrop, i, path.data(), len + 1);
+      // DragQueryFileW returns the number of characters copied, not including
+      // the terminating NUL.
+      if (copied > 0 && copied <= len) {
+        path.resize(copied);
+      } else {
+        path.resize(len);
+      }
       files.emplace_back(std::move(path));
     }
     ::DragFinish(hDrop);

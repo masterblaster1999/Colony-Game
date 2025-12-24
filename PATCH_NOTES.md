@@ -53,3 +53,25 @@ This patch builds on the previous input decoupling work and makes input bindings
   - **LMB drag** = orbit
   - **MMB / RMB drag** = pan
   - **Shift + LMB drag** = pan (chord example)
+
+# Patch 7: Window + input quality-of-life
+
+This patch focuses on practical Windows-only improvements that make the prototype feel better during real use.
+
+## What this patch adds
+
+- **Pause in background (Alt+Tab) support**
+  - New user settings in `%LOCALAPPDATA%\ColonyGame\settings.json`:
+    - `runtime.pauseWhenUnfocused` (default `true`)
+    - `runtime.maxFpsWhenUnfocused` (default `30`, used when `pauseWhenUnfocused` is `false`)
+
+- **Smoother resizing**
+  - Swapchain resizing is deferred while the user is dragging the window border
+    (`WM_ENTERSIZEMOVE` .. `WM_EXITSIZEMOVE`), so we only resize once at the final size.
+
+- **XButton (Mouse4/Mouse5) drag support**
+  - Mouse X1 / X2 now participate in the drag/capture logic, so actions like camera orbit/pan can be bound to `MouseX1` or `MouseX2` and still receive mouse delta.
+
+## Bug fixes
+
+- Fixes a potential out-of-bounds write in `src/main_win.cpp` when extracting dropped file paths via `DragQueryFileW`.

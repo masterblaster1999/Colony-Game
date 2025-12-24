@@ -22,27 +22,40 @@ public:
     void SetMaxFpsWhenVsyncOff(int maxFpsWhenVsyncOff) noexcept;
     [[nodiscard]] int MaxFpsWhenVsyncOff() const noexcept { return m_maxFpsWhenVsyncOff; }
 
+    // Optional background FPS cap used when the window is *unfocused* but still
+    // running (i.e., not paused). This cap can apply even when vsync is ON,
+    // which reduces unnecessary GPU work when the app is in the background.
+    //
+    //  - 0 means uncapped
+    //  - negative values are treated as 0
+    //  - very large values are clamped
+    void SetMaxFpsWhenUnfocused(int maxFpsWhenUnfocused) noexcept;
+    [[nodiscard]] int MaxFpsWhenUnfocused() const noexcept { return m_maxFpsWhenUnfocused; }
+
     void ResetSchedule() noexcept;
     void ResetFps() noexcept;
 
-    // Call before pumping messages. This waits (vsync OFF only) until the next
-    // scheduled frame time OR until messages arrive.
-    void ThrottleBeforeMessagePump(bool vsync) noexcept;
+    // Call before pumping messages. If a cap is active (vsync OFF cap, or the
+    // optional unfocused cap), this waits until the next scheduled frame time
+    // OR until messages arrive.
+    void ThrottleBeforeMessagePump(bool vsync, bool unfocused) noexcept;
 
-    // Call after pumping messages. Returns false when vsync is OFF and we're
-    // still too early to render.
-    bool IsTimeToRender(bool vsync) noexcept;
+    // Call after pumping messages. Returns false when a cap is active and
+    // we're still too early to render.
+    bool IsTimeToRender(bool vsync, bool unfocused) noexcept;
 
     // Call after rendering/presenting. Returns true when FPS was updated.
-    bool OnFramePresented(bool vsync) noexcept;
+    bool OnFramePresented(bool vsync, bool unfocused) noexcept;
 
     [[nodiscard]] double Fps() const noexcept { return m_fps; }
 
 private:
     void RecomputeTicksPerFrame() noexcept;
+    [[nodiscard]] LONGLONG ActiveTicksPerFrame(bool vsync, bool unfocused) const noexcept;
 
     LARGE_INTEGER m_freq{};
-    LONGLONG m_ticksPerFrame = 0;
+    LONGLONG m_ticksPerFrameVsyncOff = 0;
+    LONGLONG m_ticksPerFrameUnfocused = 0;
     LONGLONG m_nextFrameQpc = 0;
 
     LARGE_INTEGER m_fpsStart{};
@@ -50,6 +63,7 @@ private:
     double m_fps = 0.0;
 
     int m_maxFpsWhenVsyncOff = 240;
+    int m_maxFpsWhenUnfocused = 30;
 };
 
 } // namespace colony::appwin
