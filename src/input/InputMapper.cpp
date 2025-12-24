@@ -138,7 +138,7 @@ bool InputMapper::LoadFromFile(const std::filesystem::path& path) noexcept
     if (!ReadFileToString(path, text))
         return false;
 
-    const auto ext = ToLowerCopy(path.extension().string());
+    const auto ext = colony::input::bindings::ToLowerCopy(path.extension().string());
 
     bool ok = false;
     if (ext == ".json")
@@ -563,7 +563,6 @@ bool InputMapper::LoadFromIniText(std::string_view text) noexcept
         if (!line.empty() && line.back() == '\r')
             line.remove_suffix(1);
 
-        line = Trim(line);
         line = colony::input::bindings::Trim(line);
         if (line.empty())
             continue;
@@ -575,7 +574,6 @@ bool InputMapper::LoadFromIniText(std::string_view text) noexcept
         // [Section]
         if (line.front() == '[' && line.back() == ']')
         {
-            currentSection = Trim(line.substr(1, line.size() - 2));
             currentSection = colony::input::bindings::Trim(line.substr(1, line.size() - 2));
             continue;
         }
@@ -583,7 +581,6 @@ bool InputMapper::LoadFromIniText(std::string_view text) noexcept
         // Only read bindings from [Bindings] section if present.
         if (!currentSection.empty())
         {
-            const std::string secLower = ToLowerCopy(currentSection);
             const std::string secLower = colony::input::bindings::ToLowerCopy(currentSection);
             if (secLower != "bindings")
                 continue;
