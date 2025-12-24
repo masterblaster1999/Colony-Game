@@ -1,0 +1,55 @@
+name: Lint • clang-tidy & clang-format (Windows)
+
+on:
+  pull_request:
+    paths:
+      - "src/**"
+      - "include/**"
+      - "tests/**"
+      - ".clang-tidy"
+      - ".clang-format"
+      - ".github/workflows/lint.yml"
+
+jobs:
+  lint:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Cache vcpkg
+        uses: actions/cache@v4
+        with:
+          path: |
+            vcpkg/downloads
+            vcpkg/installed
+          key: ${{ runner.os }}-vcpkg-${{ hashFiles('vcpkg.json') }}
+
+      - name: Bootstrap vcpkg
+        shell: pwsh
+        run: |
+          cmd /c "vcpkg\\bootstrap-vcpkg.bat -disableMetrics"
+
+      - name: Configure (generate compile_commands.json)
+        shell: pwsh
+        run: |
+          cmake --preset default
+
+      - name: C/C++ linter
+        uses: cpp-linter/cpp-linter-action@v2
+        with:
+          # Use project files if present
+          style: file
+          database: build/default
+          tidy-checks: >
+            clang-analyzer-*,
+            bugprone-*,
+            performance-*,
+            portability-*,
+            readability-*,
+            modernize-*,
+            -modernize-use-trailing-return-type,
+            -readability-identifier-naming
+          files-changed-only: true
+          version: "16"
+        # Prefer annotations over red X for newcomers
+        continue-on-error: true
