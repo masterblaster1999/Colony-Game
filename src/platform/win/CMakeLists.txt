@@ -25,7 +25,13 @@ file(GLOB_RECURSE _WIN_TU CONFIGURE_DEPENDS
 )
 
 # Exclude entrypoints / executable glue that should not live in the platform lib.
-set(_cg_exclude_regex "(^|/)(HighPerfGPU|GpuPreference|WinLauncher|AppMain|EntryWinMain|EntryPoint|WinMain|win32_main|main_win|Bootstrap|WinBootstrap)\.(c|cpp)$")
+#
+# IMPORTANT:
+#   CrashInitBridge.cpp defines wincrash::InitCrashHandler(...) which is also
+#   defined by the ColonyGame executable (src/CrashDump.cpp). If we compile the
+#   bridge into the platform library as well, MSVC will fail the link with a
+#   duplicate symbol (LNK2005).
+set(_cg_exclude_regex "(^|/)(HighPerfGPU|GpuPreference|WinLauncher|AppMain|EntryWinMain|EntryPoint|WinMain|win32_main|main_win|Bootstrap|WinBootstrap|CrashInitBridge)\.(c|cpp)$")
 list(FILTER _WIN_TU EXCLUDE REGEX "${_cg_exclude_regex}")
 
 # Headers (IDE visibility)

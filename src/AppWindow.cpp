@@ -2,6 +2,7 @@
 
 #include "game/PrototypeGame.h"
 #include "input/InputQueue.h"
+#include "UserSettings.h"
 #include "platform/win32/RawMouseInput.h"
 #include "platform/win32/Win32Window.h"
 
@@ -21,6 +22,10 @@ struct AppWindow::Impl {
     colony::input::InputQueue                  input;
     colony::game::PrototypeGame                game;
     colony::appwin::FramePacer                 pacer;
+
+    colony::appwin::UserSettings               settings;
+    bool                                      settingsLoaded = false;
+    bool                                      settingsDirty = false;
 };
 
 AppWindow::AppWindow() = default;
@@ -34,14 +39,35 @@ bool AppWindow::Create(HINSTANCE hInst, int nCmdShow, int width, int height)
 {
     m_impl = std::make_unique<Impl>();
 
+    // Defaults (arguments win if no settings file exists yet).
+    m_impl->settings.windowWidth = static_cast<std::uint32_t>(width > 0 ? width : 1280);
+    m_impl->settings.windowHeight = static_cast<std::uint32_t>(height > 0 ? height : 720);
+    m_impl->settings.vsync = m_vsync;
+    m_impl->settings.fullscreen = false;
+    m_impl->settings.maxFpsWhenVsyncOff = m_impl->pacer.MaxFpsWhenVsyncOff();
+
+    // Best-effort load: if it fails, we keep the defaults above.
+    {
+        colony::appwin::UserSettings loaded = m_impl->settings;
+        if (colony::appwin::LoadUserSettings(loaded))
+        {
+            m_impl->settings = loaded;
+            m_impl->settingsLoaded = true;
+        }
+    }
+
+    // Apply persisted settings.
+    m_vsync = m_impl->settings.vsync;
+    m_impl->pacer.SetMaxFpsWhenVsyncOff(m_impl->settings.maxFpsWhenVsyncOff);
+
     const wchar_t* kClass = L"ColonyWindowClass";
 
     m_hwnd = colony::appwin::win32::CreateDpiAwareWindow(
         hInst,
         kClass,
         L"Colony Game",
-        width,
-        height,
+        static_cast<int>(m_impl->settings.windowWidth),
+        static_cast<int>(m_impl->settings.windowHeight),
         &AppWindow::WndProc,
         this
     );
@@ -66,6 +92,22 @@ bool AppWindow::Create(HINSTANCE hInst, int nCmdShow, int width, int height)
     ShowWindow(m_hwnd, nCmdShow);
     UpdateWindow(m_hwnd);
 
+    // Apply initial fullscreen preference after the window is shown.
+    if (m_impl->settings.fullscreen)
+    {
+        m_impl->fullscreen.Toggle(m_hwnd);
+
+        // Ensure the swapchain matches the new client rect.
+        RECT r{};
+        GetClientRect(m_hwnd, &r);
+        const UINT w = static_cast<UINT>(r.right);
+        const UINT h = static_cast<UINT>(r.bottom);
+        m_width = w;
+        m_height = h;
+        if (w > 0 && h > 0)
+            m_gfx.Resize(w, h);
+    }
+
     UpdateTitle();
     return true;
 }
@@ -73,6 +115,12 @@ bool AppWindow::Create(HINSTANCE hInst, int nCmdShow, int width, int height)
 void AppWindow::ToggleVsync()
 {
     m_vsync = !m_vsync;
+
+    if (m_impl) {
+        m_impl->settings.vsync = m_vsync;
+        m_impl->settingsDirty = true;
+    }
+
     UpdateTitle();
 }
 
@@ -82,6 +130,10 @@ void AppWindow::ToggleFullscreen()
         return;
 
     m_impl->fullscreen.Toggle(m_hwnd);
+
+    m_impl->settings.fullscreen = m_impl->fullscreen.IsFullscreen();
+    m_impl->settingsDirty = true;
+
     UpdateTitle();
 }
 
@@ -179,6 +231,21 @@ LRESULT AppWindow::HandleMsg(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam)
         return 0;
 
     case WM_DESTROY:
+        if (m_impl)
+        {
+            // Capture the latest known state before saving.
+            m_impl->settings.vsync = m_vsync;
+            m_impl->settings.fullscreen = m_impl->fullscreen.IsFullscreen();
+            if (!m_impl->fullscreen.IsFullscreen() && m_width > 0 && m_height > 0)
+            {
+                m_impl->settings.windowWidth = m_width;
+                m_impl->settings.windowHeight = m_height;
+            }
+
+            // Save even if unchanged; the file is tiny and this makes first-run deterministic.
+            (void)colony::appwin::SaveUserSettings(m_impl->settings);
+        }
+
         PostQuitMessage(0);
         return 0;
 
@@ -191,6 +258,14 @@ LRESULT AppWindow::HandleMsg(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam)
 
         if (w > 0 && h > 0)
             m_gfx.Resize(w, h);
+
+        // Persist windowed dimensions only (fullscreen sizes are monitor-dependent).
+        if (m_impl && w > 0 && h > 0 && !m_impl->fullscreen.IsFullscreen())
+        {
+            m_impl->settings.windowWidth = w;
+            m_impl->settings.windowHeight = h;
+            m_impl->settingsDirty = true;
+        }
 
         return 0;
     }

@@ -49,7 +49,17 @@ static HRESULT CreateD3D11Device(UINT flags,
 
 bool DxDevice::Init(HWND hwnd, UINT width, UINT height)
 {
+    // Allow re-init (e.g. after device removed/reset).
+    Shutdown();
+
     m_hwnd = hwnd;
+    m_width = width;
+    m_height = height;
+
+    auto fail = [&]() -> bool {
+        Shutdown();
+        return false;
+    };
 
     // -------------------------------------------------------------------------
     // Create D3D11 device (with robust fallbacks)
@@ -82,7 +92,7 @@ bool DxDevice::Init(HWND hwnd, UINT width, UINT height)
         // slower but keeps the app runnable.
         hr = CreateD3D11Device(0, D3D_DRIVER_TYPE_WARP, dev, ctx);
         if (FAILED(hr))
-            return false;
+            return fail();
     }
 
     m_device = dev;
@@ -93,15 +103,15 @@ bool DxDevice::Init(HWND hwnd, UINT width, UINT height)
     // -------------------------------------------------------------------------
     ComPtr<IDXGIDevice> dxgiDev;
     if (FAILED(m_device.As(&dxgiDev)))
-        return false;
+        return fail();
 
     ComPtr<IDXGIAdapter> adapter;
     if (FAILED(dxgiDev->GetAdapter(adapter.GetAddressOf())))
-        return false;
+        return fail();
 
     ComPtr<IDXGIFactory6> factory;
     if (FAILED(adapter->GetParent(IID_PPV_ARGS(factory.GetAddressOf()))))
-        return false;
+        return fail();
 
     m_factory = factory;
 
@@ -111,7 +121,10 @@ bool DxDevice::Init(HWND hwnd, UINT width, UINT height)
 
     m_allowTearing = CheckTearing(m_factory.Get());
 
-    return CreateSwapchain(width, height);
+    if (!CreateSwapchain(width, height))
+        return fail();
+
+    return true;
 }
 
 bool DxDevice::CreateSwapchain(UINT width, UINT height)
@@ -173,6 +186,9 @@ void DxDevice::DestroyRTV()
 
 void DxDevice::Resize(UINT width, UINT height)
 {
+    m_width = width;
+    m_height = height;
+
     if (!m_swap || width == 0 || height == 0)
         return;
 
@@ -186,7 +202,11 @@ void DxDevice::Resize(UINT width, UINT height)
         m_allowTearing ? DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING : 0);
 
     if (FAILED(hr))
+    {
+        if (hr == DXGI_ERROR_DEVICE_REMOVED || hr == DXGI_ERROR_DEVICE_RESET)
+            (void)HandleDeviceLost();
         return;
+    }
 
     CreateRTV();
 }
@@ -207,7 +227,11 @@ void DxDevice::Render(bool vsync)
     if (!vsync && m_allowTearing)
         presentFlags |= DXGI_PRESENT_ALLOW_TEARING;
 
-    (void)m_swap->Present(syncInterval, presentFlags);
+    const HRESULT hr = m_swap->Present(syncInterval, presentFlags);
+    if (hr == DXGI_ERROR_DEVICE_REMOVED || hr == DXGI_ERROR_DEVICE_RESET)
+    {
+        (void)HandleDeviceLost();
+    }
 }
 
 void DxDevice::Shutdown()
@@ -221,4 +245,26 @@ void DxDevice::Shutdown()
 
     m_hwnd = nullptr;
     m_allowTearing = false;
+    m_width = 0;
+    m_height = 0;
+}
+
+bool DxDevice::HandleDeviceLost()
+{
+    // Device removed/reset can occur due to TDR, a driver update, or the adapter
+    // changing (e.g. docking/undocking, remote sessions, etc.).
+    //
+    // We do a best-effort full recreation to keep the prototype running.
+    const HWND hwnd = m_hwnd;
+    const UINT w = m_width ? m_width : 1280u;
+    const UINT h = m_height ? m_height : 720u;
+
+    // Optional: query reason for debugging.
+    if (m_device)
+    {
+        (void)m_device->GetDeviceRemovedReason();
+    }
+
+    Shutdown();
+    return Init(hwnd, w, h);
 }

@@ -18,6 +18,7 @@
 #include "platform/win/WinCommon.h" // Windows headers + safe defines
 
 #include <algorithm>
+#include <cwctype>
 #include <filesystem>
 #include <string>
 #include <vector>
@@ -51,7 +52,8 @@ namespace
     {
         for (auto& ch : s)
         {
-            ch = static_cast<wchar_t>(towlower(ch));
+            // NOTE: std::towlower expects wint_t.
+            ch = static_cast<wchar_t>(std::towlower(static_cast<wint_t>(ch)));
         }
         return s;
     }
@@ -65,7 +67,8 @@ namespace
 
         for (auto& ch : s)
         {
-            const bool isCtrl = (ch >= 0 && ch < 32);
+            // On Windows wchar_t is unsigned, so `ch >= 0` is redundant.
+            const bool isCtrl = (ch < 32);
             switch (ch)
             {
                 case L'<': case L'>': case L':': case L'"':

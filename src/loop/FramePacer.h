@@ -14,6 +14,14 @@ class FramePacer {
 public:
     explicit FramePacer(int maxFpsWhenVsyncOff = 240) noexcept;
 
+    // Update the safety cap used when vsync is OFF.
+    //
+    //  - 0 means uncapped (not recommended; can peg a CPU core)
+    //  - negative values are treated as 0
+    //  - very large values are clamped to a reasonable upper bound
+    void SetMaxFpsWhenVsyncOff(int maxFpsWhenVsyncOff) noexcept;
+    [[nodiscard]] int MaxFpsWhenVsyncOff() const noexcept { return m_maxFpsWhenVsyncOff; }
+
     void ResetSchedule() noexcept;
     void ResetFps() noexcept;
 

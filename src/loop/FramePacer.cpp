@@ -12,6 +12,22 @@ FramePacer::FramePacer(int maxFpsWhenVsyncOff) noexcept
     ResetFps();
 }
 
+void FramePacer::SetMaxFpsWhenVsyncOff(int maxFpsWhenVsyncOff) noexcept
+{
+    // Clamp to a sane range. (0 == uncapped.)
+    if (maxFpsWhenVsyncOff < 0)
+        maxFpsWhenVsyncOff = 0;
+    if (maxFpsWhenVsyncOff > 1000)
+        maxFpsWhenVsyncOff = 1000;
+
+    if (m_maxFpsWhenVsyncOff == maxFpsWhenVsyncOff)
+        return;
+
+    m_maxFpsWhenVsyncOff = maxFpsWhenVsyncOff;
+    RecomputeTicksPerFrame();
+    ResetSchedule();
+}
+
 void FramePacer::RecomputeTicksPerFrame() noexcept
 {
     if (m_maxFpsWhenVsyncOff > 0) {

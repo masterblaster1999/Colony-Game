@@ -12,7 +12,36 @@ namespace fs = std::filesystem;
 
 namespace winpath {
 
+    // ---------------------------------------------------------------------------------
+    // Application identity
+    // ---------------------------------------------------------------------------------
+
+    std::wstring app_company()
+    {
+        // Keep in sync with other path helpers in the repo (e.g. WinFiles/WinPaths).
+        // This folder becomes:
+        //   %LOCALAPPDATA%\ColonyGame
+        return L"ColonyGame";
+    }
+
+    std::wstring app_product()
+    {
+        // Used for "Saved Games\{Product}". Keep it folder-friendly.
+        return L"ColonyGame";
+    }
+
     // --- Helpers ----------------------------------------------------------------
+
+    static fs::path known_folder(REFKNOWNFOLDERID id, DWORD flags)
+    {
+        PWSTR w = nullptr;
+        fs::path out;
+        if (SUCCEEDED(SHGetKnownFolderPath(id, flags, nullptr, &w))) {
+            out = fs::path(w);
+            CoTaskMemFree(w);
+        }
+        return out;
+    }
 
     static std::wstring get_module_path_w() {
         DWORD size = MAX_PATH;
@@ -56,17 +85,71 @@ namespace winpath {
     }
 
     fs::path writable_data_dir() {
-        PWSTR w = nullptr;
         fs::path out;
-        if (SUCCEEDED(SHGetKnownFolderPath(FOLDERID_LocalAppData, KF_FLAG_CREATE, nullptr, &w))) {
-            out = fs::path(w) / L"ColonyGame";
-            CoTaskMemFree(w);
+        if (auto base = known_folder(FOLDERID_LocalAppData, KF_FLAG_CREATE); !base.empty()) {
+            out = base / app_company();
         } else {
+            // Last-ditch fallback (portable + works in restricted environments).
             out = exe_dir() / L"userdata";
         }
         std::error_code ec;
         fs::create_directories(out, ec);
         return out;
+    }
+
+    fs::path config_dir()
+    {
+        // For now we keep config under the same root as other writable data.
+        // If we later split (e.g. Roaming vs Local), this function is the stable API.
+        return writable_data_dir();
+    }
+
+    fs::path logs_dir()
+    {
+        fs::path out = config_dir() / L"logs";
+        std::error_code ec;
+        fs::create_directories(out, ec);
+        return out;
+    }
+
+    fs::path crashdump_dir()
+    {
+        fs::path out = config_dir() / L"crashdumps";
+        std::error_code ec;
+        fs::create_directories(out, ec);
+        return out;
+    }
+
+    fs::path saved_games_dir()
+    {
+        // Try the "Saved Games" known folder first.
+        fs::path base = known_folder(FOLDERID_SavedGames, KF_FLAG_CREATE);
+        if (base.empty())
+        {
+            // Fallback to Documents\Saved Games
+            base = known_folder(FOLDERID_Documents, KF_FLAG_CREATE);
+            if (!base.empty())
+                base /= L"Saved Games";
+        }
+
+        if (base.empty())
+        {
+            // Final fallback: keep it under config_dir to ensure it's writable.
+            base = config_dir();
+        }
+
+        fs::path out = base / app_product();
+        std::error_code ec;
+        fs::create_directories(out, ec);
+        return out;
+    }
+
+    void ensure_dirs()
+    {
+        (void)config_dir();
+        (void)logs_dir();
+        (void)crashdump_dir();
+        (void)saved_games_dir();
     }
 
     // --- Atomic write (implementation) ------------------------------------------

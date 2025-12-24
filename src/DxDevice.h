@@ -25,6 +25,10 @@ public:
     [[nodiscard]] bool SupportsTearing() const noexcept { return m_allowTearing; }
 
 private:
+    // If the D3D device is removed/reset, tear down and recreate everything.
+    // Returns false if recreation fails.
+    bool HandleDeviceLost();
+
     bool CreateSwapchain(UINT width, UINT height);
     void CreateRTV();
     void DestroyRTV();
@@ -38,4 +42,7 @@ private:
     bool       m_allowTearing = false;
     DXGI_FORMAT m_backbufferFormat = DXGI_FORMAT_R8G8B8A8_UNORM; // flip model prefers UNORM for backbuffer
     HWND       m_hwnd = nullptr;
+
+    UINT m_width = 0;
+    UINT m_height = 0;
 };

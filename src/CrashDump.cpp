@@ -1,13 +1,18 @@
 #include "CrashDump.h"
 #include <DbgHelp.h>
 #include <cstdio>
+#include <cwchar>
+#include <cstdlib>
 #include <string>
 #include <filesystem>
+
+#include "platform/win/PathUtilWin.h"
 
 #pragma comment(lib, "Dbghelp.lib")
 
 namespace {
     std::wstring g_appName = L"ColonyGame";
+    std::filesystem::path g_dumpDir;
 
     std::wstring NowStamp()
     {
@@ -19,23 +24,10 @@ namespace {
         return buf;
     }
 
-    std::filesystem::path CrashDir()
-    {
-        std::wstring localAppData;
-        wchar_t* p = nullptr;
-        size_t len = 0;
-        _wdupenv_s(&p, &len, L"LOCALAPPDATA");
-        if (p) { localAppData.assign(p); free(p); }
-        if (localAppData.empty()) localAppData = L".";
-        auto dir = std::filesystem::path(localAppData) / g_appName / L"CrashDumps";
-        std::error_code ec;
-        std::filesystem::create_directories(dir, ec);
-        return dir;
-    }
-
     LONG WINAPI DumpUnhandledException(_In_ EXCEPTION_POINTERS* ep)
     {
-        auto dumpPath = CrashDir() / (g_appName + L"_" + NowStamp() + L"_" + std::to_wstring(GetCurrentProcessId()) + L".dmp");
+        const std::filesystem::path baseDir = g_dumpDir.empty() ? std::filesystem::current_path() : g_dumpDir;
+        auto dumpPath = baseDir / (g_appName + L"_" + NowStamp() + L"_" + std::to_wstring(GetCurrentProcessId()) + L".dmp");
         HANDLE hFile = CreateFileW(dumpPath.c_str(), GENERIC_WRITE, FILE_SHARE_READ, nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
         if (hFile != INVALID_HANDLE_VALUE)
         {
@@ -44,8 +36,18 @@ namespace {
             mei.ExceptionPointers = ep;
             mei.ClientPointers = FALSE;
 
-            // Light dump is usually sufficient; switch to MiniDumpWithFullMemory if you need it
-            MINIDUMP_TYPE mdt = MiniDumpNormal;
+            // A “medium” dump that is still reasonably sized but far more useful than MiniDumpNormal.
+            // (Full-memory dumps get huge fast and are usually not necessary for first-pass triage.)
+            const MINIDUMP_TYPE mdt = static_cast<MINIDUMP_TYPE>(
+                MiniDumpWithIndirectlyReferencedMemory |
+                MiniDumpScanMemory |
+                MiniDumpWithThreadInfo |
+                MiniDumpWithUnloadedModules |
+                MiniDumpWithHandleData |
+                MiniDumpWithFullMemoryInfo |
+                MiniDumpWithProcessThreadData |
+                MiniDumpWithDataSegs
+            );
 
             MiniDumpWriteDump(GetCurrentProcess(), GetCurrentProcessId(), hFile, mdt, ep ? &mei : nullptr, nullptr, nullptr);
             CloseHandle(hFile);
@@ -58,8 +60,14 @@ namespace {
 void wincrash::InitCrashHandler(const wchar_t* appName)
 {
     if (appName && *appName) g_appName = appName;
+
+    // Pick a deterministic dump folder under LocalAppData so users can find it easily.
+    // This is computed up-front to avoid doing folder discovery in the crash path.
+    winpath::ensure_dirs();
+    g_dumpDir = winpath::crashdump_dir();
+
     // Suppress legacy GP fault dialog
     SetErrorMode(SEM_NOGPFAULTERRORBOX);
     // Register handler (see MS guidance for pros/cons of in-proc minidumping)
-    SetUnhandledExceptionFilter(DumpUnhandledException); // :contentReference[oaicite:5]{index=5}
+    SetUnhandledExceptionFilter(DumpUnhandledException);
 }

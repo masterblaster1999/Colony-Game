@@ -29,7 +29,7 @@ static bool ReadFileToString(const std::filesystem::path& path, std::string& out
 
     out.resize(static_cast<std::size_t>(sz));
     f.seekg(0, std::ios::beg);
-    f.read(out.data(), sz);
+    f.read(out.data(), static_cast<std::streamsize>(sz));
     return f.good();
 }
 

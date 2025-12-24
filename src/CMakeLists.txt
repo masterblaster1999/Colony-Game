@@ -23,6 +23,8 @@ set(_colony_game_sources
     ${CMAKE_CURRENT_SOURCE_DIR}/AppMain.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/AppWindow.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/AppWindow.h
+    ${CMAKE_CURRENT_SOURCE_DIR}/UserSettings.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/UserSettings.h
 
     # Input + temporary game module (keeps app layer thin)
     ${CMAKE_CURRENT_SOURCE_DIR}/input/InputEvent.h
