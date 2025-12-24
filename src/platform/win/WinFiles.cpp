@@ -18,16 +18,37 @@ static fs::path WStringToPath(const std::wstring& w)
 [[nodiscard]]
 fs::path GetExeDir()
 {
-    wchar_t buf[MAX_PATH];
-    const DWORD n = GetModuleFileNameW(nullptr, buf, MAX_PATH);
-    if (n == 0 || n == MAX_PATH)
+    // Long-path safe GetModuleFileNameW: grow buffer until it fits.
+    // (On truncation, GetModuleFileNameW returns the buffer size.)
+    std::wstring buf(260, L'\0');
+    for (;;)
     {
-        // Fall back to current working directory if we can't query the exe path.
-        return fs::current_path();
+        const DWORD n = GetModuleFileNameW(nullptr, buf.data(), static_cast<DWORD>(buf.size()));
+        if (n == 0)
+        {
+            // Fall back to current working directory if we can't query the exe path.
+            return fs::current_path();
+        }
+
+        if (n < buf.size())
+        {
+            buf.resize(n);
+            break;
+        }
+
+        // Defensive upper bound: Win32 paths are limited to 32k-ish wide chars.
+        // If we ever hit it, just use the truncated prefix we have.
+        if (buf.size() >= 32768)
+        {
+            buf.resize(n);
+            break;
+        }
+
+        buf.resize(buf.size() * 2);
     }
 
     // Use the helper so all wide->path conversions are centralized.
-    const std::wstring exePath(buf, n);
+    const std::wstring exePath = buf;
     fs::path p = WStringToPath(exePath);
     return p.parent_path();
 }

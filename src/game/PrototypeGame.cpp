@@ -147,7 +147,7 @@ struct PrototypeGame::Impl {
 
 PrototypeGame::PrototypeGame()
 {
-    m_impl = new (std::nothrow) Impl{};
+    m_impl.reset(new (std::nothrow) Impl{});
 
     // Optional: allow developers to override bindings without recompiling.
     // If no config file is found, defaults remain.
@@ -179,10 +179,7 @@ PrototypeGame::PrototypeGame()
 }
 
 PrototypeGame::~PrototypeGame()
-{
-    delete m_impl;
-    m_impl = nullptr;
-}
+    = default;
 
 bool PrototypeGame::OnInput(std::span<const colony::input::InputEvent> events) noexcept
 {
@@ -202,105 +199,9 @@ bool PrototypeGame::OnInput(std::span<const colony::input::InputEvent> events) n
     m_impl->lastTick = now;
     m_impl->hasLastTick = true;
 
-    // --------------------------------------------------------------------------------------------
-    // Input bindings hot-reload
-    //  - Manual: press F5 to reload
-    //  - Automatic: reload when the loaded file changes on disk (polled)
-    //
-    // This is intentionally simple and dependency-free (no Win32 change notifications).
-    // --------------------------------------------------------------------------------------------
-    bool forceReload = false;
-    {
-        constexpr std::uint32_t kVK_F5 = colony::input::bindings::kVK_F1 + 4;
-        for (const auto& ev : events)
-        {
-            if (ev.type == colony::input::InputEventType::KeyDown && ev.key == kVK_F5 && !ev.repeat)
-            {
-                forceReload = true;
-                break;
-            }
-        }
-    }
-
-    // Throttle the filesystem checks to keep the hot path lightweight.
+    // Throttle filesystem checks (hot-reload) to keep the hot path lightweight.
     m_impl->bindingsPollAccum += dt;
     m_impl->bindingsSearchAccum += dt;
-
-    const bool shouldPoll = forceReload || (m_impl->bindingsPollAccum >= 0.25f);
-    const bool shouldSearch = forceReload || (!m_impl->hasBindingsPath && (m_impl->bindingsSearchAccum >= 1.0f));
-
-    if (shouldPoll)
-        m_impl->bindingsPollAccum = 0.f;
-    if (shouldSearch)
-        m_impl->bindingsSearchAccum = 0.f;
-
-    if (forceReload)
-    {
-        LogLine(L"[Input] Hot-reload requested (F5)");
-    }
-
-    if (m_impl->hasBindingsPath && shouldPoll)
-    {
-        std::error_code ec;
-        if (!fs::exists(m_impl->bindingsPath, ec) || ec)
-        {
-            if (!m_impl->loggedMissing)
-            {
-                LogLine(L"[Input] Bindings file missing (continuing with last loaded binds): " + m_impl->bindingsPath.wstring());
-                m_impl->loggedMissing = true;
-            }
-        }
-        else
-        {
-            m_impl->loggedMissing = false;
-
-            fs::file_time_type ft{};
-            if (TryGetLastWriteTime(m_impl->bindingsPath, ft))
-            {
-                const bool changed = !m_impl->hasBindingsWriteTime || (ft != m_impl->bindingsWriteTime);
-                if (forceReload || changed)
-                {
-                    if (m_impl->mapper.LoadFromFile(m_impl->bindingsPath))
-                    {
-                        m_impl->bindingsWriteTime = ft;
-                        m_impl->hasBindingsWriteTime = true;
-                        m_impl->hasLastFailedWriteTime = false;
-                        LogLine(L"[Input] Reloaded bindings: " + m_impl->bindingsPath.wstring());
-                    }
-                    else
-                    {
-                        // Keep the old bindings. Avoid spamming the log for the same on-disk timestamp.
-                        const bool newFail = !m_impl->hasLastFailedWriteTime || (ft != m_impl->lastFailedWriteTime);
-                        if (newFail)
-                        {
-                            m_impl->lastFailedWriteTime = ft;
-                            m_impl->hasLastFailedWriteTime = true;
-                            LogLine(L"[Input] Failed to reload bindings (parse error). Keeping previous binds. File: " + m_impl->bindingsPath.wstring());
-                        }
-                    }
-                }
-            }
-        }
-    }
-    else if (!m_impl->hasBindingsPath && shouldSearch)
-    {
-        fs::path loaded;
-        if (TryLoadBindings(m_impl->mapper, m_impl->bindingsCandidates, loaded))
-        {
-            m_impl->bindingsPath = loaded;
-            m_impl->hasBindingsPath = true;
-            m_impl->loggedMissing = false;
-
-            fs::file_time_type ft{};
-            if (TryGetLastWriteTime(loaded, ft))
-            {
-                m_impl->bindingsWriteTime = ft;
-                m_impl->hasBindingsWriteTime = true;
-            }
-
-            LogLine(L"[Input] Loaded bindings: " + loaded.wstring());
-        }
-    }
 
     bool changed = false;
     bool actionsChanged = false;
@@ -344,6 +245,101 @@ bool PrototypeGame::OnInput(std::span<const colony::input::InputEvent> events) n
 
     if (actionsChanged)
         changed = true;
+
+    // --------------------------------------------------------------------------------------------
+    // Input bindings hot-reload
+    //  - Manual: bindable action (defaults to F5)
+    //  - Automatic: reload when the loaded file changes on disk (polled)
+    //
+    // NOTE: We intentionally apply reloaded binds *after* consuming this frame's input events,
+    // so the frame uses a consistent action mapping. New bindings take effect next frame.
+    // --------------------------------------------------------------------------------------------
+    bool reloadRequested = false;
+    for (const auto& ae : m_impl->mapper.ActionEvents())
+    {
+        if (ae.action == colony::input::Action::ReloadBindings &&
+            ae.type == colony::input::ActionEventType::Pressed)
+        {
+            reloadRequested = true;
+            break;
+        }
+    }
+
+    const bool shouldPoll = reloadRequested || (m_impl->bindingsPollAccum >= 0.25f);
+    const bool shouldSearch = reloadRequested || (!m_impl->hasBindingsPath && (m_impl->bindingsSearchAccum >= 1.0f));
+
+    if (shouldPoll)
+        m_impl->bindingsPollAccum = 0.f;
+    if (shouldSearch)
+        m_impl->bindingsSearchAccum = 0.f;
+
+    if (reloadRequested)
+    {
+        LogLine(L"[Input] Hot-reload requested (ReloadBindings action)");
+    }
+
+    if (m_impl->hasBindingsPath && shouldPoll)
+    {
+        std::error_code ec;
+        if (!fs::exists(m_impl->bindingsPath, ec) || ec)
+        {
+            if (!m_impl->loggedMissing)
+            {
+                LogLine(L"[Input] Bindings file missing (continuing with last loaded binds): " + m_impl->bindingsPath.wstring());
+                m_impl->loggedMissing = true;
+            }
+        }
+        else
+        {
+            m_impl->loggedMissing = false;
+
+            fs::file_time_type ft{};
+            if (TryGetLastWriteTime(m_impl->bindingsPath, ft))
+            {
+                const bool changedOnDisk = !m_impl->hasBindingsWriteTime || (ft != m_impl->bindingsWriteTime);
+                if (reloadRequested || changedOnDisk)
+                {
+                    if (m_impl->mapper.LoadFromFile(m_impl->bindingsPath))
+                    {
+                        m_impl->bindingsWriteTime = ft;
+                        m_impl->hasBindingsWriteTime = true;
+                        m_impl->hasLastFailedWriteTime = false;
+                        LogLine(L"[Input] Reloaded bindings: " + m_impl->bindingsPath.wstring());
+                    }
+                    else
+                    {
+                        // Keep the old bindings. Avoid spamming the log for the same on-disk timestamp.
+                        const bool newFail = !m_impl->hasLastFailedWriteTime || (ft != m_impl->lastFailedWriteTime);
+                        if (newFail)
+                        {
+                            m_impl->lastFailedWriteTime = ft;
+                            m_impl->hasLastFailedWriteTime = true;
+                            LogLine(L"[Input] Failed to reload bindings (parse error). Keeping previous binds. File: " + m_impl->bindingsPath.wstring());
+                        }
+                    }
+                }
+            }
+        }
+    }
+    else if (!m_impl->hasBindingsPath && shouldSearch)
+    {
+        fs::path loaded;
+        if (TryLoadBindings(m_impl->mapper, m_impl->bindingsCandidates, loaded))
+        {
+            m_impl->bindingsPath = loaded;
+            m_impl->hasBindingsPath = true;
+            m_impl->loggedMissing = false;
+
+            fs::file_time_type ft{};
+            if (TryGetLastWriteTime(loaded, ft))
+            {
+                m_impl->bindingsWriteTime = ft;
+                m_impl->hasBindingsWriteTime = true;
+            }
+
+            LogLine(L"[Input] Loaded bindings: " + loaded.wstring());
+        }
+    }
 
     // Continuous keyboard movement (WASD + QE) in camera-relative space.
     //

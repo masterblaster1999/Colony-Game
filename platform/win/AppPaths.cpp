@@ -16,9 +16,26 @@ namespace fs = std::filesystem;
 
 namespace {
     fs::path exe_path() {
-        wchar_t buf[MAX_PATH];
-        DWORD n = GetModuleFileNameW(nullptr, buf, MAX_PATH);
-        return fs::path(std::wstring(buf, n));
+        // Long-path safe GetModuleFileNameW: grow buffer until it fits.
+        std::wstring buf(260, L'\0');
+        for (;;) {
+            DWORD n = GetModuleFileNameW(nullptr, buf.data(), static_cast<DWORD>(buf.size()));
+            if (n == 0) {
+                // Best-effort fallback.
+                std::error_code ec;
+                return fs::current_path(ec);
+            }
+            if (n < buf.size()) {
+                buf.resize(n);
+                break;
+            }
+            if (buf.size() >= 32768) {
+                buf.resize(n);
+                break;
+            }
+            buf.resize(buf.size() * 2);
+        }
+        return fs::path(buf);
     }
 
     fs::path known_folder(REFKNOWNFOLDERID id) {

@@ -1,5 +1,7 @@
 #include "loop/DebugCamera.h"
 
+#include <cmath>
+
 namespace colony::appwin {
 
 void DebugCameraController::ClampPitch() noexcept
@@ -20,6 +22,10 @@ bool DebugCameraController::ApplyDrag(long dx, long dy, bool orbit, bool pan) no
         // LMB drag = orbit
         m_state.yaw   += static_cast<float>(dx) * 0.15f;
         m_state.pitch += static_cast<float>(dy) * 0.15f;
+
+        // Keep yaw bounded to avoid unbounded growth over long sessions.
+        m_state.yaw = static_cast<float>(std::remainder(static_cast<double>(m_state.yaw), 360.0));
+
         ClampPitch();
         return true;
     }

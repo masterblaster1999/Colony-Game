@@ -53,6 +53,9 @@ static std::optional<colony::input::Action> ParseActionName(std::string_view nam
     if (n == "cameraorbit" || n == "orbit") return A::CameraOrbit;
     if (n == "camerapan" || n == "pan") return A::CameraPan;
 
+    // Developer QOL
+    if (n == "reloadbindings" || n == "reloadbinds" || n == "reloadinputs" || n == "reload") return A::ReloadBindings;
+
     return std::nullopt;
 }
 
@@ -128,6 +131,9 @@ void InputMapper::SetDefaultBinds() noexcept
         const std::uint32_t chord[] = { bindings::kVK_SHIFT, kMouseButtonLeft };
         AddBinding(Action::CameraPan, std::span<const std::uint32_t>(chord, 2));
     }
+
+    // Hot reload input bindings (defaults to F5).
+    AddBinding(Action::ReloadBindings, bindings::kVK_F1 + 4);
 
     RecomputeActionStatesNoEvents();
 }

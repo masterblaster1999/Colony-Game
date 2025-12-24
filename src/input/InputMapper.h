@@ -39,6 +39,9 @@ enum class Action : std::uint8_t {
     CameraOrbit,
     CameraPan,
 
+    // Developer QOL: reload input bindings from disk (defaults to F5).
+    ReloadBindings,
+
     Count
 };
 

@@ -2,6 +2,7 @@
 
 #include "input/InputEvent.h"
 
+#include <memory>
 #include <span>
 
 namespace colony::game {
@@ -39,7 +40,7 @@ public:
 
 private:
     struct Impl;
-    Impl* m_impl = nullptr;
+    std::unique_ptr<Impl> m_impl;
 };
 
 } // namespace colony::game

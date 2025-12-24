@@ -3,6 +3,7 @@
 #include "platform/win/CrashHandler.h"
 #include <Windows.h>
 #include <DbgHelp.h>
+#include <atomic>
 #include <string>
 #include <format>
 #include <filesystem>
@@ -12,6 +13,17 @@
 namespace {
   LPTOP_LEVEL_EXCEPTION_FILTER g_prev = nullptr;
   LONG g_inTopLevel = 0;
+
+  // Optional override: some callers want to control where dumps are written.
+  // This must be set *before* installing the handler to be race-free.
+  std::filesystem::path g_dumpsDir;
+  std::atomic<bool> g_hasDumpsDir{false};
+
+  std::filesystem::path EffectiveDumpDir() {
+    if (g_hasDumpsDir.load(std::memory_order_acquire) && !g_dumpsDir.empty())
+      return g_dumpsDir;
+    return cg::paths::CrashDumpsDir();
+  }
 
   std::wstring NowStamp() {
     SYSTEMTIME st;
@@ -97,7 +109,7 @@ namespace {
       return EXCEPTION_EXECUTE_HANDLER;
     }
 
-    const auto dumps = cg::paths::CrashDumpsDir();
+    const auto dumps = EffectiveDumpDir();
     cg::paths::EnsureCreated(dumps);
     const auto file = WriteDump(ep, dumps);
 
@@ -113,12 +125,20 @@ namespace {
 
 namespace cg::win {
   bool InstallCrashHandler(const std::filesystem::path& dumpsDir) {
-    cg::paths::EnsureCreated(dumpsDir);
+    // Honor the caller-provided dump location. (Previous code ignored this arg
+    // and always used cg::paths::CrashDumpsDir(), which was misleading.)
+    const auto dir = dumpsDir.empty() ? cg::paths::CrashDumpsDir() : dumpsDir;
+    g_dumpsDir = dir;
+    g_hasDumpsDir.store(true, std::memory_order_release);
+
+    cg::paths::EnsureCreated(dir);
     g_prev = SetUnhandledExceptionFilter(TopLevel);
     return true;
   }
 
   void UninstallCrashHandler() {
     SetUnhandledExceptionFilter(g_prev);
+    g_hasDumpsDir.store(false, std::memory_order_release);
+    g_dumpsDir.clear();
   }
 }
