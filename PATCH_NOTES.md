@@ -1,3 +1,31 @@
+# Patch 7: QoL polish (hotkey repeat fix + settings auto-save + per-user binds)
+
+This patch focuses on "small but high-impact" prototype polish.
+
+## Fixes
+
+- **Hotkey repeat spam**: Holding **V**, **F11**, or **Alt+Enter** no longer repeatedly toggles vsync/fullscreen due to Win32 key auto-repeat.
+  - Uses the Win32 `WM_KEYDOWN`/`WM_SYSKEYDOWN` previous key state flag (bit 30) to detect repeats.
+
+## Improvements
+
+- **Debounced settings auto-save**: `settings.json` now auto-saves shortly after changes (vsync toggle, fullscreen toggle, window resize).
+  - Debounced to avoid hammering disk writes during live-resize.
+  - Still saves on clean exit as before.
+
+- **Per-user input bindings override**:
+  - You can now drop `input_bindings.json` or `input_bindings.ini` into:
+    - `%LOCALAPPDATA%\ColonyGame\input_bindings.json`
+    - `%LOCALAPPDATA%\ColonyGame\input_bindings.ini`
+  - These take precedence over `assets/config/...` and repo-root binding files.
+
+## Dev quality-of-life
+
+- Adds `.clang-format`, `.clang-tidy`, and `.editorconfig` to make formatting/linting consistent (especially for CI).
+- Improves `tools/format-all.ps1` to auto-discover `clang-format` (PATH or common LLVM install paths).
+
+---
+
 # Patch 6: Configurable multi-binds + chords + mouse button bindings
 
 This patch builds on the previous input decoupling work and makes input bindings fully data-driven.

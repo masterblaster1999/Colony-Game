@@ -47,6 +47,15 @@ static std::vector<fs::path> BuildBindingsCandidates()
 {
     std::vector<fs::path> out;
 
+    // 0) Per-user override next to settings.json: %LOCALAPPDATA%\ColonyGame\input_bindings.*
+    //
+    // Keeps custom binds out of the repo and survives updates.
+    {
+        const fs::path userDir = platform::win::GetSaveDir();
+        AddUnique(out, userDir / L"input_bindings.json");
+        AddUnique(out, userDir / L"input_bindings.ini");
+    }
+
     // 1) Dev-friendly search: walk up from the current working directory.
     //    This mirrors InputMapper::LoadFromDefaultPaths(), but we need the
     //    successful path for logging + hot-reload.

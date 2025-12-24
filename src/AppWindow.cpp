@@ -11,6 +11,7 @@
 #include <windowsx.h> // GET_X_LPARAM, GET_Y_LPARAM
 
 #include <string>
+#include <chrono>
 
 // ----------------------------------------------------------------------------
 // AppWindow::Impl
@@ -27,6 +28,13 @@ struct AppWindow::Impl {
     bool                                      settingsLoaded = false;
     bool                                      settingsDirty = false;
 
+    // Debounced auto-save for settings writes.
+    //
+    // We avoid writing settings.json on every WM_SIZE during interactive resizing,
+    // but we also don't want to lose changes if the app crashes.
+    std::chrono::steady_clock::time_point      nextSettingsAutoSave{};
+    bool                                      hasPendingAutoSave = false;
+
     // Window state
     bool                                      active = true;
 
@@ -37,6 +45,73 @@ struct AppWindow::Impl {
     UINT                                      pendingResizeW = 0;
     UINT                                      pendingResizeH = 0;
 };
+
+namespace {
+
+using steady_clock = std::chrono::steady_clock;
+
+// How long to wait after the *last* settings change before writing settings.json.
+//
+// Rationale:
+//  - Avoids hammering the disk during window resizing (many WM_SIZE messages)
+//  - Still persists toggles quickly enough to survive crashes
+constexpr auto kSettingsAutoSaveDelay = std::chrono::milliseconds(750);
+
+// If a write fails (e.g., transient AV scan/lock), back off before retrying.
+constexpr auto kSettingsAutoSaveRetryDelay = std::chrono::seconds(2);
+
+inline void ScheduleSettingsAutosave(AppWindow::Impl& impl) noexcept
+{
+    impl.settingsDirty = true;
+    impl.hasPendingAutoSave = true;
+    impl.nextSettingsAutoSave = steady_clock::now() + kSettingsAutoSaveDelay;
+}
+
+inline void MaybeAutoSaveSettings(AppWindow::Impl& impl) noexcept
+{
+    if (!impl.settingsDirty || !impl.hasPendingAutoSave)
+        return;
+
+    // Don't write mid-drag; wait for WM_EXITSIZEMOVE.
+    if (impl.inSizeMove)
+        return;
+
+    const auto now = steady_clock::now();
+    if (now < impl.nextSettingsAutoSave)
+        return;
+
+    if (colony::appwin::SaveUserSettings(impl.settings))
+    {
+        impl.settingsDirty = false;
+        impl.hasPendingAutoSave = false;
+        return;
+    }
+
+    // Retry later.
+    impl.nextSettingsAutoSave = now + kSettingsAutoSaveRetryDelay;
+    impl.hasPendingAutoSave = true;
+}
+
+inline DWORD BackgroundWaitTimeoutMs(const AppWindow::Impl& impl) noexcept
+{
+    if (!impl.settingsDirty || !impl.hasPendingAutoSave || impl.inSizeMove)
+        return INFINITE;
+
+    const auto now = steady_clock::now();
+    if (now >= impl.nextSettingsAutoSave)
+        return 0;
+
+    // Clamp timeout to avoid overflow.
+    const auto remaining = impl.nextSettingsAutoSave - now;
+    const auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(remaining).count();
+    if (ms <= 0)
+        return 0;
+    if (ms > 60'000)
+        return 60'000;
+    return static_cast<DWORD>(ms);
+}
+
+} // namespace
 
 AppWindow::AppWindow() = default;
 AppWindow::~AppWindow() = default;
@@ -131,7 +206,7 @@ void AppWindow::ToggleVsync()
 
     if (m_impl) {
         m_impl->settings.vsync = m_vsync;
-        m_impl->settingsDirty = true;
+        ScheduleSettingsAutosave(*m_impl);
     }
 
     UpdateTitle();
@@ -145,7 +220,7 @@ void AppWindow::ToggleFullscreen()
     m_impl->fullscreen.Toggle(m_hwnd);
 
     m_impl->settings.fullscreen = m_impl->fullscreen.IsFullscreen();
-    m_impl->settingsDirty = true;
+    ScheduleSettingsAutosave(*m_impl);
 
     UpdateTitle();
 }
@@ -340,7 +415,7 @@ LRESULT AppWindow::HandleMsg(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam)
         {
             m_impl->settings.windowWidth = w;
             m_impl->settings.windowHeight = h;
-            m_impl->settingsDirty = true;
+            ScheduleSettingsAutosave(*m_impl);
         }
 
         return 0;
@@ -374,11 +449,15 @@ LRESULT AppWindow::HandleMsg(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam)
             return 0;
 
         case VK_F11:
-            ToggleFullscreen();
+            // Ignore auto-repeat so holding F11 doesn't spam-toggle.
+            if ((lParam & (1 << 30)) == 0)
+                ToggleFullscreen();
             return 0;
 
         case 'V':
-            ToggleVsync();
+            // Ignore auto-repeat so holding V doesn't spam-toggle.
+            if ((lParam & (1 << 30)) == 0)
+                ToggleVsync();
             return 0;
 
         default:
@@ -432,7 +511,8 @@ LRESULT AppWindow::HandleMsg(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam)
     case WM_SYSKEYDOWN:
     {
         // Alt+Enter (bit 29 = context code / Alt key down)
-        if (wParam == VK_RETURN && (lParam & (1 << 29))) {
+        // Ignore auto-repeat so holding Alt+Enter doesn't spam-toggle.
+        if (wParam == VK_RETURN && (lParam & (1 << 29)) && ((lParam & (1 << 30)) == 0)) {
             ToggleFullscreen();
             return 0;
         }
@@ -703,9 +783,14 @@ int AppWindow::MessageLoop()
                 m_impl->input.Clear();
                 if (changed)
                     UpdateTitle();
+
+                // Persist any queued settings changes while we're idle/minimized.
+                MaybeAutoSaveSettings(*m_impl);
             }
 
-            WaitMessage();
+            // If we have a pending settings auto-save, wake up in time to write it.
+            const DWORD timeoutMs = m_impl ? BackgroundWaitTimeoutMs(*m_impl) : INFINITE;
+            MsgWaitForMultipleObjectsEx(0, nullptr, timeoutMs, QS_ALLINPUT, MWMO_INPUTAVAILABLE);
             continue;
         }
 
@@ -730,6 +815,9 @@ int AppWindow::MessageLoop()
             if (changed) {
                 UpdateTitle();
             }
+
+            // Debounced settings persistence (non-blocking).
+            MaybeAutoSaveSettings(*m_impl);
         }
 
         // Re-check minimized state after message pump.
