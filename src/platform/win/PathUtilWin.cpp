@@ -165,9 +165,20 @@ namespace winpath {
                 return false;
             }
 
-            // Resolve directory; if no parent provided, use exe_dir()
-            const fs::path target = requestedTarget;
+            // Resolve directory; if no parent provided, write next to the EXE.
+            //
+            // NOTE:
+            //   We must also resolve the *target path* to that directory.
+            //   Otherwise, a relative "settings.json" would be written to exe_dir() (temp file)
+            //   but then replaced into the *current working directory* (target), which breaks
+            //   atomicity and can silently write to an unexpected location.
+            fs::path target = requestedTarget;
             const fs::path dir = target.parent_path().empty() ? exe_dir() : target.parent_path();
+
+            if (target.parent_path().empty() && !dir.empty())
+            {
+                target = dir / target.filename();
+            }
 
             // Ensure target directory exists
             std::error_code ec;

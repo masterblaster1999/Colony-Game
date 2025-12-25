@@ -98,6 +98,7 @@ jobs:
           -DVCPKG_MANIFEST_MODE=ON
           -DVCPKG_TARGET_TRIPLET=x64-windows
           -DBUILD_TESTING=ON
+          -DCOLONY_PCH_HEADER=src/pch.h
           -DCOLONY_LTO=OFF
 
       - name: Build (Debug)

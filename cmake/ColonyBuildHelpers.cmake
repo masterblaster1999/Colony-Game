@@ -39,6 +39,20 @@ endfunction()
 
 # Thin wrapper for target_precompile_headers() with a nicer call site.
 function(colony_enable_pch target visibility header)
+  # target_precompile_headers() expects *header files*. Accidentally passing a
+  # directory (or an empty string that resolves to a directory) can generate an
+  # invalid include inside CMake's generated cmake_pch.hxx and break MSVC builds.
+
+  if(NOT header)
+    message(WARNING "colony_enable_pch: empty header path (target: ${target})")
+    return()
+  endif()
+
+  if(EXISTS "${header}" AND IS_DIRECTORY "${header}")
+    message(WARNING "colony_enable_pch: header path is a directory: ${header} (target: ${target}). Skipping PCH.")
+    return()
+  endif()
+
   if(NOT EXISTS "${header}")
     message(WARNING "colony_enable_pch: PCH header not found: ${header} (target: ${target})")
     return()

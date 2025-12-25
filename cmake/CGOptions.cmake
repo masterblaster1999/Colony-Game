@@ -31,7 +31,53 @@ option(COLONY_WERROR "Treat compiler warnings as errors when compiling colony_co
 # COLONY_WERROR. Keep them in sync.
 set(COLONY_WARNINGS_AS_ERRORS ${COLONY_WERROR})
 
-set(COLONY_PCH_HEADER "" CACHE STRING "Path to a shared PCH header (relative to repo root)")
+# Path to a shared PCH header (relative to repo root).
+#
+# IMPORTANT:
+#   This must be a *file*, not a directory. A previous default of "" (empty)
+#   could resolve to the repo root directory in some subprojects and cause
+#   MSVC to error out while building CMake's generated PCH include (cmake_pch.hxx)
+#   with e.g. fatal error C1083.
+set(COLONY_PCH_HEADER "src/pch.h" CACHE STRING "Path to a shared PCH header (relative to repo root)")
+
+# Backwards-compatible safety net:
+#   If an existing build directory cached COLONY_PCH_HEADER as empty (or a
+#   directory), force a sane default so users don't need to delete their build
+#   folder to recover.
+if(COLONY_USE_PCH)
+  if(NOT COLONY_PCH_HEADER)
+    message(STATUS "COLONY_PCH_HEADER was empty; defaulting to src/pch.h")
+    set(COLONY_PCH_HEADER "src/pch.h" CACHE STRING "Path to a shared PCH header (relative to repo root)" FORCE)
+  endif()
+
+  if(IS_ABSOLUTE "${COLONY_PCH_HEADER}")
+    set(_cg_pch_abs "${COLONY_PCH_HEADER}")
+  else()
+    set(_cg_pch_abs "${CMAKE_SOURCE_DIR}/${COLONY_PCH_HEADER}")
+  endif()
+
+  if(EXISTS "${_cg_pch_abs}" AND IS_DIRECTORY "${_cg_pch_abs}")
+    message(WARNING "COLONY_PCH_HEADER points to a directory: ${_cg_pch_abs}. Falling back to src/pch.h")
+    set(COLONY_PCH_HEADER "src/pch.h" CACHE STRING "Path to a shared PCH header (relative to repo root)" FORCE)
+  endif()
+
+  # If a user set a non-existent header (common when reusing a build dir across
+  # branches), fall back rather than failing deep inside target_precompile_headers.
+  if(IS_ABSOLUTE "${COLONY_PCH_HEADER}")
+    set(_cg_pch_abs2 "${COLONY_PCH_HEADER}")
+  else()
+    set(_cg_pch_abs2 "${CMAKE_SOURCE_DIR}/${COLONY_PCH_HEADER}")
+  endif()
+
+  if(NOT EXISTS "${_cg_pch_abs2}")
+    message(WARNING "COLONY_PCH_HEADER does not exist: ${_cg_pch_abs2}. Falling back to src/pch.h")
+    set(COLONY_PCH_HEADER "src/pch.h" CACHE STRING "Path to a shared PCH header (relative to repo root)" FORCE)
+  endif()
+
+  unset(_cg_pch_abs2)
+
+  unset(_cg_pch_abs)
+endif()
 
 # ------------------------------ Windows-only defaults / guards ------------------------------
 
