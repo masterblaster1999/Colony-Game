@@ -8,6 +8,7 @@ if (MSVC)
     /Zc:__cplusplus
     /Zc:inline
     /Zc:preprocessor
+    /utf-8
     /EHsc
     /W4
     /MP

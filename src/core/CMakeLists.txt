@@ -66,6 +66,37 @@ target_include_directories(colony_core
 # Windows hygiene (avoid macro pollution)
 target_compile_definitions(colony_core PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX)
 
+
+# ---- Third-party deps (vcpkg) --------------------------------------------------
+# Core's public ECS headers include EnTT types, so propagate EnTT to consumers.
+set(_cg_entt_target "")
+find_package(EnTT CONFIG QUIET)
+if(EnTT_FOUND)
+  if(TARGET EnTT::EnTT)
+    set(_cg_entt_target EnTT::EnTT)
+  elseif(TARGET EnTT::entt)
+    set(_cg_entt_target EnTT::entt)
+  endif()
+else()
+  find_package(entt CONFIG QUIET)
+  if(entt_FOUND)
+    if(TARGET entt::entt)
+      set(_cg_entt_target entt::entt)
+    endif()
+  endif()
+endif()
+
+if(NOT _cg_entt_target)
+  message(FATAL_ERROR
+    "EnTT dependency not found. Ensure vcpkg manifest mode is enabled and the 'entt' port is installed.\n"
+    "Hint: configure with -DCMAKE_TOOLCHAIN_FILE=<vcpkg>/scripts/buildsystems/vcpkg.cmake and -DVCPKG_MANIFEST_MODE=ON."
+  )
+endif()
+
+target_link_libraries(colony_core PUBLIC ${_cg_entt_target})
+unset(_cg_entt_target)
+
+
 # Unity build: keep core conservative unless explicitly enabled.
 if(DEFINED COLONY_UNITY_BUILD AND COLONY_UNITY_BUILD)
   set_target_properties(colony_core PROPERTIES UNITY_BUILD ON UNITY_BUILD_BATCH_SIZE 16)

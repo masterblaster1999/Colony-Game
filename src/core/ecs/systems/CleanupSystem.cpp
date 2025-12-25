@@ -1,5 +1,5 @@
 // src/core/ecs/systems/CleanupSystem.cpp
-#include <entt/entity/registry.hpp>
+#include <entt/entt.hpp>
 #include "core/ecs/components/Destroy.hpp"
 
 void runCleanup(entt::registry& reg) {

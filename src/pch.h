@@ -409,8 +409,13 @@ CG_ALWAYS_INLINE bool hr_ok(HRESULT hr, const wchar_t* context = L"") {
 #endif
   return SUCCEEDED(hr);
 }
+#ifndef CG_WIDEN
+#  define CG_WIDEN2(x) L##x
+#  define CG_WIDEN(x) CG_WIDEN2(x)
+#endif
+
 #ifndef CG_HR
-#  define CG_HR(expr) ::cg::win::hr_ok((expr), L#expr)
+#  define CG_HR(expr) ::cg::win::hr_ok((expr), CG_WIDEN(#expr))
 #endif
 
 // ---------- Debug trace + printf ----------
