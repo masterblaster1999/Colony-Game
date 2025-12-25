@@ -1,17 +1,20 @@
 #pragma once
-#include <windows.h>
+#include "platform/win/WinCommon.h"
 
 #include <memory>
 
 #include "DxDevice.h"
 
 // Thin Win32 window wrapper + message loop for the current prototype.
-// Keyboard shortcuts (see AppWindow.cpp):
+// Keyboard shortcuts (see AppWindow_WndProc.cpp):
 //   - Esc      : Quit
 //   - V        : Toggle VSync
 //   - F11      : Toggle borderless fullscreen
 //   - Alt+Enter: Toggle borderless fullscreen
 //   - F10      : Toggle frame pacing stats in title bar (PresentMon-style summary)
+//   - F9       : Toggle RAWINPUT mouse (drag deltas)
+//   - F8       : Cycle DXGI max frame latency (1..16)
+//   - F7       : Toggle pause-when-unfocused
 class AppWindow {
 public:
     AppWindow();

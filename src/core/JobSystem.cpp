@@ -1,5 +1,8 @@
 #include "JobSystem.h"
 
+#include <algorithm>   // std::max
+#include <exception>   // std::exception
+
 namespace core {
 
 void JobSystem::Start(unsigned workerCount) {
@@ -35,7 +38,14 @@ void JobSystem::WorkerLoop() {
             job = std::move(m_jobs.front());
             m_jobs.pop();
         }
-        job();
+        try {
+            job();
+        } catch (const std::exception&) {
+            // Swallow exceptions so a single bad job doesn't terminate the worker thread.
+            // Consider wiring this up to your logger if you want visibility.
+        } catch (...) {
+            // Swallow non-standard exceptions.
+        }
     }
 }
 

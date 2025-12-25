@@ -137,6 +137,31 @@ LRESULT AppWindow::HandleMsg(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam)
         PostQuitMessage(0);
         return 0;
 
+    case WM_GETMINMAXINFO:
+        // Enforce a minimum *client* size so the renderer and UI don't end up
+        // in pathological states (tiny swapchains, unreadable HUD, etc.).
+        //
+        // We translate the desired client minimum into a window minimum using
+        // AdjustWindowRectExForDpi so it remains correct under per-monitor DPI.
+        if (lParam)
+        {
+            auto* mmi = reinterpret_cast<MINMAXINFO*>(lParam);
+
+            const DWORD style   = static_cast<DWORD>(GetWindowLongW(hWnd, GWL_STYLE));
+            const DWORD exStyle = static_cast<DWORD>(GetWindowLongW(hWnd, GWL_EXSTYLE));
+
+            RECT rc{ 0, 0,
+                     static_cast<LONG>(colony::appwin::kMinWindowClientWidth),
+                     static_cast<LONG>(colony::appwin::kMinWindowClientHeight) };
+
+            const UINT dpi = GetDpiForWindow(hWnd);
+            AdjustWindowRectExForDpi(&rc, style, FALSE, exStyle, dpi);
+
+            mmi->ptMinTrackSize.x = rc.right - rc.left;
+            mmi->ptMinTrackSize.y = rc.bottom - rc.top;
+        }
+        return 0;
+
     case WM_SIZE:
     {
         const UINT w = LOWORD(lParam);
@@ -242,6 +267,36 @@ LRESULT AppWindow::HandleMsg(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam)
             }
             return 0;
 
+
+        case VK_F8:
+            // Cycle DXGI maximum frame latency (1..16).
+            // Lower values reduce input latency; higher values can improve throughput.
+            // Ignore auto-repeat so holding F8 doesn't spam-toggle.
+            if ((lParam & (1 << 30)) == 0 && m_impl)
+            {
+                int v = m_impl->settings.maxFrameLatency;
+                if (v < 1) v = 1;
+                v = (v >= 16) ? 1 : (v + 1);
+
+                m_impl->settings.maxFrameLatency = v;
+                m_gfx.SetMaxFrameLatency(static_cast<UINT>(v));
+
+                m_impl->ScheduleSettingsAutosave();
+                UpdateTitle();
+            }
+            return 0;
+
+        case VK_F7:
+            // Toggle pausing behavior when the window is unfocused.
+            // Ignore auto-repeat so holding F7 doesn't spam-toggle.
+            if ((lParam & (1 << 30)) == 0 && m_impl)
+            {
+                m_impl->settings.pauseWhenUnfocused = !m_impl->settings.pauseWhenUnfocused;
+                m_impl->ScheduleSettingsAutosave();
+                UpdateTitle();
+            }
+            return 0;
+
         case 'V':
             // Ignore auto-repeat so holding V doesn't spam-toggle.
             if ((lParam & (1 << 30)) == 0)
@@ -261,6 +316,8 @@ LRESULT AppWindow::HandleMsg(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam)
                                   (vk == static_cast<std::uint32_t>(VK_F11)) ||
                                   (vk == static_cast<std::uint32_t>(VK_F10)) ||
                                   (vk == static_cast<std::uint32_t>(VK_F9)) ||
+                                  (vk == static_cast<std::uint32_t>(VK_F8)) ||
+                                  (vk == static_cast<std::uint32_t>(VK_F7)) ||
                                   (vk == static_cast<std::uint32_t>('V'));
 
             if (vk < 256 && !isSystem)
@@ -285,6 +342,8 @@ LRESULT AppWindow::HandleMsg(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam)
                                   (vk == static_cast<std::uint32_t>(VK_F11)) ||
                                   (vk == static_cast<std::uint32_t>(VK_F10)) ||
                                   (vk == static_cast<std::uint32_t>(VK_F9)) ||
+                                  (vk == static_cast<std::uint32_t>(VK_F8)) ||
+                                  (vk == static_cast<std::uint32_t>(VK_F7)) ||
                                   (vk == static_cast<std::uint32_t>('V'));
 
             if (vk < 256 && !isSystem)

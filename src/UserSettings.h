@@ -6,6 +6,19 @@
 
 namespace colony::appwin {
 
+// -----------------------------------------------------------------------------
+// Window sizing guardrails
+// -----------------------------------------------------------------------------
+// These are *client-area* dimensions (not including the Win32 non-client frame).
+// They are used both when clamping persisted settings.json values and when
+// enforcing minimum resize constraints via WM_GETMINMAXINFO.
+inline constexpr std::uint32_t kMinWindowClientWidth  = 640;
+inline constexpr std::uint32_t kMinWindowClientHeight = 360;
+
+// 8K desktop-ish upper bounds (guard against accidental huge values).
+inline constexpr std::uint32_t kMaxWindowClientWidth  = 7680;
+inline constexpr std::uint32_t kMaxWindowClientHeight = 4320;
+
 // How DXGI should scale the swapchain to the window.
 //
 // For modern borderless fullscreen + "independent flip" friendliness, `None`

@@ -149,6 +149,9 @@ void AppWindow::UpdateTitle()
     oss.setf(std::ios::fixed);
     oss << L"Colony Game | " << std::setprecision(0) << fps << L" FPS"
         << L" | VSync " << vs
+        << L" | Lat " << m_impl->settings.maxFrameLatency
+        << L" | Raw " << (m_impl->settings.rawMouse ? L"ON" : L"OFF")
+        << L" | PauseBG " << (m_impl->settings.pauseWhenUnfocused ? L"ON" : L"OFF")
         << L" | " << fs
         << L" | " << act;
 

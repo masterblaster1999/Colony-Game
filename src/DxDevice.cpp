@@ -339,6 +339,24 @@ DxRenderStats DxDevice::Render(bool vsync)
     if (!m_ctx || !m_rtv || !m_swap)
         return stats;
 
+
+    // Ensure viewport/scissor match the current swapchain size.
+    // (Clear doesn't require this, but any real drawing will.)
+    if (m_width > 0 && m_height > 0)
+    {
+        D3D11_VIEWPORT vp{};
+        vp.TopLeftX = 0.0f;
+        vp.TopLeftY = 0.0f;
+        vp.Width    = static_cast<float>(m_width);
+        vp.Height   = static_cast<float>(m_height);
+        vp.MinDepth = 0.0f;
+        vp.MaxDepth = 1.0f;
+        m_ctx->RSSetViewports(1, &vp);
+
+        const D3D11_RECT sc{ 0, 0, static_cast<LONG>(m_width), static_cast<LONG>(m_height) };
+        m_ctx->RSSetScissorRects(1, &sc);
+    }
+
     const float clear[4] = { 0.08f, 0.10f, 0.12f, 1.0f };
 
     m_ctx->OMSetRenderTargets(1, m_rtv.GetAddressOf(), nullptr);

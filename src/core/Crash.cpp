@@ -5,6 +5,7 @@
 #include <cstdio>
 #include <ctime>
 #include <filesystem>   // <-- needed for std::filesystem::path/ops
+#include <system_error>
 
 #pragma comment(lib, "Dbghelp.lib")
 
@@ -28,12 +29,20 @@ static LONG WINAPI UnhandledExceptionFilterFn(EXCEPTION_POINTERS* info) {
     wchar_t dumpDirBuf[MAX_PATH]{};
     DWORD n = GetEnvironmentVariableW(L"CG_DUMP_DIR", dumpDirBuf, MAX_PATH);
     std::filesystem::path outDir = (n > 0) ? std::filesystem::path(dumpDirBuf) : base;
-    std::filesystem::create_directories(outDir);
+    std::error_code ec;
+    std::filesystem::create_directories(outDir, ec);
 
     std::filesystem::path dumpPath = outDir / name;
 
     HANDLE hFile = CreateFileW(dumpPath.c_str(), GENERIC_WRITE, FILE_SHARE_READ, nullptr,
                                CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+
+    if (hFile == INVALID_HANDLE_VALUE)
+    {
+        LOG_ERROR("Unhandled exception. Failed to create minidump file %s",
+                  std::string(dumpPath.string()).c_str());
+        return EXCEPTION_EXECUTE_HANDLER;
+    }
 
     MINIDUMP_EXCEPTION_INFORMATION mei{};
     mei.ThreadId = GetCurrentThreadId();

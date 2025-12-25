@@ -75,3 +75,41 @@ This patch focuses on practical Windows-only improvements that make the prototyp
 ## Bug fixes
 
 - Fixes a potential out-of-bounds write in `src/main_win.cpp` when extracting dropped file paths via `DragQueryFileW`.
+
+
+# Patch 8: Latency/resize guardrails + robustness fixes
+
+This patch tightens up a few Windows prototype fundamentals: swapchain latency control, resize guardrails, and crash/worker robustness.
+
+## What this patch adds
+
+- **DXGI max frame latency hotkey (F8)**
+  - Cycles `settings.maxFrameLatency` from **1..16** at runtime.
+  - Applies immediately via `DxDevice::SetMaxFrameLatency`.
+
+- **Pause-when-unfocused hotkey (F7)**
+  - Toggles `runtime.pauseWhenUnfocused` without restarting.
+
+- **Minimum window size enforcement**
+  - Adds `WM_GETMINMAXINFO` handling so the user cannot resize the client area below:
+    - **640×360** (DPI-aware).
+
+- **More informative window title**
+  - Title now shows: `Lat`, `Raw`, and `PauseBG` states.
+
+## Bug fixes / robustness
+
+- `src/core/JobSystem.cpp`
+  - Adds missing `<algorithm>` include (fixes potential build break on strict toolchains).
+  - Wraps job execution in `try/catch` so a single throwing job can't terminate the worker thread.
+
+- `src/core/Crash.cpp`
+  - Avoids calling `MiniDumpWriteDump` with an invalid file handle.
+  - Uses non-throwing `std::filesystem::create_directories(..., error_code)` in the crash path.
+
+- `src/DxDevice.cpp`
+  - Ensures `RSSetViewports` / `RSSetScissorRects` match swapchain size each frame.
+
+- `src/UserSettings.cpp`
+  - Separates window width/height clamping (min height now **360** instead of forcing **640**).
+  - `ReadFileToString` now verifies the full file was read.

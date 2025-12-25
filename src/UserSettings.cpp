@@ -11,19 +11,23 @@
 namespace colony::appwin {
 
 namespace {
-    constexpr std::uint32_t kMinWindowDim = 640;
-    constexpr std::uint32_t kMaxWindowDim = 7680;
-
     constexpr int kMinMaxFps = 30;
     constexpr int kMaxMaxFps = 1000;
 
     constexpr int kMinFrameLatency = 1;
     constexpr int kMaxFrameLatency = 16;
 
-    std::uint32_t ClampDim(std::uint32_t v) noexcept
+    std::uint32_t ClampWindowWidth(std::uint32_t v) noexcept
     {
-        if (v < kMinWindowDim) return kMinWindowDim;
-        if (v > kMaxWindowDim) return kMaxWindowDim;
+        if (v < kMinWindowClientWidth) return kMinWindowClientWidth;
+        if (v > kMaxWindowClientWidth) return kMaxWindowClientWidth;
+        return v;
+    }
+
+    std::uint32_t ClampWindowHeight(std::uint32_t v) noexcept
+    {
+        if (v < kMinWindowClientHeight) return kMinWindowClientHeight;
+        if (v > kMaxWindowClientHeight) return kMaxWindowClientHeight;
         return v;
     }
 
@@ -86,7 +90,7 @@ namespace {
         f.seekg(0, std::ios::beg);
         out.resize(static_cast<std::size_t>(sz));
         f.read(out.data(), static_cast<std::streamsize>(sz));
-        return true;
+        return (f.gcount() == static_cast<std::streamsize>(sz));
     }
 }
 
@@ -115,9 +119,9 @@ bool LoadUserSettings(UserSettings& out) noexcept
     if (const auto it = j.find("window"); it != j.end() && it->is_object())
     {
         if (auto w = it->find("width"); w != it->end() && w->is_number_integer())
-            tmp.windowWidth = ClampDim(static_cast<std::uint32_t>(w->get<std::int64_t>()));
+            tmp.windowWidth = ClampWindowWidth(static_cast<std::uint32_t>(w->get<std::int64_t>()));
         if (auto h = it->find("height"); h != it->end() && h->is_number_integer())
-            tmp.windowHeight = ClampDim(static_cast<std::uint32_t>(h->get<std::int64_t>()));
+            tmp.windowHeight = ClampWindowHeight(static_cast<std::uint32_t>(h->get<std::int64_t>()));
     }
 
     if (const auto it = j.find("graphics"); it != j.end() && it->is_object())
