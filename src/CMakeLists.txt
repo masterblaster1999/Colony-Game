@@ -24,6 +24,8 @@ set(_colony_game_sources
     ${CMAKE_CURRENT_SOURCE_DIR}/AppWindow.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/AppWindow_Create.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/AppWindow_WndProc.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/AppWindow_WndProc_Window.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/AppWindow_WndProc_Input.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/AppWindow_Loop.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/AppWindow.h
     ${CMAKE_CURRENT_SOURCE_DIR}/AppWindow_Impl.h

@@ -2,7 +2,6 @@
 
 #include "platform/win/PathUtilWin.h"
 #include "platform/win/WinFiles.h"
-#include "util/TextEncoding.h"
 
 #include <fstream>
 #include <string>
@@ -17,6 +16,12 @@ namespace {
 
     constexpr int kMinFrameLatency = 1;
     constexpr int kMaxFrameLatency = 16;
+
+    // Settings JSON schema version.
+    //
+    // NOTE: SaveUserSettings always writes the latest schema version. LoadUserSettings
+    // performs best-effort migration from older layouts so user preferences survive refactors.
+    constexpr int kUserSettingsSchemaVersion = 3;
 
     std::uint32_t ClampWindowWidth(std::uint32_t v) noexcept
     {
@@ -93,6 +98,92 @@ namespace {
         f.read(out.data(), static_cast<std::streamsize>(sz));
         return (f.gcount() == static_cast<std::streamsize>(sz));
     }
+
+    int ReadSettingsVersion(const nlohmann::json& j) noexcept
+    {
+        if (auto it = j.find("version"); it != j.end() && it->is_number_integer())
+            return it->get<int>();
+        return 0;
+    }
+
+    nlohmann::json& EnsureObject(nlohmann::json& j, const char* key)
+    {
+        auto it = j.find(key);
+        if (it == j.end() || !it->is_object())
+        {
+            j[key] = nlohmann::json::object();
+            return j[key];
+        }
+        return *it;
+    }
+
+    // Best-effort migration for older settings layouts.
+    //
+    // We keep this intentionally forgiving: if keys exist in the expected new
+    // locations we leave them alone, otherwise we look for legacy/root-level
+    // equivalents and copy them into the modern nested objects.
+    void NormalizeLegacySettingsJson(nlohmann::json& j, int fileVersion, bool& didMigrate)
+    {
+        if (!j.is_object())
+            return;
+
+        // Forward-compat: if the file is newer than we know, still try to read
+        // the keys we understand.
+        if (fileVersion > kUserSettingsSchemaVersion)
+            return;
+
+        if (fileVersion >= kUserSettingsSchemaVersion)
+            return;
+
+        auto& window   = EnsureObject(j, "window");
+        auto& graphics = EnsureObject(j, "graphics");
+        auto& runtime  = EnsureObject(j, "runtime");
+        auto& input    = EnsureObject(j, "input");
+        auto& debug    = EnsureObject(j, "debug");
+
+        auto copy_if_missing = [&](const char* legacyKey, nlohmann::json& dst, const char* dstKey)
+        {
+            if (dst.contains(dstKey))
+                return;
+            auto it2 = j.find(legacyKey);
+            if (it2 != j.end())
+            {
+                dst[dstKey] = *it2;
+                didMigrate = true;
+            }
+        };
+
+        // Common legacy layouts:
+        //   - root-level keys (vsync/fullscreen/etc.) from early prototypes
+        //   - windowWidth/windowHeight instead of window.width/window.height
+        copy_if_missing("windowWidth",  window,   "width");
+        copy_if_missing("windowHeight", window,   "height");
+        copy_if_missing("width",        window,   "width");
+        copy_if_missing("height",       window,   "height");
+
+        copy_if_missing("vsync",              graphics, "vsync");
+        copy_if_missing("fullscreen",         graphics, "fullscreen");
+        copy_if_missing("maxFpsWhenVsyncOff",  graphics, "maxFpsWhenVsyncOff");
+        copy_if_missing("maxFrameLatency",     graphics, "maxFrameLatency");
+        copy_if_missing("swapchainScaling",    graphics, "swapchainScaling");
+
+        // A couple of plausible historical aliases.
+        copy_if_missing("swapchainScalingMode", graphics, "swapchainScaling");
+        copy_if_missing("dxgiMaxFrameLatency",  graphics, "maxFrameLatency");
+
+        copy_if_missing("pauseWhenUnfocused",  runtime,  "pauseWhenUnfocused");
+        copy_if_missing("maxFpsWhenUnfocused", runtime,  "maxFpsWhenUnfocused");
+
+        copy_if_missing("rawMouse",       input, "rawMouse");
+        copy_if_missing("showFrameStats", debug, "showFrameStats");
+
+        if (didMigrate)
+        {
+            // Bump the version in-memory so a re-save writes the latest schema.
+            j["version"] = kUserSettingsSchemaVersion;
+        }
+    }
+
 }
 
 std::filesystem::path UserSettingsPath()
@@ -110,13 +201,15 @@ bool LoadUserSettings(UserSettings& out) noexcept
     if (!ReadFileToString(path, text))
         return false;
 
-    if (!colony::util::NormalizeTextToUtf8(text))
-        return false;
-
     // Allow // comments (same as input_bindings.json), and avoid exceptions.
-    const nlohmann::json j = nlohmann::json::parse(text, nullptr, false, /*ignore_comments*/ true);
+    nlohmann::json j = nlohmann::json::parse(text, nullptr, false, /*ignore_comments*/ true);
     if (j.is_discarded() || !j.is_object())
         return false;
+
+
+    const int fileVersion = ReadSettingsVersion(j);
+    bool didMigrate = false;
+    NormalizeLegacySettingsJson(j, fileVersion, didMigrate);
 
     UserSettings tmp = out;
 
@@ -164,6 +257,13 @@ bool LoadUserSettings(UserSettings& out) noexcept
             tmp.showFrameStats = s->get<bool>();
     }
 
+    if (didMigrate)
+    {
+        // Rewrite settings.json in the latest schema so future loads are fast
+        // and older keys don't linger forever.
+        (void)SaveUserSettings(tmp);
+    }
+
     out = tmp;
     return true;
 }
@@ -176,7 +276,7 @@ bool SaveUserSettings(const UserSettings& settings) noexcept
     std::filesystem::create_directories(UserSettingsPath().parent_path(), ec);
 
     nlohmann::json j;
-    j["version"] = 3;
+    j["version"] = kUserSettingsSchemaVersion;
     j["window"] = {
         {"width", settings.windowWidth},
         {"height", settings.windowHeight},

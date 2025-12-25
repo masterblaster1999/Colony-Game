@@ -6,7 +6,7 @@
 #include "DxDevice.h"
 
 // Thin Win32 window wrapper + message loop for the current prototype.
-// Keyboard shortcuts (see AppWindow_WndProc.cpp):
+// Keyboard shortcuts (see AppWindow_WndProc_Input.cpp):
 //   - Esc      : Quit
 //   - V        : Toggle VSync
 //   - F11      : Toggle borderless fullscreen
@@ -29,6 +29,10 @@ public:
 private:
     static LRESULT CALLBACK WndProc(HWND, UINT, WPARAM, LPARAM);
     LRESULT HandleMsg(HWND, UINT, WPARAM, LPARAM);
+
+    // Split WndProc handling into focused units (Window vs Input) to keep files manageable.
+    LRESULT HandleMsg_Window(HWND, UINT, WPARAM, LPARAM, bool& handled);
+    LRESULT HandleMsg_Input(HWND, UINT, WPARAM, LPARAM, bool& handled);
 
     void ToggleVsync();
     void ToggleFullscreen();

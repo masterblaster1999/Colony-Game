@@ -1,9 +1,138 @@
 #include "DxDevice.h"
 
+#include "platform/win/LauncherLogSingletonWin.h"
+
+#include <cstdint>
+#include <iomanip>
+#include <sstream>
+#include <string>
+
 #include <array>
 #include <iterator> // std::size
 
 namespace {
+
+static const wchar_t* HrName(HRESULT hr) noexcept
+{
+    switch (hr)
+    {
+    case DXGI_ERROR_DEVICE_HUNG:           return L"DXGI_ERROR_DEVICE_HUNG";
+    case DXGI_ERROR_DEVICE_REMOVED:        return L"DXGI_ERROR_DEVICE_REMOVED";
+    case DXGI_ERROR_DEVICE_RESET:          return L"DXGI_ERROR_DEVICE_RESET";
+    case DXGI_ERROR_DRIVER_INTERNAL_ERROR: return L"DXGI_ERROR_DRIVER_INTERNAL_ERROR";
+    case DXGI_ERROR_INVALID_CALL:          return L"DXGI_ERROR_INVALID_CALL";
+    case DXGI_STATUS_OCCLUDED:             return L"DXGI_STATUS_OCCLUDED";
+    default:                               return nullptr;
+    }
+}
+
+static std::wstring TrimW(std::wstring s)
+{
+    while (!s.empty() && (s.back() == L'\r' || s.back() == L'\n' || s.back() == L' ' || s.back() == L'\t'))
+        s.pop_back();
+    while (!s.empty() && (s.front() == L' ' || s.front() == L'\t'))
+        s.erase(s.begin());
+    return s;
+}
+
+static std::wstring HrMessageW(HRESULT hr)
+{
+    wchar_t* buf = nullptr;
+    const DWORD flags = FORMAT_MESSAGE_ALLOCATE_BUFFER | FORMAT_MESSAGE_FROM_SYSTEM | FORMAT_MESSAGE_IGNORE_INSERTS;
+    const DWORD len = ::FormatMessageW(flags, nullptr, static_cast<DWORD>(hr),
+        MAKELANGID(LANG_NEUTRAL, SUBLANG_DEFAULT), reinterpret_cast<LPWSTR>(&buf), 0, nullptr);
+
+    std::wstring msg;
+    if (len && buf)
+    {
+        msg.assign(buf, buf + len);
+        ::LocalFree(buf);
+    }
+    return TrimW(msg);
+}
+
+static std::wstring HrFullW(HRESULT hr)
+{
+    std::wstringstream ss;
+    ss << L"0x" << std::hex << std::uppercase << std::setw(8) << std::setfill(L'0')
+       << static_cast<std::uint32_t>(hr);
+    if (const wchar_t* name = HrName(hr))
+        ss << L" (" << name << L")";
+    const std::wstring msg = HrMessageW(hr);
+    if (!msg.empty())
+        ss << L": " << msg;
+    return ss.str();
+}
+
+static std::wstring AdapterSummaryW(ID3D11Device* device)
+{
+    if (!device)
+        return {};
+
+    Microsoft::WRL::ComPtr<IDXGIDevice> dxgiDevice;
+    if (FAILED(device->QueryInterface(IID_PPV_ARGS(&dxgiDevice))))
+        return {};
+
+    Microsoft::WRL::ComPtr<IDXGIAdapter> adapter;
+    if (FAILED(dxgiDevice->GetAdapter(&adapter)) || !adapter)
+        return {};
+
+    Microsoft::WRL::ComPtr<IDXGIAdapter1> adapter1;
+    (void)adapter.As(&adapter1);
+
+    if (adapter1)
+    {
+        DXGI_ADAPTER_DESC1 desc{};
+        if (SUCCEEDED(adapter1->GetDesc1(&desc)))
+        {
+            std::wstringstream ss;
+            ss << desc.Description
+               << L" (VendorId=0x" << std::hex << std::uppercase << desc.VendorId
+               << L", DeviceId=0x" << desc.DeviceId
+               << L", DedicatedVRAM=" << std::dec << (desc.DedicatedVideoMemory / (1024ull * 1024ull)) << L"MB)";
+            return ss.str();
+        }
+    }
+
+    DXGI_ADAPTER_DESC desc{};
+    if (SUCCEEDED(adapter->GetDesc(&desc)))
+    {
+        std::wstringstream ss;
+        ss << desc.Description
+           << L" (VendorId=0x" << std::hex << std::uppercase << desc.VendorId
+           << L", DeviceId=0x" << desc.DeviceId
+           << L", DedicatedVRAM=" << std::dec << (desc.DedicatedVideoMemory / (1024ull * 1024ull)) << L"MB)";
+        return ss.str();
+    }
+
+    return {};
+}
+
+static void LogDeviceLost(const wchar_t* stage, HRESULT triggeringHr, HRESULT removedReason,
+                          ID3D11Device* device,
+                          UINT width, UINT height,
+                          const DxDeviceOptions& opt,
+                          bool allowTearing, UINT swapchainFlags, bool waitable)
+{
+    std::wstringstream ss;
+    ss << L"[DxDevice] Device lost (" << (stage ? stage : L"?") << L") "
+       << L"triggeringHr=" << HrFullW(triggeringHr) << L" "
+       << L"removedReason=" << HrFullW(removedReason);
+
+    const std::wstring adapter = AdapterSummaryW(device);
+    if (!adapter.empty())
+        ss << L" adapter=\"" << adapter << L"\"";
+
+    ss << L" size=" << width << L"x" << height
+       << L" maxFrameLatency=" << opt.maxFrameLatency
+       << L" scaling=" << static_cast<int>(opt.scaling)
+       << L" allowTearing=" << (allowTearing ? L"true" : L"false")
+       << L" swapchainFlags=0x" << std::hex << std::uppercase << swapchainFlags
+       << L" waitable=" << (waitable ? L"true" : L"false");
+
+    WriteLog(LauncherLog(), ss.str());
+}
+
 
 static UINT ClampFrameLatency(UINT v) noexcept
 {
@@ -321,7 +450,7 @@ void DxDevice::Resize(UINT width, UINT height)
     if (FAILED(hr))
     {
         if (hr == DXGI_ERROR_DEVICE_REMOVED || hr == DXGI_ERROR_DEVICE_RESET)
-            (void)HandleDeviceLost();
+            (void)HandleDeviceLost(hr, L"ResizeBuffers");
         return;
     }
 
@@ -359,8 +488,7 @@ DxRenderStats DxDevice::Render(bool vsync)
 
     const float clear[4] = { 0.08f, 0.10f, 0.12f, 1.0f };
 
-    ID3D11RenderTargetView* rtvs[] = { m_rtv.Get() };
-    m_ctx->OMSetRenderTargets(1, rtvs, nullptr);
+    m_ctx->OMSetRenderTargets(1, m_rtv.GetAddressOf(), nullptr);
     m_ctx->ClearRenderTargetView(m_rtv.Get(), clear);
 
     const UINT syncInterval = vsync ? 1u : 0u;
@@ -391,7 +519,7 @@ DxRenderStats DxDevice::Render(bool vsync)
 
     if (hr == DXGI_ERROR_DEVICE_REMOVED || hr == DXGI_ERROR_DEVICE_RESET)
     {
-        (void)HandleDeviceLost();
+        (void)HandleDeviceLost(hr, L"Present");
     }
 
     return stats;
@@ -415,21 +543,27 @@ void DxDevice::Shutdown()
     m_swapchainFlags = 0;
 }
 
-bool DxDevice::HandleDeviceLost()
+bool DxDevice::HandleDeviceLost(HRESULT triggeringHr, const wchar_t* stage)
 {
     // Device removed/reset can occur due to TDR, a driver update, or the adapter
     // changing (e.g. docking/undocking, remote sessions, etc.).
     //
     // We do a best-effort full recreation to keep the prototype running.
     const HWND hwnd = m_hwnd;
-    const UINT w = m_width ? m_width : 1280u;
-    const UINT h = m_height ? m_height : 720u;
+    const UINT w = m_width;
+    const UINT h = m_height;
     const DxDeviceOptions opt = m_opt;
 
-    // Optional: query reason for debugging.
+    HRESULT reason = DXGI_ERROR_DEVICE_REMOVED;
     if (m_device)
-        (void)m_device->GetDeviceRemovedReason();
+        reason = m_device->GetDeviceRemovedReason();
+
+    LogDeviceLost(stage, triggeringHr, reason, m_device.Get(), w, h, opt, m_allowTearing, m_swapchainFlags, m_createdWithWaitableFlag);
 
     Shutdown();
-    return Init(hwnd, w, h, opt);
+
+    const bool ok = Init(hwnd, w, h, opt);
+    WriteLog(LauncherLog(), ok ? L"[DxDevice] Device recreation succeeded after device loss."
+                          : L"[DxDevice] Device recreation FAILED after device loss.");
+    return ok;
 }

@@ -61,7 +61,7 @@ public:
 private:
     // If the D3D device is removed/reset, tear down and recreate everything.
     // Returns false if recreation fails.
-    bool HandleDeviceLost();
+    bool HandleDeviceLost(HRESULT triggeringHr, const wchar_t* stage);
 
     bool CreateSwapchain(UINT width, UINT height);
     void CreateRTV();
