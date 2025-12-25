@@ -40,7 +40,8 @@ In the current window prototype (`AppWindow`):
 - **Esc**: quit
 - **V**: toggle VSync (when off, frame rate is capped to avoid 100% CPU)
 - **F11** or **Alt+Enter**: toggle borderless fullscreen
-- **F9**: toggle `pauseWhenUnfocused` (background pause)
+- **F9**: toggle raw mouse input (WM_INPUT) vs cursor-based deltas
+- **F10**: toggle PresentMon-style frame pacing stats in the window title
 - Mouse drag (LMB/RMB/MMB): camera placeholder controls (debug title shows values)
 
 ### Per-user settings
@@ -51,16 +52,26 @@ The prototype persists a small settings file at:
 
 New in this patch:
 
-- `graphics.maxFrameLatency` (default `1`): maximum number of queued frames for the swapchain (lower = less input latency).
 - `runtime.pauseWhenUnfocused` (default `true`): when you Alt+Tab away, the game pauses rendering/sim to save CPU/GPU.
 - `runtime.maxFpsWhenUnfocused` (default `30`): if `pauseWhenUnfocused` is `false`, this caps the background FPS.
+- `input.rawMouse` (default `true`): enables WM_INPUT raw mouse deltas (better high-DPI + high polling stability).
+- `graphics.maxFrameLatency` (default `1`): limits DXGI render queue depth (lower latency, more stable pacing).
+- `graphics.swapchainScaling` (default `"none"`): DXGI scaling mode for the swapchain (`none`, `stretch`, `aspect`).
+- `debug.showFrameStats` (default `false`): toggles PresentMon-style pacing stats in the title bar.
 
 Example snippet:
 
 ```json
 {
   "graphics": {
-    "maxFrameLatency": 1
+    "maxFrameLatency": 1,
+    "swapchainScaling": "none"
+  },
+  "input": {
+    "rawMouse": true
+  },
+  "debug": {
+    "showFrameStats": true
   },
   "runtime": {
     "pauseWhenUnfocused": false,

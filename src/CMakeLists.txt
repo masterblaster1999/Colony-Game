@@ -51,6 +51,8 @@ set(_colony_game_sources
     ${CMAKE_CURRENT_SOURCE_DIR}/loop/DebugCamera.h
     ${CMAKE_CURRENT_SOURCE_DIR}/loop/FramePacer.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/loop/FramePacer.h
+    ${CMAKE_CURRENT_SOURCE_DIR}/loop/FramePacingStats.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/loop/FramePacingStats.h
     ${CMAKE_CURRENT_SOURCE_DIR}/DxDevice.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/DxDevice.h
 )

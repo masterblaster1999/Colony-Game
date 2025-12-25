@@ -17,7 +17,6 @@ namespace {
     constexpr int kMinMaxFps = 30;
     constexpr int kMaxMaxFps = 1000;
 
-
     constexpr int kMinFrameLatency = 1;
     constexpr int kMaxFrameLatency = 16;
 
@@ -36,12 +35,44 @@ namespace {
         return v;
     }
 
-
     int ClampFrameLatency(int v) noexcept
     {
         if (v < kMinFrameLatency) return kMinFrameLatency;
         if (v > kMaxFrameLatency) return kMaxFrameLatency;
         return v;
+    }
+
+    SwapchainScalingMode ParseScalingMode(const nlohmann::json& v, SwapchainScalingMode fallback) noexcept
+    {
+        if (v.is_string()) {
+            const std::string s = v.get<std::string>();
+            if (s == "none" || s == "None") return SwapchainScalingMode::None;
+            if (s == "stretch" || s == "Stretch") return SwapchainScalingMode::Stretch;
+            if (s == "aspect" || s == "aspect_ratio" || s == "Aspect") return SwapchainScalingMode::Aspect;
+            return fallback;
+        }
+
+        // Back-compat: accept integers.
+        if (v.is_number_integer()) {
+            const int i = v.get<int>();
+            switch (i) {
+            case 0: return SwapchainScalingMode::None;
+            case 1: return SwapchainScalingMode::Stretch;
+            case 2: return SwapchainScalingMode::Aspect;
+            default: return fallback;
+            }
+        }
+        return fallback;
+    }
+
+    const char* ScalingModeToString(SwapchainScalingMode m) noexcept
+    {
+        switch (m) {
+        case SwapchainScalingMode::None: return "none";
+        case SwapchainScalingMode::Stretch: return "stretch";
+        case SwapchainScalingMode::Aspect: return "aspect";
+        default: return "none";
+        }
     }
 
     bool ReadFileToString(const std::filesystem::path& p, std::string& out) noexcept
@@ -97,8 +128,12 @@ bool LoadUserSettings(UserSettings& out) noexcept
             tmp.fullscreen = f->get<bool>();
         if (auto m = it->find("maxFpsWhenVsyncOff"); m != it->end() && m->is_number_integer())
             tmp.maxFpsWhenVsyncOff = ClampMaxFps(m->get<int>());
-        if (auto l = it->find("maxFrameLatency"); l != it->end() && l->is_number_integer())
-            tmp.maxFrameLatency = ClampFrameLatency(l->get<int>());
+
+        if (auto fl = it->find("maxFrameLatency"); fl != it->end() && fl->is_number_integer())
+            tmp.maxFrameLatency = ClampFrameLatency(fl->get<int>());
+
+        if (auto sc = it->find("swapchainScaling"); sc != it->end())
+            tmp.swapchainScaling = ParseScalingMode(*sc, tmp.swapchainScaling);
     }
 
     if (const auto it = j.find("runtime"); it != j.end() && it->is_object())
@@ -107,6 +142,18 @@ bool LoadUserSettings(UserSettings& out) noexcept
             tmp.pauseWhenUnfocused = p->get<bool>();
         if (auto m = it->find("maxFpsWhenUnfocused"); m != it->end() && m->is_number_integer())
             tmp.maxFpsWhenUnfocused = ClampMaxFps(m->get<int>());
+    }
+
+    if (const auto it = j.find("input"); it != j.end() && it->is_object())
+    {
+        if (auto r = it->find("rawMouse"); r != it->end() && r->is_boolean())
+            tmp.rawMouse = r->get<bool>();
+    }
+
+    if (const auto it = j.find("debug"); it != j.end() && it->is_object())
+    {
+        if (auto s = it->find("showFrameStats"); s != it->end() && s->is_boolean())
+            tmp.showFrameStats = s->get<bool>();
     }
 
     out = tmp;
@@ -130,12 +177,21 @@ bool SaveUserSettings(const UserSettings& settings) noexcept
         {"vsync", settings.vsync},
         {"fullscreen", settings.fullscreen},
         {"maxFpsWhenVsyncOff", settings.maxFpsWhenVsyncOff},
-        {"maxFrameLatency", settings.maxFrameLatency},
+        {"maxFrameLatency", ClampFrameLatency(settings.maxFrameLatency)},
+        {"swapchainScaling", ScalingModeToString(settings.swapchainScaling)},
     };
 
     j["runtime"] = {
         {"pauseWhenUnfocused", settings.pauseWhenUnfocused},
         {"maxFpsWhenUnfocused", settings.maxFpsWhenUnfocused},
+    };
+
+    j["input"] = {
+        {"rawMouse", settings.rawMouse},
+    };
+
+    j["debug"] = {
+        {"showFrameStats", settings.showFrameStats},
     };
 
     std::string payload = j.dump(4);

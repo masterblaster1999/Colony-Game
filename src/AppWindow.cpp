@@ -7,11 +7,17 @@
 #include "platform/win32/Win32Window.h"
 
 #include "loop/FramePacer.h"
+#include "loop/FramePacingStats.h"
 
 #include <windowsx.h> // GET_X_LPARAM, GET_Y_LPARAM
 
-#include <string>
+#include <algorithm>
 #include <chrono>
+#include <cstdint>
+#include <iomanip>
+#include <limits>
+#include <sstream>
+#include <string>
 
 // ----------------------------------------------------------------------------
 // AppWindow::Impl
@@ -23,6 +29,7 @@ struct AppWindow::Impl {
     colony::input::InputQueue                  input;
     colony::game::PrototypeGame                game;
     colony::appwin::FramePacer                 pacer;
+    colony::appwin::FramePacingStats           frameStats;
 
     colony::appwin::UserSettings               settings;
     bool                                      settingsLoaded = false;
@@ -44,6 +51,11 @@ struct AppWindow::Impl {
     bool                                      inSizeMove = false;
     UINT                                      pendingResizeW = 0;
     UINT                                      pendingResizeH = 0;
+
+    // Mouse delta aggregation (prevents InputQueue overflow with very high
+    // polling rate mice; flushed into a single MouseDelta event per pump).
+    long long                                 pendingMouseDx = 0;
+    long long                                 pendingMouseDy = 0;
 };
 
 namespace {
@@ -111,6 +123,38 @@ inline DWORD BackgroundWaitTimeoutMs(const AppWindow::Impl& impl) noexcept
     return static_cast<DWORD>(ms);
 }
 
+inline std::int32_t ClampI32(long long v) noexcept
+{
+    if (v < static_cast<long long>(std::numeric_limits<std::int32_t>::min()))
+        return std::numeric_limits<std::int32_t>::min();
+    if (v > static_cast<long long>(std::numeric_limits<std::int32_t>::max()))
+        return std::numeric_limits<std::int32_t>::max();
+    return static_cast<std::int32_t>(v);
+}
+
+inline void FlushPendingMouseDelta(AppWindow::Impl& impl) noexcept
+{
+    if (impl.pendingMouseDx == 0 && impl.pendingMouseDy == 0)
+        return;
+
+    const auto b = impl.mouse.Buttons();
+
+    colony::input::InputEvent ev{};
+    ev.type = colony::input::InputEventType::MouseDelta;
+    ev.dx = ClampI32(impl.pendingMouseDx);
+    ev.dy = ClampI32(impl.pendingMouseDy);
+    ev.buttons = 0;
+    if (b.left)   ev.buttons |= colony::input::MouseButtonsMask::MouseLeft;
+    if (b.right)  ev.buttons |= colony::input::MouseButtonsMask::MouseRight;
+    if (b.middle) ev.buttons |= colony::input::MouseButtonsMask::MouseMiddle;
+    if (b.x1)     ev.buttons |= colony::input::MouseButtonsMask::MouseX1;
+    if (b.x2)     ev.buttons |= colony::input::MouseButtonsMask::MouseX2;
+
+    impl.input.Push(ev);
+    impl.pendingMouseDx = 0;
+    impl.pendingMouseDy = 0;
+}
+
 } // namespace
 
 AppWindow::AppWindow() = default;
@@ -130,9 +174,12 @@ bool AppWindow::Create(HINSTANCE hInst, int nCmdShow, int width, int height)
     m_impl->settings.vsync = m_vsync;
     m_impl->settings.fullscreen = false;
     m_impl->settings.maxFpsWhenVsyncOff = m_impl->pacer.MaxFpsWhenVsyncOff();
-    m_impl->settings.maxFrameLatency = 1;
+    m_impl->settings.maxFrameLatency = 1; // lowest latency by default
+    m_impl->settings.swapchainScaling = colony::appwin::SwapchainScalingMode::None;
     m_impl->settings.pauseWhenUnfocused = true;
     m_impl->settings.maxFpsWhenUnfocused = m_impl->pacer.MaxFpsWhenUnfocused();
+    m_impl->settings.rawMouse = true;
+    m_impl->settings.showFrameStats = false;
 
     // Best-effort load: if it fails, we keep the defaults above.
     {
@@ -168,18 +215,27 @@ bool AppWindow::Create(HINSTANCE hInst, int nCmdShow, int width, int height)
     m_impl->fullscreen.InitFromCurrent(m_hwnd);
 
     // Enable WM_INPUT raw deltas (best-effort; falls back to cursor deltas).
-    m_impl->mouse.Register(m_hwnd);
+    if (m_impl->settings.rawMouse)
+        m_impl->mouse.Register(m_hwnd);
 
     RECT cr{};
     GetClientRect(m_hwnd, &cr);
     m_width  = static_cast<UINT>(cr.right);
     m_height = static_cast<UINT>(cr.bottom);
 
-    if (!m_gfx.Init(m_hwnd, m_width, m_height))
-        return false;
+    DxDeviceOptions gfxOpt{};
+    gfxOpt.maxFrameLatency = static_cast<UINT>(m_impl->settings.maxFrameLatency);
+    gfxOpt.enableWaitableObject = true;
+    switch (m_impl->settings.swapchainScaling)
+    {
+    case colony::appwin::SwapchainScalingMode::Stretch: gfxOpt.scaling = DXGI_SCALING_STRETCH; break;
+    case colony::appwin::SwapchainScalingMode::Aspect:  gfxOpt.scaling = DXGI_SCALING_ASPECT_RATIO_STRETCH; break;
+    case colony::appwin::SwapchainScalingMode::None:
+    default:                                           gfxOpt.scaling = DXGI_SCALING_NONE; break;
+    }
 
-    // Apply per-user latency setting (defaults to 1 for the lowest latency).
-    m_gfx.SetMaximumFrameLatency(static_cast<UINT>(m_impl->settings.maxFrameLatency));
+    if (!m_gfx.Init(m_hwnd, m_width, m_height, gfxOpt))
+        return false;
 
     ShowWindow(m_hwnd, nCmdShow);
     UpdateWindow(m_hwnd);
@@ -240,23 +296,29 @@ void AppWindow::UpdateTitle()
                              ? L"ACTIVE"
                              : (m_impl->settings.pauseWhenUnfocused ? L"BG (PAUSED)" : L"BG");
     const double fps = m_impl->pacer.Fps();
-    const unsigned latency = m_gfx.MaximumFrameLatency();
+
+    std::wostringstream oss;
+    oss.setf(std::ios::fixed);
+    oss << L"Colony Game | " << std::setprecision(0) << fps << L" FPS"
+        << L" | VSync " << vs
+        << L" | " << fs
+        << L" | " << act;
+
+    if (m_impl->settings.showFrameStats)
+    {
+        oss << L" | " << m_impl->frameStats.FormatTitleString();
+    }
 
 #ifndef NDEBUG
     const auto cam = m_impl->game.GetDebugCameraInfo();
-    wchar_t title[256];
-    swprintf_s(title,
-               L"Colony Game | %.0f FPS | VSync %s | %s | %s | Lat %u | yaw %.1f pitch %.1f pan(%.1f, %.1f) zoom %.2f",
-               fps, vs, fs, act, latency,
-               cam.yaw, cam.pitch,
-               cam.panX, cam.panY,
-               cam.zoom);
-    SetWindowTextW(m_hwnd, title);
-#else
-    wchar_t title[128];
-    swprintf_s(title, L"Colony Game | %.0f FPS | VSync %s | %s | %s | Lat %u", fps, vs, fs, act, latency);
-    SetWindowTextW(m_hwnd, title);
+    oss << L" | yaw " << std::setprecision(1) << cam.yaw
+        << L" pitch " << cam.pitch
+        << L" pan(" << cam.panX << L", " << cam.panY << L")"
+        << L" zoom " << std::setprecision(2) << cam.zoom;
 #endif
+
+    const std::wstring title = oss.str();
+    SetWindowTextW(m_hwnd, title.c_str());
 }
 
 LRESULT CALLBACK AppWindow::WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam)
@@ -292,6 +354,11 @@ LRESULT AppWindow::HandleMsg(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam)
 
     case WM_KILLFOCUS:
         if (m_impl) {
+            // Drop any buffered mouse deltas on focus loss to avoid applying
+            // stale movement when focus returns.
+            m_impl->pendingMouseDx = 0;
+            m_impl->pendingMouseDy = 0;
+
             m_impl->mouse.OnKillFocus(hWnd);
 
             // Flush keyboard state on focus loss to avoid "stuck key" behavior
@@ -308,6 +375,10 @@ LRESULT AppWindow::HandleMsg(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam)
             m_impl->active = active;
             m_impl->mouse.OnActivateApp(hWnd, active);
             if (!active) {
+                // Drop any buffered mouse deltas when we go inactive.
+                m_impl->pendingMouseDx = 0;
+                m_impl->pendingMouseDy = 0;
+
                 colony::input::InputEvent ev{};
                 ev.type = colony::input::InputEventType::FocusLost;
                 m_impl->input.Push(ev);
@@ -459,17 +530,32 @@ LRESULT AppWindow::HandleMsg(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam)
                 ToggleFullscreen();
             return 0;
 
-        case VK_F9:
-            // Toggle background pause (useful when streaming/recording or for debugging).
-            // Ignore auto-repeat so holding F9 doesn't spam-toggle.
-            if ((lParam & (1 << 30)) == 0)
+        case VK_F10:
+            // Toggle title-bar frame pacing stats (PresentMon-style summary)
+            // Ignore auto-repeat so holding F10 doesn't spam-toggle.
+            if ((lParam & (1 << 30)) == 0 && m_impl)
             {
-                if (m_impl)
-                {
-                    m_impl->settings.pauseWhenUnfocused = !m_impl->settings.pauseWhenUnfocused;
-                    ScheduleSettingsAutosave(*m_impl);
-                    UpdateTitle();
-                }
+                m_impl->settings.showFrameStats = !m_impl->settings.showFrameStats;
+                m_impl->frameStats.Reset();
+                ScheduleSettingsAutosave(*m_impl);
+                UpdateTitle();
+            }
+            return 0;
+
+        case VK_F9:
+            // Toggle raw mouse input at runtime (best-effort).
+            // Ignore auto-repeat so holding F9 doesn't spam-toggle.
+            if ((lParam & (1 << 30)) == 0 && m_impl)
+            {
+                m_impl->settings.rawMouse = !m_impl->settings.rawMouse;
+                m_impl->mouse.SetEnabled(hWnd, m_impl->settings.rawMouse);
+
+                // Drop any pending deltas to avoid a jump across the mode switch.
+                m_impl->pendingMouseDx = 0;
+                m_impl->pendingMouseDy = 0;
+
+                ScheduleSettingsAutosave(*m_impl);
+                UpdateTitle();
             }
             return 0;
 
@@ -490,6 +576,8 @@ LRESULT AppWindow::HandleMsg(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam)
             const std::uint32_t vk = static_cast<std::uint32_t>(wParam);
             const bool isSystem = (vk == static_cast<std::uint32_t>(VK_ESCAPE)) ||
                                   (vk == static_cast<std::uint32_t>(VK_F11)) ||
+                                  (vk == static_cast<std::uint32_t>(VK_F10)) ||
+                                  (vk == static_cast<std::uint32_t>(VK_F9)) ||
                                   (vk == static_cast<std::uint32_t>('V'));
 
             if (vk < 256 && !isSystem)
@@ -512,6 +600,8 @@ LRESULT AppWindow::HandleMsg(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam)
             const std::uint32_t vk = static_cast<std::uint32_t>(wParam);
             const bool isSystem = (vk == static_cast<std::uint32_t>(VK_ESCAPE)) ||
                                   (vk == static_cast<std::uint32_t>(VK_F11)) ||
+                                  (vk == static_cast<std::uint32_t>(VK_F10)) ||
+                                  (vk == static_cast<std::uint32_t>(VK_F9)) ||
                                   (vk == static_cast<std::uint32_t>('V'));
 
             if (vk < 256 && !isSystem)
@@ -596,6 +686,7 @@ LRESULT AppWindow::HandleMsg(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam)
     case WM_LBUTTONDOWN:
         SetFocus(hWnd);
         if (m_impl) {
+            FlushPendingMouseDelta(*m_impl);
             m_impl->mouse.OnLButtonDown(hWnd, GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam));
 
             colony::input::InputEvent bev{};
@@ -607,6 +698,7 @@ LRESULT AppWindow::HandleMsg(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam)
 
     case WM_LBUTTONUP:
         if (m_impl) {
+            FlushPendingMouseDelta(*m_impl);
             m_impl->mouse.OnLButtonUp(hWnd);
 
             colony::input::InputEvent bev{};
@@ -619,6 +711,7 @@ LRESULT AppWindow::HandleMsg(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam)
     case WM_RBUTTONDOWN:
         SetFocus(hWnd);
         if (m_impl) {
+            FlushPendingMouseDelta(*m_impl);
             m_impl->mouse.OnRButtonDown(hWnd, GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam));
 
             colony::input::InputEvent bev{};
@@ -630,6 +723,7 @@ LRESULT AppWindow::HandleMsg(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam)
 
     case WM_RBUTTONUP:
         if (m_impl) {
+            FlushPendingMouseDelta(*m_impl);
             m_impl->mouse.OnRButtonUp(hWnd);
 
             colony::input::InputEvent bev{};
@@ -642,6 +736,7 @@ LRESULT AppWindow::HandleMsg(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam)
     case WM_MBUTTONDOWN:
         SetFocus(hWnd);
         if (m_impl) {
+            FlushPendingMouseDelta(*m_impl);
             m_impl->mouse.OnMButtonDown(hWnd, GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam));
 
             colony::input::InputEvent bev{};
@@ -653,6 +748,7 @@ LRESULT AppWindow::HandleMsg(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam)
 
     case WM_MBUTTONUP:
         if (m_impl) {
+            FlushPendingMouseDelta(*m_impl);
             m_impl->mouse.OnMButtonUp(hWnd);
 
             colony::input::InputEvent bev{};
@@ -665,6 +761,7 @@ LRESULT AppWindow::HandleMsg(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam)
     case WM_XBUTTONDOWN:
         SetFocus(hWnd);
         if (m_impl) {
+            FlushPendingMouseDelta(*m_impl);
             const WORD xb = GET_XBUTTON_WPARAM(wParam);
             m_impl->mouse.OnXButtonDown(hWnd,
                                         xb == XBUTTON1,
@@ -679,6 +776,7 @@ LRESULT AppWindow::HandleMsg(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam)
 
     case WM_XBUTTONUP:
         if (m_impl) {
+            FlushPendingMouseDelta(*m_impl);
             const WORD xb = GET_XBUTTON_WPARAM(wParam);
             m_impl->mouse.OnXButtonUp(hWnd, xb == XBUTTON1);
             colony::input::InputEvent bev{};
@@ -695,18 +793,10 @@ LRESULT AppWindow::HandleMsg(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam)
             LONG dy = 0;
             if (m_impl->mouse.OnMouseMove(hWnd, GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam), dx, dy))
             {
-                const auto b = m_impl->mouse.Buttons();
-                colony::input::InputEvent ev{};
-                ev.type = colony::input::InputEventType::MouseDelta;
-                ev.dx = static_cast<std::int32_t>(dx);
-                ev.dy = static_cast<std::int32_t>(dy);
-                ev.buttons = 0;
-                if (b.left)   ev.buttons |= colony::input::MouseButtonsMask::MouseLeft;
-                if (b.right)  ev.buttons |= colony::input::MouseButtonsMask::MouseRight;
-                if (b.middle) ev.buttons |= colony::input::MouseButtonsMask::MouseMiddle;
-                if (b.x1)     ev.buttons |= colony::input::MouseButtonsMask::MouseX1;
-                if (b.x2)     ev.buttons |= colony::input::MouseButtonsMask::MouseX2;
-                m_impl->input.Push(ev);
+                // Aggregate per-frame to keep input stable on high polling
+                // mice and avoid overflowing the fixed-size input queue.
+                m_impl->pendingMouseDx += dx;
+                m_impl->pendingMouseDy += dy;
             }
         }
         return 0;
@@ -714,6 +804,7 @@ LRESULT AppWindow::HandleMsg(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam)
     case WM_MOUSEWHEEL:
         if (m_impl)
         {
+            FlushPendingMouseDelta(*m_impl);
             const int detents = m_impl->mouse.OnMouseWheel(wParam);
             colony::input::InputEvent ev{};
             ev.type = colony::input::InputEventType::MouseWheel;
@@ -732,18 +823,10 @@ LRESULT AppWindow::HandleMsg(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam)
             LONG dy = 0;
             if (m_impl->mouse.OnRawInput(hWnd, reinterpret_cast<HRAWINPUT>(lParam), dx, dy))
             {
-                const auto b = m_impl->mouse.Buttons();
-                colony::input::InputEvent ev{};
-                ev.type = colony::input::InputEventType::MouseDelta;
-                ev.dx = static_cast<std::int32_t>(dx);
-                ev.dy = static_cast<std::int32_t>(dy);
-                ev.buttons = 0;
-                if (b.left)   ev.buttons |= colony::input::MouseButtonsMask::MouseLeft;
-                if (b.right)  ev.buttons |= colony::input::MouseButtonsMask::MouseRight;
-                if (b.middle) ev.buttons |= colony::input::MouseButtonsMask::MouseMiddle;
-                if (b.x1)     ev.buttons |= colony::input::MouseButtonsMask::MouseX1;
-                if (b.x2)     ev.buttons |= colony::input::MouseButtonsMask::MouseX2;
-                m_impl->input.Push(ev);
+                // Aggregate per-frame to keep input stable on high polling
+                // mice and avoid overflowing the fixed-size input queue.
+                m_impl->pendingMouseDx += dx;
+                m_impl->pendingMouseDy += dy;
             }
         }
         return 0;
@@ -766,59 +849,54 @@ int AppWindow::MessageLoop()
     // the loop begins.
     m_impl->pacer.ResetSchedule();
     m_impl->pacer.ResetFps();
+    m_impl->frameStats.Reset();
 
     bool lastVsync = m_vsync;
-    bool lastUnfocused = m_impl ? !m_impl->active : false;
+    bool lastUnfocused = !m_impl->active;
+
+    auto lastPresented = std::chrono::steady_clock::now();
 
     while (true)
     {
-        const bool unfocused = m_impl ? !m_impl->active : false;
-        const bool pauseInBackground = m_impl ? (unfocused && m_impl->settings.pauseWhenUnfocused) : false;
+        const bool unfocused = !m_impl->active;
+        const bool pauseInBackground = unfocused && m_impl->settings.pauseWhenUnfocused;
 
         // Reset pacing when the pacing mode changes (vsync toggled, or we moved
         // between foreground/background). This prevents long sleeps after e.g.
         // Alt+Tab.
-        if (lastVsync != m_vsync || lastUnfocused != unfocused) {
+        if (lastVsync != m_vsync || lastUnfocused != unfocused)
+        {
             m_impl->pacer.ResetSchedule();
             lastVsync = m_vsync;
             lastUnfocused = unfocused;
         }
 
         // If minimized or intentionally paused in the background, don't render;
-        // block until something happens. We still consume any queued input events
+        // block until something happens. We still consume queued input events
         // so FocusLost (etc.) reaches the game layer.
-        if (m_width == 0 || m_height == 0 || pauseInBackground || m_gfx.IsOccluded())
+        if (m_width == 0 || m_height == 0 || pauseInBackground)
         {
             while (PeekMessageW(&msg, nullptr, 0, 0, PM_REMOVE))
             {
-                if (msg.message == WM_QUIT) return static_cast<int>(msg.wParam);
+                if (msg.message == WM_QUIT)
+                    return static_cast<int>(msg.wParam);
                 TranslateMessage(&msg);
                 DispatchMessageW(&msg);
             }
 
-            if (m_impl)
-            {
-                const bool changed = m_impl->game.OnInput(m_impl->input.Events());
-                m_impl->input.Clear();
-                if (changed)
-                    UpdateTitle();
+            // Flush any buffered mouse delta into the queue before we hand it to the game.
+            FlushPendingMouseDelta(*m_impl);
 
-                // Persist any queued settings changes while we're idle/minimized.
-                MaybeAutoSaveSettings(*m_impl);
-            }
+            const bool changed = m_impl->game.OnInput(m_impl->input.Events());
+            m_impl->input.Clear();
+            if (changed)
+                UpdateTitle();
+
+            // Persist any queued settings changes while we're idle/minimized.
+            MaybeAutoSaveSettings(*m_impl);
 
             // If we have a pending settings auto-save, wake up in time to write it.
-            DWORD timeoutMs = m_impl ? BackgroundWaitTimeoutMs(*m_impl) : INFINITE;
-
-            // If DXGI reported the swapchain is occluded, poll at a low rate using DXGI_PRESENT_TEST.
-            // (This keeps CPU/GPU usage low while minimized/hidden.)
-            if (m_gfx.IsOccluded())
-            {
-                (void)m_gfx.TestPresent();
-                if (timeoutMs == INFINITE || timeoutMs > 200)
-                    timeoutMs = 200;
-            }
-
+            const DWORD timeoutMs = BackgroundWaitTimeoutMs(*m_impl);
             MsgWaitForMultipleObjectsEx(0, nullptr, timeoutMs, QS_ALLINPUT, MWMO_INPUTAVAILABLE);
             continue;
         }
@@ -830,68 +908,140 @@ int AppWindow::MessageLoop()
         // Pump all queued messages.
         while (PeekMessageW(&msg, nullptr, 0, 0, PM_REMOVE))
         {
-            if (msg.message == WM_QUIT) return static_cast<int>(msg.wParam);
+            if (msg.message == WM_QUIT)
+                return static_cast<int>(msg.wParam);
             TranslateMessage(&msg);
             DispatchMessageW(&msg);
         }
 
-        // Apply input events to the game even if we end up skipping rendering
-        // this iteration (e.g., vsync OFF + not time to render yet).
-        if (m_impl)
+        // Flush aggregated mouse movement after consuming the current burst of messages.
+        FlushPendingMouseDelta(*m_impl);
+
+        const bool unfocusedAfterPump = !m_impl->active;
+        const bool pauseInBackgroundAfterPump = unfocusedAfterPump && m_impl->settings.pauseWhenUnfocused;
+        if (m_width == 0 || m_height == 0 || pauseInBackgroundAfterPump)
+            continue;
+
+        // If a cap is active and we woke due to messages, don't render early.
+        if (!m_impl->pacer.IsTimeToRender(m_vsync, unfocusedAfterPump))
         {
             const bool changed = m_impl->game.OnInput(m_impl->input.Events());
             m_impl->input.Clear();
-            if (changed) {
+            if (changed)
                 UpdateTitle();
-            }
 
             // Debounced settings persistence (non-blocking).
             MaybeAutoSaveSettings(*m_impl);
-        }
-
-        // Re-check minimized state after message pump.
-        const bool unfocusedAfterPump = m_impl ? !m_impl->active : false;
-        const bool pauseInBackgroundAfterPump = m_impl ? (unfocusedAfterPump && m_impl->settings.pauseWhenUnfocused) : false;
-        if (m_width == 0 || m_height == 0 || pauseInBackgroundAfterPump) {
             continue;
         }
 
-        // If a cap is active and we woke due to messages, don't render early.
-        if (!m_impl->pacer.IsTimeToRender(m_vsync, unfocusedAfterPump)) {
-            continue;
-        }
-
-        // Waitable swapchain integration:
-        // If DXGI provided a frame-latency waitable object, wait here so we don't
-        // start building a new frame while the previous one is still being presented.
-        //
-        // This is a large win for smoothness and input latency on Windows because it:
-        //   - prevents deep present queues (when paired with SetMaximumFrameLatency)
-        //   - replaces "busy polling" / timing loops with an OS wait that also wakes for messages
-        const HANDLE frameWait = m_gfx.FrameLatencyWaitableObject();
-        if (frameWait)
+        // If the swapchain exposes a frame-latency waitable object, block on it
+        // (while still pumping messages) to avoid queuing ahead.
+        double waitMs = 0.0;
+        const HANDLE frameLatency = m_gfx.FrameLatencyWaitableObject();
+        if (frameLatency != nullptr)
         {
-            const HANDLE handles[1] = { frameWait };
-            const DWORD waitRes = MsgWaitForMultipleObjectsEx(
-                1,
-                handles,
-                1000, // safety timeout (ms) to avoid deadlocks on buggy drivers
-                QS_ALLINPUT,
-                MWMO_INPUTAVAILABLE);
+            const auto waitStart = std::chrono::steady_clock::now();
+            bool abortFrame = false;
 
-            if (waitRes != WAIT_OBJECT_0)
+            while (true)
             {
-                // Woke due to messages (or timeout). We'll pump messages at the top of the loop.
+                const DWORD timeoutMs = BackgroundWaitTimeoutMs(*m_impl);
+                const DWORD r = MsgWaitForMultipleObjectsEx(1, &frameLatency, timeoutMs, QS_ALLINPUT, MWMO_INPUTAVAILABLE);
+
+                if (r == WAIT_OBJECT_0)
+                {
+                    // Frame slot available.
+                    break;
+                }
+
+                if (r == WAIT_OBJECT_0 + 1)
+                {
+                    // Windows messages pending.
+                    while (PeekMessageW(&msg, nullptr, 0, 0, PM_REMOVE))
+                    {
+                        if (msg.message == WM_QUIT)
+                            return static_cast<int>(msg.wParam);
+                        TranslateMessage(&msg);
+                        DispatchMessageW(&msg);
+                    }
+
+                    FlushPendingMouseDelta(*m_impl);
+
+                    const bool unfocusedNow = !m_impl->active;
+                    const bool pauseNow = unfocusedNow && m_impl->settings.pauseWhenUnfocused;
+
+                    // State changed while waiting; restart the loop.
+                    if (m_width == 0 || m_height == 0 || pauseNow)
+                    {
+                        abortFrame = true;
+                        break;
+                    }
+
+                    // If a cap is active, ensure we still respect it.
+                    if (!m_impl->pacer.IsTimeToRender(m_vsync, unfocusedNow))
+                    {
+                        abortFrame = true;
+                        break;
+                    }
+
+                    continue;
+                }
+
+                if (r == WAIT_TIMEOUT)
+                {
+                    MaybeAutoSaveSettings(*m_impl);
+                    continue;
+                }
+
+                // WAIT_FAILED or unexpected return; don't hang.
+                break;
+            }
+
+            waitMs = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - waitStart).count();
+
+            if (abortFrame)
+            {
+                const bool changed = m_impl->game.OnInput(m_impl->input.Events());
+                m_impl->input.Clear();
+                if (changed)
+                    UpdateTitle();
+                MaybeAutoSaveSettings(*m_impl);
                 continue;
             }
         }
 
-        // Render one frame (your sim tick could go here too).
-        m_gfx.Render(m_vsync);
+        // Apply input to the game as close to Present() as possible (lower latency).
+        const bool changed = m_impl->game.OnInput(m_impl->input.Events());
+        m_impl->input.Clear();
+        if (changed)
+            UpdateTitle();
+
+        MaybeAutoSaveSettings(*m_impl);
+
+        // Render one frame.
+        const DxRenderStats rs = m_gfx.Render(m_vsync);
+        const auto afterRender = std::chrono::steady_clock::now();
+
+        // If DXGI reports occlusion, avoid burning CPU/GPU. We'll yield a bit and retry.
+        if (rs.occluded)
+        {
+            m_impl->pacer.ResetSchedule();
+            MsgWaitForMultipleObjectsEx(0, nullptr, 50, QS_ALLINPUT, MWMO_INPUTAVAILABLE);
+            continue;
+        }
+
+        const double frameMs = std::chrono::duration<double, std::milli>(afterRender - lastPresented).count();
+        lastPresented = afterRender;
+
+        // PresentMon-style rolling stats (computed a few times a second).
+        m_impl->frameStats.AddSample(frameMs, rs.presentMs, waitMs);
+        const bool statsUpdated = m_impl->frameStats.Update(afterRender);
 
         // FPS counter (update about once per second).
-        if (m_impl->pacer.OnFramePresented(m_vsync, unfocusedAfterPump)) {
+        const bool fpsTick = m_impl->pacer.OnFramePresented(m_vsync, unfocusedAfterPump);
+
+        if (fpsTick || (m_impl->settings.showFrameStats && statsUpdated))
             UpdateTitle();
-        }
     }
 }

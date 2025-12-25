@@ -25,6 +25,12 @@ class RawMouseInput {
 public:
     void Register(HWND hwnd) noexcept;
 
+    // Enable/disable WM_INPUT raw mouse deltas at runtime.
+    //
+    // When disabled, the helper falls back to cursor-based deltas (WM_MOUSEMOVE)
+    // while dragging.
+    void SetEnabled(HWND hwnd, bool enabled) noexcept;
+
     // Focus / capture
     void OnSetFocus() noexcept;
     void OnKillFocus(HWND hwnd) noexcept;

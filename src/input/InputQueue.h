@@ -15,7 +15,9 @@ namespace colony::input {
 // with an SPSC ring buffer without changing the InputEvent type.
 class InputQueue {
 public:
-    static constexpr std::size_t kMaxEvents = 1024;
+    // High polling-rate mice can generate very large WM_INPUT bursts; keep this
+    // comfortably above 1k to avoid dropped input in worst-case stutters.
+    static constexpr std::size_t kMaxEvents = 4096;
 
     void Clear() noexcept { m_count = 0; }
 

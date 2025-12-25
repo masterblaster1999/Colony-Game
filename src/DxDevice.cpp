@@ -1,8 +1,21 @@
 #include "DxDevice.h"
 
-#include <algorithm> // std::clamp
 #include <array>
 #include <iterator> // std::size
+
+namespace {
+
+static UINT ClampFrameLatency(UINT v) noexcept
+{
+    if (v < 1u)  return 1u;
+    if (v > 16u) return 16u;
+    return v;
+}
+
+static double QpcToMs(LONGLONG ticks, const LARGE_INTEGER& freq) noexcept
+{
+    return (freq.QuadPart > 0) ? (double(ticks) * 1000.0 / double(freq.QuadPart)) : 0.0;
+}
 
 // Small helper: check whether the OS/driver combo supports variable-refresh / tearing.
 // Requires DXGI 1.5+ and flip-model swapchains.
@@ -10,7 +23,7 @@ static bool CheckTearing(IDXGIFactory6* factory)
 {
     BOOL allow = FALSE;
 
-    ComPtr<IDXGIFactory5> f5;
+    Microsoft::WRL::ComPtr<IDXGIFactory5> f5;
     if (factory && SUCCEEDED(factory->QueryInterface(IID_PPV_ARGS(&f5))))
     {
         if (FAILED(f5->CheckFeatureSupport(DXGI_FEATURE_PRESENT_ALLOW_TEARING, &allow, sizeof(allow))))
@@ -22,8 +35,8 @@ static bool CheckTearing(IDXGIFactory6* factory)
 
 static HRESULT CreateD3D11Device(UINT flags,
                                 D3D_DRIVER_TYPE driverType,
-                                ComPtr<ID3D11Device>& outDevice,
-                                ComPtr<ID3D11DeviceContext>& outCtx)
+                                Microsoft::WRL::ComPtr<ID3D11Device>& outDevice,
+                                Microsoft::WRL::ComPtr<ID3D11DeviceContext>& outCtx)
 {
     // Ask for the best available feature level down to 10.0.
     static constexpr D3D_FEATURE_LEVEL kLevels[] = {
@@ -48,34 +61,9 @@ static HRESULT CreateD3D11Device(UINT flags,
         outCtx.GetAddressOf());
 }
 
-static UINT ClampFrameLatency(UINT v) noexcept
-{
-    // DXGI uses an implementation-defined upper bound. Common guidance is 1..16.
-    // We clamp to a conservative range so invalid values don't fail Present loops.
-    return std::clamp(v, 1u, 16u);
-}
+} // namespace
 
-void DxDevice::SetMaximumFrameLatency(UINT maxLatency) noexcept
-{
-    maxLatency = ClampFrameLatency(maxLatency);
-    m_maxFrameLatency = maxLatency;
-
-    // Preferred: per-swapchain (required when using the waitable-object flag).
-    if (m_swap2 && (m_swapChainFlags & DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT))
-    {
-        (void)m_swap2->SetMaximumFrameLatency(maxLatency);
-        return;
-    }
-
-    // Fallback: device-level frame latency control (older swapchains).
-    ComPtr<IDXGIDevice1> dxgiDev1;
-    if (m_device && SUCCEEDED(m_device.As(&dxgiDev1)))
-    {
-        (void)dxgiDev1->SetMaximumFrameLatency(maxLatency);
-    }
-}
-
-bool DxDevice::Init(HWND hwnd, UINT width, UINT height)
+bool DxDevice::Init(HWND hwnd, UINT width, UINT height, const DxDeviceOptions& opt)
 {
     // Allow re-init (e.g. after device removed/reset).
     Shutdown();
@@ -83,7 +71,8 @@ bool DxDevice::Init(HWND hwnd, UINT width, UINT height)
     m_hwnd = hwnd;
     m_width = width;
     m_height = height;
-    m_occluded = false;
+    m_opt = opt;
+    m_opt.maxFrameLatency = ClampFrameLatency(m_opt.maxFrameLatency);
 
     auto fail = [&]() -> bool {
         Shutdown();
@@ -146,7 +135,7 @@ bool DxDevice::Init(HWND hwnd, UINT width, UINT height)
 
     // Disable DXGI's default Alt+Enter fullscreen handling; AppWindow manages it.
     if (m_factory)
-        (void)m_factory->MakeWindowAssociation(m_hwnd, DXGI_MWA_NO_ALT_ENTER);
+        (void)m_factory->MakeWindowAssociation(m_hwnd, DXGI_MWA_NO_ALT_ENTER | DXGI_MWA_NO_WINDOW_CHANGES);
 
     m_allowTearing = CheckTearing(m_factory.Get());
 
@@ -156,50 +145,113 @@ bool DxDevice::Init(HWND hwnd, UINT width, UINT height)
     return true;
 }
 
+void DxDevice::CloseFrameLatencyHandle() noexcept
+{
+    if (m_frameLatencyWaitable)
+    {
+        ::CloseHandle(m_frameLatencyWaitable);
+        m_frameLatencyWaitable = nullptr;
+    }
+}
+
+void DxDevice::ApplyFrameLatencyIfPossible() noexcept
+{
+    const UINT latency = ClampFrameLatency(m_opt.maxFrameLatency);
+
+    // Per-swapchain path (best). This also provides the waitable object handle.
+    if (m_swap)
+    {
+        ComPtr<IDXGISwapChain2> sc2;
+        if (SUCCEEDED(m_swap.As(&sc2)))
+        {
+            (void)sc2->SetMaximumFrameLatency(latency);
+
+            if (m_opt.enableWaitableObject && m_createdWithWaitableFlag)
+            {
+                // Requires DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT.
+                HANDLE h = sc2->GetFrameLatencyWaitableObject();
+                if (h)
+                    m_frameLatencyWaitable = h;
+            }
+        }
+    }
+
+    // Best-effort device-wide fallback (helps on older swapchains/paths).
+    if (m_device)
+    {
+        ComPtr<IDXGIDevice1> dev1;
+        if (SUCCEEDED(m_device.As(&dev1)))
+            (void)dev1->SetMaximumFrameLatency(latency);
+    }
+}
+
+void DxDevice::SetMaxFrameLatency(UINT v) noexcept
+{
+    const UINT clamped = ClampFrameLatency(v);
+    if (m_opt.maxFrameLatency == clamped)
+        return;
+
+    m_opt.maxFrameLatency = clamped;
+
+    // If a swapchain already exists, apply immediately.
+    CloseFrameLatencyHandle();
+    ApplyFrameLatencyIfPossible();
+}
+
 bool DxDevice::CreateSwapchain(UINT width, UINT height)
 {
     if (!m_factory || !m_device)
         return false;
 
-    // If we previously created a waitable object, close it before recreating the swapchain.
-    if (m_frameLatencyWaitableObject)
-    {
-        CloseHandle(m_frameLatencyWaitableObject);
-        m_frameLatencyWaitableObject = nullptr;
-    }
-    m_swap2.Reset();
-    m_swap.Reset();
+    DestroyRTV();
+    CloseFrameLatencyHandle();
+
+    m_createdWithWaitableFlag = false;
+    m_swapchainFlags = 0;
 
     DXGI_SWAP_CHAIN_DESC1 desc{};
     desc.Width = width;
     desc.Height = height;
     desc.Format = m_backbufferFormat;
     desc.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT;
+
+    // 2 buffers keeps latency low; frame latency limiting is handled separately.
     desc.BufferCount = 2;
     desc.SampleDesc = { 1, 0 };
     desc.SwapEffect = DXGI_SWAP_EFFECT_FLIP_DISCARD;  // flip-model
-    desc.Scaling = DXGI_SCALING_STRETCH;
+
+    // Scaling mode matters for modern borderless fullscreen:
+    //  - NONE is preferred when buffers match the client size (better independent flip odds)
+    //  - STRETCH can hide mismatch but may prevent some presentation optimizations
+    desc.Scaling = m_opt.scaling;
+
     desc.AlphaMode = DXGI_ALPHA_MODE_IGNORE;
 
     // Allow tearing only when supported and only when presenting with syncInterval==0.
-    UINT baseFlags = m_allowTearing ? DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING : 0;
+    const UINT baseFlags = m_allowTearing ? DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING : 0u;
 
-    // First try to enable the frame-latency waitable object (biggest win for input latency + smoothness).
-    desc.Flags = baseFlags | DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT;
+    const bool wantWaitable = m_opt.enableWaitableObject;
+    const UINT waitableFlag = wantWaitable ? DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT : 0u;
+
+    // Try to create a waitable swapchain first (biggest latency win on Windows).
+    struct Attempt { UINT flags; bool waitable; };
+    const Attempt attempts[] = {
+        { baseFlags | waitableFlag, true },
+        { baseFlags, false },
+    };
 
     ComPtr<IDXGISwapChain1> swap;
-    HRESULT hr = m_factory->CreateSwapChainForHwnd(
-        m_device.Get(),
-        m_hwnd,
-        &desc,
-        nullptr,
-        nullptr,
-        swap.GetAddressOf());
+    HRESULT hr = E_FAIL;
+    bool createdWaitable = false;
 
-    if (FAILED(hr))
+    for (const auto& a : attempts)
     {
-        // Older OS / unusual drivers may reject the waitable-object flag. Fall back to a normal flip swapchain.
-        desc.Flags = baseFlags;
+        if (!wantWaitable && a.waitable)
+            continue;
+
+        desc.Flags = a.flags;
+        swap.Reset();
+
         hr = m_factory->CreateSwapChainForHwnd(
             m_device.Get(),
             m_hwnd,
@@ -208,25 +260,22 @@ bool DxDevice::CreateSwapchain(UINT width, UINT height)
             nullptr,
             swap.GetAddressOf());
 
-        if (FAILED(hr))
-            return false;
-    }
-
-    m_swap = swap;
-    m_swapChainFlags = desc.Flags;
-    m_occluded = false;
-
-    // Optional: configure per-swapchain max frame latency and retrieve the wait handle.
-    if ((m_swapChainFlags & DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT) != 0)
-    {
-        if (SUCCEEDED(m_swap.As(&m_swap2)) && m_swap2)
+        if (SUCCEEDED(hr))
         {
-            SetMaximumFrameLatency(m_maxFrameLatency);
-
-            // Waitable handle: signals when we can begin rendering the next frame.
-            m_frameLatencyWaitableObject = m_swap2->GetFrameLatencyWaitableObject();
+            createdWaitable = a.waitable && wantWaitable;
+            m_swapchainFlags = a.flags;
+            break;
         }
     }
+
+    if (FAILED(hr) || !swap)
+        return false;
+
+    m_swap = swap;
+    m_createdWithWaitableFlag = createdWaitable;
+
+    // Apply latency caps + retrieve waitable object handle (if available).
+    ApplyFrameLatencyIfPossible();
 
     CreateRTV();
     return m_rtv != nullptr;
@@ -267,7 +316,7 @@ void DxDevice::Resize(UINT width, UINT height)
         width,
         height,
         m_backbufferFormat,
-        m_swapChainFlags);
+        m_swapchainFlags);
 
     if (FAILED(hr))
     {
@@ -276,36 +325,19 @@ void DxDevice::Resize(UINT width, UINT height)
         return;
     }
 
-    m_occluded = false;
+    // Some drivers keep the same handle across ResizeBuffers, but re-querying is cheap
+    // and keeps us correct if a resize causes the handle to change.
+    CloseFrameLatencyHandle();
+    ApplyFrameLatencyIfPossible();
+
     CreateRTV();
 }
 
-bool DxDevice::TestPresent()
+DxRenderStats DxDevice::Render(bool vsync)
 {
-    if (!m_swap)
-        return false;
-
-    const HRESULT hr = m_swap->Present(0, DXGI_PRESENT_TEST);
-    if (hr == DXGI_STATUS_OCCLUDED)
-    {
-        m_occluded = true;
-        return false;
-    }
-
-    if (hr == DXGI_ERROR_DEVICE_REMOVED || hr == DXGI_ERROR_DEVICE_RESET)
-    {
-        (void)HandleDeviceLost();
-        return false;
-    }
-
-    m_occluded = false;
-    return true;
-}
-
-void DxDevice::Render(bool vsync)
-{
+    DxRenderStats stats{};
     if (!m_ctx || !m_rtv || !m_swap)
-        return;
+        return stats;
 
     const float clear[4] = { 0.08f, 0.10f, 0.12f, 1.0f };
 
@@ -318,46 +350,50 @@ void DxDevice::Render(bool vsync)
     if (!vsync && m_allowTearing)
         presentFlags |= DXGI_PRESENT_ALLOW_TEARING;
 
-    const HRESULT hr = m_swap->Present(syncInterval, presentFlags);
-
-    if (hr == DXGI_STATUS_OCCLUDED)
+    static LARGE_INTEGER freq{};
+    static bool freqInit = false;
+    if (!freqInit)
     {
-        // Some present paths may report occlusion; when this happens, the app should
-        // stop rendering until visible again (AppWindow handles this).
-        m_occluded = true;
-        return;
+        ::QueryPerformanceFrequency(&freq);
+        freqInit = true;
     }
 
-    m_occluded = false;
+    LARGE_INTEGER t0{};
+    LARGE_INTEGER t1{};
+    ::QueryPerformanceCounter(&t0);
+
+    const HRESULT hr = m_swap->Present(syncInterval, presentFlags);
+
+    ::QueryPerformanceCounter(&t1);
+
+    stats.presentHr = hr;
+    stats.presentMs = QpcToMs(t1.QuadPart - t0.QuadPart, freq);
+    stats.occluded = (hr == DXGI_STATUS_OCCLUDED);
 
     if (hr == DXGI_ERROR_DEVICE_REMOVED || hr == DXGI_ERROR_DEVICE_RESET)
     {
         (void)HandleDeviceLost();
     }
+
+    return stats;
 }
 
 void DxDevice::Shutdown()
 {
     DestroyRTV();
+    CloseFrameLatencyHandle();
 
-    if (m_frameLatencyWaitableObject)
-    {
-        CloseHandle(m_frameLatencyWaitableObject);
-        m_frameLatencyWaitableObject = nullptr;
-    }
-
-    if (m_swap2)  m_swap2.Reset();
-    if (m_swap)   m_swap.Reset();
-    if (m_ctx)    m_ctx.Reset();
-    if (m_device) m_device.Reset();
+    if (m_swap)    m_swap.Reset();
+    if (m_ctx)     m_ctx.Reset();
+    if (m_device)  m_device.Reset();
     if (m_factory) m_factory.Reset();
 
     m_hwnd = nullptr;
     m_allowTearing = false;
-    m_occluded = false;
     m_width = 0;
     m_height = 0;
-    m_swapChainFlags = 0;
+    m_createdWithWaitableFlag = false;
+    m_swapchainFlags = 0;
 }
 
 bool DxDevice::HandleDeviceLost()
@@ -369,13 +405,12 @@ bool DxDevice::HandleDeviceLost()
     const HWND hwnd = m_hwnd;
     const UINT w = m_width ? m_width : 1280u;
     const UINT h = m_height ? m_height : 720u;
+    const DxDeviceOptions opt = m_opt;
 
     // Optional: query reason for debugging.
     if (m_device)
-    {
         (void)m_device->GetDeviceRemovedReason();
-    }
 
     Shutdown();
-    return Init(hwnd, w, h);
+    return Init(hwnd, w, h, opt);
 }

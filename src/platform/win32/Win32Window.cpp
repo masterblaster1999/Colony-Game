@@ -1,8 +1,12 @@
 #include "platform/win32/Win32Window.h"
 
 #include <shellscalingapi.h> // AdjustWindowRectExForDpi, GetDpiForSystem
+#include <dwmapi.h>
 
 #pragma comment(lib, "Shcore.lib")
+
+// DwmSetWindowAttribute
+#pragma comment(lib, "dwmapi.lib")
 
 namespace colony::appwin::win32 {
 
@@ -98,6 +102,19 @@ void BorderlessFullscreen::Toggle(HWND hwnd) noexcept
             // Borderless fullscreen.
             const DWORD newStyle = (m_windowStyle & ~WS_OVERLAPPEDWINDOW) | WS_POPUP;
 
+            // Reduce the amount of compositor/window-manager animation work
+            // during fullscreen transitions. (Best-effort: ignored on older
+            // Windows builds.)
+            {
+                const BOOL disableTransitions = TRUE;
+                (void)DwmSetWindowAttribute(
+                    hwnd,
+                    DWMWA_TRANSITIONS_FORCEDISABLED,
+                    &disableTransitions,
+                    sizeof(disableTransitions)
+                );
+            }
+
             SetWindowLongW(hwnd, GWL_STYLE, static_cast<LONG>(newStyle));
             SetWindowLongW(hwnd, GWL_EXSTYLE, static_cast<LONG>(m_windowExStyle));
 
@@ -116,6 +133,17 @@ void BorderlessFullscreen::Toggle(HWND hwnd) noexcept
     }
     else
     {
+        // Re-enable compositor transitions (best-effort).
+        {
+            const BOOL disableTransitions = FALSE;
+            (void)DwmSetWindowAttribute(
+                hwnd,
+                DWMWA_TRANSITIONS_FORCEDISABLED,
+                &disableTransitions,
+                sizeof(disableTransitions)
+            );
+        }
+
         // Restore windowed placement.
         SetWindowLongW(hwnd, GWL_STYLE, static_cast<LONG>(m_windowStyle));
         SetWindowLongW(hwnd, GWL_EXSTYLE, static_cast<LONG>(m_windowExStyle));

@@ -8,16 +8,42 @@ namespace colony::appwin::win32 {
 
 void RawMouseInput::Register(HWND hwnd) noexcept
 {
+    SetEnabled(hwnd, true);
+}
+
+void RawMouseInput::SetEnabled(HWND hwnd, bool enabled) noexcept
+{
+    if (enabled) {
+        RAWINPUTDEVICE rid{};
+        rid.usUsagePage = 0x01; // HID_USAGE_PAGE_GENERIC
+        rid.usUsage     = 0x02; // HID_USAGE_GENERIC_MOUSE
+
+        // Keep INPUTSINK so we continue receiving WM_INPUT even while captured; we still
+        // gate processing by focus/capture in WM_INPUT to avoid background movement.
+        rid.dwFlags     = RIDEV_INPUTSINK;
+        rid.hwndTarget  = hwnd;
+
+        m_rawRegistered = (RegisterRawInputDevices(&rid, 1, sizeof(rid)) != FALSE);
+
+        // If we ever fall back to WM_MOUSEMOVE deltas, re-base to avoid a huge jump.
+        m_hasPos = false;
+        return;
+    }
+
+    // Best-effort removal of this registration so we stop receiving WM_INPUT for the mouse.
+    // (If this fails for some reason, we still gate processing by m_rawRegistered.)
     RAWINPUTDEVICE rid{};
-    rid.usUsagePage = 0x01; // HID_USAGE_PAGE_GENERIC
-    rid.usUsage     = 0x02; // HID_USAGE_GENERIC_MOUSE
+    rid.usUsagePage = 0x01;
+    rid.usUsage     = 0x02;
+    rid.dwFlags     = RIDEV_REMOVE;
+    rid.hwndTarget  = nullptr;
 
-    // Keep INPUTSINK so we continue receiving WM_INPUT even while captured; we still
-    // gate processing by focus/capture in WM_INPUT to avoid background movement.
-    rid.dwFlags     = RIDEV_INPUTSINK;
-    rid.hwndTarget  = hwnd;
+    if (RegisterRawInputDevices(&rid, 1, sizeof(rid)) != FALSE) {
+        m_rawRegistered = false;
+    }
 
-    m_rawRegistered = (RegisterRawInputDevices(&rid, 1, sizeof(rid)) != FALSE);
+    // Re-base cursor deltas on next move.
+    m_hasPos = false;
 }
 
 // -----------------------------------------------------------------------------
@@ -208,6 +234,10 @@ bool RawMouseInput::OnRawInput(HWND hwnd, HRAWINPUT hRawInput, LONG& outDx, LONG
 {
     outDx = 0;
     outDy = 0;
+
+    if (!m_rawRegistered) {
+        return false;
+    }
 
     // Only process raw input when the window is active or owns capture,
     // and only while dragging (buttons down). This avoids background movement

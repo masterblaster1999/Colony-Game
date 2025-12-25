@@ -1,4 +1,5 @@
 #pragma once
+
 #include <windows.h>
 
 #include <d3d11.h>
@@ -6,6 +7,29 @@
 #include <wrl/client.h>
 
 using Microsoft::WRL::ComPtr;
+
+// Swapchain/device creation options.
+//
+// This is intentionally small and Windows-only.
+struct DxDeviceOptions
+{
+    // DXGI maximum frame latency (frames queued ahead). Clamp: 1..16.
+    UINT maxFrameLatency = 1;
+
+    // DXGI swapchain scaling policy.
+    DXGI_SCALING scaling = DXGI_SCALING_NONE;
+
+    // If true, request DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT and
+    // expose FrameLatencyWaitableObject() for low-latency message-loop waiting.
+    bool enableWaitableObject = true;
+};
+
+struct DxRenderStats
+{
+    HRESULT presentHr = S_OK;
+    double presentMs = 0.0; // CPU time spent inside Present()
+    bool occluded = false;  // Present returned DXGI_STATUS_OCCLUDED
+};
 
 // Minimal D3D11 device + flip-model swapchain wrapper.
 // Windows-only by design for this project.
@@ -17,33 +41,22 @@ public:
     DxDevice(const DxDevice&) = delete;
     DxDevice& operator=(const DxDevice&) = delete;
 
-    bool Init(HWND hwnd, UINT width, UINT height);
+    bool Init(HWND hwnd, UINT width, UINT height, const DxDeviceOptions& opt = {});
     void Resize(UINT width, UINT height);
-    void Render(bool vsync);
+    DxRenderStats Render(bool vsync);
     void Shutdown();
 
     [[nodiscard]] bool SupportsTearing() const noexcept { return m_allowTearing; }
 
-    // ---------------------------------------------------------------------------------
-    // Low-latency presentation (flip-model waitable swapchain)
-    // ---------------------------------------------------------------------------------
-    //
-    // If the swapchain was created with DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT,
-    // DXGI can expose a waitable object that signals when it's OK to begin rendering the
-    // next frame (i.e., the swapchain is not still presenting).
-    //
-    // Using this handle in the message loop avoids CPU spinning and can reduce input
-    // latency by limiting how many frames are queued.
-    void SetMaximumFrameLatency(UINT maxLatency) noexcept;
-    [[nodiscard]] UINT MaximumFrameLatency() const noexcept { return m_maxFrameLatency; }
-    [[nodiscard]] HANDLE FrameLatencyWaitableObject() const noexcept { return m_frameLatencyWaitableObject; }
+    // Waitable swapchain integration (nullptr when unsupported or disabled).
+    [[nodiscard]] HANDLE FrameLatencyWaitableObject() const noexcept { return m_frameLatencyWaitable; }
+    [[nodiscard]] bool HasFrameLatencyWaitableObject() const noexcept { return m_frameLatencyWaitable != nullptr; }
 
-    // Best-effort occlusion tracking (Present can report DXGI_STATUS_OCCLUDED on some paths).
-    [[nodiscard]] bool IsOccluded() const noexcept { return m_occluded; }
+    [[nodiscard]] UINT MaxFrameLatency() const noexcept { return m_opt.maxFrameLatency; }
+    void SetMaxFrameLatency(UINT v) noexcept;
 
-    // Cheap visibility check: calls Present with DXGI_PRESENT_TEST to update IsOccluded().
-    // Returns true if the swapchain is visible (not occluded).
-    bool TestPresent();
+    [[nodiscard]] DXGI_SCALING Scaling() const noexcept { return m_opt.scaling; }
+    void SetScaling(DXGI_SCALING s) noexcept { m_opt.scaling = s; }
 
 private:
     // If the D3D device is removed/reset, tear down and recreate everything.
@@ -54,26 +67,30 @@ private:
     void CreateRTV();
     void DestroyRTV();
 
+    void CloseFrameLatencyHandle() noexcept;
+    void ApplyFrameLatencyIfPossible() noexcept;
+
     ComPtr<ID3D11Device>           m_device;
     ComPtr<ID3D11DeviceContext>    m_ctx;
-    ComPtr<IDXGISwapChain1>        m_swap;   // base interface (used for Present/Resize/GetBuffer)
-    ComPtr<IDXGISwapChain2>        m_swap2;  // optional (waitable object + per-swapchain frame latency)
+    ComPtr<IDXGISwapChain1>        m_swap;
     ComPtr<IDXGIFactory6>          m_factory;
     ComPtr<ID3D11RenderTargetView> m_rtv;
 
     bool        m_allowTearing = false;
-    bool        m_occluded = false;
-
-    DXGI_FORMAT m_backbufferFormat = DXGI_FORMAT_R8G8B8A8_UNORM; // flip model prefers UNORM for backbuffer
+    DXGI_FORMAT m_backbufferFormat = DXGI_FORMAT_R8G8B8A8_UNORM; // flip model prefers UNORM
     HWND        m_hwnd = nullptr;
 
-    UINT        m_width = 0;
-    UINT        m_height = 0;
+    UINT m_width  = 0;
+    UINT m_height = 0;
 
-    // Swapchain configuration
-    UINT        m_swapChainFlags = 0;
+    // Options requested for creation / device lost recreation.
+    DxDeviceOptions m_opt{};
 
-    // Low-latency configuration
-    UINT        m_maxFrameLatency = 1;
-    HANDLE      m_frameLatencyWaitableObject = nullptr;
+    // Swapchain waitable object (CloseHandle() on shutdown).
+    HANDLE m_frameLatencyWaitable = nullptr;
+    bool   m_createdWithWaitableFlag = false;
+
+    // The exact flags used to create the current swapchain (must be reused
+    // for ResizeBuffers).
+    UINT   m_swapchainFlags = 0;
 };

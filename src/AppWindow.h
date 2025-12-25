@@ -11,7 +11,7 @@
 //   - V        : Toggle VSync
 //   - F11      : Toggle borderless fullscreen
 //   - Alt+Enter: Toggle borderless fullscreen
-//   - F9       : Toggle pause-when-unfocused (background pause)
+//   - F10      : Toggle frame pacing stats in title bar (PresentMon-style summary)
 class AppWindow {
 public:
     AppWindow();
