@@ -13,10 +13,15 @@ LRESULT AppWindow::HandleMsg_Input(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lP
     switch (msg)
     {
     case WM_SETCURSOR:
-        if (LOWORD(lParam) == HTCLIENT && m_impl) {
+        if (LOWORD(lParam) == HTCLIENT && m_impl)
+        {
+            // Cache cursor handles (LoadCursor is cheap, but WM_SETCURSOR can be *very* hot).
+            static HCURSOR s_hand = LoadCursorW(nullptr, IDC_HAND);
+            static HCURSOR s_sizeAll = LoadCursorW(nullptr, IDC_SIZEALL);
+
             const auto b = m_impl->mouse.Buttons();
-            if (b.middle || b.right || b.x1 || b.x2) { SetCursor(LoadCursor(nullptr, IDC_SIZEALL)); handled = true; return TRUE; }
-            if (b.left)                              { SetCursor(LoadCursor(nullptr, IDC_HAND));    handled = true; return TRUE; }
+            if (b.middle || b.right || b.x1 || b.x2) { SetCursor(s_sizeAll); handled = true; return TRUE; }
+            if (b.left)                              { SetCursor(s_hand);    handled = true; return TRUE; }
         }
         break;
 
@@ -29,6 +34,30 @@ LRESULT AppWindow::HandleMsg_Input(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lP
         {
         case VK_ESCAPE:
             PostQuitMessage(0);
+            handled = true;
+            return 0;
+
+        case VK_F1:
+            // Hotkey help.
+            // Ignore auto-repeat so holding F1 doesn't spam MessageBox.
+            if ((lParam & (1 << 30)) == 0)
+                ShowHotkeysHelp();
+            handled = true;
+            return 0;
+
+        case VK_F6:
+            // FPS caps:
+            //   - F6        : VSync-OFF cap (foreground)
+            //   - Shift+F6  : unfocused cap (background)
+            // Ignore auto-repeat so holding F6 doesn't spam-toggle.
+            if ((lParam & (1 << 30)) == 0)
+            {
+                const bool shiftDown = (GetKeyState(VK_SHIFT) & 0x8000) != 0;
+                if (shiftDown)
+                    CycleMaxFpsWhenUnfocused();
+                else
+                    CycleMaxFpsWhenVsyncOff();
+            }
             handled = true;
             return 0;
 
@@ -118,6 +147,8 @@ LRESULT AppWindow::HandleMsg_Input(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lP
         {
             const std::uint32_t vk = static_cast<std::uint32_t>(wParam);
             const bool isSystem = (vk == static_cast<std::uint32_t>(VK_ESCAPE)) ||
+                                  (vk == static_cast<std::uint32_t>(VK_F1)) ||
+                                  (vk == static_cast<std::uint32_t>(VK_F6)) ||
                                   (vk == static_cast<std::uint32_t>(VK_F11)) ||
                                   (vk == static_cast<std::uint32_t>(VK_F10)) ||
                                   (vk == static_cast<std::uint32_t>(VK_F9)) ||
@@ -145,6 +176,8 @@ LRESULT AppWindow::HandleMsg_Input(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lP
         {
             const std::uint32_t vk = static_cast<std::uint32_t>(wParam);
             const bool isSystem = (vk == static_cast<std::uint32_t>(VK_ESCAPE)) ||
+                                  (vk == static_cast<std::uint32_t>(VK_F1)) ||
+                                  (vk == static_cast<std::uint32_t>(VK_F6)) ||
                                   (vk == static_cast<std::uint32_t>(VK_F11)) ||
                                   (vk == static_cast<std::uint32_t>(VK_F10)) ||
                                   (vk == static_cast<std::uint32_t>(VK_F9)) ||

@@ -72,6 +72,33 @@ endif()
 add_executable(ColonyGame ${_win32_arg})
 target_sources(ColonyGame PRIVATE ${_colony_game_sources})
 
+# Embed a proper Windows app manifest (PerMonitorV2 DPI awareness, long paths, etc.)
+# and version info into the executable via a generated .rc file that uses an
+# absolute path. This avoids fragile relative-path assumptions during builds.
+if (WIN32)
+    set(_cg_manifest_src "")
+    if (EXISTS "${PROJECT_SOURCE_DIR}/res/win/app.manifest")
+        set(_cg_manifest_src "${PROJECT_SOURCE_DIR}/res/win/app.manifest")
+    elseif (EXISTS "${PROJECT_SOURCE_DIR}/res/app.manifest")
+        set(_cg_manifest_src "${PROJECT_SOURCE_DIR}/res/app.manifest")
+    endif()
+
+    if (NOT _cg_manifest_src STREQUAL "")
+        configure_file("${_cg_manifest_src}" "${CMAKE_CURRENT_BINARY_DIR}/app.manifest" COPYONLY)
+        file(TO_CMAKE_PATH "${CMAKE_CURRENT_BINARY_DIR}/app.manifest" _cg_manifest_abs)
+
+        set(_cg_manifest_rc "${CMAKE_CURRENT_BINARY_DIR}/app_manifest.rc")
+        file(WRITE "${_cg_manifest_rc}" "1 RT_MANIFEST \"${_cg_manifest_abs}\"\n")
+        set_source_files_properties("${_cg_manifest_rc}" PROPERTIES GENERATED TRUE)
+        target_sources(ColonyGame PRIVATE "${_cg_manifest_rc}")
+    endif()
+
+    if (EXISTS "${PROJECT_SOURCE_DIR}/res/version.rc")
+        target_sources(ColonyGame PRIVATE "${PROJECT_SOURCE_DIR}/res/version.rc")
+    endif()
+endif()
+
+
 target_compile_features(ColonyGame PRIVATE cxx_std_23)
 
 # Keep include paths tight: we only need src/ for the thin app layer.

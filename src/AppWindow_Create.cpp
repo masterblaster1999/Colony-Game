@@ -2,6 +2,7 @@
 
 #include "DxDevice.h"
 
+#include <array>
 #include <chrono>
 #include <cstdint>
 #include <iomanip>
@@ -133,6 +134,134 @@ void AppWindow::ToggleFullscreen()
     UpdateTitle();
 }
 
+
+void AppWindow::CycleMaxFpsWhenVsyncOff()
+{
+    if (!m_impl)
+        return;
+
+    // Common monitor refresh caps + "unlimited" (0).
+    constexpr std::array<std::uint32_t, 6> kCaps{ { 0u, 60u, 120u, 144u, 165u, 240u } };
+
+    const std::uint32_t cur = m_impl->pacer.MaxFpsWhenVsyncOff();
+
+    // If the current value isn't in the list (e.g. edited in JSON), pick the next
+    // higher cap; otherwise, cycle to the next element.
+    bool matched = false;
+    std::uint32_t next = kCaps[0];
+
+    for (std::size_t i = 0; i < kCaps.size(); ++i)
+    {
+        if (kCaps[i] == cur)
+        {
+            next = kCaps[(i + 1) % kCaps.size()];
+            matched = true;
+            break;
+        }
+    }
+
+    if (!matched)
+    {
+        // Skip index 0 (unlimited) for "next higher cap" selection.
+        next = 0;
+        for (std::size_t i = 1; i < kCaps.size(); ++i)
+        {
+            if (kCaps[i] > cur)
+            {
+                next = kCaps[i];
+                break;
+            }
+        }
+    }
+
+    m_impl->pacer.SetMaxFpsWhenVsyncOff(next);
+
+    m_impl->settings.maxFpsWhenVsyncOff = next;
+    m_impl->ScheduleSettingsAutosave();
+
+    UpdateTitle();
+}
+
+void AppWindow::CycleMaxFpsWhenUnfocused()
+{
+    if (!m_impl)
+        return;
+
+    // Background caps: keep CPU usage down when alt-tabbed / unfocused.
+    constexpr std::array<std::uint32_t, 5> kCaps{ { 0u, 5u, 10u, 30u, 60u } };
+
+    const std::uint32_t cur = m_impl->pacer.MaxFpsWhenUnfocused();
+
+    bool matched = false;
+    std::uint32_t next = kCaps[0];
+
+    for (std::size_t i = 0; i < kCaps.size(); ++i)
+    {
+        if (kCaps[i] == cur)
+        {
+            next = kCaps[(i + 1) % kCaps.size()];
+            matched = true;
+            break;
+        }
+    }
+
+    if (!matched)
+    {
+        next = 0;
+        for (std::size_t i = 1; i < kCaps.size(); ++i)
+        {
+            if (kCaps[i] > cur)
+            {
+                next = kCaps[i];
+                break;
+            }
+        }
+    }
+
+    m_impl->pacer.SetMaxFpsWhenUnfocused(next);
+
+    m_impl->settings.maxFpsWhenUnfocused = next;
+    m_impl->ScheduleSettingsAutosave();
+
+    UpdateTitle();
+}
+
+void AppWindow::ShowHotkeysHelp()
+{
+    const auto CapStr = [](std::uint32_t v) -> std::wstring {
+        if (v == 0) return L"∞";
+        return std::to_wstring(v);
+    };
+
+    std::wostringstream oss;
+    oss << L"Hotkeys\r\n"
+        << L"-------\r\n"
+        << L"Esc            : Quit\r\n"
+        << L"F1             : Show this help\r\n"
+        << L"V              : Toggle VSync\r\n"
+        << L"F11 / Alt+Enter: Toggle borderless fullscreen\r\n"
+        << L"F10            : Toggle frame pacing stats in title bar\r\n"
+        << L"F9             : Toggle RAWINPUT mouse (drag deltas)\r\n"
+        << L"F8             : Cycle DXGI max frame latency (1..16)\r\n"
+        << L"F7             : Toggle pause-when-unfocused\r\n"
+        << L"F6             : Cycle FPS cap when VSync is OFF (∞ / 60 / 120 / 144 / 165 / 240)\r\n"
+        << L"Shift+F6        : Cycle background FPS cap (∞ / 5 / 10 / 30 / 60)\r\n"
+        << L"\r\n"
+        << L"Current\r\n"
+        << L"-------\r\n"
+        << L"VSync            : " << (m_gfx.VsyncEnabled() ? L"ON" : L"OFF") << L"\r\n"
+        << L"Cap (VSync OFF)  : " << CapStr(m_impl ? m_impl->pacer.MaxFpsWhenVsyncOff() : 0u) << L"\r\n"
+        << L"Cap (Background) : " << CapStr(m_impl ? m_impl->pacer.MaxFpsWhenUnfocused() : 0u) << L"\r\n"
+        << L"Max Frame Latency: " << (m_impl ? std::to_wstring(m_impl->settings.maxFrameLatency) : L"?") << L"\r\n"
+        << L"Raw Mouse        : " << (m_impl && m_impl->settings.rawMouse ? L"ON" : L"OFF") << L"\r\n"
+        << L"Pause Unfocused  : " << (m_impl && m_impl->settings.pauseWhenUnfocused ? L"ON" : L"OFF") << L"\r\n"
+        << L"\r\n"
+        << L"Settings persist in %LOCALAPPDATA%\\ColonyGame\\settings.json\r\n";
+
+    const auto msg = oss.str();
+    MessageBoxW(m_hwnd ? m_hwnd : nullptr, msg.c_str(), L"Colony Game - Hotkeys", MB_OK | MB_ICONINFORMATION);
+}
+
 void AppWindow::UpdateTitle()
 {
     if (!m_hwnd || !m_impl)
@@ -145,11 +274,18 @@ void AppWindow::UpdateTitle()
                              : (m_impl->settings.pauseWhenUnfocused ? L"BG (PAUSED)" : L"BG");
     const double fps = m_impl->pacer.Fps();
 
+    const auto CapStr = [](std::uint32_t v) -> std::wstring {
+        if (v == 0) return L"∞";
+        return std::to_wstring(v);
+    };
+
     std::wostringstream oss;
     oss.setf(std::ios::fixed);
     oss << L"Colony Game | " << std::setprecision(0) << fps << L" FPS"
         << L" | VSync " << vs
         << L" | Lat " << m_impl->settings.maxFrameLatency
+        << L" | CapOff " << CapStr(m_impl->pacer.MaxFpsWhenVsyncOff())
+        << L" | CapBG " << CapStr(m_impl->pacer.MaxFpsWhenUnfocused())
         << L" | Raw " << (m_impl->settings.rawMouse ? L"ON" : L"OFF")
         << L" | PauseBG " << (m_impl->settings.pauseWhenUnfocused ? L"ON" : L"OFF")
         << L" | " << fs
@@ -158,6 +294,12 @@ void AppWindow::UpdateTitle()
     if (!m_impl->settingsLoaded)
     {
         oss << L" | CFG DEFAULT";
+    }
+
+    const auto dropped = m_impl->input.Dropped();
+    if (dropped > 0)
+    {
+        oss << L" | InputDrop " << dropped;
     }
 
     if (m_impl->settings.showFrameStats)

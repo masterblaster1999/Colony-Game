@@ -38,10 +38,15 @@ If you prefer CMake presets in Visual Studio / VS Code, see `CMakePresets.json`.
 In the current window prototype (`AppWindow`):
 
 - **Esc**: quit
+- **F1**: show hotkey help
 - **V**: toggle VSync (when off, frame rate is capped to avoid 100% CPU)
-- **F11** or **Alt+Enter**: toggle borderless fullscreen
+- **F6**: cycle FPS cap when VSync is **OFF** (∞ / 60 / 120 / 144 / 165 / 240)
+- **Shift+F6**: cycle background FPS cap (∞ / 5 / 10 / 30 / 60)
+- **F7**: toggle pause-when-unfocused
+- **F8**: cycle DXGI max frame latency (lower = lower latency)
 - **F9**: toggle raw mouse input (WM_INPUT) vs cursor-based deltas
 - **F10**: toggle PresentMon-style frame pacing stats in the window title
+- **F11** or **Alt+Enter**: toggle borderless fullscreen
 - Mouse drag (LMB/RMB/MMB): camera placeholder controls (debug title shows values)
 
 ### Per-user settings
@@ -56,6 +61,7 @@ New in this patch:
 - `runtime.maxFpsWhenUnfocused` (default `30`): if `pauseWhenUnfocused` is `false`, this caps the background FPS.
 - `input.rawMouse` (default `true`): enables WM_INPUT raw mouse deltas (better high-DPI + high polling stability).
 - `graphics.maxFrameLatency` (default `1`): limits DXGI render queue depth (lower latency, more stable pacing).
+- `graphics.maxFpsWhenVsyncOff` (default `240`): caps FPS when VSync is off (helps avoid 100% CPU).
 - `graphics.swapchainScaling` (default `"none"`): DXGI scaling mode for the swapchain (`none`, `stretch`, `aspect`).
 - `debug.showFrameStats` (default `false`): toggles PresentMon-style pacing stats in the title bar.
 
@@ -65,6 +71,7 @@ Example snippet:
 {
   "graphics": {
     "maxFrameLatency": 1,
+    "maxFpsWhenVsyncOff": 240,
     "swapchainScaling": "none"
   },
   "input": {
