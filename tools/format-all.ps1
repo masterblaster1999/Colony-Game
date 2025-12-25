@@ -1,39 +1,26 @@
-# Format all C/C++ sources in src/ using clang-format.
-#
-# Prefers clang-format on PATH, but falls back to common Windows installs:
-#  - LLVM official installer
-#  - Visual Studio's bundled LLVM toolchain
+param()
 
-$clang = $null
+$ErrorActionPreference = "Stop"
 
-$cmd = Get-Command clang-format.exe -ErrorAction SilentlyContinue
-if ($cmd) {
-  $clang = $cmd.Source
-}
+function Find-ClangFormat {
+    $candidates = @(
+        "$env:LLVM_INSTALL_DIR\bin\clang-format.exe",
+        "C:\Program Files\LLVM\bin\clang-format.exe",
+        "C:\Program Files (x86)\LLVM\bin\clang-format.exe"
+    )
 
-if (-not $clang) {
-  $candidatePaths = @(
-    "C:\Program Files\LLVM\bin\clang-format.exe",
-    "C:\Program Files (x86)\LLVM\bin\clang-format.exe",
-    "C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Tools\Llvm\x64\bin\clang-format.exe",
-    "C:\Program Files\Microsoft Visual Studio\2022\Professional\VC\Tools\Llvm\x64\bin\clang-format.exe",
-    "C:\Program Files\Microsoft Visual Studio\2022\Enterprise\VC\Tools\Llvm\x64\bin\clang-format.exe"
-  )
-
-  foreach ($p in $candidatePaths) {
-    if (Test-Path $p) {
-      $clang = $p
-      break
+    foreach ($c in $candidates) {
+        if ($c -and (Test-Path $c)) { return $c }
     }
-  }
+
+    $cmd = Get-Command clang-format.exe -ErrorAction SilentlyContinue
+    if ($cmd) { return $cmd.Source }
+
+    throw "clang-format.exe not found. Install LLVM (clang-format) or add it to PATH."
 }
 
-if (-not $clang) {
-  Write-Error "clang-format.exe not found. Install LLVM or ensure clang-format is on PATH."
-  exit 1
-}
+$clang = Find-ClangFormat
+$repoRoot = Resolve-Path (Join-Path $PSScriptRoot "..")
 
-Write-Host "Using clang-format: $clang"
-
-Get-ChildItem "$PSScriptRoot\..\src" -Include *.h,*.hpp,*.cpp -Recurse |
-  % { & $clang -i $_.FullName }
+Get-ChildItem -Path $repoRoot -Include *.h,*.hpp,*.cpp -Recurse -File |
+    ForEach-Object { & $clang -i $_.FullName }

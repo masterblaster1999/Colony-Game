@@ -17,6 +17,10 @@ namespace {
     constexpr int kMinMaxFps = 30;
     constexpr int kMaxMaxFps = 1000;
 
+
+    constexpr int kMinFrameLatency = 1;
+    constexpr int kMaxFrameLatency = 16;
+
     std::uint32_t ClampDim(std::uint32_t v) noexcept
     {
         if (v < kMinWindowDim) return kMinWindowDim;
@@ -29,6 +33,14 @@ namespace {
         if (v == 0) return 0;
         if (v < kMinMaxFps) return kMinMaxFps;
         if (v > kMaxMaxFps) return kMaxMaxFps;
+        return v;
+    }
+
+
+    int ClampFrameLatency(int v) noexcept
+    {
+        if (v < kMinFrameLatency) return kMinFrameLatency;
+        if (v > kMaxFrameLatency) return kMaxFrameLatency;
         return v;
     }
 
@@ -85,6 +97,8 @@ bool LoadUserSettings(UserSettings& out) noexcept
             tmp.fullscreen = f->get<bool>();
         if (auto m = it->find("maxFpsWhenVsyncOff"); m != it->end() && m->is_number_integer())
             tmp.maxFpsWhenVsyncOff = ClampMaxFps(m->get<int>());
+        if (auto l = it->find("maxFrameLatency"); l != it->end() && l->is_number_integer())
+            tmp.maxFrameLatency = ClampFrameLatency(l->get<int>());
     }
 
     if (const auto it = j.find("runtime"); it != j.end() && it->is_object())
@@ -107,7 +121,7 @@ bool SaveUserSettings(const UserSettings& settings) noexcept
     std::filesystem::create_directories(UserSettingsPath().parent_path(), ec);
 
     nlohmann::json j;
-    j["version"] = 2;
+    j["version"] = 3;
     j["window"] = {
         {"width", settings.windowWidth},
         {"height", settings.windowHeight},
@@ -116,6 +130,7 @@ bool SaveUserSettings(const UserSettings& settings) noexcept
         {"vsync", settings.vsync},
         {"fullscreen", settings.fullscreen},
         {"maxFpsWhenVsyncOff", settings.maxFpsWhenVsyncOff},
+        {"maxFrameLatency", settings.maxFrameLatency},
     };
 
     j["runtime"] = {

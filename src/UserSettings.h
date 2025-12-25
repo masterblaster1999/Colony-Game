@@ -27,6 +27,15 @@ struct UserSettings
     // 0 = uncapped (not recommended for laptops).
     int maxFpsWhenVsyncOff = 240;
 
+    // DXGI max frame latency (how many frames can be queued for the swapchain).
+    //
+    //  - 1 is the lowest-latency setting (recommended).
+    //  - Higher values can improve throughput on some GPUs but increase input latency.
+    //
+    // Note: This only applies when the swapchain is created with
+    // DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT (our default on supported systems).
+    int maxFrameLatency = 1;
+
     // If true, the game stops rendering/sim ticking when the window is not the
     // foreground app (Alt+Tab). This saves a lot of CPU/GPU and avoids
     // surprising background input.

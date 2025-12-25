@@ -40,7 +40,7 @@ In the current window prototype (`AppWindow`):
 - **Esc**: quit
 - **V**: toggle VSync (when off, frame rate is capped to avoid 100% CPU)
 - **F11** or **Alt+Enter**: toggle borderless fullscreen
-- **F9**: toggle `pauseWhenUnfocused` (handy for background profiling)
+- **F9**: toggle `pauseWhenUnfocused` (background pause)
 - Mouse drag (LMB/RMB/MMB): camera placeholder controls (debug title shows values)
 
 ### Per-user settings
@@ -51,6 +51,7 @@ The prototype persists a small settings file at:
 
 New in this patch:
 
+- `graphics.maxFrameLatency` (default `1`): maximum number of queued frames for the swapchain (lower = less input latency).
 - `runtime.pauseWhenUnfocused` (default `true`): when you Alt+Tab away, the game pauses rendering/sim to save CPU/GPU.
 - `runtime.maxFpsWhenUnfocused` (default `30`): if `pauseWhenUnfocused` is `false`, this caps the background FPS.
 
@@ -58,6 +59,9 @@ Example snippet:
 
 ```json
 {
+  "graphics": {
+    "maxFrameLatency": 1
+  },
   "runtime": {
     "pauseWhenUnfocused": false,
     "maxFpsWhenUnfocused": 30

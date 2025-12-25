@@ -130,6 +130,7 @@ bool AppWindow::Create(HINSTANCE hInst, int nCmdShow, int width, int height)
     m_impl->settings.vsync = m_vsync;
     m_impl->settings.fullscreen = false;
     m_impl->settings.maxFpsWhenVsyncOff = m_impl->pacer.MaxFpsWhenVsyncOff();
+    m_impl->settings.maxFrameLatency = 1;
     m_impl->settings.pauseWhenUnfocused = true;
     m_impl->settings.maxFpsWhenUnfocused = m_impl->pacer.MaxFpsWhenUnfocused();
 
@@ -176,6 +177,9 @@ bool AppWindow::Create(HINSTANCE hInst, int nCmdShow, int width, int height)
 
     if (!m_gfx.Init(m_hwnd, m_width, m_height))
         return false;
+
+    // Apply per-user latency setting (defaults to 1 for the lowest latency).
+    m_gfx.SetMaximumFrameLatency(static_cast<UINT>(m_impl->settings.maxFrameLatency));
 
     ShowWindow(m_hwnd, nCmdShow);
     UpdateWindow(m_hwnd);
@@ -225,16 +229,6 @@ void AppWindow::ToggleFullscreen()
     UpdateTitle();
 }
 
-void AppWindow::TogglePauseWhenUnfocused()
-{
-    if (!m_impl)
-        return;
-
-    m_impl->settings.pauseWhenUnfocused = !m_impl->settings.pauseWhenUnfocused;
-    ScheduleSettingsAutosave(*m_impl);
-    UpdateTitle();
-}
-
 void AppWindow::UpdateTitle()
 {
     if (!m_hwnd || !m_impl)
@@ -246,20 +240,21 @@ void AppWindow::UpdateTitle()
                              ? L"ACTIVE"
                              : (m_impl->settings.pauseWhenUnfocused ? L"BG (PAUSED)" : L"BG");
     const double fps = m_impl->pacer.Fps();
+    const unsigned latency = m_gfx.MaximumFrameLatency();
 
 #ifndef NDEBUG
     const auto cam = m_impl->game.GetDebugCameraInfo();
     wchar_t title[256];
     swprintf_s(title,
-               L"Colony Game | %.0f FPS | VSync %s | %s | %s | yaw %.1f pitch %.1f pan(%.1f, %.1f) zoom %.2f",
-               fps, vs, fs, act,
+               L"Colony Game | %.0f FPS | VSync %s | %s | %s | Lat %u | yaw %.1f pitch %.1f pan(%.1f, %.1f) zoom %.2f",
+               fps, vs, fs, act, latency,
                cam.yaw, cam.pitch,
                cam.panX, cam.panY,
                cam.zoom);
     SetWindowTextW(m_hwnd, title);
 #else
     wchar_t title[128];
-    swprintf_s(title, L"Colony Game | %.0f FPS | VSync %s | %s | %s", fps, vs, fs, act);
+    swprintf_s(title, L"Colony Game | %.0f FPS | VSync %s | %s | %s | Lat %u", fps, vs, fs, act, latency);
     SetWindowTextW(m_hwnd, title);
 #endif
 }
@@ -465,9 +460,17 @@ LRESULT AppWindow::HandleMsg(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam)
             return 0;
 
         case VK_F9:
+            // Toggle background pause (useful when streaming/recording or for debugging).
             // Ignore auto-repeat so holding F9 doesn't spam-toggle.
             if ((lParam & (1 << 30)) == 0)
-                TogglePauseWhenUnfocused();
+            {
+                if (m_impl)
+                {
+                    m_impl->settings.pauseWhenUnfocused = !m_impl->settings.pauseWhenUnfocused;
+                    ScheduleSettingsAutosave(*m_impl);
+                    UpdateTitle();
+                }
+            }
             return 0;
 
         case 'V':
@@ -487,7 +490,6 @@ LRESULT AppWindow::HandleMsg(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam)
             const std::uint32_t vk = static_cast<std::uint32_t>(wParam);
             const bool isSystem = (vk == static_cast<std::uint32_t>(VK_ESCAPE)) ||
                                   (vk == static_cast<std::uint32_t>(VK_F11)) ||
-                                  (vk == static_cast<std::uint32_t>(VK_F9))  ||
                                   (vk == static_cast<std::uint32_t>('V'));
 
             if (vk < 256 && !isSystem)
@@ -510,7 +512,6 @@ LRESULT AppWindow::HandleMsg(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam)
             const std::uint32_t vk = static_cast<std::uint32_t>(wParam);
             const bool isSystem = (vk == static_cast<std::uint32_t>(VK_ESCAPE)) ||
                                   (vk == static_cast<std::uint32_t>(VK_F11)) ||
-                                  (vk == static_cast<std::uint32_t>(VK_F9))  ||
                                   (vk == static_cast<std::uint32_t>('V'));
 
             if (vk < 256 && !isSystem)
@@ -786,7 +787,7 @@ int AppWindow::MessageLoop()
         // If minimized or intentionally paused in the background, don't render;
         // block until something happens. We still consume any queued input events
         // so FocusLost (etc.) reaches the game layer.
-        if (m_width == 0 || m_height == 0 || pauseInBackground)
+        if (m_width == 0 || m_height == 0 || pauseInBackground || m_gfx.IsOccluded())
         {
             while (PeekMessageW(&msg, nullptr, 0, 0, PM_REMOVE))
             {
@@ -807,7 +808,17 @@ int AppWindow::MessageLoop()
             }
 
             // If we have a pending settings auto-save, wake up in time to write it.
-            const DWORD timeoutMs = m_impl ? BackgroundWaitTimeoutMs(*m_impl) : INFINITE;
+            DWORD timeoutMs = m_impl ? BackgroundWaitTimeoutMs(*m_impl) : INFINITE;
+
+            // If DXGI reported the swapchain is occluded, poll at a low rate using DXGI_PRESENT_TEST.
+            // (This keeps CPU/GPU usage low while minimized/hidden.)
+            if (m_gfx.IsOccluded())
+            {
+                (void)m_gfx.TestPresent();
+                if (timeoutMs == INFINITE || timeoutMs > 200)
+                    timeoutMs = 200;
+            }
+
             MsgWaitForMultipleObjectsEx(0, nullptr, timeoutMs, QS_ALLINPUT, MWMO_INPUTAVAILABLE);
             continue;
         }
@@ -848,6 +859,31 @@ int AppWindow::MessageLoop()
         // If a cap is active and we woke due to messages, don't render early.
         if (!m_impl->pacer.IsTimeToRender(m_vsync, unfocusedAfterPump)) {
             continue;
+        }
+
+        // Waitable swapchain integration:
+        // If DXGI provided a frame-latency waitable object, wait here so we don't
+        // start building a new frame while the previous one is still being presented.
+        //
+        // This is a large win for smoothness and input latency on Windows because it:
+        //   - prevents deep present queues (when paired with SetMaximumFrameLatency)
+        //   - replaces "busy polling" / timing loops with an OS wait that also wakes for messages
+        const HANDLE frameWait = m_gfx.FrameLatencyWaitableObject();
+        if (frameWait)
+        {
+            const HANDLE handles[1] = { frameWait };
+            const DWORD waitRes = MsgWaitForMultipleObjectsEx(
+                1,
+                handles,
+                1000, // safety timeout (ms) to avoid deadlocks on buggy drivers
+                QS_ALLINPUT,
+                MWMO_INPUTAVAILABLE);
+
+            if (waitRes != WAIT_OBJECT_0)
+            {
+                // Woke due to messages (or timeout). We'll pump messages at the top of the loop.
+                continue;
+            }
         }
 
         // Render one frame (your sim tick could go here too).
