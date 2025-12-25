@@ -16,23 +16,33 @@
 set(_WIN_DIR "${CMAKE_SOURCE_DIR}/src/platform/win")
 set(_LEGACY_DIR "${CMAKE_SOURCE_DIR}/platform/win") # legacy (optional)
 
+# Centralized dependency target (ensures vcpkg include dirs are consistent).
+if(NOT TARGET colony::deps)
+  include(ColonyDeps)
+endif()
+
 # -----------------------------------------------------
-# Source discovery (canonical)
+# Sources (canonical)
 # -----------------------------------------------------
-file(GLOB_RECURSE _WIN_TU CONFIGURE_DEPENDS
-  "${_WIN_DIR}/*.c"
-  "${_WIN_DIR}/*.cpp"
+# Keep this list explicit so we never accidentally compile legacy/entrypoint TUs
+# into the platform static lib (classic duplicate symbol / multiple WinMain).
+set(_WIN_TU
+  "${_WIN_DIR}/CrashDump.cpp"
+  "${_WIN_DIR}/CrashHandler.cpp"
+  "${_WIN_DIR}/CrashHandlerWin.cpp"
+  "${_WIN_DIR}/DxgiSwapchain.cpp"
+  "${_WIN_DIR}/LauncherLoggingWin.cpp"
+  "${_WIN_DIR}/PathResolver.cpp"
+  "${_WIN_DIR}/PathUtilWin.cpp"
+  "${_WIN_DIR}/SingleInstance.cpp"
+  "${_WIN_DIR}/WinFiles.cpp"
+  "${_WIN_DIR}/WinPaths.cpp"
+  "${_WIN_DIR}/WinPlatformPaths.cpp"
+  "${_WIN_DIR}/WinWindow.cpp"
 )
 
-# Exclude entrypoints / executable glue that should not live in the platform lib.
-#
-# IMPORTANT:
-#   CrashInitBridge.cpp defines wincrash::InitCrashHandler(...) which is also
-#   defined by the ColonyGame executable (src/CrashDump.cpp). If we compile the
-#   bridge into the platform library as well, MSVC will fail the link with a
-#   duplicate symbol (LNK2005).
-set(_cg_exclude_regex "(^|/)(HighPerfGPU|GpuPreference|WinLauncher|AppMain|EntryWinMain|EntryPoint|WinMain|win32_main|main_win|Bootstrap|WinBootstrap|CrashInitBridge|WinPath)\.(c|cpp)$")
-list(FILTER _WIN_TU EXCLUDE REGEX "${_cg_exclude_regex}")
+# Exclude entrypoints / executable glue from legacy discovery.
+set(_cg_exclude_regex "(^|/)(HighPerfGPU|GpuPreference|WinLauncher|WinMain|win32_main|main_win|Bootstrap|WinBootstrap|CrashInitBridge|WinPath)\.(c|cpp)$")
 
 # Headers (IDE visibility)
 file(GLOB_RECURSE _WIN_HDR CONFIGURE_DEPENDS
@@ -162,6 +172,7 @@ if(NOT TARGET colony_platform_win)
     # Propagate Win32 import libs required by the platform objects to consumers.
     # (Static libs need these to be PUBLIC so final EXEs link cleanly.)
     target_link_libraries(colony_platform_win ${_cg_pub}
+      colony::deps
       dbghelp
       shlwapi
       shell32

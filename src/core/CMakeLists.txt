@@ -68,33 +68,13 @@ target_compile_definitions(colony_core PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX)
 
 
 # ---- Third-party deps (vcpkg) --------------------------------------------------
-# Core's public ECS headers include EnTT types, so propagate EnTT to consumers.
-set(_cg_entt_target "")
-find_package(EnTT CONFIG QUIET)
-if(EnTT_FOUND)
-  if(TARGET EnTT::EnTT)
-    set(_cg_entt_target EnTT::EnTT)
-  elseif(TARGET EnTT::entt)
-    set(_cg_entt_target EnTT::entt)
-  endif()
-else()
-  find_package(entt CONFIG QUIET)
-  if(entt_FOUND)
-    if(TARGET entt::entt)
-      set(_cg_entt_target entt::entt)
-    endif()
-  endif()
+# Use the centralized dependency target so include paths are consistent across
+# all targets (prevents "header found in one project but not another").
+if(NOT TARGET colony::deps)
+  include(ColonyDeps)
 endif()
 
-if(NOT _cg_entt_target)
-  message(FATAL_ERROR
-    "EnTT dependency not found. Ensure vcpkg manifest mode is enabled and the 'entt' port is installed.\n"
-    "Hint: configure with -DCMAKE_TOOLCHAIN_FILE=<vcpkg>/scripts/buildsystems/vcpkg.cmake and -DVCPKG_MANIFEST_MODE=ON."
-  )
-endif()
-
-target_link_libraries(colony_core PUBLIC ${_cg_entt_target})
-unset(_cg_entt_target)
+target_link_libraries(colony_core PUBLIC colony::deps)
 
 
 # Unity build: keep core conservative unless explicitly enabled.

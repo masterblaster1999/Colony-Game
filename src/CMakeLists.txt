@@ -22,7 +22,11 @@ set(_colony_game_sources
     ${CMAKE_CURRENT_SOURCE_DIR}/app/EntryWinMain.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/AppMain.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/AppWindow.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/AppWindow_Create.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/AppWindow_WndProc.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/AppWindow_Loop.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/AppWindow.h
+    ${CMAKE_CURRENT_SOURCE_DIR}/AppWindow_Impl.h
     ${CMAKE_CURRENT_SOURCE_DIR}/UserSettings.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/UserSettings.h
 
@@ -76,13 +80,15 @@ target_include_directories(ColonyGame BEFORE PRIVATE
     ${PROJECT_SOURCE_DIR}/include
 )
 
-# Third-party deps
-find_package(nlohmann_json CONFIG REQUIRED)
+# Third-party deps (vcpkg): keep centralized so include paths are consistent.
+if(NOT TARGET colony::deps)
+  include(ColonyDeps)
+endif()
 
 # Link against the modular libraries (engine/core/platform) + DirectX for the window layer.
 target_link_libraries(ColonyGame PRIVATE
     colony::platform_win
-    nlohmann_json::nlohmann_json
+    colony::deps
     d3d11
     dxgi
     dxguid

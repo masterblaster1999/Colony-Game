@@ -40,6 +40,9 @@ include(ColonyBuildHelpers)
 # Per-target debug runtime checks helper (RTC, etc.)
 include(WindowsFlags)
 
+# Centralized third-party dependency target (vcpkg manifest mode)
+include(ColonyDeps)
+
 # --------------------------------------------------------------------------------------
 # Targets (kept intentionally small and Windows-focused)
 # --------------------------------------------------------------------------------------
