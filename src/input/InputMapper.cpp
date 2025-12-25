@@ -1,5 +1,7 @@
 #include "input/InputMapper.h"
 
+#include "util/TextEncoding.h"
+
 #include "input/InputBindingParse.h"
 
 #include <algorithm>
@@ -142,6 +144,9 @@ bool InputMapper::LoadFromFile(const std::filesystem::path& path) noexcept
 {
     std::string text;
     if (!ReadFileToString(path, text))
+        return false;
+
+    if (!colony::util::NormalizeTextToUtf8(text))
         return false;
 
     const auto ext = colony::input::bindings::ToLowerCopy(path.extension().string());

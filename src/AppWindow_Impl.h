@@ -85,6 +85,7 @@ struct AppWindow::Impl {
 
         if (colony::appwin::SaveUserSettings(settings))
         {
+            settingsLoaded = true;
             settingsDirty = false;
             hasPendingAutoSave = false;
             return;

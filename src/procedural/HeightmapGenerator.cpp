@@ -61,8 +61,8 @@ namespace
     [[noreturn]] void ThrowIfFailedImpl(HRESULT hr, const char* expr, const char* file, int line)
     {
         char buf[256];
-        std::sprintf(buf, "HRESULT 0x%08X from %s (%s:%d)",
-                     static_cast<unsigned>(hr), expr, file, line);
+        std::snprintf(buf, sizeof(buf), "HRESULT 0x%08X from %s (%s:%d)",
+                      static_cast<unsigned>(hr), expr, file, line);
         throw std::runtime_error(buf);
     }
 }

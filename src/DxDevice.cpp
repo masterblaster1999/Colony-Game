@@ -359,7 +359,8 @@ DxRenderStats DxDevice::Render(bool vsync)
 
     const float clear[4] = { 0.08f, 0.10f, 0.12f, 1.0f };
 
-    m_ctx->OMSetRenderTargets(1, m_rtv.GetAddressOf(), nullptr);
+    ID3D11RenderTargetView* rtvs[] = { m_rtv.Get() };
+    m_ctx->OMSetRenderTargets(1, rtvs, nullptr);
     m_ctx->ClearRenderTargetView(m_rtv.Get(), clear);
 
     const UINT syncInterval = vsync ? 1u : 0u;

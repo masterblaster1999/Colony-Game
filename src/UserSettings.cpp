@@ -2,6 +2,7 @@
 
 #include "platform/win/PathUtilWin.h"
 #include "platform/win/WinFiles.h"
+#include "util/TextEncoding.h"
 
 #include <fstream>
 #include <string>
@@ -107,6 +108,9 @@ bool LoadUserSettings(UserSettings& out) noexcept
     std::string text;
     const auto path = UserSettingsPath();
     if (!ReadFileToString(path, text))
+        return false;
+
+    if (!colony::util::NormalizeTextToUtf8(text))
         return false;
 
     // Allow // comments (same as input_bindings.json), and avoid exceptions.

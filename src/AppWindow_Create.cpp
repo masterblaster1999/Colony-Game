@@ -155,6 +155,11 @@ void AppWindow::UpdateTitle()
         << L" | " << fs
         << L" | " << act;
 
+    if (!m_impl->settingsLoaded)
+    {
+        oss << L" | CFG DEFAULT";
+    }
+
     if (m_impl->settings.showFrameStats)
     {
         oss << L" | " << m_impl->frameStats.FormatTitleString();

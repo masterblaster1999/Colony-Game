@@ -22,5 +22,16 @@ function Find-ClangFormat {
 $clang = Find-ClangFormat
 $repoRoot = Resolve-Path (Join-Path $PSScriptRoot "..")
 
-Get-ChildItem -Path $repoRoot -Include *.h,*.hpp,*.cpp -Recurse -File |
+# Only format first-party code. Avoid reformatting vendored code under external/ etc.
+$targets = @(
+    Join-Path $repoRoot "src",
+    Join-Path $repoRoot "include",
+    Join-Path $repoRoot "tests"
+) | Where-Object { $_ -and (Test-Path $_) }
+
+if ($targets.Count -eq 0) {
+    throw "No source directories found to format."
+}
+
+Get-ChildItem -Path $targets -Include *.h,*.hpp,*.cpp -Recurse -File |
     ForEach-Object { & $clang -i $_.FullName }

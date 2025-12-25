@@ -20,6 +20,7 @@
 #include <xinput.h>
 #include <mmsystem.h>   // TIMECAPS, timeGetDevCaps, timeBeginPeriod, timeEndPeriod
 #include <shellapi.h>
+#include <strsafe.h>
 
 #include <stdint.h>
 #include <stdio.h>
@@ -485,7 +486,10 @@ struct HotReload{
 static FILETIME filetimeA(const char* path){ WIN32_FILE_ATTRIBUTE_DATA d{}; if(GetFileAttributesExA(path,GetFileExInfoStandard,&d)) return d.ftLastWriteTime; FILETIME z{}; return z; }
 static bool file_existsA(const char* path){ DWORD a=GetFileAttributesA(path); return (a!=INVALID_FILE_ATTRIBUTES && !(a&FILE_ATTRIBUTE_DIRECTORY)); }
 static bool load_game(HotReload& hr, const char* dllName){
-    char tmp[MAX_PATH]; wsprintfA(tmp,"%s_hot.dll",dllName); CopyFileA(dllName,tmp,FALSE);
+    char tmp[MAX_PATH] = {};
+    if (FAILED(StringCchPrintfA(tmp, MAX_PATH, "%s_hot.dll", dllName)))
+        return false;
+    CopyFileA(dllName, tmp, FALSE);
     HMODULE dll=LoadLibraryA(tmp); if(!dll) return false;
     auto init=(void(*)(void**,int,int))GetProcAddress(dll,"game_init");
     auto resize=(void(*)(void*,int,int))GetProcAddress(dll,"game_resize");
