@@ -61,4 +61,6 @@ include(StageWin)
 
 # Optional: print a small config summary at the end of configure
 include(CGSummary)
-cg_print_config_summary()
+if(COMMAND cg_print_config_summary)
+  cg_print_config_summary()
+endif()

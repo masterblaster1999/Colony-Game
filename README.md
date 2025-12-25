@@ -40,6 +40,7 @@ In the current window prototype (`AppWindow`):
 - **Esc**: quit
 - **V**: toggle VSync (when off, frame rate is capped to avoid 100% CPU)
 - **F11** or **Alt+Enter**: toggle borderless fullscreen
+- **F9**: toggle `pauseWhenUnfocused` (handy for background profiling)
 - Mouse drag (LMB/RMB/MMB): camera placeholder controls (debug title shows values)
 
 ### Per-user settings

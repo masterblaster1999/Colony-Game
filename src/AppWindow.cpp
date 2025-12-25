@@ -225,6 +225,16 @@ void AppWindow::ToggleFullscreen()
     UpdateTitle();
 }
 
+void AppWindow::TogglePauseWhenUnfocused()
+{
+    if (!m_impl)
+        return;
+
+    m_impl->settings.pauseWhenUnfocused = !m_impl->settings.pauseWhenUnfocused;
+    ScheduleSettingsAutosave(*m_impl);
+    UpdateTitle();
+}
+
 void AppWindow::UpdateTitle()
 {
     if (!m_hwnd || !m_impl)
@@ -454,6 +464,12 @@ LRESULT AppWindow::HandleMsg(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam)
                 ToggleFullscreen();
             return 0;
 
+        case VK_F9:
+            // Ignore auto-repeat so holding F9 doesn't spam-toggle.
+            if ((lParam & (1 << 30)) == 0)
+                TogglePauseWhenUnfocused();
+            return 0;
+
         case 'V':
             // Ignore auto-repeat so holding V doesn't spam-toggle.
             if ((lParam & (1 << 30)) == 0)
@@ -471,6 +487,7 @@ LRESULT AppWindow::HandleMsg(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam)
             const std::uint32_t vk = static_cast<std::uint32_t>(wParam);
             const bool isSystem = (vk == static_cast<std::uint32_t>(VK_ESCAPE)) ||
                                   (vk == static_cast<std::uint32_t>(VK_F11)) ||
+                                  (vk == static_cast<std::uint32_t>(VK_F9))  ||
                                   (vk == static_cast<std::uint32_t>('V'));
 
             if (vk < 256 && !isSystem)
@@ -493,6 +510,7 @@ LRESULT AppWindow::HandleMsg(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam)
             const std::uint32_t vk = static_cast<std::uint32_t>(wParam);
             const bool isSystem = (vk == static_cast<std::uint32_t>(VK_ESCAPE)) ||
                                   (vk == static_cast<std::uint32_t>(VK_F11)) ||
+                                  (vk == static_cast<std::uint32_t>(VK_F9))  ||
                                   (vk == static_cast<std::uint32_t>('V'));
 
             if (vk < 256 && !isSystem)

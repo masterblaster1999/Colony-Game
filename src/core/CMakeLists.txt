@@ -105,6 +105,12 @@ if(COMMAND colony_apply_debug_runtime_checks)
   colony_apply_debug_runtime_checks(colony_core)
 endif()
 
+# Apply consistent warning level (/W4, /permissive-, etc.) when the helper is
+# available (it is provided by the top-level build).
+if(COMMAND colony_enable_warnings)
+  colony_enable_warnings(colony_core)
+endif()
+
 # IDE grouping (optional but nice)
 if(_CORE_SOURCES)
   source_group(TREE "${CMAKE_SOURCE_DIR}/src" PREFIX "Source" FILES ${_CORE_SOURCES})

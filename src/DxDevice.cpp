@@ -160,6 +160,20 @@ bool DxDevice::CreateSwapchain(UINT width, UINT height)
 
     m_swap = swap;
 
+    // Best-effort latency improvement: limit the number of queued frames.
+    //
+    // NOTE: IDXGISwapChain2::SetMaximumFrameLatency requires the swap chain to be created with
+    // DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT. We don't use that flag yet (we'd
+    // also want to wait on the handle in the message loop), so we instead apply the device-wide
+    // latency limit via IDXGIDevice1.
+    {
+        ComPtr<IDXGIDevice1> dxgiDev1;
+        if (SUCCEEDED(m_device.As(&dxgiDev1)) && dxgiDev1)
+        {
+            (void)dxgiDev1->SetMaximumFrameLatency(1);
+        }
+    }
+
     CreateRTV();
     return m_rtv != nullptr;
 }

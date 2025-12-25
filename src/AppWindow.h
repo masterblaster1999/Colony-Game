@@ -10,6 +10,7 @@
 //   - Esc      : Quit
 //   - V        : Toggle VSync
 //   - F11      : Toggle borderless fullscreen
+//   - F9       : Toggle "pause when unfocused" behavior
 //   - Alt+Enter: Toggle borderless fullscreen
 class AppWindow {
 public:
@@ -28,6 +29,7 @@ private:
 
     void ToggleVsync();
     void ToggleFullscreen();
+    void TogglePauseWhenUnfocused();
     void UpdateTitle(); // includes FPS (once computed), vsync + fullscreen state
 
     HWND    m_hwnd = nullptr;
