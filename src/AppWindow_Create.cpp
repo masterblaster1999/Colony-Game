@@ -28,6 +28,7 @@ bool AppWindow::Create(HINSTANCE hInst, int nCmdShow, int width, int height)
     m_impl->settings.maxFpsWhenUnfocused = m_impl->pacer.MaxFpsWhenUnfocused();
     m_impl->settings.rawMouse = true;
     m_impl->settings.showFrameStats = false;
+    m_impl->settings.showDxgiDiagnostics = false;
 
     // Best-effort load: if it fails, we keep the defaults above.
     {
@@ -200,6 +201,7 @@ void AppWindow::ShowHotkeysHelp()
         L"F8             Cycle DXGI max frame latency (1..16)\n"
         L"F9             Toggle RAWINPUT mouse deltas\n"
         L"F10            Toggle frame pacing stats in title\n"
+        L"F12            Toggle DXGI diagnostics in title\n"
         L"F11 / Alt+Enter Toggle borderless fullscreen\n"
         L"\n"
         L"In-game (ImGui)\n"
@@ -243,6 +245,21 @@ void AppWindow::UpdateTitle()
     if (m_impl->settings.showFrameStats)
     {
         oss << L" | " << m_impl->frameStats.FormatTitleString();
+    }
+
+    if (m_impl->settings.showDxgiDiagnostics)
+    {
+        const UINT syncInterval = m_vsync ? 1u : 0u;
+        UINT presentFlags = 0;
+        if (!m_vsync && m_gfx.TearingEnabled())
+            presentFlags |= DXGI_PRESENT_ALLOW_TEARING;
+
+        oss << L" | DXGI b" << m_gfx.SwapchainBufferCount()
+            << L" tear" << (m_gfx.TearingEnabled() ? L"Y" : L"N")
+            << L" si" << syncInterval
+            << L" pf0x" << std::hex << std::uppercase << presentFlags << std::dec
+            << L" lat" << m_gfx.MaxFrameLatency()
+            << L" wf" << (m_gfx.CreatedWithWaitableFlag() ? L"Y" : L"N");
     }
 
 #ifndef NDEBUG

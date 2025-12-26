@@ -160,3 +160,31 @@ This patch hardens the low-latency DXGI “waitable swapchain” path.
 
 - `src/AppWindow_Create.cpp`
   - Adds a `WH ON/OFF` indicator to the title bar, so you can tell whether the DXGI frame-latency waitable object is available on the current system.
+
+
+# Patch 11: DXGI diagnostics title overlay (no ImGui required)
+
+This patch adds an optional one-line DXGI diagnostics segment in the window title.
+It’s meant for debugging odd presentation behavior (tearing, flip-model eligibility, waitable swapchains, etc.).
+
+## What this patch adds
+
+- **DXGI diagnostics toggle (F12)**
+  - Toggles `debug.showDxgiDiagnostics` at runtime.
+  - Persists to `%LOCALAPPDATA%\ColonyGame\settings.json`.
+
+- **Title-bar DXGI line** (when enabled)
+  - `b#`  : swapchain buffer count
+  - `tear`: whether tearing is enabled (support + swapchain flag)
+  - `si`  : sync interval (0/1)
+  - `pf0x`: present flags (hex, e.g. `0x200` = `DXGI_PRESENT_ALLOW_TEARING`)
+  - `lat` : max frame latency
+  - `wf`  : whether the swapchain was created with the waitable-object flag
+
+## Files touched
+
+- `src/DxDevice.h/.cpp`
+- `src/UserSettings.h/.cpp`
+- `src/AppWindow_Create.cpp`
+- `src/AppWindow_WndProc_Input.cpp`
+- `src/AppWindow.h`

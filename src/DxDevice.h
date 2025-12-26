@@ -54,6 +54,22 @@ public:
 
     [[nodiscard]] bool SupportsTearing() const noexcept { return m_allowTearing; }
 
+    // Swapchain diagnostics (useful for debugging presentation behavior).
+    [[nodiscard]] UINT SwapchainBufferCount() const noexcept { return m_swapchainBufferCount; }
+    [[nodiscard]] UINT SwapchainFlags() const noexcept { return m_swapchainFlags; }
+    [[nodiscard]] bool CreatedWithWaitableFlag() const noexcept { return m_createdWithWaitableFlag; }
+
+    // True if tearing is supported and the swapchain was created with ALLOW_TEARING.
+    [[nodiscard]] bool TearingEnabled() const noexcept
+    {
+        return m_allowTearing && ((m_swapchainFlags & DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING) != 0u);
+    }
+
+    // Parameters used for the most recent Present() call.
+    [[nodiscard]] UINT LastPresentSyncInterval() const noexcept { return m_lastPresentSyncInterval; }
+    [[nodiscard]] UINT LastPresentFlags() const noexcept { return m_lastPresentFlags; }
+
+
     // Expose raw D3D11 interfaces for overlay layers.
     [[nodiscard]] ID3D11Device* Device() const noexcept { return m_device.Get(); }
     [[nodiscard]] ID3D11DeviceContext* Context() const noexcept { return m_ctx.Get(); }
@@ -115,4 +131,11 @@ private:
     // The exact flags used to create the current swapchain (must be reused
     // for ResizeBuffers).
     UINT   m_swapchainFlags = 0;
+
+    // Cached swapchain properties (for debug overlays / title diagnostics).
+    UINT   m_swapchainBufferCount = 0;
+
+    // Present parameters from the most recent EndFrame().
+    UINT   m_lastPresentFlags = 0;
+    UINT   m_lastPresentSyncInterval = 0;
 };

@@ -26,7 +26,7 @@ namespace {
     //
     // NOTE: SaveUserSettings always writes the latest schema version. LoadUserSettings
     // performs best-effort migration from older layouts so user preferences survive refactors.
-    constexpr int kUserSettingsSchemaVersion = 3;
+    constexpr int kUserSettingsSchemaVersion = 4;
 
     std::uint32_t ClampWindowWidth(std::uint32_t v) noexcept
     {
@@ -181,6 +181,8 @@ namespace {
 
         copy_if_missing("rawMouse",       input, "rawMouse");
         copy_if_missing("showFrameStats", debug, "showFrameStats");
+        copy_if_missing("showDxgiDiagnostics", debug, "showDxgiDiagnostics");
+        copy_if_missing("showDxgiDiag",        debug, "showDxgiDiagnostics");
 
         if (didMigrate)
         {
@@ -260,6 +262,8 @@ bool LoadUserSettings(UserSettings& out) noexcept
     {
         if (auto s = it->find("showFrameStats"); s != it->end() && s->is_boolean())
             tmp.showFrameStats = s->get<bool>();
+        if (auto d = it->find("showDxgiDiagnostics"); d != it->end() && d->is_boolean())
+            tmp.showDxgiDiagnostics = d->get<bool>();
     }
 
     if (didMigrate)
@@ -305,6 +309,7 @@ bool SaveUserSettings(const UserSettings& settings) noexcept
 
     j["debug"] = {
         {"showFrameStats", settings.showFrameStats},
+        {"showDxgiDiagnostics", settings.showDxgiDiagnostics},
     };
 
     std::string payload = j.dump(4);

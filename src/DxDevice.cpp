@@ -403,6 +403,15 @@ bool DxDevice::CreateSwapchain(UINT width, UINT height)
     m_swap = swap;
     m_createdWithWaitableFlag = createdWaitable;
 
+    // Cache swapchain properties for diagnostics.
+    m_swapchainBufferCount = desc.BufferCount;
+    if (m_swap)
+    {
+        DXGI_SWAP_CHAIN_DESC1 got{};
+        if (SUCCEEDED(m_swap->GetDesc1(&got)))
+            m_swapchainBufferCount = got.BufferCount;
+    }
+
     // Apply latency caps + retrieve waitable object handle (if available).
     ApplyFrameLatencyIfPossible();
 
@@ -501,6 +510,10 @@ DxRenderStats DxDevice::EndFrame(bool vsync)
     if (!vsync && m_allowTearing)
         presentFlags |= DXGI_PRESENT_ALLOW_TEARING;
 
+    // Cache for diagnostics (title/overlay).
+    m_lastPresentSyncInterval = syncInterval;
+    m_lastPresentFlags = presentFlags;
+
     static LARGE_INTEGER freq{};
     static bool freqInit = false;
     if (!freqInit)
@@ -552,6 +565,9 @@ void DxDevice::Shutdown()
     m_height = 0;
     m_createdWithWaitableFlag = false;
     m_swapchainFlags = 0;
+    m_swapchainBufferCount = 0;
+    m_lastPresentFlags = 0;
+    m_lastPresentSyncInterval = 0;
 }
 
 bool DxDevice::HandleDeviceLost(HRESULT triggeringHr, const wchar_t* stage)

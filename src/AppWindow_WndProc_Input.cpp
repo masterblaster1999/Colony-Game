@@ -76,6 +76,18 @@ LRESULT AppWindow::HandleMsg_Input(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lP
             handled = true;
             return 0;
 
+        case VK_F12:
+            // Toggle DXGI diagnostics in the title bar.
+            // Ignore auto-repeat so holding F12 doesn't spam-toggle.
+            if ((lParam & (1 << 30)) == 0 && m_impl)
+            {
+                m_impl->settings.showDxgiDiagnostics = !m_impl->settings.showDxgiDiagnostics;
+                m_impl->ScheduleSettingsAutosave();
+                UpdateTitle();
+            }
+            handled = true;
+            return 0;
+
         case VK_F9:
             // Toggle raw mouse input at runtime (best-effort).
             // Ignore auto-repeat so holding F9 doesn't spam-toggle.
@@ -160,6 +172,7 @@ LRESULT AppWindow::HandleMsg_Input(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lP
             const bool isSystem = (vk == static_cast<std::uint32_t>(VK_ESCAPE)) ||
                                   (vk == static_cast<std::uint32_t>(VK_F11)) ||
                                   (vk == static_cast<std::uint32_t>(VK_F10)) ||
+                                  (vk == static_cast<std::uint32_t>(VK_F12)) ||
                                   (vk == static_cast<std::uint32_t>(VK_F9)) ||
                                   (vk == static_cast<std::uint32_t>(VK_F8)) ||
                                   (vk == static_cast<std::uint32_t>(VK_F7)) ||
@@ -195,6 +208,7 @@ LRESULT AppWindow::HandleMsg_Input(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lP
                                   (vk == static_cast<std::uint32_t>(VK_F6)) ||
                                   (vk == static_cast<std::uint32_t>(VK_F11)) ||
                                   (vk == static_cast<std::uint32_t>(VK_F10)) ||
+                                  (vk == static_cast<std::uint32_t>(VK_F12)) ||
                                   (vk == static_cast<std::uint32_t>(VK_F9)) ||
                                   (vk == static_cast<std::uint32_t>(VK_F8)) ||
                                   (vk == static_cast<std::uint32_t>(VK_F7)) ||

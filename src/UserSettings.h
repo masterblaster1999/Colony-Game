@@ -84,6 +84,10 @@ struct UserSettings
 
     // Show in-app frame pacing stats in the window title (PresentMon-style summary).
     bool showFrameStats = false;
+
+    // Show low-level DXGI/swapchain diagnostics in the window title.
+    // Useful for debugging tearing / flip-model / waitable swapchain behavior.
+    bool showDxgiDiagnostics = false;
 };
 
 [[nodiscard]] std::filesystem::path UserSettingsPath();

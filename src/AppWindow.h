@@ -15,6 +15,7 @@
 //   - F11       : Toggle borderless fullscreen
 //   - Alt+Enter : Toggle borderless fullscreen
 //   - F10       : Toggle frame pacing stats in title bar (PresentMon-style summary)
+//   - F12       : Toggle DXGI diagnostics in title bar (swapchain/tearing/present flags)
 //   - F9        : Toggle RAWINPUT mouse (drag deltas)
 //   - F8        : Cycle DXGI max frame latency (1..16)
 //   - F7        : Toggle pause-when-unfocused
