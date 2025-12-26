@@ -120,6 +120,7 @@ bool PrototypeGame::Impl::loadBindings()
     }
 
     if (loaded.empty()) {
+        bindingsLoadedPath.clear();
         DebugTraceA("[Colony] Input bindings: using defaults (no valid bindings file found)");
         DebugTraceA("[Colony] Searched candidate paths:");
         for (const auto& p : allPaths) {
@@ -131,6 +132,7 @@ bool PrototypeGame::Impl::loadBindings()
     }
 
     DebugTraceA(("[Colony] Input bindings loaded: " + loaded.string()).c_str());
+    bindingsLoadedPath = loaded;
     setStatus("Bindings: loaded", 1.5f);
     return true;
 }

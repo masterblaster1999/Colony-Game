@@ -7,6 +7,7 @@
 #include "loop/DebugCamera.h"
 #include "platform/win32/Win32Debug.h"
 
+#include <array>
 #include <filesystem>
 #include <limits>
 #include <string>
@@ -66,6 +67,19 @@ struct PrototypeGame::Impl {
     float                       bindingsPollInterval    = 1.f;
     std::vector<std::pair<fs::path, fs::file_time_type>> bindingCandidates;
 
+    // Path of the last successfully loaded bindings file (empty if using defaults).
+    fs::path bindingsLoadedPath;
+
+#if defined(COLONY_WITH_IMGUI)
+    // Minimal bindings editor UI state.
+    bool showBindingsEditor = false;
+    bool bindingsEditorInit = false;
+    fs::path bindingsEditorTargetPath;
+    std::string bindingsEditorMessage;
+    float bindingsEditorMessageTtl = 0.f;
+    std::array<std::string, static_cast<std::size_t>(colony::input::Action::Count)> bindingsEditorText;
+#endif
+
     Impl();
 
     [[nodiscard]] proto::TileType toolTile() const noexcept;
@@ -94,6 +108,7 @@ struct PrototypeGame::Impl {
 #if defined(COLONY_WITH_IMGUI)
     void drawHelpWindow();
     void drawPanelsWindow();
+    void drawBindingsEditorWindow();
     void drawWorldWindow();
     void drawUI();
 #endif

@@ -1,8 +1,14 @@
 #include "game/PrototypeGame_Impl.h"
 
+#include "input/InputBindingParse.h"
+
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
+#include <fstream>
+#include <system_error>
+
+#include <nlohmann/json.hpp>
 
 namespace colony::game {
 
@@ -22,6 +28,50 @@ namespace {
 [[nodiscard]] float clampf(float v, float lo, float hi) noexcept
 {
     return std::max(lo, std::min(v, hi));
+}
+
+// Minimal std::string wrapper for ImGui::InputText without pulling in imgui_stdlib.
+// Uses the standard CallbackResize pattern.
+static int InputTextStdStringCallback(ImGuiInputTextCallbackData* data)
+{
+    if (data->EventFlag == ImGuiInputTextFlags_CallbackResize)
+    {
+        auto* str = static_cast<std::string*>(data->UserData);
+        str->resize(static_cast<std::size_t>(data->BufTextLen));
+        data->Buf = str->data();
+        return 0;
+    }
+    return 0;
+}
+
+static bool InputTextStdString(const char* label, std::string* str, ImGuiInputTextFlags flags = 0)
+{
+    flags |= ImGuiInputTextFlags_CallbackResize;
+    return ImGui::InputText(label, str->data(), str->capacity() + 1, flags, InputTextStdStringCallback, str);
+}
+
+[[nodiscard]] std::string chordToString(std::span<const std::uint16_t> codes)
+{
+    namespace bp = colony::input::bindings;
+    std::string out;
+    for (std::size_t i = 0; i < codes.size(); ++i) {
+        if (i != 0)
+            out.push_back('+');
+        out += bp::InputCodeToToken(static_cast<std::uint32_t>(codes[i]));
+    }
+    return out;
+}
+
+[[nodiscard]] std::string actionBindsToString(const colony::input::InputMapper& input, colony::input::Action action)
+{
+    std::string out;
+    const std::size_t count = input.BindingCount(action);
+    for (std::size_t i = 0; i < count; ++i) {
+        if (i != 0)
+            out += ", ";
+        out += chordToString(input.BindingChord(action, i));
+    }
+    return out;
 }
 
 struct CanvasXform {
@@ -97,6 +147,7 @@ void PrototypeGame::Impl::drawHelpWindow()
         ImGui::BulletText("R: Reset world");
         ImGui::BulletText("P: Pause simulation");
         ImGui::BulletText("F5: Reload input bindings");
+        ImGui::BulletText("Bindings Editor: Colony panel -> Input Bindings");
     }
     ImGui::End();
 }
@@ -161,11 +212,380 @@ void PrototypeGame::Impl::drawPanelsWindow()
         ImGui::Checkbox("Hot Reload", &bindingHotReloadEnabled);
         ImGui::SliderFloat("Poll Interval (s)", &bindingsPollInterval, 0.1f, 5.0f, "%.1f");
 
+        if (bindingsLoadedPath.empty()) {
+            ImGui::TextUnformatted("Active: (defaults)");
+        } else {
+            ImGui::TextWrapped("Active: %s", bindingsLoadedPath.string().c_str());
+        }
+
+        if (ImGui::Button("Reload Now (F5)")) {
+            (void)loadBindings();
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("Bindings Editor...")) {
+            showBindingsEditor = true;
+            bindingsEditorInit = false;
+        }
+
         if (!statusText.empty() && statusTtl > 0.f) {
             ImGui::Separator();
             ImGui::TextWrapped("%s", statusText.c_str());
         }
     }
+    ImGui::End();
+}
+
+namespace {
+
+[[nodiscard]] bool writeTextFile(const fs::path& path, std::string_view text, std::string& outError)
+{
+    outError.clear();
+
+    std::error_code ec;
+    if (path.has_parent_path()) {
+        fs::create_directories(path.parent_path(), ec);
+        if (ec) {
+            outError = "Failed to create directories: " + path.parent_path().string();
+            return false;
+        }
+    }
+
+    std::ofstream f(path, std::ios::binary | std::ios::trunc);
+    if (!f) {
+        outError = "Failed to open file for writing: " + path.string();
+        return false;
+    }
+    f.write(text.data(), static_cast<std::streamsize>(text.size()));
+    if (!f) {
+        outError = "Write failed: " + path.string();
+        return false;
+    }
+    return true;
+}
+
+[[nodiscard]] bool parseBindingsField(std::string_view field,
+                                     bool& outClear,
+                                     std::vector<std::vector<std::uint32_t>>& outChords,
+                                     std::string& outWarning,
+                                     std::string& outError)
+{
+    namespace bp = colony::input::bindings;
+
+    outClear = false;
+    outChords.clear();
+    outWarning.clear();
+    outError.clear();
+
+    field = bp::Trim(field);
+    if (field.empty()) {
+        outClear = true;
+        return true;
+    }
+
+    std::vector<std::uint32_t> chordCodes;
+    bool hadInvalid = false;
+    std::string firstInvalid;
+
+    for (auto part : bp::Split(field, ',')) {
+        part = bp::Trim(part);
+        if (part.empty())
+            continue;
+
+        if (bp::ParseChordString(part, chordCodes)) {
+            outChords.emplace_back(chordCodes.begin(), chordCodes.end());
+        } else {
+            hadInvalid = true;
+            if (firstInvalid.empty())
+                firstInvalid = std::string(part);
+        }
+    }
+
+    if (outChords.empty()) {
+        if (!firstInvalid.empty())
+            outError = "No valid chords. Example invalid: \"" + firstInvalid + "\"";
+        else
+            outError = "No valid chords.";
+        return false;
+    }
+
+    if (hadInvalid) {
+        outWarning = "Some invalid chords were ignored";
+        if (!firstInvalid.empty())
+            outWarning += ". Example: \"" + firstInvalid + "\"";
+    }
+
+    return true;
+}
+
+[[nodiscard]] std::string chordCodesToString(std::span<const std::uint32_t> codes)
+{
+    namespace bp = colony::input::bindings;
+    std::string out;
+    for (std::size_t i = 0; i < codes.size(); ++i) {
+        if (i != 0)
+            out.push_back('+');
+        out += bp::InputCodeToToken(codes[i]);
+    }
+    return out;
+}
+
+} // namespace
+
+void PrototypeGame::Impl::drawBindingsEditorWindow()
+{
+    if (!showBindingsEditor)
+        return;
+
+    // One-time init when opened.
+    if (!bindingsEditorInit) {
+        if (!bindingsLoadedPath.empty()) {
+            bindingsEditorTargetPath = bindingsLoadedPath;
+        } else if (!bindingCandidates.empty()) {
+            bindingsEditorTargetPath = bindingCandidates.front().first;
+        } else {
+            bindingsEditorTargetPath = fs::path("assets") / "config" / "input_bindings.json";
+        }
+
+        for (std::size_t i = 0; i < static_cast<std::size_t>(colony::input::Action::Count); ++i) {
+            const auto a = static_cast<colony::input::Action>(i);
+            bindingsEditorText[i] = actionBindsToString(input, a);
+        }
+
+        bindingsEditorMessage.clear();
+        bindingsEditorMessageTtl = 0.f;
+        bindingsEditorInit = true;
+    }
+
+    // Fade message.
+    if (bindingsEditorMessageTtl > 0.f) {
+        bindingsEditorMessageTtl = std::max(0.f, bindingsEditorMessageTtl - ImGui::GetIO().DeltaTime);
+        if (bindingsEditorMessageTtl == 0.f)
+            bindingsEditorMessage.clear();
+    }
+
+    ImGui::SetNextWindowSize({720, 560}, ImGuiCond_FirstUseEver);
+    if (!ImGui::Begin("Bindings Editor", &showBindingsEditor)) {
+        ImGui::End();
+        return;
+    }
+
+    ImGui::TextUnformatted("Edit bindings as comma-separated chords.");
+    ImGui::TextDisabled("Examples:  W, Up    |   Shift+W   |   MouseLeft   |   Ctrl+WheelUp");
+    ImGui::TextDisabled("Wheel tokens: WheelUp, WheelDown");
+    ImGui::Separator();
+
+    ImGui::TextWrapped("Target file: %s", bindingsEditorTargetPath.string().c_str());
+
+    // Buttons
+    if (ImGui::Button("Apply (runtime)"))
+    {
+        constexpr std::size_t kActCount = static_cast<std::size_t>(colony::input::Action::Count);
+        std::array<bool, kActCount> clearFlags{};
+        std::array<std::vector<std::vector<std::uint32_t>>, kActCount> parsed{};
+
+        std::string warnings;
+        for (std::size_t i = 0; i < kActCount; ++i)
+        {
+            std::string warn, err;
+            if (!parseBindingsField(bindingsEditorText[i], clearFlags[i], parsed[i], warn, err))
+            {
+                const auto a = static_cast<colony::input::Action>(i);
+                bindingsEditorMessage = std::string("Error in ") + colony::input::InputMapper::ActionName(a) + ": " + err;
+                bindingsEditorMessageTtl = 6.f;
+                setStatus("Bindings: apply failed", 3.f);
+                parsed = {};
+                clearFlags = {};
+                ImGui::End();
+                return;
+            }
+            if (!warn.empty())
+            {
+                const auto a = static_cast<colony::input::Action>(i);
+                warnings += std::string("[") + colony::input::InputMapper::ActionName(a) + "] " + warn + "\n";
+            }
+        }
+
+        // Apply atomically.
+        for (std::size_t i = 0; i < kActCount; ++i)
+        {
+            const auto a = static_cast<colony::input::Action>(i);
+            if (clearFlags[i]) {
+                input.ClearBindings(a);
+                continue;
+            }
+
+            input.ClearBindings(a);
+            for (const auto& chord : parsed[i]) {
+                input.AddBinding(a, std::span<const std::uint32_t>(chord.data(), chord.size()));
+            }
+        }
+
+        if (!warnings.empty()) {
+            bindingsEditorMessage = warnings;
+            bindingsEditorMessageTtl = 6.f;
+        } else {
+            bindingsEditorMessage = "Applied.";
+            bindingsEditorMessageTtl = 2.f;
+        }
+        setStatus("Bindings: applied (runtime)", 2.f);
+    }
+
+    ImGui::SameLine();
+    if (ImGui::Button("Save (write file)"))
+    {
+        constexpr std::size_t kActCount = static_cast<std::size_t>(colony::input::Action::Count);
+        std::array<bool, kActCount> clearFlags{};
+        std::array<std::vector<std::vector<std::uint32_t>>, kActCount> parsed{};
+
+        std::string warnings;
+        for (std::size_t i = 0; i < kActCount; ++i)
+        {
+            std::string warn, err;
+            if (!parseBindingsField(bindingsEditorText[i], clearFlags[i], parsed[i], warn, err))
+            {
+                const auto a = static_cast<colony::input::Action>(i);
+                bindingsEditorMessage = std::string("Error in ") + colony::input::InputMapper::ActionName(a) + ": " + err;
+                bindingsEditorMessageTtl = 6.f;
+                setStatus("Bindings: save failed", 3.f);
+                ImGui::End();
+                return;
+            }
+            if (!warn.empty())
+            {
+                const auto a = static_cast<colony::input::Action>(i);
+                warnings += std::string("[") + colony::input::InputMapper::ActionName(a) + "] " + warn + "\n";
+            }
+        }
+
+        const std::string ext = colony::input::bindings::ToLowerCopy(bindingsEditorTargetPath.extension().string());
+
+        std::string fileText;
+        if (ext == ".ini")
+        {
+            fileText += "[Bindings]\n";
+            for (std::size_t i = 0; i < kActCount; ++i)
+            {
+                const auto a = static_cast<colony::input::Action>(i);
+                fileText += colony::input::InputMapper::ActionName(a);
+                fileText += " =";
+                if (!clearFlags[i])
+                {
+                    fileText += " ";
+                    for (std::size_t b = 0; b < parsed[i].size(); ++b) {
+                        if (b != 0)
+                            fileText += ", ";
+                        fileText += chordCodesToString(std::span<const std::uint32_t>(parsed[i][b].data(), parsed[i][b].size()));
+                    }
+                }
+                fileText += "\n";
+            }
+        }
+        else
+        {
+            using json = nlohmann::json;
+            json j;
+            j["version"] = 1;
+
+            json binds = json::object();
+            for (std::size_t i = 0; i < kActCount; ++i)
+            {
+                const auto a = static_cast<colony::input::Action>(i);
+                json arr = json::array();
+
+                if (!clearFlags[i])
+                {
+                    for (const auto& chord : parsed[i]) {
+                        arr.push_back(chordCodesToString(std::span<const std::uint32_t>(chord.data(), chord.size())));
+                    }
+                }
+
+                binds[colony::input::InputMapper::ActionName(a)] = arr;
+            }
+
+            j["bindings"] = std::move(binds);
+            fileText = j.dump(2);
+            fileText.push_back('\n');
+        }
+
+        std::string error;
+        if (!writeTextFile(bindingsEditorTargetPath, fileText, error))
+        {
+            bindingsEditorMessage = error;
+            bindingsEditorMessageTtl = 6.f;
+            setStatus("Bindings: save failed", 3.f);
+            ImGui::End();
+            return;
+        }
+
+        // Reload bindings from disk so the running game matches the saved file,
+        // and refresh hot-reload timestamps.
+        (void)loadBindings();
+
+        if (!warnings.empty()) {
+            bindingsEditorMessage = std::string("Saved (with warnings):\n") + warnings;
+            bindingsEditorMessageTtl = 6.f;
+        } else {
+            bindingsEditorMessage = "Saved.";
+            bindingsEditorMessageTtl = 2.f;
+        }
+        setStatus("Bindings: saved", 2.f);
+    }
+
+    ImGui::SameLine();
+    if (ImGui::Button("Revert"))
+    {
+        for (std::size_t i = 0; i < static_cast<std::size_t>(colony::input::Action::Count); ++i) {
+            const auto a = static_cast<colony::input::Action>(i);
+            bindingsEditorText[i] = actionBindsToString(input, a);
+        }
+        bindingsEditorMessage = "Reverted.";
+        bindingsEditorMessageTtl = 1.5f;
+    }
+
+    ImGui::SameLine();
+    if (ImGui::Button("Reset Defaults"))
+    {
+        input.SetDefaultBinds();
+        for (std::size_t i = 0; i < static_cast<std::size_t>(colony::input::Action::Count); ++i) {
+            const auto a = static_cast<colony::input::Action>(i);
+            bindingsEditorText[i] = actionBindsToString(input, a);
+        }
+        bindingsEditorMessage = "Defaults applied.";
+        bindingsEditorMessageTtl = 2.f;
+        setStatus("Bindings: defaults", 2.f);
+    }
+
+    if (!bindingsEditorMessage.empty()) {
+        ImGui::Separator();
+        ImGui::TextWrapped("%s", bindingsEditorMessage.c_str());
+    }
+
+    ImGui::Separator();
+
+    if (ImGui::BeginTable("bindings_table", 2,
+                          ImGuiTableFlags_RowBg | ImGuiTableFlags_Borders | ImGuiTableFlags_Resizable |
+                              ImGuiTableFlags_SizingStretchProp))
+    {
+        ImGui::TableSetupColumn("Action", ImGuiTableColumnFlags_WidthFixed, 160.f);
+        ImGui::TableSetupColumn("Bindings", ImGuiTableColumnFlags_WidthStretch);
+        ImGui::TableHeadersRow();
+
+        for (std::size_t i = 0; i < static_cast<std::size_t>(colony::input::Action::Count); ++i)
+        {
+            const auto a = static_cast<colony::input::Action>(i);
+
+            ImGui::TableNextRow();
+            ImGui::TableNextColumn();
+            ImGui::TextUnformatted(colony::input::InputMapper::ActionName(a));
+
+            ImGui::TableNextColumn();
+            const std::string label = std::string("##bind_") + colony::input::InputMapper::ActionName(a);
+            InputTextStdString(label.c_str(), &bindingsEditorText[i]);
+        }
+
+        ImGui::EndTable();
+    }
+
     ImGui::End();
 }
 
@@ -214,17 +634,28 @@ void PrototypeGame::Impl::drawWorldWindow()
     cx.center = {canvas_p0.x + canvas_sz.x * 0.5f, canvas_p0.y + canvas_sz.y * 0.5f};
     cx.tilePx = 24.f * std::max(0.05f, cam.zoom);
 
-    // Zoom around mouse cursor (only when hovering the canvas)
+    // Zoom around mouse cursor (only when hovering the canvas).
+    //
+    // NOTE: Zoom is driven through bindable input actions so the mouse wheel
+    // can be re-mapped on Windows (WheelUp/WheelDown by default).
     if (canvas_hovered) {
-        const float wheel = ImGui::GetIO().MouseWheel;
-        if (wheel != 0.f) {
+        int detents = 0;
+        for (const auto& ae : input.ActionEvents()) {
+            if (ae.type != colony::input::ActionEventType::Pressed)
+                continue;
+            if (ae.action == colony::input::Action::CameraZoomIn)
+                ++detents;
+            else if (ae.action == colony::input::Action::CameraZoomOut)
+                --detents;
+        }
+
+        if (detents != 0) {
             const float oldTilePx = cx.tilePx;
             const ImVec2 mouse    = ImGui::GetIO().MousePos;
 
             const ImVec2 worldBefore = screenToWorld(cam, cx, mouse);
 
             // Update zoom
-            const int detents = static_cast<int>(wheel);
             (void)camera.ApplyWheelDetents(detents);
 
             const DebugCameraState& cam2 = camera.State();
@@ -411,6 +842,7 @@ void PrototypeGame::Impl::drawUI()
 {
     drawWorldWindow();
     drawPanelsWindow();
+    drawBindingsEditorWindow();
     drawHelpWindow();
 }
 

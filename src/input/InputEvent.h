@@ -35,7 +35,12 @@ constexpr std::uint32_t kMouseButtonMiddle = kMouseCodeBase + 2;
 constexpr std::uint32_t kMouseButtonX1     = kMouseCodeBase + 3;
 constexpr std::uint32_t kMouseButtonX2     = kMouseCodeBase + 4;
 
-constexpr std::uint32_t kInputCodeCount = kMouseCodeBase + 5;
+// Mouse wheel is modeled as an impulse (WheelUp/WheelDown). These are not "held"
+// inputs; they are generated from WM_MOUSEWHEEL detents.
+constexpr std::uint32_t kMouseWheelUp      = kMouseCodeBase + 5;
+constexpr std::uint32_t kMouseWheelDown    = kMouseCodeBase + 6;
+
+constexpr std::uint32_t kInputCodeCount = kMouseCodeBase + 7;
 
 enum MouseButtonsMask : std::uint8_t {
     MouseLeft   = 1u << 0,

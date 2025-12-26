@@ -19,6 +19,10 @@
     "CameraOrbit": ["MouseLeft"],
     "CameraPan": ["MouseMiddle", "MouseRight", "Shift+MouseLeft"],
 
+    // Mouse wheel is bindable:
+    "CameraZoomIn": ["WheelUp"],
+    "CameraZoomOut": ["WheelDown"],
+
     // Developer quality of life:
     "ReloadBindings": ["F5"]
   }

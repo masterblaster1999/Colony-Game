@@ -39,6 +39,10 @@ enum class Action : std::uint8_t {
     CameraOrbit,
     CameraPan,
 
+    // Mouse wheel camera zoom (impulse-style; WheelUp/WheelDown by default).
+    CameraZoomIn,
+    CameraZoomOut,
+
     // Developer QOL: reload input bindings from disk (defaults to F5).
     ReloadBindings,
 
@@ -130,6 +134,13 @@ public:
     [[nodiscard]] bool IsDown(Action action) const noexcept;
 
     [[nodiscard]] MovementAxes GetMovementAxes() const noexcept;
+
+    // --- Introspection helpers (debug UI / bindings editor) ---
+    [[nodiscard]] std::size_t BindingCount(Action action) const noexcept;
+    [[nodiscard]] std::span<const std::uint16_t> BindingChord(Action action, std::size_t bindingIndex) const noexcept;
+
+    // Canonical action name used in config files.
+    [[nodiscard]] static const char* ActionName(Action action) noexcept;
 
 private:
     static constexpr std::size_t kActionCount = static_cast<std::size_t>(Action::Count);

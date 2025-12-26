@@ -57,6 +57,9 @@ static std::optional<colony::input::Action> ParseActionName(std::string_view nam
     if (n == "cameraorbit" || n == "orbit") return A::CameraOrbit;
     if (n == "camerapan" || n == "pan") return A::CameraPan;
 
+    if (n == "camerazoomin" || n == "zoomin" || n == "zoom_in" || n == "zoom+" || n == "wheelup") return A::CameraZoomIn;
+    if (n == "camerazoomout" || n == "zoomout" || n == "zoom_out" || n == "zoom-" || n == "wheeldown") return A::CameraZoomOut;
+
     // Developer QOL
     if (n == "reloadbindings" || n == "reloadbinds" || n == "reloadinputs" || n == "reload") return A::ReloadBindings;
 
@@ -129,6 +132,10 @@ void InputMapper::SetDefaultBinds() noexcept
     AddBinding(Action::CameraOrbit, kMouseButtonLeft);
     AddBinding(Action::CameraPan, kMouseButtonMiddle);
     AddBinding(Action::CameraPan, kMouseButtonRight);
+
+    // Mouse wheel zoom.
+    AddBinding(Action::CameraZoomIn, kMouseWheelUp);
+    AddBinding(Action::CameraZoomOut, kMouseWheelDown);
 
     // Optional chord example: Shift+MouseLeft => pan.
     {
@@ -429,6 +436,30 @@ bool InputMapper::ConsumeEvent(const InputEvent& ev) noexcept
         recompute = true;
         break;
 
+    case InputEventType::MouseWheel:
+    {
+        const int detents = static_cast<int>(ev.wheelDetents);
+        if (detents == 0)
+            break;
+
+        const std::size_t code = static_cast<std::size_t>(detents > 0 ? kMouseWheelUp : kMouseWheelDown);
+        if (code >= kMaxInputCodes)
+            break;
+
+        const int steps = (detents > 0) ? detents : -detents;
+        for (int i = 0; i < steps; ++i)
+        {
+            // Wheel is an impulse; synthesize a press + release so bindings can
+            // be expressed as normal chords.
+            m_down.set(code);
+            RefreshActionsAndEmitTransitions();
+
+            m_down.reset(code);
+            RefreshActionsAndEmitTransitions();
+        }
+        break;
+    }
+
     default:
         break;
     }
@@ -471,6 +502,50 @@ MovementAxes InputMapper::GetMovementAxes() const noexcept
     a.z = (IsDown(Action::MoveUp) ? 1.f : 0.f) - (IsDown(Action::MoveDown) ? 1.f : 0.f);
 
     return a;
+}
+
+std::size_t InputMapper::BindingCount(Action action) const noexcept
+{
+    const auto idx = ToIndex(action);
+    if (idx >= kActionCount)
+        return 0;
+    return static_cast<std::size_t>(m_bindCounts[idx]);
+}
+
+std::span<const std::uint16_t> InputMapper::BindingChord(Action action, std::size_t bindingIndex) const noexcept
+{
+    const auto idx = ToIndex(action);
+    if (idx >= kActionCount)
+        return {};
+
+    const auto bindCount = static_cast<std::size_t>(m_bindCounts[idx]);
+    if (bindingIndex >= bindCount)
+        return {};
+
+    const Chord& c = m_binds[idx][bindingIndex];
+    return std::span<const std::uint16_t>(c.codes.data(), static_cast<std::size_t>(c.count));
+}
+
+const char* InputMapper::ActionName(Action action) noexcept
+{
+    switch (action)
+    {
+    case Action::MoveForward:      return "MoveForward";
+    case Action::MoveBackward:     return "MoveBackward";
+    case Action::MoveLeft:         return "MoveLeft";
+    case Action::MoveRight:        return "MoveRight";
+    case Action::MoveDown:         return "MoveDown";
+    case Action::MoveUp:           return "MoveUp";
+    case Action::MoveForwardFast:  return "MoveForwardFast";
+    case Action::SpeedBoost:       return "SpeedBoost";
+    case Action::CameraOrbit:      return "CameraOrbit";
+    case Action::CameraPan:        return "CameraPan";
+    case Action::CameraZoomIn:     return "CameraZoomIn";
+    case Action::CameraZoomOut:    return "CameraZoomOut";
+    case Action::ReloadBindings:   return "ReloadBindings";
+    case Action::Count:            break;
+    }
+    return "Unknown";
 }
 
 bool InputMapper::LoadFromJsonText(std::string_view text) noexcept
@@ -525,10 +600,26 @@ bool InputMapper::LoadFromJsonText(std::string_view text) noexcept
 
         if (v.is_string())
         {
-            considerBindStr(v.get_ref<const std::string&>());
+            std::string_view s = v.get_ref<const std::string&>();
+            if (colony::input::bindings::Trim(s).empty())
+            {
+                // Explicit clear.
+                ClearBindings(*act);
+                any = true;
+                continue;
+            }
+            considerBindStr(s);
         }
         else if (v.is_array())
         {
+            if (v.empty())
+            {
+                // Explicit clear.
+                ClearBindings(*act);
+                any = true;
+                continue;
+            }
+
             for (const auto& item : v)
             {
                 if (!item.is_string())
@@ -619,6 +710,14 @@ bool InputMapper::LoadFromIniText(std::string_view text) noexcept
         const auto act = ParseActionName(key);
         if (!act)
             continue;
+
+        // "Action =" explicitly clears existing binds.
+        if (value.empty())
+        {
+            ClearBindings(*act);
+            any = true;
+            continue;
+        }
 
         parsedChords.clear();
 

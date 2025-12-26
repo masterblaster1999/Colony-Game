@@ -239,3 +239,28 @@ This patch is focused on small but important correctness and developer-QOL impro
   - Fixes an incomplete build definition by adding all required `.cpp` sources (including stage implementations)
     so the `ColonyWorldGen` static library can actually link when enabled.
   - Aligns the target to `cxx_std_23` to match the repo’s overall C++23 toolchain.
+
+
+# Patch 14: Mouse wheel bindings + minimal bindings editor
+
+This patch adds a high-value, low-risk input upgrade: the mouse wheel is now bindable (and the game includes a small in-game editor to tweak binds and save them back to disk).
+
+## What this patch adds
+
+- **Bindable mouse wheel**
+  - New bind tokens: `WheelUp` / `WheelDown`.
+  - Wheel detents (`WM_MOUSEWHEEL`) are converted into **impulse-style** input codes so they can participate in chords (e.g. `Ctrl+WheelUp`).
+
+- **Rebindable zoom**
+  - New actions: `CameraZoomIn` / `CameraZoomOut`.
+  - World zoom now uses these actions instead of directly reading `ImGuiIO::MouseWheel`, so you can remap zoom without touching code.
+
+- **Minimal Bindings Editor UI**
+  - Open from **Colony** panel → **Input Bindings** → **Bindings Editor...**
+  - Edit per-action binds as comma-separated chords, apply instantly, and save to your current bindings file.
+
+## Small but important behavior improvement
+
+- **Explicit "clear" support in config files**
+  - JSON: `"SomeAction": []` clears that action’s binds.
+  - INI: `SomeAction =` clears that action’s binds.

@@ -17,6 +17,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <cstdio>
 #include <cstdint>
 #include <optional>
 #include <string>
@@ -185,6 +186,12 @@ inline std::optional<std::uint32_t> ParseInputCodeToken(std::string_view token) 
     if (t == "mousex1" || t == "x1" || t == "mouse4" || t == "mb4") return colony::input::kMouseButtonX1;
     if (t == "mousex2" || t == "x2" || t == "mouse5" || t == "mb5") return colony::input::kMouseButtonX2;
 
+    // Mouse wheel (impulse-style bindings)
+    if (t == "wheelup" || t == "mwheelup" || t == "mousewheelup" || t == "scrollup")
+        return colony::input::kMouseWheelUp;
+    if (t == "wheeldown" || t == "mwheeldown" || t == "mousewheeldown" || t == "scrolldown")
+        return colony::input::kMouseWheelDown;
+
     return std::nullopt;
 }
 
@@ -218,6 +225,75 @@ inline bool ParseChordString(std::string_view chordStr, std::vector<std::uint32_
     std::sort(outCodes.begin(), outCodes.end());
     outCodes.erase(std::unique(outCodes.begin(), outCodes.end()), outCodes.end());
     return !outCodes.empty();
+}
+
+// Converts a unified input code back into a human-friendly token suitable for
+// config files / UI.
+//
+// NOTE: This is not intended to be a perfect round-trip for every possible VK
+// code, but it covers the project's supported tokens.
+[[nodiscard]]
+inline std::string InputCodeToToken(std::uint32_t code)
+{
+    // Mouse buttons / wheel.
+    switch (code) {
+    case colony::input::kMouseButtonLeft:   return "MouseLeft";
+    case colony::input::kMouseButtonRight:  return "MouseRight";
+    case colony::input::kMouseButtonMiddle: return "MouseMiddle";
+    case colony::input::kMouseButtonX1:     return "MouseX1";
+    case colony::input::kMouseButtonX2:     return "MouseX2";
+    case colony::input::kMouseWheelUp:      return "WheelUp";
+    case colony::input::kMouseWheelDown:    return "WheelDown";
+    default: break;
+    }
+
+    // Function keys.
+    if (code >= kVK_F1 && code <= kVK_F24) {
+        const std::uint32_t n = (code - kVK_F1) + 1;
+        return "F" + std::to_string(n);
+    }
+
+    // Single printable alnum keys.
+    if ((code >= 'A' && code <= 'Z') || (code >= '0' && code <= '9')) {
+        return std::string(1, static_cast<char>(code));
+    }
+
+    // Arrow keys.
+    if (code == kVK_UP) return "Up";
+    if (code == kVK_DOWN) return "Down";
+    if (code == kVK_LEFT) return "Left";
+    if (code == kVK_RIGHT) return "Right";
+
+    // Common named keys.
+    if (code == kVK_SPACE) return "Space";
+    if (code == kVK_ESCAPE) return "Esc";
+    if (code == kVK_TAB) return "Tab";
+    if (code == kVK_RETURN) return "Enter";
+    if (code == kVK_BACK) return "Backspace";
+    if (code == kVK_INSERT) return "Insert";
+    if (code == kVK_DELETE) return "Delete";
+    if (code == kVK_HOME) return "Home";
+    if (code == kVK_END) return "End";
+    if (code == kVK_PRIOR) return "PageUp";
+    if (code == kVK_NEXT) return "PageDown";
+
+    // Modifiers.
+    if (code == kVK_SHIFT) return "Shift";
+    if (code == kVK_LSHIFT) return "LShift";
+    if (code == kVK_RSHIFT) return "RShift";
+
+    if (code == kVK_CONTROL) return "Ctrl";
+    if (code == kVK_LCONTROL) return "LCtrl";
+    if (code == kVK_RCONTROL) return "RCtrl";
+
+    if (code == kVK_MENU) return "Alt";
+    if (code == kVK_LMENU) return "LAlt";
+    if (code == kVK_RMENU) return "RAlt";
+
+    // Fallback: preserve as hex.
+    char buf[16] = {};
+    std::snprintf(buf, sizeof(buf), "VK_0x%02X", static_cast<unsigned int>(code & 0xFFu));
+    return std::string(buf);
 }
 
 } // namespace colony::input::bindings

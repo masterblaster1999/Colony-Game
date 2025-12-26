@@ -72,6 +72,14 @@ TEST_CASE("ParseInputCodeToken: mouse buttons") {
     CHECK(ParseInputCodeToken("MouseX2").value() == colony::input::kMouseButtonX2);
 }
 
+TEST_CASE("ParseInputCodeToken: mouse wheel") {
+    CHECK(ParseInputCodeToken("WheelUp").value() == colony::input::kMouseWheelUp);
+    CHECK(ParseInputCodeToken("WheelDown").value() == colony::input::kMouseWheelDown);
+    // Common aliases
+    CHECK(ParseInputCodeToken("MouseWheelUp").value() == colony::input::kMouseWheelUp);
+    CHECK(ParseInputCodeToken("ScrollDown").value() == colony::input::kMouseWheelDown);
+}
+
 TEST_CASE("ParseInputCodeToken: invalid") {
     CHECK_FALSE(ParseInputCodeToken("").has_value());
     CHECK_FALSE(ParseInputCodeToken(" ").has_value());
@@ -98,6 +106,14 @@ TEST_CASE("ParseChordString: mixed keyboard + mouse") {
     REQUIRE(codes.size() == 2);
     CHECK(codes[0] == colony::input::bindings::kVK_MENU);
     CHECK(codes[1] == colony::input::kMouseButtonLeft);
+}
+
+TEST_CASE("ParseChordString: mixed keyboard + mouse wheel") {
+    std::vector<std::uint32_t> codes;
+    CHECK(ParseChordString("Ctrl+WheelUp", codes));
+    REQUIRE(codes.size() == 2);
+    CHECK(codes[0] == colony::input::bindings::kVK_CONTROL);
+    CHECK(codes[1] == colony::input::kMouseWheelUp);
 }
 
 TEST_CASE("ParseChordString: invalid token fails") {
