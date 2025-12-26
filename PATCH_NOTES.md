@@ -144,3 +144,19 @@ This patch tightens the runtime hotkey story and fixes a persistence edge-case i
 
 - `src/input/InputMapper.cpp`
   - `ReadFileToString` now verifies the full file was read (matches the settings loader’s robustness).
+
+# Patch 10: DXGI waitable-handle pacing correctness + responsiveness
+
+This patch hardens the low-latency DXGI “waitable swapchain” path.
+
+## What this patch fixes / improves
+
+- `src/AppWindow_Loop.cpp`
+  - Re-queries the swapchain frame-latency waitable handle each wait iteration.
+    This fixes **undefined behavior** if the swapchain is resized or the frame latency is changed while waiting.
+  - Drains any pending Win32 messages after the handle becomes signaled.
+    `MsgWaitForMultipleObjectsEx` can return the signaled handle even when messages are queued, so this keeps input as fresh as possible.
+  - Wait timing stats now measure **only the time spent inside the wait call** (not the time spent dispatching messages).
+
+- `src/AppWindow_Create.cpp`
+  - Adds a `WH ON/OFF` indicator to the title bar, so you can tell whether the DXGI frame-latency waitable object is available on the current system.

@@ -228,6 +228,7 @@ void AppWindow::UpdateTitle()
         << L" | VSync " << vs
         << L" | Cap " << (m_vsync ? L"-" : (m_impl->settings.maxFpsWhenVsyncOff == 0 ? L"∞" : std::to_wstring(m_impl->settings.maxFpsWhenVsyncOff)))
         << L" | Lat " << m_impl->settings.maxFrameLatency
+        << L" | WH " << (m_gfx.HasFrameLatencyWaitableObject() ? L"ON" : L"OFF")
         << L" | Raw " << (m_impl->settings.rawMouse ? L"ON" : L"OFF")
         << L" | PauseBG " << (m_impl->settings.pauseWhenUnfocused ? L"ON" : L"OFF")
         << L" | BGCap " << (m_impl->settings.pauseWhenUnfocused ? L"-" : (m_impl->settings.maxFpsWhenUnfocused == 0 ? L"∞" : std::to_wstring(m_impl->settings.maxFpsWhenUnfocused)))

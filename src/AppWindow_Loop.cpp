@@ -136,21 +136,75 @@ int AppWindow::MessageLoop()
 
         // If the swapchain exposes a frame-latency waitable object, block on it
         // (while still pumping messages) to avoid queuing ahead.
+        //
+        // NOTE: The waitable handle can legitimately change when the swapchain is resized
+        // (WM_SIZE / WM_EXITSIZEMOVE) or when we adjust the maximum frame latency (F8),
+        // because DxDevice will close the old handle and obtain a new one.
+        // Calling MsgWaitForMultipleObjectsEx on a handle that has since been closed is
+        // undefined behavior, so we re-query the handle each time through the loop.
         double waitMs = 0.0;
-        const HANDLE frameLatency = m_gfx.FrameLatencyWaitableObject();
-        if (frameLatency != nullptr)
+        if (m_gfx.HasFrameLatencyWaitableObject())
         {
-            const auto waitStart = std::chrono::steady_clock::now();
             bool abortFrame = false;
 
             while (true)
             {
+                // Re-fetch every iteration in case message dispatch resized the swapchain.
+                HANDLE frameLatency = m_gfx.FrameLatencyWaitableObject();
+                if (frameLatency == nullptr)
+                    break;
+
                 const DWORD timeoutMs = m_impl->BackgroundWaitTimeoutMs();
+
+                const auto callStart = std::chrono::steady_clock::now();
                 const DWORD r = MsgWaitForMultipleObjectsEx(1, &frameLatency, timeoutMs, QS_ALLINPUT, MWMO_INPUTAVAILABLE);
+                waitMs += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - callStart).count();
 
                 if (r == WAIT_OBJECT_0)
                 {
                     // Frame slot available.
+                    //
+                    // MsgWaitForMultipleObjectsEx prioritizes signaled handles over messages
+                    // (it returns the first signaled object in pHandles). That means there can
+                    // be pending input in the queue even though we "won" on the handle.
+                    // Drain messages now so input is applied as close to Present() as possible.
+                    bool pumped = false;
+                    while (PeekMessageW(&msg, nullptr, 0, 0, PM_REMOVE))
+                    {
+                        pumped = true;
+                        if (msg.message == WM_QUIT)
+                        {
+                            exitCode = static_cast<int>(msg.wParam);
+                            goto exit_loop;
+                        }
+                        TranslateMessage(&msg);
+                        DispatchMessageW(&msg);
+                    }
+
+                    m_impl->FlushPendingMouseDelta();
+
+                    const bool unfocusedNow = !m_impl->active;
+                    const bool pauseNow = unfocusedNow && m_impl->settings.pauseWhenUnfocused;
+
+                    // State changed while waiting; restart the outer loop.
+                    if (m_width == 0 || m_height == 0 || pauseNow)
+                    {
+                        abortFrame = true;
+                        break;
+                    }
+
+                    // If a cap is active, ensure we still respect it.
+                    if (!m_impl->pacer.IsTimeToRender(m_vsync, unfocusedNow))
+                    {
+                        abortFrame = true;
+                        break;
+                    }
+
+                    // If we pumped messages, the swapchain / waitable handle may have changed.
+                    // Re-evaluate before rendering so we don't queue against the wrong swapchain.
+                    if (pumped)
+                        continue;
+
                     break;
                 }
 
@@ -173,7 +227,7 @@ int AppWindow::MessageLoop()
                     const bool unfocusedNow = !m_impl->active;
                     const bool pauseNow = unfocusedNow && m_impl->settings.pauseWhenUnfocused;
 
-                    // State changed while waiting; restart the loop.
+                    // State changed while waiting; restart the outer loop.
                     if (m_width == 0 || m_height == 0 || pauseNow)
                     {
                         abortFrame = true;
@@ -196,11 +250,9 @@ int AppWindow::MessageLoop()
                     continue;
                 }
 
-                // WAIT_FAILED or unexpected return; don't hang.
+                // WAIT_FAILED, WAIT_IO_COMPLETION, or unexpected return; don't hang.
                 break;
             }
-
-            waitMs = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - waitStart).count();
 
             if (abortFrame)
             {
