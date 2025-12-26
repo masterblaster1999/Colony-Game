@@ -57,6 +57,7 @@ TEST_CASE("ParseInputCodeToken: function keys") {
     using namespace colony::input::bindings;
 
     CHECK(ParseInputCodeToken("F1").value() == kVK_F1);
+    CHECK(ParseInputCodeToken("F2").value() == kVK_F2);
     CHECK(ParseInputCodeToken("f5").value() == (kVK_F1 + 4));
     CHECK(ParseInputCodeToken("F24").value() == kVK_F24);
     CHECK_FALSE(ParseInputCodeToken("F0").has_value());

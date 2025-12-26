@@ -385,6 +385,24 @@ void PrototypeGame::Impl::drawWorldWindow()
                             world.plannedCount());
         dl->AddText({canvas_p0.x + 8.f, canvas_p0.y + 8.f}, IM_COL32(255, 255, 255, 200), buf);
     }
+    // Status overlay (also visible when panels are hidden).
+    if (!statusText.empty() && statusTtl > 0.f) {
+        float a = 1.0f;
+        if (statusTtl < 0.5f)
+            a = clampf(statusTtl / 0.5f, 0.f, 1.f);
+
+        const ImU32 textCol = IM_COL32(255, 255, 255, static_cast<int>(200 * a));
+        const ImU32 bgCol   = IM_COL32(0, 0, 0, static_cast<int>(140 * a));
+
+        const ImVec2 pos = {canvas_p0.x + 8.f, canvas_p0.y + 28.f};
+        const ImVec2 sz  = ImGui::CalcTextSize(statusText.c_str());
+
+        dl->AddRectFilled({pos.x - 4.f, pos.y - 2.f},
+                          {pos.x + sz.x + 4.f, pos.y + sz.y + 2.f},
+                          bgCol,
+                          4.0f);
+        dl->AddText(pos, textCol, statusText.c_str());
+    }
 
     ImGui::End();
 }

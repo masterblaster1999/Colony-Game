@@ -137,7 +137,7 @@ void InputMapper::SetDefaultBinds() noexcept
     }
 
     // Hot reload input bindings (defaults to F5).
-    AddBinding(Action::ReloadBindings, bindings::kVK_F1 + 4);
+    AddBinding(Action::ReloadBindings, bindings::VK_F(5));
 
     RecomputeActionStatesNoEvents();
 }

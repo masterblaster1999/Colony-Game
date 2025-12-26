@@ -58,8 +58,18 @@ inline constexpr std::uint32_t kVK_LMENU    = 0xA4;
 inline constexpr std::uint32_t kVK_RMENU    = 0xA5;
 
 inline constexpr std::uint32_t kVK_F1  = 0x70;
+inline constexpr std::uint32_t kVK_F2  = 0x71;
 inline constexpr std::uint32_t kVK_F24 = 0x87;
 
+
+// Helper for readability when referring to function keys in code.
+[[nodiscard]] inline constexpr std::uint32_t VK_F(std::uint32_t n) noexcept
+{
+    return (n >= 1 && n <= 24) ? (kVK_F1 + (n - 1)) : 0u;
+}
+static_assert(VK_F(1) == kVK_F1);
+static_assert(VK_F(2) == kVK_F2);
+static_assert(VK_F(24) == kVK_F24);
 // --- Small string helpers ----------------------------------------------------------------------
 
 [[nodiscard]]

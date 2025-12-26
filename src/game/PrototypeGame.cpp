@@ -31,11 +31,13 @@ void PrototypeGame::DrawUI() noexcept
 void PrototypeGame::TogglePanels() noexcept
 {
     m_impl->showPanels = !m_impl->showPanels;
+    m_impl->setStatus(m_impl->showPanels ? "Panels: shown" : "Panels: hidden", 1.5f);
 }
 
 void PrototypeGame::ToggleHelp() noexcept
 {
     m_impl->showHelp = !m_impl->showHelp;
+    m_impl->setStatus(m_impl->showHelp ? "Help: shown" : "Help: hidden", 1.5f);
 }
 
 void PrototypeGame::ResetWorld() noexcept
