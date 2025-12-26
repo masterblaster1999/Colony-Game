@@ -98,6 +98,16 @@ LRESULT AppWindow::HandleMsg_Window(HWND hWnd, UINT msg, WPARAM wParam, LPARAM l
         handled = true;
         return 0;
 
+
+    case WM_SYSCOMMAND:
+        // Disable ALT application menu (lets Alt be used as a modifier in-game).
+        if ((wParam & 0xfff0u) == SC_KEYMENU)
+        {
+            handled = true;
+            return 0;
+        }
+        break;
+
     case WM_CLOSE:
         DestroyWindow(hWnd);
         handled = true;

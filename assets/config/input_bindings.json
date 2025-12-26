@@ -8,10 +8,11 @@
     "MoveDown": ["Q"],
     "MoveUp": ["E"],
 
-    // Example chord binding (distinct action):
+    // Example chord binding (distinct action).
+    // Tip: you can use Shift/LShift/RShift (same for Ctrl/Alt) to be as specific as you want:
     "MoveForwardFast": ["Shift+W"],
 
-    // Modifier action:
+    // Modifier action (Shift/LShift/RShift are all valid; same pattern for Ctrl/Alt):
     "SpeedBoost": ["Shift"],
 
     // Mouse buttons are now bindable too:

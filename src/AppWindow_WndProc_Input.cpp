@@ -4,6 +4,64 @@
 
 #include <cstdint>
 
+namespace {
+
+// Translate generic VK_* modifier codes (VK_SHIFT/VK_CONTROL/VK_MENU) into left/right
+// variants using lParam scan code / extended bit.
+// Returns vk unchanged for non-modifier keys.
+[[nodiscard]] std::uint32_t TranslateModifierVk(std::uint32_t vk, LPARAM lParam) noexcept
+{
+    if (vk == static_cast<std::uint32_t>(VK_SHIFT))
+    {
+        // For Shift, the extended-bit doesn't distinguish left/right. Use the scan code.
+        const UINT sc = (static_cast<UINT>((lParam & 0x00ff0000) >> 16));
+        const UINT vkEx = MapVirtualKeyW(sc, MAPVK_VSC_TO_VK_EX);
+        if (vkEx == VK_LSHIFT || vkEx == VK_RSHIFT)
+            return static_cast<std::uint32_t>(vkEx);
+        return vk;
+    }
+
+    if (vk == static_cast<std::uint32_t>(VK_CONTROL))
+    {
+        // Extended bit (bit 24) is set for the right-side key.
+        return (lParam & 0x01000000) ? static_cast<std::uint32_t>(VK_RCONTROL)
+                                     : static_cast<std::uint32_t>(VK_LCONTROL);
+    }
+
+    if (vk == static_cast<std::uint32_t>(VK_MENU))
+    {
+        // Extended bit (bit 24) is set for the right-side key.
+        return (lParam & 0x01000000) ? static_cast<std::uint32_t>(VK_RMENU)
+                                     : static_cast<std::uint32_t>(VK_LMENU);
+    }
+
+    return vk;
+}
+
+inline void PushKeyEventDual(colony::input::InputQueue& q,
+                             colony::input::InputEventType type,
+                             std::uint32_t vk,
+                             std::uint32_t vkSpecific,
+                             bool alt,
+                             bool repeat) noexcept
+{
+    colony::input::InputEvent ev{};
+    ev.type = type;
+    ev.key = vk;
+    ev.alt = alt;
+    ev.repeat = repeat;
+    q.Push(ev);
+
+    // Also emit the left/right variant (useful for explicit LShift/RShift bindings).
+    if (vkSpecific != vk)
+    {
+        ev.key = vkSpecific;
+        q.Push(ev);
+    }
+}
+
+} // namespace
+
 // -------------------------------------------------------------------------------------------------
 // AppWindow message handling: Input (keyboard / mouse / raw input)
 // -------------------------------------------------------------------------------------------------
@@ -14,9 +72,13 @@ LRESULT AppWindow::HandleMsg_Input(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lP
     {
     case WM_SETCURSOR:
         if (LOWORD(lParam) == HTCLIENT && m_impl) {
+            // Cache cursors to avoid repeated LoadCursor calls (WM_SETCURSOR can fire a lot).
+            static HCURSOR s_sizeAll = LoadCursor(nullptr, IDC_SIZEALL);
+            static HCURSOR s_hand    = LoadCursor(nullptr, IDC_HAND);
+
             const auto b = m_impl->mouse.Buttons();
-            if (b.middle || b.right || b.x1 || b.x2) { SetCursor(LoadCursor(nullptr, IDC_SIZEALL)); handled = true; return TRUE; }
-            if (b.left)                              { SetCursor(LoadCursor(nullptr, IDC_HAND));    handled = true; return TRUE; }
+            if (b.middle || b.right || b.x1 || b.x2) { SetCursor(s_sizeAll); handled = true; return TRUE; }
+            if (b.left)                              { SetCursor(s_hand);    handled = true; return TRUE; }
         }
         break;
 
@@ -184,12 +246,10 @@ LRESULT AppWindow::HandleMsg_Input(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lP
 
             if (vk < 256 && !isSystem)
             {
-                colony::input::InputEvent ev{};
-                ev.type = colony::input::InputEventType::KeyDown;
-                ev.key = vk;
-                ev.alt = (lParam & (1 << 29)) != 0;
-                ev.repeat = (lParam & (1 << 30)) != 0;
-                m_impl->input.Push(ev);
+                const std::uint32_t vkSpecific = TranslateModifierVk(vk, lParam);
+                const bool alt = (lParam & (1 << 29)) != 0;
+                const bool repeat = (lParam & (1 << 30)) != 0;
+                PushKeyEventDual(m_impl->input, colony::input::InputEventType::KeyDown, vk, vkSpecific, alt, repeat);
                 handled = true;
                 return 0;
             }
@@ -216,12 +276,9 @@ LRESULT AppWindow::HandleMsg_Input(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lP
 
             if (vk < 256 && !isSystem)
             {
-                colony::input::InputEvent ev{};
-                ev.type = colony::input::InputEventType::KeyUp;
-                ev.key = vk;
-                ev.alt = (lParam & (1 << 29)) != 0;
-                ev.repeat = false;
-                m_impl->input.Push(ev);
+                const std::uint32_t vkSpecific = TranslateModifierVk(vk, lParam);
+                const bool alt = (lParam & (1 << 29)) != 0;
+                PushKeyEventDual(m_impl->input, colony::input::InputEventType::KeyUp, vk, vkSpecific, alt, false);
                 handled = true;
                 return 0;
             }
@@ -230,6 +287,20 @@ LRESULT AppWindow::HandleMsg_Input(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lP
 
     case WM_SYSKEYDOWN:
     {
+        // F10 is treated as a system key by Win32 (WM_SYSKEYDOWN).
+        // Mirror the WM_KEYDOWN handler so the toggle works consistently.
+        if (wParam == VK_F10)
+        {
+            if ((lParam & (1 << 30)) == 0 && m_impl) {
+                m_impl->settings.showFrameStats = !m_impl->settings.showFrameStats;
+                m_impl->settings.showDxgiDiagnostics = false;
+                m_impl->ScheduleSettingsAutosave();
+                UpdateTitle();
+            }
+            handled = true;
+            return 0;
+        }
+
         // Alt+Enter (bit 29 = context code / Alt key down)
         // Ignore auto-repeat so holding Alt+Enter doesn't spam-toggle.
         if (wParam == VK_RETURN && (lParam & (1 << 29)) && ((lParam & (1 << 30)) == 0)) {
@@ -245,12 +316,10 @@ LRESULT AppWindow::HandleMsg_Input(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lP
             const std::uint32_t vk = static_cast<std::uint32_t>(wParam);
             if (vk < 256)
             {
-                colony::input::InputEvent ev{};
-                ev.type = colony::input::InputEventType::KeyDown;
-                ev.key = vk;
-                ev.alt = (lParam & (1 << 29)) != 0;
-                ev.repeat = (lParam & (1 << 30)) != 0;
-                m_impl->input.Push(ev);
+                const std::uint32_t vkSpecific = TranslateModifierVk(vk, lParam);
+                const bool alt = (lParam & (1 << 29)) != 0;
+                const bool repeat = (lParam & (1 << 30)) != 0;
+                PushKeyEventDual(m_impl->input, colony::input::InputEventType::KeyDown, vk, vkSpecific, alt, repeat);
             }
 
             // Prevent the classic Alt-key menu activation when using Alt as a modifier in-game.
@@ -266,17 +335,16 @@ LRESULT AppWindow::HandleMsg_Input(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lP
     }
 
     case WM_SYSKEYUP:
+        // If F10 was consumed by the window layer (stats toggle), don't forward it as gameplay input.
+        if (wParam == VK_F10) { handled = true; return 0; }
         if (m_impl)
         {
             const std::uint32_t vk = static_cast<std::uint32_t>(wParam);
             if (vk < 256)
             {
-                colony::input::InputEvent ev{};
-                ev.type = colony::input::InputEventType::KeyUp;
-                ev.key = vk;
-                ev.alt = (lParam & (1 << 29)) != 0;
-                ev.repeat = false;
-                m_impl->input.Push(ev);
+                const std::uint32_t vkSpecific = TranslateModifierVk(vk, lParam);
+                const bool alt = (lParam & (1 << 29)) != 0;
+                PushKeyEventDual(m_impl->input, colony::input::InputEventType::KeyUp, vk, vkSpecific, alt, false);
             }
         }
         break;
@@ -443,6 +511,9 @@ LRESULT AppWindow::HandleMsg_Input(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lP
                 m_impl->pendingMouseDy += dy;
             }
         }
+        // Per Win32 docs, WM_INPUT should be passed to DefWindowProc so the system can
+        // perform internal cleanup. We still return 0 to indicate we processed it.
+        (void)DefWindowProcW(hWnd, msg, wParam, lParam);
         handled = true;
         return 0;
 

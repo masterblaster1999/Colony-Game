@@ -188,3 +188,21 @@ It’s meant for debugging odd presentation behavior (tearing, flip-model eligib
 - `src/AppWindow_Create.cpp`
 - `src/AppWindow_WndProc_Input.cpp`
 - `src/AppWindow.h`
+
+
+# Patch 12: Modifier key precision + Alt-menu suppression + WM_INPUT cleanup
+
+This patch tightens Win32 input correctness and makes left/right modifier bindings truly work.
+
+## What this patch fixes / improves
+
+- `src/AppWindow_WndProc_Input.cpp`
+  - **Left/Right modifiers:** when you press **Shift/Ctrl/Alt**, we now emit *both* the generic VK code (e.g. `VK_SHIFT`) **and** the left/right-specific VK code (`VK_LSHIFT`/`VK_RSHIFT`, etc.).
+    - Existing bindings using `Shift`/`Ctrl`/`Alt` keep working.
+    - New/existing bindings using `LShift`/`RShift`, `LCtrl`/`RCtrl`, `LAlt`/`RAlt` now work as expected.
+  - **F10 reliability:** handles `VK_F10` in `WM_SYSKEYDOWN` (Win32 treats F10 as a system key) so the frame-stats title toggle works consistently.
+  - **Raw input cleanup:** after processing `WM_INPUT`, we also call `DefWindowProcW` (per Win32 guidance) so the system can do internal cleanup, while still returning 0 to indicate we've processed the message.
+  - **Micro-optimization:** caches cursor handles used by `WM_SETCURSOR` to avoid repeated `LoadCursor` calls.
+
+- `src/AppWindow_WndProc_Window.cpp`
+  - Handles `WM_SYSCOMMAND` + `SC_KEYMENU` to fully suppress the ALT application menu behavior (so Alt can be used as an in-game modifier without activating the window menu).
