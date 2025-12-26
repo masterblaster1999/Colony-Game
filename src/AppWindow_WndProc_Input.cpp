@@ -293,7 +293,7 @@ LRESULT AppWindow::HandleMsg_Input(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lP
         {
             if ((lParam & (1 << 30)) == 0 && m_impl) {
                 m_impl->settings.showFrameStats = !m_impl->settings.showFrameStats;
-                m_impl->settings.showDxgiDiagnostics = false;
+                m_impl->frameStats.Reset();
                 m_impl->ScheduleSettingsAutosave();
                 UpdateTitle();
             }

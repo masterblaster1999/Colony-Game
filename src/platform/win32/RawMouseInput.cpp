@@ -31,16 +31,22 @@ void RawMouseInput::SetEnabled(HWND hwnd, bool enabled) noexcept
     }
 
     // Best-effort removal of this registration so we stop receiving WM_INPUT for the mouse.
-    // (If this fails for some reason, we still gate processing by m_rawRegistered.)
+    //
+    // IMPORTANT:
+    //   From the game's perspective, disabling raw input should take effect immediately.
+    //   Even if RIDEV_REMOVE fails (e.g. transient system state), we treat raw input as
+    //   disabled and simply ignore any WM_INPUT messages that still arrive.
     RAWINPUTDEVICE rid{};
     rid.usUsagePage = 0x01;
     rid.usUsage     = 0x02;
     rid.dwFlags     = RIDEV_REMOVE;
     rid.hwndTarget  = nullptr;
 
-    if (RegisterRawInputDevices(&rid, 1, sizeof(rid)) != FALSE) {
-        m_rawRegistered = false;
-    }
+    // Treat raw input as disabled regardless of unregister success.
+    m_rawRegistered = false;
+
+    // Still attempt to unregister to reduce WM_INPUT traffic.
+    (void)RegisterRawInputDevices(&rid, 1, sizeof(rid));
 
     // Re-base cursor deltas on next move.
     m_hasPos = false;

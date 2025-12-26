@@ -242,6 +242,12 @@ void AppWindow::UpdateTitle()
         oss << L" | CFG DEFAULT";
     }
 
+    if (m_impl->input.Dropped() > 0)
+    {
+        oss << L" | InDrop " << m_impl->input.Dropped();
+    }
+
+
     if (m_impl->settings.showFrameStats)
     {
         oss << L" | " << m_impl->frameStats.FormatTitleString();
@@ -249,10 +255,8 @@ void AppWindow::UpdateTitle()
 
     if (m_impl->settings.showDxgiDiagnostics)
     {
-        const UINT syncInterval = m_vsync ? 1u : 0u;
-        UINT presentFlags = 0;
-        if (!m_vsync && m_gfx.TearingEnabled())
-            presentFlags |= DXGI_PRESENT_ALLOW_TEARING;
+        const UINT syncInterval = m_gfx.LastPresentSyncInterval();
+        const UINT presentFlags = m_gfx.LastPresentFlags();
 
         oss << L" | DXGI b" << m_gfx.SwapchainBufferCount()
             << L" tear" << (m_gfx.TearingEnabled() ? L"Y" : L"N")

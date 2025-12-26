@@ -206,3 +206,36 @@ This patch tightens Win32 input correctness and makes left/right modifier bindin
 
 - `src/AppWindow_WndProc_Window.cpp`
   - Handles `WM_SYSCOMMAND` + `SC_KEYMENU` to fully suppress the ALT application menu behavior (so Alt can be used as an in-game modifier without activating the window menu).
+
+
+# Patch 13: Raw input disable semantics + title diagnostics accuracy + WorldGen target fix
+
+This patch is focused on small but important correctness and developer-QOL improvements.
+
+## What this patch fixes / improves
+
+- `src/platform/win32/RawMouseInput.cpp`
+  - **Correct toggle semantics:** disabling raw input now takes effect immediately from the game's perspective.
+    Even if `RIDEV_REMOVE` fails transiently, we treat raw input as disabled and ignore any stray `WM_INPUT`.
+
+- `src/AppWindow_WndProc_Input.cpp`
+  - **Consistent F10 behavior:** `VK_F10` handled in `WM_SYSKEYDOWN` now mirrors the `WM_KEYDOWN` path
+    (toggles frame stats + resets the rolling stats window), without unexpectedly touching DXGI diagnostics.
+
+- `src/AppWindow_Create.cpp`
+  - **More accurate DXGI diagnostics:** the title bar diagnostics now display the **last actual** `Present()`
+    sync interval and flags from `DxDevice`, rather than re-deriving them from current toggles.
+  - **Input overflow visibility:** if the fixed per-frame input queue ever overflows, the title now shows
+    `InDrop <count>` to make the issue obvious during testing.
+
+- `src/common/ThreadPool.hpp`
+  - Adds the missing `<stdexcept>` include so the header is self-sufficient when PCH is disabled.
+
+- `src/platform/win/SingleInstanceGuard.h`
+  - Makes the guard header self-sufficient (`<stdexcept>`) and fixes mutex lifecycle (no unconditional
+    `ReleaseMutex` on a mutex the thread may not own).
+
+- `src/worldgen/CMakeLists.txt`
+  - Fixes an incomplete build definition by adding all required `.cpp` sources (including stage implementations)
+    so the `ColonyWorldGen` static library can actually link when enabled.
+  - Aligns the target to `cxx_std_23` to match the repo’s overall C++23 toolchain.
