@@ -139,6 +139,77 @@ void AppWindow::ToggleFullscreen()
     UpdateTitle();
 }
 
+void AppWindow::CycleMaxFpsWhenVsyncOff()
+{
+    if (!m_impl)
+        return;
+
+    // 0 = uncapped.
+    constexpr int kOptions[] = { 0, 60, 120, 144, 165, 240 };
+    constexpr std::size_t kCount = sizeof(kOptions) / sizeof(kOptions[0]);
+
+    const int cur = m_impl->settings.maxFpsWhenVsyncOff;
+    std::size_t idx = 0;
+    for (std::size_t i = 0; i < kCount; ++i)
+    {
+        if (kOptions[i] == cur) { idx = i; break; }
+    }
+
+    const int next = kOptions[(idx + 1) % kCount];
+    m_impl->settings.maxFpsWhenVsyncOff = next;
+    m_impl->pacer.SetMaxFpsWhenVsyncOff(next);
+    m_impl->ScheduleSettingsAutosave();
+    UpdateTitle();
+}
+
+void AppWindow::CycleMaxFpsWhenUnfocused()
+{
+    if (!m_impl)
+        return;
+
+    // 0 = uncapped. Low caps are intentionally allowed for background power saving.
+    constexpr int kOptions[] = { 0, 5, 10, 30, 60 };
+    constexpr std::size_t kCount = sizeof(kOptions) / sizeof(kOptions[0]);
+
+    const int cur = m_impl->settings.maxFpsWhenUnfocused;
+    std::size_t idx = 0;
+    for (std::size_t i = 0; i < kCount; ++i)
+    {
+        if (kOptions[i] == cur) { idx = i; break; }
+    }
+
+    const int next = kOptions[(idx + 1) % kCount];
+    m_impl->settings.maxFpsWhenUnfocused = next;
+    m_impl->pacer.SetMaxFpsWhenUnfocused(next);
+    m_impl->ScheduleSettingsAutosave();
+    UpdateTitle();
+}
+
+void AppWindow::ShowHotkeysHelp()
+{
+    // Keep this simple and Win32-only: a single MessageBox.
+    // Useful even when ImGui is disabled or not compiled in.
+    const wchar_t* msg =
+        L"Runtime Hotkeys\n"
+        L"\n"
+        L"Esc            Quit\n"
+        L"V              Toggle VSync\n"
+        L"F6             Cycle FPS cap when VSync is OFF (∞/60/120/144/165/240)\n"
+        L"Shift+F6        Cycle background FPS cap (∞/5/10/30/60)\n"
+        L"F7             Toggle pause-when-unfocused\n"
+        L"F8             Cycle DXGI max frame latency (1..16)\n"
+        L"F9             Toggle RAWINPUT mouse deltas\n"
+        L"F10            Toggle frame pacing stats in title\n"
+        L"F11 / Alt+Enter Toggle borderless fullscreen\n"
+        L"\n"
+        L"In-game (ImGui)\n"
+        L"F1             Toggle panels\n"
+        L"F2             Toggle help\n"
+        L"F5             Reload input bindings\n";
+
+    MessageBoxW(m_hwnd ? m_hwnd : nullptr, msg, L"Colony Game - Hotkeys", MB_OK | MB_ICONINFORMATION);
+}
+
 void AppWindow::UpdateTitle()
 {
     if (!m_hwnd || !m_impl)
@@ -155,9 +226,11 @@ void AppWindow::UpdateTitle()
     oss.setf(std::ios::fixed);
     oss << L"Colony Game | " << std::setprecision(0) << fps << L" FPS"
         << L" | VSync " << vs
+        << L" | Cap " << (m_vsync ? L"-" : (m_impl->settings.maxFpsWhenVsyncOff == 0 ? L"∞" : std::to_wstring(m_impl->settings.maxFpsWhenVsyncOff)))
         << L" | Lat " << m_impl->settings.maxFrameLatency
         << L" | Raw " << (m_impl->settings.rawMouse ? L"ON" : L"OFF")
         << L" | PauseBG " << (m_impl->settings.pauseWhenUnfocused ? L"ON" : L"OFF")
+        << L" | BGCap " << (m_impl->settings.pauseWhenUnfocused ? L"-" : (m_impl->settings.maxFpsWhenUnfocused == 0 ? L"∞" : std::to_wstring(m_impl->settings.maxFpsWhenUnfocused)))
         << L" | " << fs
         << L" | " << act;
 

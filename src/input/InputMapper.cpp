@@ -32,7 +32,9 @@ static bool ReadFileToString(const std::filesystem::path& path, std::string& out
     out.resize(static_cast<std::size_t>(sz));
     f.seekg(0, std::ios::beg);
     f.read(out.data(), static_cast<std::streamsize>(sz));
-    return f.good();
+    // Ensure the full file was read; this avoids subtle partial-read failures
+    // (AV scanners/locking) being treated as successful loads.
+    return (f.gcount() == static_cast<std::streamsize>(sz));
 }
 
 static std::optional<colony::input::Action> ParseActionName(std::string_view name)

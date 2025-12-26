@@ -93,6 +93,7 @@ void PrototypeGame::Impl::drawHelpWindow()
         ImGui::Separator();
         ImGui::BulletText("F1: Toggle panels");
         ImGui::BulletText("F2: Toggle help");
+        ImGui::BulletText("F3: Runtime hotkeys (popup)");
         ImGui::BulletText("R: Reset world");
         ImGui::BulletText("P: Pause simulation");
         ImGui::BulletText("F5: Reload input bindings");

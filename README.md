@@ -38,7 +38,9 @@ If you prefer CMake presets in Visual Studio / VS Code, see `CMakePresets.json`.
 In the current window prototype (`AppWindow`):
 
 - **Esc**: quit
-- **F1**: show hotkey help
+- **F1**: toggle in-game panels (ImGui)
+- **F2**: toggle in-game help (ImGui)
+- **F3**: show runtime hotkey help (popup)
 - **V**: toggle VSync (when off, frame rate is capped to avoid 100% CPU)
 - **F6**: cycle FPS cap when VSync is **OFF** (∞ / 60 / 120 / 144 / 165 / 240)
 - **Shift+F6**: cycle background FPS cap (∞ / 5 / 10 / 30 / 60)

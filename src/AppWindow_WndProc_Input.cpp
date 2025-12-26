@@ -48,6 +48,14 @@ LRESULT AppWindow::HandleMsg_Input(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lP
             handled = true;
             return 0;
 
+        case VK_F3:
+            // Show runtime hotkeys (MessageBox). Useful even without ImGui.
+            // Ignore auto-repeat so holding F3 doesn't spam.
+            if ((lParam & (1 << 30)) == 0)
+                ShowHotkeysHelp();
+            handled = true;
+            return 0;
+
         case VK_F11:
             // Ignore auto-repeat so holding F11 doesn't spam-toggle.
             if ((lParam & (1 << 30)) == 0)
@@ -117,6 +125,22 @@ LRESULT AppWindow::HandleMsg_Input(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lP
             handled = true;
             return 0;
 
+        case VK_F6:
+            // Cycle FPS caps.
+            //  - F6:        cap when VSync is OFF
+            //  - Shift+F6:   cap when unfocused (only matters when pauseWhenUnfocused is false)
+            // Ignore auto-repeat so holding F6 doesn't spam.
+            if ((lParam & (1 << 30)) == 0)
+            {
+                const bool shiftDown = (GetKeyState(VK_SHIFT) & 0x8000) != 0;
+                if (shiftDown)
+                    CycleMaxFpsWhenUnfocused();
+                else
+                    CycleMaxFpsWhenVsyncOff();
+            }
+            handled = true;
+            return 0;
+
         case 'V':
             // Ignore auto-repeat so holding V doesn't spam-toggle.
             if ((lParam & (1 << 30)) == 0)
@@ -139,6 +163,10 @@ LRESULT AppWindow::HandleMsg_Input(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lP
                                   (vk == static_cast<std::uint32_t>(VK_F9)) ||
                                   (vk == static_cast<std::uint32_t>(VK_F8)) ||
                                   (vk == static_cast<std::uint32_t>(VK_F7)) ||
+                                  (vk == static_cast<std::uint32_t>(VK_F6)) ||
+                                  (vk == static_cast<std::uint32_t>(VK_F3)) ||
+                                  (vk == static_cast<std::uint32_t>(VK_F1)) ||
+                                  (vk == static_cast<std::uint32_t>(VK_F2)) ||
                                   (vk == static_cast<std::uint32_t>('V'));
 
             if (vk < 256 && !isSystem)
@@ -161,6 +189,10 @@ LRESULT AppWindow::HandleMsg_Input(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lP
         {
             const std::uint32_t vk = static_cast<std::uint32_t>(wParam);
             const bool isSystem = (vk == static_cast<std::uint32_t>(VK_ESCAPE)) ||
+                                  (vk == static_cast<std::uint32_t>(VK_F1)) ||
+                                  (vk == static_cast<std::uint32_t>(VK_F2)) ||
+                                  (vk == static_cast<std::uint32_t>(VK_F3)) ||
+                                  (vk == static_cast<std::uint32_t>(VK_F6)) ||
                                   (vk == static_cast<std::uint32_t>(VK_F11)) ||
                                   (vk == static_cast<std::uint32_t>(VK_F10)) ||
                                   (vk == static_cast<std::uint32_t>(VK_F9)) ||

@@ -8,7 +8,9 @@
 // Thin Win32 window wrapper + message loop for the current prototype.
 // Keyboard shortcuts (see AppWindow_WndProc_Input.cpp):
 //   - Esc       : Quit
-//   - F1        : Show this hotkey help
+//   - F1        : Toggle in-game panels (ImGui)
+//   - F2        : Toggle in-game help (ImGui)
+//   - F3        : Show runtime hotkeys (MessageBox)
 //   - V         : Toggle VSync
 //   - F11       : Toggle borderless fullscreen
 //   - Alt+Enter : Toggle borderless fullscreen

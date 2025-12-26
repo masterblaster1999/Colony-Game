@@ -113,3 +113,34 @@ This patch tightens up a few Windows prototype fundamentals: swapchain latency c
 - `src/UserSettings.cpp`
   - Separates window width/height clamping (min height now **360** instead of forcing **640**).
   - `ReadFileToString` now verifies the full file was read.
+
+
+# Patch 9: FPS cap cycling + hotkey discoverability + persistence fixes
+
+This patch tightens the runtime hotkey story and fixes a persistence edge-case in settings.
+
+## What this patch adds
+
+- **FPS cap cycling hotkeys (F6 / Shift+F6)**
+  - **F6**: cycles `graphics.maxFpsWhenVsyncOff` (∞ / 60 / 120 / 144 / 165 / 240)
+  - **Shift+F6**: cycles `runtime.maxFpsWhenUnfocused` (∞ / 5 / 10 / 30 / 60)
+  - Applies immediately via `FramePacer` and persists to `%LOCALAPPDATA%\ColonyGame\settings.json`.
+
+- **Runtime hotkey help popup (F3)**
+  - **F3** opens a simple MessageBox listing window/system hotkeys.
+  - Handy when ImGui is disabled or when users want a quick refresher.
+
+- **Title-bar improvements**
+  - Title now includes `Cap` and `BGCap` so you can see the active caps at a glance.
+
+## Bug fixes
+
+- `src/UserSettings.cpp`
+  - Fixes an inconsistency where low background FPS caps (e.g. **5** or **10**) would be clamped up to **30** on load.
+
+- `src/AppWindow_WndProc_Input.cpp`
+  - Stops forwarding key-up events for system hotkeys (F1/F2/etc.) into the input mapper.
+    This avoids odd one-sided key events for keys consumed by the window layer.
+
+- `src/input/InputMapper.cpp`
+  - `ReadFileToString` now verifies the full file was read (matches the settings loader’s robustness).

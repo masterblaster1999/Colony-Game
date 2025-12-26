@@ -11,7 +11,12 @@
 namespace colony::appwin {
 
 namespace {
-    constexpr int kMinMaxFps = 30;
+    // FPS caps:
+    //   - 0 means uncapped
+    //   - otherwise allow very low caps (e.g. 5/10 FPS when unfocused)
+    //     because the window layer supports them and they are useful for
+    //     background power saving.
+    constexpr int kMinMaxFps = 1;
     constexpr int kMaxMaxFps = 1000;
 
     constexpr int kMinFrameLatency = 1;
@@ -284,14 +289,14 @@ bool SaveUserSettings(const UserSettings& settings) noexcept
     j["graphics"] = {
         {"vsync", settings.vsync},
         {"fullscreen", settings.fullscreen},
-        {"maxFpsWhenVsyncOff", settings.maxFpsWhenVsyncOff},
+        {"maxFpsWhenVsyncOff", ClampMaxFps(settings.maxFpsWhenVsyncOff)},
         {"maxFrameLatency", ClampFrameLatency(settings.maxFrameLatency)},
         {"swapchainScaling", ScalingModeToString(settings.swapchainScaling)},
     };
 
     j["runtime"] = {
         {"pauseWhenUnfocused", settings.pauseWhenUnfocused},
-        {"maxFpsWhenUnfocused", settings.maxFpsWhenUnfocused},
+        {"maxFpsWhenUnfocused", ClampMaxFps(settings.maxFpsWhenUnfocused)},
     };
 
     j["input"] = {
