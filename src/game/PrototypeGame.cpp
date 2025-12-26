@@ -8,8 +8,12 @@
 #include <algorithm>
 #include <chrono>
 #include <cmath>
+#include <cstdio>
 #include <filesystem>
+#include <limits>
 #include <string>
+#include <system_error>
+#include <utility>
 #include <vector>
 
 #if defined(COLONY_WITH_IMGUI)
@@ -19,6 +23,9 @@
 namespace fs = std::filesystem;
 
 namespace colony::game {
+
+using colony::appwin::DebugCameraController;
+using colony::appwin::DebugCameraState;
 
 namespace {
 
@@ -128,8 +135,8 @@ struct PrototypeGame::Impl {
         (void)loadBindings();
 
         // Center the camera on the world.
-        const float cx = std::max(0, world.width() / 2);
-        const float cy = std::max(0, world.height() / 2);
+        const float cx = std::max(0.0f, static_cast<float>(world.width()) * 0.5f);
+        const float cy = std::max(0.0f, static_cast<float>(world.height()) * 0.5f);
         (void)camera.ApplyPan(cx, cy);
         (void)camera.ApplyZoomFactor(1.0f);
     }
@@ -168,37 +175,78 @@ struct PrototypeGame::Impl {
 
     bool loadBindings()
     {
-        const fs::path path = input.BindingsPath();
+        // Refresh the watched file list every time we try to load so hot-reload is robust
+        // across working-directory changes (VS, VSCode, command line, etc.).
+        bindingCandidates.clear();
+        bindingsPollAccum = 0.f;
 
-        if (!input.LoadBindings()) {
-            std::string msg = "Failed to load input bindings";
-            msg += "\n\nFile: ";
-            msg += path.string();
-            OutputDebugStringA((msg + "\n").c_str());
-            setStatus("Bindings: load FAILED (see debug output)", 4.f);
-            return false;
-        }
+        // Candidate filenames searched relative to:
+        //   current working directory, then up to N parent directories.
+        // This mirrors InputMapper's default search convention, but keeps the chosen path visible
+        // for status messages + hot-reload.
+        static const fs::path kRelCandidates[] = {
+            fs::path("assets") / "config" / "input_bindings.json",
+            fs::path("assets") / "config" / "input_bindings.ini",
+            fs::path("input_bindings.json"),
+            fs::path("input_bindings.ini"),
+        };
 
-        try {
-            if (fs::exists(path)) {
-                const auto wt = fs::last_write_time(path);
-                bool found    = false;
-                for (auto& [p, t] : bindingCandidates) {
-                    if (p == path) {
-                        t     = wt;
-                        found = true;
-                        break;
-                    }
-                }
-                if (!found)
-                    bindingCandidates.emplace_back(path, wt);
+        std::vector<fs::path> found;
+        found.reserve(16);
+
+        std::error_code ec;
+        fs::path base = fs::current_path(ec);
+        if (ec || base.empty())
+            base = fs::path(".");
+
+        for (int depth = 0; depth <= 5; ++depth) {
+            for (const fs::path& rel : kRelCandidates) {
+                const fs::path p = base / rel;
+                ec.clear();
+                if (fs::exists(p, ec) && !ec)
+                    found.push_back(p);
             }
-        } catch (...) {
-            // Optional.
+
+            if (!base.has_parent_path())
+                break;
+
+            const fs::path parent = base.parent_path();
+            if (parent == base)
+                break;
+
+            base = parent;
         }
 
-        setStatus("Bindings: loaded", 1.5f);
-        return true;
+        // Populate the hot-reload watch list (even if loading fails, so the user can fix the file).
+        for (const fs::path& p : found) {
+            ec.clear();
+            const auto wt = fs::last_write_time(p, ec);
+            if (!ec)
+                bindingCandidates.emplace_back(p, wt);
+        }
+
+        if (found.empty()) {
+            setStatus("Bindings: defaults (no file found)", 2.f);
+            return true; // Not an error: compiled defaults are fine.
+        }
+
+        // Try candidates in order until one loads.
+        for (const fs::path& p : found) {
+            if (input.LoadFromFile(p)) {
+                setStatus("Bindings: loaded (" + p.filename().string() + ")", 1.5f);
+                return true;
+            }
+        }
+
+        // If we got here, every candidate existed but failed to parse.
+        std::string msg = "Failed to load input bindings from all candidate files.\n\nCandidates:";
+        for (const fs::path& p : found) {
+            msg += "\n  - ";
+            msg += p.string();
+        }
+        OutputDebugStringA((msg + "\n").c_str());
+        setStatus("Bindings: load FAILED (see debug output)", 4.f);
+        return false;
     }
 
     void pollBindingHotReload(float dt)
@@ -277,13 +325,13 @@ struct PrototypeGame::Impl {
             ImGui::Text("Population: %d", static_cast<int>(world.colonists().size()));
             ImGui::Text("Wood: %d", inv.wood);
             ImGui::Text("Food: %.1f", inv.food);
-            ImGui::Text("Built Farms: %d", world.countBuilt(proto::TileType::Farm));
+            ImGui::Text("Built Farms: %d", world.builtCount(proto::TileType::Farm));
 
             ImGui::Separator();
-            ImGui::Text("Plans Pending: %d", world.countPlanned());
+            ImGui::Text("Plans Pending: %d", world.plannedCount());
 
             if (ImGui::Button("Clear Plans")) {
-                world.clearPlans();
+                world.clearAllPlans();
                 setStatus("Plans cleared");
             }
             ImGui::SameLine();
@@ -302,7 +350,7 @@ struct PrototypeGame::Impl {
 
                 if (tile != proto::TileType::Empty) {
                     ImGui::SameLine();
-                    ImGui::TextDisabled("(wood %d, %.1fs)", proto::WoodCost(tile), proto::BuildTime(tile));
+                    ImGui::TextDisabled("(wood %d, %.1fs)", proto::TileWoodCost(tile), proto::TileBuildTimeSeconds(tile));
                 }
             };
 
@@ -446,7 +494,7 @@ struct PrototypeGame::Impl {
 
                     // Progress bar if reserved
                     if (c.reservedBy >= 0 && c.workRemaining > 0.f) {
-                        const float t = clampf(1.0f - (c.workRemaining / proto::BuildTime(c.planned)), 0.f, 1.f);
+                        const float t = clampf(1.0f - (c.workRemaining / proto::TileBuildTimeSeconds(c.planned)), 0.f, 1.f);
                         const ImVec2 bar0 = {p0.x + 2.f, p1.y - 6.f};
                         const ImVec2 bar1 = {p0.x + 2.f + (cx.tilePx - 4.f) * t, p1.y - 2.f};
                         dl->AddRectFilled(bar0, bar1, IM_COL32(255, 255, 255, 160));
@@ -502,7 +550,7 @@ struct PrototypeGame::Impl {
                     // Left paint: place current tool (except Inspect)
                     if (ImGui::IsMouseDown(ImGuiMouseButton_Left) && tool != Tool::Inspect) {
                         if (tx != lastPaintX || ty != lastPaintY) {
-                            const auto result = world.tryPlacePlan(tx, ty, toolTile());
+                            const auto result = world.placePlan(tx, ty, toolTile());
                             if (result == proto::PlacePlanResult::NotEnoughWood) {
                                 setStatus("Not enough wood");
                             }
@@ -514,7 +562,7 @@ struct PrototypeGame::Impl {
                     // Right paint: erase plan
                     if (ImGui::IsMouseDown(ImGuiMouseButton_Right)) {
                         if (tx != lastPaintX || ty != lastPaintY) {
-                            (void)world.tryPlacePlan(tx, ty, proto::TileType::Empty);
+                            (void)world.placePlan(tx, ty, proto::TileType::Empty);
                             lastPaintX = tx;
                             lastPaintY = ty;
                         }
@@ -537,8 +585,8 @@ struct PrototypeGame::Impl {
         {
             const auto& inv = world.inventory();
             char buf[256]   = {};
-            (void)snprintf(buf, sizeof(buf), "Tool: %s | Wood: %d | Food: %.1f | Plans: %d", toolName(), inv.wood,
-                           inv.food, world.countPlanned());
+            (void)std::snprintf(buf, sizeof(buf), "Tool: %s | Wood: %d | Food: %.1f | Plans: %d", toolName(), inv.wood,
+                           inv.food, world.plannedCount());
             dl->AddText({canvas_p0.x + 8.f, canvas_p0.y + 8.f}, IM_COL32(255, 255, 255, 200), buf);
         }
 
@@ -566,8 +614,8 @@ struct PrototypeGame::Impl {
 
         // Recenter camera
         const DebugCameraState& s = camera.State();
-        const float cx            = std::max(0, world.width() / 2);
-        const float cy            = std::max(0, world.height() / 2);
+        const float cx            = std::max(0.0f, static_cast<float>(world.width()) * 0.5f);
+        const float cy            = std::max(0.0f, static_cast<float>(world.height()) * 0.5f);
         (void)camera.ApplyPan(cx - s.panX, cy - s.panY);
 
         simAccumulator = 0.0;
@@ -591,19 +639,22 @@ bool PrototypeGame::OnInput(std::span<const colony::input::InputEvent> events,
 {
     bool changed = false;
 
-    // Always feed raw input events into the mapper to keep button/key state sane,
-    // but only act on *game hotkeys* if ImGui isn't capturing keyboard.
-    for (const auto& ev : events) {
-        m_impl->input.OnInputEvent(ev);
+    // Feed all raw events into the mapper (keeps key/mouse/chord state sane).
+    (void)m_impl->input.Consume(events);
 
-        if (ev.type == colony::input::InputEventType::KeyDown && !ev.repeat && !uiWantsKeyboard) {
-            switch (ev.key) {
-            case '1': m_impl->tool = Impl::Tool::Inspect; changed = true; break;
-            case '2': m_impl->tool = Impl::Tool::Floor; changed = true; break;
-            case '3': m_impl->tool = Impl::Tool::Wall; changed = true; break;
-            case '4': m_impl->tool = Impl::Tool::Farm; changed = true; break;
+    // Only act on *game hotkeys* if ImGui isn't capturing keyboard.
+    for (const auto& ev : events)
+    {
+        if (ev.type == colony::input::InputEventType::KeyDown && !ev.repeat && !uiWantsKeyboard)
+        {
+            switch (ev.key)
+            {
+            case '1': m_impl->tool = Impl::Tool::Inspect;   changed = true; break;
+            case '2': m_impl->tool = Impl::Tool::Floor;     changed = true; break;
+            case '3': m_impl->tool = Impl::Tool::Wall;      changed = true; break;
+            case '4': m_impl->tool = Impl::Tool::Farm;      changed = true; break;
             case '5': m_impl->tool = Impl::Tool::Stockpile; changed = true; break;
-            case '6': m_impl->tool = Impl::Tool::Erase; changed = true; break;
+            case '6': m_impl->tool = Impl::Tool::Erase;     changed = true; break;
 
             case 'P':
                 m_impl->paused = !m_impl->paused;
@@ -615,21 +666,28 @@ bool PrototypeGame::OnInput(std::span<const colony::input::InputEvent> events,
                 m_impl->resetWorld();
                 changed = true;
                 break;
-            default: break;
+
+            default:
+                break;
             }
         }
     }
 
     // Discrete actions from the mapper (bindings file)
-    for (const auto actionEvent : m_impl->input.ConsumeActionEvents()) {
-        switch (actionEvent.action) {
+    for (const auto& actionEvent : m_impl->input.ActionEvents())
+    {
+        switch (actionEvent.action)
+        {
         case colony::input::Action::ReloadBindings:
-            if (actionEvent.type == colony::input::ActionEventType::Pressed) {
+            if (actionEvent.type == colony::input::ActionEventType::Pressed)
+            {
                 (void)m_impl->loadBindings();
                 changed = true;
             }
             break;
-        default: break;
+
+        default:
+            break;
         }
     }
 
@@ -657,7 +715,9 @@ bool PrototypeGame::Update(float dtSeconds, bool uiWantsKeyboard, bool /*uiWants
 
     // Keyboard camera pan/zoom (disabled while ImGui is capturing keyboard, e.g. when typing)
     if (!uiWantsKeyboard) {
-        const float moveSpeed = 20.0f / std::max(0.25f, m_impl->camera.State().zoom);
+        const bool  boost    = m_impl->input.IsDown(colony::input::Action::SpeedBoost);
+        const float speedMul = boost ? 3.0f : 1.0f;
+        const float moveSpeed = 20.0f * speedMul / std::max(0.25f, m_impl->camera.State().zoom);
         const float zoomSpeed = 1.0f;
 
         const colony::input::MovementAxes axes = m_impl->input.GetMovementAxes();
