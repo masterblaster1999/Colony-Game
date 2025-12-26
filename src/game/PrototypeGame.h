@@ -32,9 +32,25 @@ public:
     PrototypeGame(const PrototypeGame&) = delete;
     PrototypeGame& operator=(const PrototypeGame&) = delete;
 
-    // Consume input events. Returns true if something changed that should
-    // immediately refresh the debug window title.
-    bool OnInput(std::span<const colony::input::InputEvent> events) noexcept;
+    // Consume input events (key up/down, mouse buttons, etc.).
+    // Returns true if something changed that should immediately refresh the
+    // debug window title (mostly camera/tool state).
+    bool OnInput(std::span<const colony::input::InputEvent> events,
+                 bool uiWantsKeyboard,
+                 bool uiWantsMouse) noexcept;
+
+    // Per-render-frame update: fixed-step simulation, keyboard camera pan/zoom,
+    // hot-reload polling, etc.
+    bool Update(float dtSeconds, bool uiWantsKeyboard, bool uiWantsMouse) noexcept;
+
+    // Build the prototype's ImGui UI (world viewport, build menu, sim controls).
+    // No-op if ImGui is disabled.
+    void DrawUI() noexcept;
+
+    // Convenience hotkeys (triggered by the window layer).
+    void TogglePanels() noexcept;
+    void ToggleHelp() noexcept;
+    void ResetWorld() noexcept;
 
     [[nodiscard]] DebugCameraInfo GetDebugCameraInfo() const noexcept;
 

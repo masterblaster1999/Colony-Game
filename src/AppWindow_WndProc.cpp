@@ -44,6 +44,14 @@ LRESULT AppWindow::HandleMsg(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam)
             return r;
     }
 
+#if defined(COLONY_WITH_IMGUI)
+    // Let ImGui observe Win32 messages before we translate them into our own input events.
+    // We intentionally do *not* early-return on ImGui handling so app-level hotkeys like
+    // F11 (fullscreen) continue to work.
+    if (m_impl && m_impl->imguiReady)
+        (void)m_impl->imgui.handleWndProc(hWnd, msg, wParam, lParam);
+#endif
+
     // Input handling (keyboard/mouse/rawinput).
     handled = false;
     {

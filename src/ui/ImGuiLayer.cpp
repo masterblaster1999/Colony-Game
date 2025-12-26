@@ -595,6 +595,10 @@ void ImGuiLayer::newFrame()
     ImGui_ImplDX11_NewFrame();
     ImGui_ImplWin32_NewFrame();
     ImGui::NewFrame();
+
+    // Build the main dockspace early so callers can dock their windows
+    // during the same frame.
+    DrawDockspaceAndMenuBar(m_hwnd);
 }
 
 void ImGuiLayer::render()
@@ -602,7 +606,6 @@ void ImGuiLayer::render()
     if (!m_initialized || !enabled)
         return;
 
-    DrawDockspaceAndMenuBar(m_hwnd);
     DrawImGuiDebugWindows(m_hwnd);
 
     ImGui::Render();

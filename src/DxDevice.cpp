@@ -462,12 +462,10 @@ void DxDevice::Resize(UINT width, UINT height)
     CreateRTV();
 }
 
-DxRenderStats DxDevice::Render(bool vsync)
+void DxDevice::BeginFrame()
 {
-    DxRenderStats stats{};
-    if (!m_ctx || !m_rtv || !m_swap)
-        return stats;
-
+    if (!m_ctx || !m_rtv)
+        return;
 
     // Ensure viewport/scissor match the current swapchain size.
     // (Clear doesn't require this, but any real drawing will.)
@@ -487,9 +485,15 @@ DxRenderStats DxDevice::Render(bool vsync)
     }
 
     const float clear[4] = { 0.08f, 0.10f, 0.12f, 1.0f };
-
     m_ctx->OMSetRenderTargets(1, m_rtv.GetAddressOf(), nullptr);
     m_ctx->ClearRenderTargetView(m_rtv.Get(), clear);
+}
+
+DxRenderStats DxDevice::EndFrame(bool vsync)
+{
+    DxRenderStats stats{};
+    if (!m_swap)
+        return stats;
 
     const UINT syncInterval = vsync ? 1u : 0u;
 
@@ -519,10 +523,17 @@ DxRenderStats DxDevice::Render(bool vsync)
 
     if (hr == DXGI_ERROR_DEVICE_REMOVED || hr == DXGI_ERROR_DEVICE_RESET)
     {
-        (void)HandleDeviceLost(hr, L"Present");
+        const bool recreated = HandleDeviceLost(hr, L"Present");
+        m_deviceRecreated = m_deviceRecreated || recreated;
     }
 
     return stats;
+}
+
+DxRenderStats DxDevice::Render(bool vsync)
+{
+    BeginFrame();
+    return EndFrame(vsync);
 }
 
 void DxDevice::Shutdown()
@@ -563,6 +574,8 @@ bool DxDevice::HandleDeviceLost(HRESULT triggeringHr, const wchar_t* stage)
     Shutdown();
 
     const bool ok = Init(hwnd, w, h, opt);
+    if (ok)
+        m_deviceRecreated = true;
     WriteLog(LauncherLog(), ok ? L"[DxDevice] Device recreation succeeded after device loss."
                           : L"[DxDevice] Device recreation FAILED after device loss.");
     return ok;

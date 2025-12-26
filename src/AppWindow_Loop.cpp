@@ -1,6 +1,11 @@
 #include "AppWindow_Impl.h"
 
+#include <algorithm>
 #include <chrono>
+
+#if defined(COLONY_WITH_IMGUI)
+    #include <imgui.h>
+#endif
 
 int AppWindow::MessageLoop()
 {
@@ -15,10 +20,15 @@ int AppWindow::MessageLoop()
     m_impl->pacer.ResetFps();
     m_impl->frameStats.Reset();
 
+    // First rendered frame will initialize dt tracking.
+    m_impl->hasLastRenderTick = false;
+
     bool lastVsync = m_vsync;
     bool lastUnfocused = !m_impl->active;
 
     auto lastPresented = std::chrono::steady_clock::now();
+
+    int exitCode = 0;
 
     while (true)
     {
@@ -33,6 +43,9 @@ int AppWindow::MessageLoop()
             m_impl->pacer.ResetSchedule();
             lastVsync = m_vsync;
             lastUnfocused = unfocused;
+
+            // Also reset our per-render dt so we don't simulate a huge step after Alt+Tab.
+            m_impl->hasLastRenderTick = false;
         }
 
         // If minimized or intentionally paused in the background, don't render;
@@ -43,7 +56,10 @@ int AppWindow::MessageLoop()
             while (PeekMessageW(&msg, nullptr, 0, 0, PM_REMOVE))
             {
                 if (msg.message == WM_QUIT)
-                    return static_cast<int>(msg.wParam);
+                {
+                    exitCode = static_cast<int>(msg.wParam);
+                    goto exit_loop;
+                }
                 TranslateMessage(&msg);
                 DispatchMessageW(&msg);
             }
@@ -51,7 +67,15 @@ int AppWindow::MessageLoop()
             // Flush any buffered mouse delta into the queue before we hand it to the game.
             m_impl->FlushPendingMouseDelta();
 
-            const bool changed = m_impl->game.OnInput(m_impl->input.Events());
+#if defined(COLONY_WITH_IMGUI)
+            const bool uiWantsKeyboard = (m_impl->imguiReady && m_impl->imgui.enabled) ? m_impl->imgui.wantsKeyboard() : false;
+            const bool uiWantsMouse = (m_impl->imguiReady && m_impl->imgui.enabled) ? m_impl->imgui.wantsMouse() : false;
+#else
+            const bool uiWantsKeyboard = false;
+            const bool uiWantsMouse = false;
+#endif
+
+            const bool changed = m_impl->game.OnInput(m_impl->input.Events(), uiWantsKeyboard, uiWantsMouse);
             m_impl->input.Clear();
             if (changed)
                 UpdateTitle();
@@ -73,7 +97,10 @@ int AppWindow::MessageLoop()
         while (PeekMessageW(&msg, nullptr, 0, 0, PM_REMOVE))
         {
             if (msg.message == WM_QUIT)
-                return static_cast<int>(msg.wParam);
+            {
+                exitCode = static_cast<int>(msg.wParam);
+                goto exit_loop;
+            }
             TranslateMessage(&msg);
             DispatchMessageW(&msg);
         }
@@ -89,7 +116,15 @@ int AppWindow::MessageLoop()
         // If a cap is active and we woke due to messages, don't render early.
         if (!m_impl->pacer.IsTimeToRender(m_vsync, unfocusedAfterPump))
         {
-            const bool changed = m_impl->game.OnInput(m_impl->input.Events());
+#if defined(COLONY_WITH_IMGUI)
+            const bool uiWantsKeyboard = (m_impl->imguiReady && m_impl->imgui.enabled) ? m_impl->imgui.wantsKeyboard() : false;
+            const bool uiWantsMouse = (m_impl->imguiReady && m_impl->imgui.enabled) ? m_impl->imgui.wantsMouse() : false;
+#else
+            const bool uiWantsKeyboard = false;
+            const bool uiWantsMouse = false;
+#endif
+
+            const bool changed = m_impl->game.OnInput(m_impl->input.Events(), uiWantsKeyboard, uiWantsMouse);
             m_impl->input.Clear();
             if (changed)
                 UpdateTitle();
@@ -125,7 +160,10 @@ int AppWindow::MessageLoop()
                     while (PeekMessageW(&msg, nullptr, 0, 0, PM_REMOVE))
                     {
                         if (msg.message == WM_QUIT)
-                            return static_cast<int>(msg.wParam);
+                        {
+                            exitCode = static_cast<int>(msg.wParam);
+                            goto exit_loop;
+                        }
                         TranslateMessage(&msg);
                         DispatchMessageW(&msg);
                     }
@@ -166,7 +204,15 @@ int AppWindow::MessageLoop()
 
             if (abortFrame)
             {
-                const bool changed = m_impl->game.OnInput(m_impl->input.Events());
+#if defined(COLONY_WITH_IMGUI)
+                const bool uiWantsKeyboard = (m_impl->imguiReady && m_impl->imgui.enabled) ? m_impl->imgui.wantsKeyboard() : false;
+                const bool uiWantsMouse = (m_impl->imguiReady && m_impl->imgui.enabled) ? m_impl->imgui.wantsMouse() : false;
+#else
+                const bool uiWantsKeyboard = false;
+                const bool uiWantsMouse = false;
+#endif
+
+                const bool changed = m_impl->game.OnInput(m_impl->input.Events(), uiWantsKeyboard, uiWantsMouse);
                 m_impl->input.Clear();
                 if (changed)
                     UpdateTitle();
@@ -175,22 +221,70 @@ int AppWindow::MessageLoop()
             }
         }
 
+        // --- Render path ---
+
+        const auto frameStart = std::chrono::steady_clock::now();
+
+        float dtSeconds = 0.0f;
+        if (m_impl->hasLastRenderTick)
+            dtSeconds = std::chrono::duration<float>(frameStart - m_impl->lastRenderTick).count();
+        m_impl->lastRenderTick = frameStart;
+        m_impl->hasLastRenderTick = true;
+
+        // Prevent giant simulation steps after stalls.
+        dtSeconds = std::clamp(dtSeconds, 0.0f, 0.25f);
+
+        // Clear + set RT/viewport.
+        m_gfx.BeginFrame();
+
+#if defined(COLONY_WITH_IMGUI)
+        if (m_impl->imguiReady && m_impl->imgui.enabled)
+            m_impl->imgui.newFrame();
+
+        const bool uiWantsKeyboard = (m_impl->imguiReady && m_impl->imgui.enabled) ? m_impl->imgui.wantsKeyboard() : false;
+        const bool uiWantsMouse = (m_impl->imguiReady && m_impl->imgui.enabled) ? m_impl->imgui.wantsMouse() : false;
+#else
+        const bool uiWantsKeyboard = false;
+        const bool uiWantsMouse = false;
+#endif
+
         // Apply input to the game as close to Present() as possible (lower latency).
-        const bool changed = m_impl->game.OnInput(m_impl->input.Events());
+        const bool inputChanged = m_impl->game.OnInput(m_impl->input.Events(), uiWantsKeyboard, uiWantsMouse);
         m_impl->input.Clear();
-        if (changed)
+
+        // Simulate + update per-frame state.
+        const bool updateChanged = m_impl->game.Update(dtSeconds, uiWantsKeyboard, uiWantsMouse);
+
+        if (inputChanged || updateChanged)
             UpdateTitle();
+
+#if defined(COLONY_WITH_IMGUI)
+        if (m_impl->imguiReady && m_impl->imgui.enabled)
+        {
+            m_impl->game.DrawUI();
+            m_impl->imgui.render();
+        }
+#endif
 
         m_impl->MaybeAutoSaveSettings();
 
-        // Render one frame.
-        const DxRenderStats rs = m_gfx.Render(m_vsync);
+        // Present.
+        const DxRenderStats rs = m_gfx.EndFrame(m_vsync);
         const auto afterRender = std::chrono::steady_clock::now();
+
+#if defined(COLONY_WITH_IMGUI)
+        if (m_impl->imguiReady && m_gfx.ConsumeDeviceRecreatedFlag())
+        {
+            m_impl->imgui.shutdown();
+            m_impl->imguiReady = m_impl->imgui.initialize(m_hwnd, m_gfx.Device(), m_gfx.Context());
+        }
+#endif
 
         // If DXGI reports occlusion, avoid burning CPU/GPU. We'll yield a bit and retry.
         if (rs.occluded)
         {
             m_impl->pacer.ResetSchedule();
+            m_impl->hasLastRenderTick = false;
             MsgWaitForMultipleObjectsEx(0, nullptr, 50, QS_ALLINPUT, MWMO_INPUTAVAILABLE);
             continue;
         }
@@ -208,4 +302,16 @@ int AppWindow::MessageLoop()
         if (fpsTick || (m_impl->settings.showFrameStats && statsUpdated))
             UpdateTitle();
     }
+
+exit_loop:
+
+#if defined(COLONY_WITH_IMGUI)
+    if (m_impl && m_impl->imguiReady)
+    {
+        m_impl->imgui.shutdown();
+        m_impl->imguiReady = false;
+    }
+#endif
+
+    return exitCode;
 }

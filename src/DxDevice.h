@@ -43,10 +43,28 @@ public:
 
     bool Init(HWND hwnd, UINT width, UINT height, const DxDeviceOptions& opt = {});
     void Resize(UINT width, UINT height);
+    // Begin/End split allows the app to inject rendering work (e.g. ImGui)
+    // between clear and Present.
+    void BeginFrame();
+    DxRenderStats EndFrame(bool vsync);
+
+    // Convenience wrapper: BeginFrame() + EndFrame().
     DxRenderStats Render(bool vsync);
     void Shutdown();
 
     [[nodiscard]] bool SupportsTearing() const noexcept { return m_allowTearing; }
+
+    // Expose raw D3D11 interfaces for overlay layers.
+    [[nodiscard]] ID3D11Device* Device() const noexcept { return m_device.Get(); }
+    [[nodiscard]] ID3D11DeviceContext* Context() const noexcept { return m_ctx.Get(); }
+
+    // True once after a device-lost recreation.
+    [[nodiscard]] bool ConsumeDeviceRecreatedFlag() noexcept
+    {
+        const bool v = m_deviceRecreated;
+        m_deviceRecreated = false;
+        return v;
+    }
 
     // Waitable swapchain integration (nullptr when unsupported or disabled).
     [[nodiscard]] HANDLE FrameLatencyWaitableObject() const noexcept { return m_frameLatencyWaitable; }
@@ -89,6 +107,10 @@ private:
     // Swapchain waitable object (CloseHandle() on shutdown).
     HANDLE m_frameLatencyWaitable = nullptr;
     bool   m_createdWithWaitableFlag = false;
+
+    // Set when the D3D device/swapchain were successfully recreated after
+    // DXGI_ERROR_DEVICE_REMOVED/RESET.
+    bool   m_deviceRecreated = false;
 
     // The exact flags used to create the current swapchain (must be reused
     // for ResizeBuffers).

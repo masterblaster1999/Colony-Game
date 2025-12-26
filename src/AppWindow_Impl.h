@@ -16,6 +16,10 @@
 #include "platform/win32/RawMouseInput.h"
 #include "platform/win32/Win32Window.h"
 
+#if defined(COLONY_WITH_IMGUI)
+    #include "ui/ImGuiLayer.h"
+#endif
+
 #include <chrono>
 #include <cstdint>
 #include <limits>
@@ -32,6 +36,11 @@ struct AppWindow::Impl {
     colony::appwin::FramePacer                  pacer;
     colony::appwin::FramePacingStats            frameStats;
 
+#if defined(COLONY_WITH_IMGUI)
+    cg::ui::ImGuiLayer                          imgui;
+    bool                                        imguiReady = false;
+#endif
+
     colony::appwin::UserSettings                settings;
     bool                                       settingsLoaded = false;
     bool                                       settingsDirty = false;
@@ -45,6 +54,10 @@ struct AppWindow::Impl {
 
     // Window state
     bool                                       active = true;
+
+    // Time delta between rendered frames (used for simulation and camera).
+    std::chrono::steady_clock::time_point       lastRenderTick{};
+    bool                                        hasLastRenderTick = false;
 
     // When resizing via the window frame, defer swapchain resizes until the
     // user finishes the drag (WM_EXITSIZEMOVE). This avoids hammering
