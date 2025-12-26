@@ -8,7 +8,9 @@
 // We use DOCTEST_CONFIG_IMPLEMENT (instead of ...WITH_MAIN) so we can customize
 // defaults and still support doctest command-line flags.
 #define DOCTEST_CONFIG_IMPLEMENT
-#include <doctest/doctest.h>
+// Use the repo's doctest wrapper so we build cleanly whether doctest comes
+// from vcpkg/FetchContent (preferred) or is vendored in ./external/doctest.
+#include "doctest.h"
 
 // Defensive: avoid leaking implementation macros into other files when tests are
 // built in unity/jumbo mode. CMake also excludes this file from unity builds,

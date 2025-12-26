@@ -26,6 +26,10 @@
   #elif __has_include("external/doctest/doctest.h")
     #include "external/doctest/doctest.h"
 
+  // Repo-vendored layout: ./external/doctest/doctest.h (relative to ./tests)
+  #elif __has_include("../external/doctest/doctest.h")
+    #include "../external/doctest/doctest.h"
+
   // Nothing matched → give a helpful error with hints
   #else
     #error \

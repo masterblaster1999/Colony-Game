@@ -127,6 +127,7 @@
   </ItemDefinitionGroup>
 
   <ItemGroup>
+    <ClCompile Include="test_main.cpp" />
     <ClCompile Include="smoke\smoke.cpp" />
   </ItemGroup>
 
