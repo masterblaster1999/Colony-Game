@@ -47,6 +47,11 @@ set(_colony_game_sources
     ${CMAKE_CURRENT_SOURCE_DIR}/input/InputMapper.h
     ${CMAKE_CURRENT_SOURCE_DIR}/game/PrototypeGame.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/game/PrototypeGame.h
+    ${CMAKE_CURRENT_SOURCE_DIR}/game/PrototypeGame_Impl.h
+    ${CMAKE_CURRENT_SOURCE_DIR}/game/PrototypeGame_UI.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/game/PrototypeGame_Input.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/game/PrototypeGame_Camera.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/game/PrototypeGame_Sim.cpp
 
     # Gameplay-forward prototype scaffolding
     ${CMAKE_CURRENT_SOURCE_DIR}/game/proto/ProtoWorld.cpp
