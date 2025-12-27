@@ -264,3 +264,242 @@ This patch adds a high-value, low-risk input upgrade: the mouse wheel is now bin
 - **Explicit "clear" support in config files**
   - JSON: `"SomeAction": []` clears that action’s binds.
   - INI: `SomeAction =` clears that action’s binds.
+
+
+# Patch 15: Rectangle paint + plan cache + UI split
+
+This patch improves *building workflow* in the World view and makes the prototype scale a bit better as the number of planned tiles increases.
+
+## What this patch adds
+
+- **Rectangle paint**
+  - Hold **Shift + Left-drag** in the World view to place a rectangle of the current tool.
+  - Hold **Shift + Right-drag** to erase a rectangle of plans.
+
+## What this patch fixes / improves
+
+- `src/game/proto/ProtoWorld.cpp/.h`
+  - **Plan tracking cache:** active planned cells are tracked in an indexed list.
+    - `plannedCount()` becomes O(1).
+    - Job assignment scans planned cells instead of the entire grid.
+  - **Erase semantics fix:** calling `placePlan(..., TileType::Empty)` now truly means **clear an existing plan**.
+    - Prevents “empty plans” from being created on already-built tiles when erasing.
+
+- `src/game/PrototypeGame_UI*.cpp`
+  - Split the formerly large UI translation unit into smaller files for easier maintenance.
+
+## Patch 16 — Prototype Save/Load + Modifier Bind Fix
+
+- **New:** Proto world persistence:
+  - Save world: **Ctrl+S** or **F6** (also available as a button in the Panels UI)
+  - Load world: **Ctrl+L** or **F7**
+  - Saves to the user's **Saved Games\ColonyGame\proto_world.json** (falls back to LocalAppData if needed).
+- **Fix:** Input bindings now treat **Ctrl/Shift/Alt** as generic modifiers (Left/Right variants both satisfy bindings like `Ctrl+S` and `Shift+W`).
+- **UI:** Help window updated with the new shortcuts.
+- **Build hygiene:** Switched a few Win32-facing headers to include the shared `WinCommon.h` wrapper (reduces macro redefinition warnings).
+
+## Patch 17 — Command-line Safe Mode + Startup Overrides
+
+This patch adds a small, Windows-only command-line parser so you can recover from bad settings or ImGui layout without manually hunting down files.
+
+### New command-line options
+
+- `--safe-mode`
+  - Runs with defaults by **ignoring** both `settings.json` and `imgui.ini` for that run.
+  - Disables settings writes (no autosave, no shutdown save) so the recovery run is non-destructive.
+- `--reset-settings`
+  - Deletes `%LOCALAPPDATA%\ColonyGame\settings.json` before launch.
+- `--reset-imgui`
+  - Deletes `%LOCALAPPDATA%\ColonyGame\imgui.ini` before launch.
+- `--ignore-settings`
+  - Launch with defaults without deleting `settings.json` (the file is not read).
+- `--ignore-imgui-ini`
+  - Launch without reading/writing `imgui.ini` (default UI layout each run).
+
+### New startup overrides (useful for testing)
+
+- `--fullscreen` / `--windowed`
+- `--vsync` / `--novsync`
+- `--rawmouse` / `--norawmouse`
+- `--width <px>` / `--height <px>`
+- `--max-frame-latency <1..16>`
+- `--maxfps <0|N>` (VSync off cap)
+- `--bgfps <0|N>` (background cap)
+
+### Implementation notes
+
+- `AppWindow` now has a `CreateOptions` struct so startup settings can be overridden in a single place.
+- The ImGui layer can be initialized with ini persistence disabled (prevents loading an off-screen layout).
+
+## Patch 18 — Plan Undo/Redo + Editor QoL
+
+This patch improves the in-game building workflow by making plan placement reversible and easier to debug.
+
+### New
+
+- **Undo/Redo for plan placement**
+  - Undo: **Ctrl+Z**
+  - Redo: **Ctrl+Y** or **Ctrl+Shift+Z**
+  - Drag strokes and rectangle placements are grouped into a single command.
+  - "Clear Plans" is now undoable (one command).
+
+- **New bindable actions:** `Undo`, `Redo`
+  - Added to the default binding files:
+    - `assets/config/input_bindings.json`
+    - `assets/config/input_bindings.ini`
+
+- **View/Debug toggles (Colony panel)**
+  - Brush preview overlay
+  - Colonist path drawing
+  - Reservation ID overlay
+
+- **World Reset + tuning panel**
+  - Reset width/height and seed controls
+  - Live tuning sliders (build speed, walk speed, farm/food rates)
+
+### Implementation notes
+
+- `src/game/editor/PlanHistory.*` holds the command stack and applies changes through `World::placePlan()` to keep caches consistent.
+- Added `World::CancelAllJobsAndClearReservations()` so undo/redo (and bulk edits) don't leave colonists walking toward stale targets.
+
+
+## Patch 19 — Job assignment performance + rectangle paint reliability (2025-12-27)
+
+### What’s new
+- **Faster job assignment**: idle colonists now do a single *multi-goal* path search to the nearest available plan, instead of running A* once per plan tile. This avoids big CPU spikes when many plans exist.
+- **Job assignment throttle**: assignment attempts are throttled (~5×/sec) while idle colonists exist, preventing pathological “try/fail every tick” loops.
+- **Rectangle paint reliability**: `Shift + drag` rectangle plans now apply even if you release the mouse outside the world canvas.
+- **Tiny-world guard**: world reset no longer creates invalid RNG ranges when `width <= 2` or `height <= 2` (useful for edge-case saves/tests).
+
+### Files changed
+- `src/game/proto/ProtoWorld.h`
+- `src/game/proto/ProtoWorld.cpp`
+- `src/game/PrototypeGame_UI_World.cpp`
+
+
+## Patch 20 — Plan priorities + save slots + autosave (2025-12-27)
+
+### What’s new
+- **Plan priorities (P1..P4)**
+  - Each planned tile now stores a small priority value.
+  - Colonists prefer building **higher priority plans first**, then nearest.
+  - UI: new **Brush Priority** control in the Colony panel.
+  - Default hotkeys (bindable): **PageUp/PageDown**.
+  - View/Debug: optional **Show plan priorities** overlay.
+
+- **Selection / Inspect upgrades**
+  - Inspect tool click now selects a tile.
+  - The Colony panel shows a **Selection** section.
+  - If the selected tile has an active plan, you can edit its priority (undoable).
+
+- **Save slots + autosave controls**
+  - Added manual **Save Slot / Load Slot** with slot selector (0..9).
+  - Added **Autosave** (enable/interval/keep count) with rotating autosave files.
+  - UI buttons for **Autosave Now** and **Load Autosave (Newest)**.
+
+### Compatibility
+- Save format bumped to v2 to store plan priority, but **v1 saves still load** (priority defaults to P1).
+
+### Files changed
+- `src/game/proto/ProtoWorld.h`
+- `src/game/proto/ProtoWorld.cpp`
+- `src/game/editor/PlanHistory.h`
+- `src/game/editor/PlanHistory.cpp`
+- `src/input/InputMapper.h`
+- `src/input/InputMapper.cpp`
+- `src/game/PrototypeGame_Impl.h`
+- `src/game/PrototypeGame_Input.cpp`
+- `src/game/PrototypeGame_Sim.cpp`
+- `src/game/PrototypeGame_SaveLoad.cpp`
+- `src/game/PrototypeGame_UI_World.cpp`
+- `src/game/PrototypeGame_UI_Panels.cpp`
+- `src/game/PrototypeGame_UI_Help.cpp`
+- `assets/config/input_bindings.json`
+- `assets/config/input_bindings.ini`
+
+
+## Patch 21 — Priority paint tool + async saves + built-count cache (2025-12-27)
+
+### What’s new
+
+Gameplay / UX
+- **New tool: Priority (`7`)**
+  - Paints the current **Brush Priority** onto **existing plans** (does not place new plans / does not change plan type).
+  - Works with rectangle paint (**Shift + drag**).
+  - Fully undo/redo-able.
+
+Performance / Reliability
+- **Async saves**: manual saves and autosaves now run on a background worker thread.
+  - Reduces frame hitches, especially with autosave enabled.
+  - Autosaves are **generation-guarded** so an old queued autosave can’t overwrite the newest autosave after a load/reset.
+- **Built tile count cache**: `builtCount(...)` is now O(1) via a cached counter array instead of scanning the whole grid every tick.
+
+Save format
+- Save files now include an optional `meta` object (ignored by the loader) with:
+  - `kind`: `"manual"` / `"autosave"`
+  - `savedUnixSecondsUtc`
+  - `playtimeSeconds`
+
+### Files changed
+- `src/game/proto/ProtoWorld.h`
+- `src/game/proto/ProtoWorld.cpp`
+- `src/game/PrototypeGame_Impl.h`
+- `src/game/PrototypeGame_Input.cpp`
+- `src/game/PrototypeGame_Sim.cpp`
+- `src/game/PrototypeGame_SaveLoad.cpp`
+- `src/game/PrototypeGame_UI_World.cpp`
+- `src/game/PrototypeGame_UI_Panels.cpp`
+- `src/game/PrototypeGame_UI_Help.cpp`
+
+
+## Patch 22 — Save browser + sidecar save metadata + job-search perf (2025-12-27)
+
+### What’s new
+
+Save / Load UX
+- **Save Browser (UI)**
+  - New **Save Browser** section in the panels window.
+  - Lists **save slots** and **autosaves** with quick info (timestamp, playtime, world size, population, inventory, counts).
+  - One-click **Load**, **Show in Explorer**, and **Delete** (with a short confirm timer).
+  - **Open Save Folder** button.
+
+Performance / Reliability
+- **Sidecar save metadata (`*.meta.json`)**
+  - Manual saves and autosaves now write a small sidecar metadata file next to the world save:
+    - Example: `proto_world_slot_3.json` -> `proto_world_slot_3.meta.json`
+  - This prevents the UI from needing to parse the full (potentially huge) world JSON just to show save previews.
+  - Autosave rotation now rotates the matching `.meta.json` files too.
+- **Job search optimization**
+  - Nearest-plan search now reuses scratch buffers (generation-stamped) instead of allocating and clearing large arrays every query.
+  - Removed a redundant plan-priority filter check in the adjacency test.
+
+### Files changed
+- `src/CMakeLists.txt`
+- `src/game/save/SaveMeta.h`
+- `src/game/save/SaveMeta.cpp`
+- `src/game/PrototypeGame_Impl.h`
+- `src/game/PrototypeGame_SaveLoad.cpp`
+- `src/game/PrototypeGame_UI_Panels.cpp`
+- `src/game/proto/ProtoWorld.h`
+- `src/game/proto/ProtoWorld.cpp`
+
+
+## Patch 23 — Save thumbnails (meta) + Save Browser preview (2025-12-27)
+
+### What’s new
+
+Save / Load UX
+- **Save Browser previews**
+  - Sidecar save metadata files (`*.meta.json`) now include a tiny **thumbnail** of the world.
+  - The Save Browser displays this thumbnail so you can visually pick a save without loading it.
+  - Thumbnail is sampled from the world grid and stored compactly as **base64**.
+  - Old meta files won’t have thumbnails until you **make a new save / autosave**.
+
+### Files changed
+- `src/CMakeLists.txt`
+- `src/game/save/Base64.h`
+- `src/game/save/Base64.cpp`
+- `src/game/save/SaveMeta.h`
+- `src/game/save/SaveMeta.cpp`
+- `src/game/PrototypeGame_SaveLoad.cpp`
+- `src/game/PrototypeGame_UI_Panels.cpp`

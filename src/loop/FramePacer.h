@@ -1,6 +1,11 @@
 #pragma once
 
-#include <windows.h>
+#include "platform/win/WinCommon.h"
+
+#ifndef CREATE_WAITABLE_TIMER_HIGH_RESOLUTION
+    // Available on Windows 10, version 1803+. Older SDKs may not define it.
+    #define CREATE_WAITABLE_TIMER_HIGH_RESOLUTION 0x00000002
+#endif
 
 namespace colony::appwin {
 
@@ -13,6 +18,13 @@ namespace colony::appwin {
 class FramePacer {
 public:
     explicit FramePacer(int maxFpsWhenVsyncOff = 240) noexcept;
+
+    ~FramePacer() noexcept;
+
+    FramePacer(const FramePacer&) = delete;
+    FramePacer& operator=(const FramePacer&) = delete;
+    FramePacer(FramePacer&&) = delete;
+    FramePacer& operator=(FramePacer&&) = delete;
 
     // Update the safety cap used when vsync is OFF.
     //
@@ -53,10 +65,17 @@ private:
     void RecomputeTicksPerFrame() noexcept;
     [[nodiscard]] LONGLONG ActiveTicksPerFrame(bool vsync, bool unfocused) const noexcept;
 
+    void EnsureWaitableTimer() noexcept;
+
+
     LARGE_INTEGER m_freq{};
     LONGLONG m_ticksPerFrameVsyncOff = 0;
     LONGLONG m_ticksPerFrameUnfocused = 0;
     LONGLONG m_nextFrameQpc = 0;
+
+    // Optional high-resolution waitable timer for more accurate sleeping than a millisecond-granularity
+    // MsgWaitForMultipleObjectsEx timeout. Created lazily.
+    HANDLE m_waitableTimer = nullptr;
 
     LARGE_INTEGER m_fpsStart{};
     int m_fpsFrames = 0;

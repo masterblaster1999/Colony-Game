@@ -36,7 +36,14 @@ PrototypeGame::Impl::Impl()
 
 void PrototypeGame::Impl::resetWorld()
 {
-    world.reset(64, 64, MakeSeed());
+    // A reset replaces world state; don't allow an old queued autosave to write after this.
+    invalidatePendingAutosaves();
+
+    const std::uint32_t seed = worldResetUseRandomSeed ? MakeSeed() : worldResetSeed;
+    worldResetSeed = seed;
+    world.reset(worldResetW, worldResetH, seed);
+
+    clearPlanHistory();
 
     // Recenter camera.
     const DebugCameraState& s = camera.State();
@@ -48,10 +55,7 @@ void PrototypeGame::Impl::resetWorld()
     paused         = false;
     simSpeed       = 1.f;
 
-    lastPaintX = std::numeric_limits<int>::min();
-    lastPaintY = std::numeric_limits<int>::min();
-
-    setStatus("World reset");
+    setStatus("World reset", 2.0f);
 }
 
 bool PrototypeGame::Impl::Update(float dtSeconds, bool uiWantsKeyboard, bool /*uiWantsMouse*/) noexcept
@@ -61,12 +65,18 @@ bool PrototypeGame::Impl::Update(float dtSeconds, bool uiWantsKeyboard, bool /*u
 
     dtSeconds = clampf(dtSeconds, 0.f, 0.25f);
 
+    // Track real-time playtime for save metadata.
+    playtimeSeconds += static_cast<double>(dtSeconds);
+
     // Auto status fade
     if (statusTtl > 0.f) {
         statusTtl = std::max(0.f, statusTtl - dtSeconds);
         if (statusTtl == 0.f)
             statusText.clear();
     }
+
+    // Background save completions (update status UI if needed).
+    pollAsyncSaves();
 
     // Hot reload input bindings
     pollBindingHotReload(dtSeconds);
@@ -89,6 +99,17 @@ bool PrototypeGame::Impl::Update(float dtSeconds, bool uiWantsKeyboard, bool /*u
         if (steps == maxCatchupSteps && simAccumulator >= fixedDt) {
             // Drop extra time if we fell behind.
             simAccumulator = std::fmod(simAccumulator, fixedDt);
+        }
+    }
+
+    // Autosave is based on real time (not simulation-scaled time).
+    if (autosaveEnabled && autosaveIntervalSeconds > 0.f)
+    {
+        autosaveAccumSeconds += dtSeconds;
+        if (autosaveAccumSeconds >= autosaveIntervalSeconds)
+        {
+            autosaveAccumSeconds = 0.f;
+            (void)autosaveWorld();
         }
     }
 

@@ -84,6 +84,21 @@ LRESULT AppWindow::HandleMsg_Window(HWND hWnd, UINT msg, WPARAM wParam, LPARAM l
                 ev.height = finalH;
                 m_impl->input.Push(ev);
             }
+
+            // Persist window placement after a move/resize drag.
+            // (WM_EXITSIZEMOVE fires for both dragging the frame and dragging the title bar.)
+            if (!m_impl->fullscreen.IsFullscreen())
+            {
+                WINDOWPLACEMENT wp{ sizeof(WINDOWPLACEMENT) };
+                if (GetWindowPlacement(hWnd, &wp))
+                {
+                    m_impl->settings.windowPosValid = true;
+                    m_impl->settings.windowPosX = wp.rcNormalPosition.left;
+                    m_impl->settings.windowPosY = wp.rcNormalPosition.top;
+                    m_impl->settings.windowMaximized = (wp.showCmd == SW_SHOWMAXIMIZED);
+                    m_impl->ScheduleSettingsAutosave();
+                }
+            }
         }
         handled = true;
         return 0;
@@ -119,14 +134,35 @@ LRESULT AppWindow::HandleMsg_Window(HWND hWnd, UINT msg, WPARAM wParam, LPARAM l
             // Capture the latest known state before saving.
             m_impl->settings.vsync = m_vsync;
             m_impl->settings.fullscreen = m_impl->fullscreen.IsFullscreen();
-            if (!m_impl->fullscreen.IsFullscreen() && m_width > 0 && m_height > 0)
+
+            // Window placement is meaningful for windowed mode only.
+            // If we exit while in fullscreen, keep the last saved windowed placement.
+            if (!m_impl->fullscreen.IsFullscreen())
             {
-                m_impl->settings.windowWidth = m_width;
-                m_impl->settings.windowHeight = m_height;
+                WINDOWPLACEMENT wp{ sizeof(WINDOWPLACEMENT) };
+                if (GetWindowPlacement(hWnd, &wp))
+                {
+                    m_impl->settings.windowPosValid = true;
+                    m_impl->settings.windowPosX = wp.rcNormalPosition.left;
+                    m_impl->settings.windowPosY = wp.rcNormalPosition.top;
+                    m_impl->settings.windowMaximized = (wp.showCmd == SW_SHOWMAXIMIZED);
+                }
+
+                // Persist the *restored* client size.
+                // If the user closes while maximized, keep the last restored size rather than
+                // overwriting it with the monitor-sized client area.
+                const bool isMaximized = (::IsZoomed(hWnd) != FALSE);
+                if (!isMaximized && m_width > 0 && m_height > 0)
+                {
+                    m_impl->settings.windowWidth = m_width;
+                    m_impl->settings.windowHeight = m_height;
+                }
             }
 
             // Save even if unchanged; the file is tiny and this makes first-run deterministic.
-            (void)colony::appwin::SaveUserSettings(m_impl->settings);
+            // (Safe-mode / command line can disable writes for recovery runs.)
+            if (m_impl->settingsWriteEnabled)
+                (void)colony::appwin::SaveUserSettings(m_impl->settings);
         }
 
         PostQuitMessage(0);
@@ -163,6 +199,7 @@ LRESULT AppWindow::HandleMsg_Window(HWND hWnd, UINT msg, WPARAM wParam, LPARAM l
     {
         const UINT w = LOWORD(lParam);
         const UINT h = HIWORD(lParam);
+        const UINT sizeType = static_cast<UINT>(wParam);
         m_width = w;
         m_height = h;
 
@@ -194,9 +231,46 @@ LRESULT AppWindow::HandleMsg_Window(HWND hWnd, UINT msg, WPARAM wParam, LPARAM l
         // Persist windowed dimensions only (fullscreen sizes are monitor-dependent).
         if (m_impl && w > 0 && h > 0 && !m_impl->fullscreen.IsFullscreen())
         {
-            m_impl->settings.windowWidth = w;
-            m_impl->settings.windowHeight = h;
-            m_impl->ScheduleSettingsAutosave();
+            // Track maximized/restored state for startup restore.
+            if (sizeType == SIZE_MAXIMIZED)
+            {
+                if (!m_impl->settings.windowMaximized)
+                {
+                    m_impl->settings.windowMaximized = true;
+                    m_impl->ScheduleSettingsAutosave();
+                }
+            }
+            else if (sizeType == SIZE_RESTORED)
+            {
+                if (m_impl->settings.windowMaximized)
+                {
+                    m_impl->settings.windowMaximized = false;
+                    m_impl->ScheduleSettingsAutosave();
+                }
+            }
+
+            // Persist the restored client size only.
+            if (sizeType == SIZE_RESTORED)
+            {
+                m_impl->settings.windowWidth = w;
+                m_impl->settings.windowHeight = h;
+                m_impl->ScheduleSettingsAutosave();
+
+                // If this was a maximize->restore via the caption button (no WM_EXITSIZEMOVE),
+                // refresh the normal placement too.
+                if (!m_impl->inSizeMove)
+                {
+                    WINDOWPLACEMENT wp{ sizeof(WINDOWPLACEMENT) };
+                    if (GetWindowPlacement(hWnd, &wp))
+                    {
+                        m_impl->settings.windowPosValid = true;
+                        m_impl->settings.windowPosX = wp.rcNormalPosition.left;
+                        m_impl->settings.windowPosY = wp.rcNormalPosition.top;
+                        // windowMaximized already handled above.
+                        m_impl->ScheduleSettingsAutosave();
+                    }
+                }
+            }
         }
 
         handled = true;

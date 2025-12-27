@@ -44,6 +44,19 @@ struct UserSettings
     std::uint32_t windowWidth = 1280;
     std::uint32_t windowHeight = 720;
 
+    // Persisted window position (virtual-screen coordinates; top-left of the *outer* window rect).
+    //
+    // Why a "valid" flag?
+    //   - First run: we don't want to force a position; let Windows choose.
+    //   - Monitor layout changes: if the saved position is off-screen, we ignore it.
+    bool windowPosValid = false;
+    int  windowPosX = 0;
+    int  windowPosY = 0;
+
+    // Whether the window was maximized the last time we saved settings.
+    // (Only meaningful for windowed mode; borderless fullscreen is tracked separately.)
+    bool windowMaximized = false;
+
     // Present with vsync enabled.
     bool vsync = true;
 

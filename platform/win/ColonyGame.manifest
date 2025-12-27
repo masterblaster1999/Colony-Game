@@ -1,17 +1,34 @@
-diff --git a/platform/win/ColonyGame.manifest b/platform/win/ColonyGame.manifest
-new file mode 100644
---- /dev/null
-+++ b/platform/win/ColonyGame.manifest
-@@ -0,0 +1,18 @@
-+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-+<assembly manifestVersion="1.0" xmlns="urn:schemas-microsoft-com:asm.v1">
-+  <assemblyIdentity version="1.0.0.0" processorArchitecture="amd64"
-+                    name="ColonyGame" type="win32"/>
-+  <application xmlns="urn:schemas-microsoft-com:asm.v3">
-+    <windowsSettings>
-+      <!-- Prefer PerMonitorV2 when available, fall back sanely -->
-+      <dpiAwareness>PerMonitorV2, PerMonitor, System</dpiAwareness>
-+      <dpiAware xmlns="http://schemas.microsoft.com/SMI/2005/WindowsSettings">true/pmv2</dpiAware>
-+    </windowsSettings>
-+  </application>
-+</assembly>
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<assembly manifestVersion="1.0"
+  xmlns="urn:schemas-microsoft-com:asm.v1"
+  xmlns:asmv3="urn:schemas-microsoft-com:asm.v3">
+
+  <assemblyIdentity version="1.0.0.0" name="ColonyGame" type="win32"/>
+  <description>Colony-Game</description>
+
+  <asmv3:application>
+    <asmv3:windowsSettings>
+      <!-- Prefer Per-Monitor V2 when available, fall back sanely on older Windows. -->
+      <dpiAwareness xmlns="http://schemas.microsoft.com/SMI/2016/WindowsSettings">
+        PerMonitorV2, PerMonitor, System
+      </dpiAwareness>
+      <dpiAware xmlns="http://schemas.microsoft.com/SMI/2005/WindowsSettings">true/pm</dpiAware>
+
+      <!-- Quality-of-life: allow long (>260) paths when the OS long-path policy is enabled. -->
+      <longPathAware xmlns="http://schemas.microsoft.com/SMI/2016/WindowsSettings">true</longPathAware>
+
+      <!-- Helps older GDI-based UI scale more nicely on mixed-DPI setups (safe no-op for D3D). -->
+      <gdiScaling xmlns="http://schemas.microsoft.com/SMI/2017/WindowsSettings">true</gdiScaling>
+    </asmv3:windowsSettings>
+  </asmv3:application>
+
+  <compatibility xmlns="urn:schemas-microsoft-com:compatibility.v1">
+    <application>
+      <!-- Windows 10 / 11 -->
+      <supportedOS Id="{8e0f7a12-bfb3-4fe8-b9a5-48fd50a15a9a}"/>
+      <!-- Windows 8.1 -->
+      <supportedOS Id="{1f676c76-80e1-4239-95bb-83d0f6d0da78}"/>
+    </application>
+  </compatibility>
+
+</assembly>

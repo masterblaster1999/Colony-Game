@@ -1,5 +1,7 @@
 #pragma once
-#include <windows.h>
+
+// Centralized Windows header policy (WIN32_LEAN_AND_MEAN/NOMINMAX/STRICT).
+#include "platform/win/WinCommon.h"
 
 // Dear ImGui (core only; backends are included in the .cpp)
 #include <imgui.h>
@@ -13,7 +15,8 @@ namespace cg::ui
     class ImGuiLayer
     {
     public:
-        bool initialize(HWND hwnd, ID3D11Device* device, ID3D11DeviceContext* context);
+        // If enableIniFile is false, the layer will NOT read/write imgui.ini (useful for safe-mode).
+        bool initialize(HWND hwnd, ID3D11Device* device, ID3D11DeviceContext* context, bool enableIniFile = true);
         void shutdown();
 
         // Call once per frame (before you draw any ImGui widgets)

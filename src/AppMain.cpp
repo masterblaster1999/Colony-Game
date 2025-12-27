@@ -7,10 +7,19 @@
 
 #include "platform/win/LauncherLogSingletonWin.h" // LauncherLog(), WriteLog()
 
+#include "app/CommandLineArgs.h"
+
 #include "AppWindow.h"
 #include "CrashDump.h"
+#include "UserSettings.h"
 
+#include "platform/win/PathUtilWin.h"
+
+#include <filesystem>
 #include <string>
+#include <system_error>
+
+namespace fs = std::filesystem;
 
 #ifndef DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2
 #   define DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2 ((HANDLE)-4)
@@ -94,10 +103,90 @@ int GameMain(HINSTANCE hInstance, PWSTR cmdLine, int nCmdShow)
     InstallCrashHandler(L"ColonyGame");
     NameMainThread();
 
+    // ----- Command line parsing / recovery -----
+    const colony::appwin::CommandLineArgs args = colony::appwin::ParseCommandLineArgs();
+
+    if (args.showHelp)
+    {
+        const std::wstring help = colony::appwin::BuildCommandLineHelpText();
+        MessageBoxW(nullptr, help.c_str(), L"Colony Game - Command Line", MB_OK | MB_ICONINFORMATION);
+        return 0;
+    }
+
+    if (!args.unknown.empty())
+    {
+        std::wstring msg = L"Unknown command line option(s):\n";
+        for (const auto& u : args.unknown)
+        {
+            msg += L"  " + u + L"\n";
+        }
+        msg += L"\n";
+        msg += colony::appwin::BuildCommandLineHelpText();
+        MessageBoxW(nullptr, msg.c_str(), L"Colony Game - Unknown option", MB_OK | MB_ICONWARNING);
+        return -1;
+    }
+
+    auto tryDelete = [&](const fs::path& p, const wchar_t* label) {
+        if (p.empty())
+            return;
+        std::error_code ec;
+        const bool existed = fs::exists(p, ec) && !ec;
+        if (existed)
+        {
+            WriteLog(log, std::wstring(L"[AppMain] Deleting ") + label + L": " + p.wstring());
+            fs::remove(p, ec);
+            if (ec)
+            {
+                const std::wstring err = std::wstring(L"Failed to delete ") + label + L"\n\n" + p.wstring() + L"\n\n" +
+                                         L"Error: " + std::to_wstring(ec.value()) + L"\n";
+                MessageBoxW(nullptr, err.c_str(), L"Colony Game", MB_OK | MB_ICONWARNING);
+            }
+        }
+    };
+
+    if (args.resetSettings)
+        tryDelete(colony::appwin::UserSettingsPath(), L"settings.json");
+
+    if (args.resetImGui)
+    {
+        const fs::path dataDir = colony::appwin::winpath::writable_data_dir();
+        if (!dataDir.empty())
+            tryDelete(dataDir / L"imgui.ini", L"imgui.ini");
+    }
+
     WriteLog(log, L"[AppMain] Creating AppWindow...");
 
+    AppWindow::CreateOptions opt{};
+    opt.width  = args.width.value_or(1280);
+    opt.height = args.height.value_or(720);
+
+    // Safe-mode: ignore settings + ImGui ini and do NOT write settings back out.
+    if (args.safeMode)
+    {
+        opt.ignoreUserSettings    = true;
+        opt.settingsWriteEnabled  = false;
+        opt.disableImGuiIni       = true;
+    }
+
+    if (args.ignoreSettings)
+        opt.ignoreUserSettings = true;
+    if (args.ignoreImGuiIni)
+        opt.disableImGuiIni = true;
+    if (args.disableImGui)
+        opt.disableImGui = true;
+
+    // Overrides (tri-state)
+    opt.fullscreen = args.fullscreen;
+    opt.vsync      = args.vsync;
+    opt.rawMouse   = args.rawMouse;
+
+    opt.maxFrameLatency     = args.maxFrameLatency;
+    opt.maxFpsWhenVsyncOff  = args.maxFpsWhenVsyncOff;
+    opt.pauseWhenUnfocused  = args.pauseWhenUnfocused;
+    opt.maxFpsWhenUnfocused = args.maxFpsWhenUnfocused;
+
     AppWindow app;
-    if (!app.Create(hInstance, nCmdShow, 1280, 720))
+    if (!app.Create(hInstance, nCmdShow, opt))
     {
         WriteLog(log, L"[AppMain] AppWindow.Create FAILED");
         return -1;

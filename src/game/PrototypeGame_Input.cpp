@@ -2,6 +2,7 @@
 
 #include "input/InputBindingParse.h"
 
+#include <algorithm>
 #include <system_error>
 
 namespace colony::game {
@@ -66,6 +67,7 @@ proto::TileType PrototypeGame::Impl::toolTile() const noexcept
     case Tool::Stockpile: return proto::TileType::Stockpile;
     case Tool::Erase: return proto::TileType::Empty;
     case Tool::Inspect: return proto::TileType::Empty;
+    case Tool::Priority: return proto::TileType::Empty;
     }
     return proto::TileType::Empty;
 }
@@ -79,6 +81,7 @@ const char* PrototypeGame::Impl::toolName() const noexcept
     case Tool::Farm: return "Plan Farm";
     case Tool::Stockpile: return "Plan Stockpile";
     case Tool::Erase: return "Erase Plan";
+    case Tool::Priority: return "Paint Priority";
     }
     return "(unknown)";
 }
@@ -190,6 +193,7 @@ bool PrototypeGame::Impl::OnInput(std::span<const colony::input::InputEvent> eve
             case '4': tool = Tool::Farm; changed = true; break;
             case '5': tool = Tool::Stockpile; changed = true; break;
             case '6': tool = Tool::Erase; changed = true; break;
+            case '7': tool = Tool::Priority; changed = true; break;
 
             case 'P':
                 paused = !paused;
@@ -221,16 +225,68 @@ bool PrototypeGame::Impl::OnInput(std::span<const colony::input::InputEvent> eve
     }
 
     // Discrete actions from bindings file.
-    for (const auto& actionEvent : input.ActionEvents()) {
-        switch (actionEvent.action) {
-        case colony::input::Action::ReloadBindings:
-            if (actionEvent.type == colony::input::ActionEventType::Pressed) {
+    // Respect ImGui capture so Ctrl+S/Ctrl+L (and similar chords) don't fire while typing in UI widgets.
+    if (!uiWantsKeyboard)
+    {
+        for (const auto& actionEvent : input.ActionEvents())
+        {
+            if (actionEvent.type != colony::input::ActionEventType::Pressed)
+                continue;
+
+            switch (actionEvent.action)
+            {
+            case colony::input::Action::ReloadBindings:
                 (void)loadBindings();
                 changed = true;
+                break;
+
+            case colony::input::Action::SaveWorld:
+                (void)saveWorld();
+                changed = true;
+                break;
+
+            case colony::input::Action::LoadWorld:
+                (void)loadWorld();
+                changed = true;
+                break;
+
+            case colony::input::Action::Undo:
+                if (undoPlans())
+                    changed = true;
+                break;
+
+            case colony::input::Action::Redo:
+                if (redoPlans())
+                    changed = true;
+                break;
+
+            case colony::input::Action::PlanPriorityUp:
+            {
+                const int old = planBrushPriority;
+                planBrushPriority = std::min(3, planBrushPriority + 1);
+                if (planBrushPriority != old)
+                {
+                    setStatus("Brush priority: " + std::to_string(planBrushPriority + 1), 1.25f);
+                    changed = true;
+                }
+                break;
             }
-            break;
-        default:
-            break;
+
+            case colony::input::Action::PlanPriorityDown:
+            {
+                const int old = planBrushPriority;
+                planBrushPriority = std::max(0, planBrushPriority - 1);
+                if (planBrushPriority != old)
+                {
+                    setStatus("Brush priority: " + std::to_string(planBrushPriority + 1), 1.25f);
+                    changed = true;
+                }
+                break;
+            }
+
+            default:
+                break;
+            }
         }
     }
 

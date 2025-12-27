@@ -151,8 +151,16 @@ static std::string WideToUtf8(const std::wstring& ws)
     return out;
 }
 
+
+
+static std::filesystem::path g_imguiDataDir;
+static std::filesystem::path g_imguiIniPath;
+
+static bool g_openResetLayoutPopup = false;
+static std::string g_resetLayoutStatus;
+
 // Persist imgui.ini and imgui_log.txt under %LOCALAPPDATA%\ColonyGame (via winpath helper).
-static void SetImGuiIniAndLogToWritableDataDir()
+static void SetImGuiIniAndLogToWritableDataDir(bool enableIniFile)
 {
     ImGuiIO& io = ImGui::GetIO();
 
@@ -163,14 +171,19 @@ static void SetImGuiIniAndLogToWritableDataDir()
     const std::filesystem::path iniFile = dir / L"imgui.ini";
     const std::filesystem::path logFile = dir / L"imgui_log.txt";
 
+    g_imguiDataDir = dir;
+    g_imguiIniPath  = iniFile;
+
     static std::string s_iniUtf8;
     static std::string s_logUtf8;
 
     s_iniUtf8 = WideToUtf8(iniFile.wstring());
     s_logUtf8 = WideToUtf8(logFile.wstring());
 
-    if (!s_iniUtf8.empty())
+    if (enableIniFile && !s_iniUtf8.empty())
         io.IniFilename = s_iniUtf8.c_str();
+    else
+        io.IniFilename = nullptr; // do NOT load from CWD in safe-mode
     if (!s_logUtf8.empty())
         io.LogFilename = s_logUtf8.c_str();
 }
@@ -414,7 +427,77 @@ static void DrawDockspaceAndMenuBar(HWND hwnd)
 
             ImGui::EndMenu();
         }
+
+        if (ImGui::BeginMenu("Layout"))
+        {
+            if (ImGui::MenuItem("Reset UI layout (delete imgui.ini)"))
+            {
+                g_openResetLayoutPopup = true;
+                g_resetLayoutStatus.clear();
+            }
+
+            ImGui::EndMenu();
+        }
+
         ImGui::EndMenuBar();
+    }
+
+    if (g_openResetLayoutPopup)
+    {
+        ImGui::OpenPopup("Reset UI Layout");
+        g_openResetLayoutPopup = false;
+    }
+
+    if (ImGui::BeginPopupModal("Reset UI Layout", nullptr, ImGuiWindowFlags_AlwaysAutoResize))
+    {
+        ImGui::TextUnformatted("This will delete the saved ImGui layout file:");
+        ImGui::Separator();
+
+        const std::string iniPathUtf8 = WideToUtf8(g_imguiIniPath.wstring());
+        ImGui::TextWrapped("%s", iniPathUtf8.empty() ? "(unknown)" : iniPathUtf8.c_str());
+
+        ImGui::Spacing();
+        ImGui::TextUnformatted("After deleting, restart the game to regenerate the default layout.");
+        ImGui::Spacing();
+
+        if (!g_resetLayoutStatus.empty())
+        {
+            ImGui::Separator();
+            ImGui::TextWrapped("%s", g_resetLayoutStatus.c_str());
+            ImGui::Spacing();
+        }
+
+        if (ImGui::Button("Delete imgui.ini"))
+        {
+            if (g_imguiIniPath.empty())
+            {
+                g_resetLayoutStatus = "No imgui.ini path is known (nothing to delete).";
+            }
+            else
+            {
+                std::error_code ec;
+                const bool removed = std::filesystem::remove(g_imguiIniPath, ec);
+                if (ec)
+                {
+                    g_resetLayoutStatus = "Failed to delete imgui.ini: " + ec.message();
+                }
+                else if (!removed)
+                {
+                    g_resetLayoutStatus = "imgui.ini was not found (already deleted?). Restart the game anyway.";
+                }
+                else
+                {
+                    g_resetLayoutStatus = "Deleted imgui.ini. Restart the game to regenerate the default layout.";
+                }
+            }
+        }
+
+        ImGui::SameLine();
+
+        if (ImGui::Button("Close"))
+            ImGui::CloseCurrentPopup();
+
+        ImGui::EndPopup();
     }
 
     ImGui::End();
@@ -523,7 +606,7 @@ static bool IsTextInputMessage(UINT msg)
 
 } // namespace
 
-bool ImGuiLayer::initialize(HWND hwnd, ID3D11Device* device, ID3D11DeviceContext* context)
+bool ImGuiLayer::initialize(HWND hwnd, ID3D11Device* device, ID3D11DeviceContext* context, bool enableIniFile)
 {
     if (m_initialized)
         return true;
@@ -546,7 +629,7 @@ bool ImGuiLayer::initialize(HWND hwnd, ID3D11Device* device, ID3D11DeviceContext
     io.ConfigFlags |= ImGuiConfigFlags_ViewportsEnable;
     io.ConfigWindowsMoveFromTitleBarOnly = true;
 
-    SetImGuiIniAndLogToWritableDataDir();
+    SetImGuiIniAndLogToWritableDataDir(enableIniFile);
 
     ImGui_ImplWin32_EnableDpiAwareness();
 

@@ -46,6 +46,10 @@ int AppWindow::MessageLoop()
 
             // Also reset our per-render dt so we don't simulate a huge step after Alt+Tab.
             m_impl->hasLastRenderTick = false;
+
+            // Reset the frame-time baseline too, so a long pause doesn't produce
+            // a huge "frame time" sample on the next rendered frame.
+            lastPresented = std::chrono::steady_clock::now();
         }
 
         // If minimized or intentionally paused in the background, don't render;
@@ -53,6 +57,11 @@ int AppWindow::MessageLoop()
         // so FocusLost (etc.) reaches the game layer.
         if (m_width == 0 || m_height == 0 || pauseInBackground)
         {
+            // We're not rendering right now (minimized/hidden/paused). Reset per-render
+            // dt tracking and the frame-time baseline so we don't "catch up" or skew
+            // pacing stats when we resume.
+            m_impl->hasLastRenderTick = false;
+            lastPresented = std::chrono::steady_clock::now();
             while (PeekMessageW(&msg, nullptr, 0, 0, PM_REMOVE))
             {
                 if (msg.message == WM_QUIT)
@@ -328,7 +337,7 @@ int AppWindow::MessageLoop()
         if (m_impl->imguiReady && m_gfx.ConsumeDeviceRecreatedFlag())
         {
             m_impl->imgui.shutdown();
-            m_impl->imguiReady = m_impl->imgui.initialize(m_hwnd, m_gfx.Device(), m_gfx.Context());
+            m_impl->imguiReady = m_impl->imgui.initialize(m_hwnd, m_gfx.Device(), m_gfx.Context(), m_impl->imguiIniEnabled);
         }
 #endif
 

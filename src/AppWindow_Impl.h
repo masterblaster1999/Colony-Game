@@ -39,11 +39,15 @@ struct AppWindow::Impl {
 #if defined(COLONY_WITH_IMGUI)
     cg::ui::ImGuiLayer                          imgui;
     bool                                        imguiReady = false;
+    bool                                        imguiIniEnabled = true;
 #endif
 
     colony::appwin::UserSettings                settings;
     bool                                       settingsLoaded = false;
     bool                                       settingsDirty = false;
+
+    // If false, the app will not write settings.json (autosave + shutdown save are disabled).
+    bool                                       settingsWriteEnabled = true;
 
     // Debounced auto-save for settings writes.
     //
@@ -78,6 +82,8 @@ struct AppWindow::Impl {
 
     void ScheduleSettingsAutosave() noexcept
     {
+        if (!settingsWriteEnabled)
+            return;
         settingsDirty = true;
         hasPendingAutoSave = true;
         nextSettingsAutoSave = std::chrono::steady_clock::now() + kSettingsAutoSaveDelay;
@@ -85,6 +91,8 @@ struct AppWindow::Impl {
 
     void MaybeAutoSaveSettings() noexcept
     {
+        if (!settingsWriteEnabled)
+            return;
         if (!settingsDirty || !hasPendingAutoSave)
             return;
 
@@ -111,6 +119,8 @@ struct AppWindow::Impl {
 
     [[nodiscard]] DWORD BackgroundWaitTimeoutMs() const noexcept
     {
+        if (!settingsWriteEnabled)
+            return INFINITE;
         if (!settingsDirty || !hasPendingAutoSave || inSizeMove)
             return INFINITE;
 

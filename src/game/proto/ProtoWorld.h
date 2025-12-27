@@ -1,7 +1,10 @@
 #pragma once
 
 #include <cstdint>
+#include <array>
+#include <filesystem>
 #include <random>
+#include <string>
 #include <vector>
 
 #include "colony/pathfinding/AStar.hpp"
@@ -36,6 +39,12 @@ struct Inventory {
 struct Cell {
     TileType built = TileType::Empty;
     TileType planned = TileType::Empty;
+
+    // Plan priority (prototype).
+    //  - 0 = lowest (displayed as 1)
+    //  - 3 = highest (displayed as 4)
+    // Only meaningful while planned != Empty && planned != built.
+    std::uint8_t planPriority = 0;
 
     // Remaining construction work for the planned tile.
     // Only meaningful while planned != built.
@@ -96,15 +105,30 @@ public:
 
     // Plan placement. Plans are blueprints and are built by colonists over time.
     // Costs are applied as a delta between old plan and new plan.
-    PlacePlanResult placePlan(int x, int y, TileType plan);
+    PlacePlanResult placePlan(int x, int y, TileType plan, std::uint8_t planPriority = 0);
 
     void clearAllPlans();
+
+    // Clears all colonist jobs and all per-cell reservations.
+    // Useful after player edits plans (undo/redo) so colonists don't keep walking
+    // toward a plan that no longer exists.
+    void CancelAllJobsAndClearReservations() noexcept;
 
     [[nodiscard]] int plannedCount() const noexcept;
     [[nodiscard]] int builtCount(TileType t) const noexcept;
 
     // Simulation tick (fixed dt). dt is seconds.
     void tick(double dtSeconds);
+
+    // ---------------------------------------------------------------------
+    // Persistence (prototype)
+    // ---------------------------------------------------------------------
+    // Save/load to a JSON file. Intended for the prototype game only.
+    //
+    // On load, derived caches (nav + planned-cache) are rebuilt and colonist
+    // jobs/paths are cleared.
+    [[nodiscard]] bool SaveJson(const std::filesystem::path& path, std::string* outError = nullptr) const noexcept;
+    [[nodiscard]] bool LoadJson(const std::filesystem::path& path, std::string* outError = nullptr) noexcept;
 
     // Tuning knobs (can be edited live from UI)
     double buildWorkPerSecond = 1.0; // work units/sec
@@ -114,6 +138,8 @@ public:
     double foodPerColonistPerSecond = 0.05;
 
 private:
+    static constexpr std::size_t kTileTypeCount = static_cast<std::size_t>(TileType::Stockpile) + 1u;
+
     [[nodiscard]] std::size_t idx(int x, int y) const noexcept
     {
         return static_cast<std::size_t>(y * m_w + x);
@@ -122,14 +148,52 @@ private:
     void syncNavCell(int x, int y) noexcept;
     void syncAllNav() noexcept;
 
-    void assignJobs();
+    // ---------------------------------------------------------------------
+    // Plan tracking
+    // ---------------------------------------------------------------------
+    // The prototype started with a naive full-grid scan for plannedCount() and
+    // job assignment. That becomes expensive as the grid grows. We keep a small
+    // index of *active* plans (planned != Empty && planned != built) to:
+    //   - make plannedCount() O(1)
+    //   - avoid scanning every tile for job assignment
+    //
+    // Implementation details:
+    //   - m_plannedCells stores the list of active-plan coordinates.
+    //   - m_plannedIndex maps a flattened cell index -> index into m_plannedCells
+    //     (or -1 if the cell is not currently an active plan).
+    void rebuildPlannedCache() noexcept;
+    void planCacheAdd(int x, int y) noexcept;
+    void planCacheRemove(int x, int y) noexcept;
+
+    // Job assignment: assign idle colonists to nearby unreserved plans.
+    // Throttled to avoid doing expensive path searches every tick when no jobs can be found.
+    void assignJobs(double dtSeconds);
+
+    // Finds a path from (startX,startY) to the nearest walkable "work tile" that is
+    // adjacent to an available plan.
+    //
+    // If requiredPriority >= 0, only plans with that planPriority are considered.
+    [[nodiscard]] bool findPathToNearestAvailablePlan(int startX, int startY,
+                                                      int& outPlanX, int& outPlanY,
+                                                      std::vector<colony::pf::IVec2>& outPath,
+                                                      int requiredPriority) const;
+
+    static constexpr double kJobAssignIntervalSeconds = 0.20;
+
     bool computePathToAdjacent(Colonist& c, int targetX, int targetY);
+    bool computePathToAdjacentFrom(int startX, int startY,
+                                   int targetX, int targetY,
+                                   std::vector<colony::pf::IVec2>& outPath) const;
 
     void stepColonist(Colonist& c, double dtSeconds);
     void stepConstructionIfReady(Colonist& c, double dtSeconds);
     void cancelJob(Colonist& c) noexcept;
 
     void applyPlanIfComplete(int targetX, int targetY) noexcept;
+
+    // Cached counts for *built* tiles. This avoids full-grid scans in tick/UI.
+    void rebuildBuiltCounts() noexcept;
+    void builtCountAdjust(TileType oldBuilt, TileType newBuilt) noexcept;
 
     int m_w = 0;
     int m_h = 0;
@@ -139,6 +203,21 @@ private:
 
     std::vector<Colonist> m_colonists;
     colony::pf::GridMap m_nav;
+
+    // Active plan cache.
+    std::vector<colony::pf::IVec2> m_plannedCells;
+    std::vector<int>              m_plannedIndex;
+
+    std::array<int, kTileTypeCount> m_builtCounts{};
+
+    double m_jobAssignCooldown = 0.0;
+
+    // Scratch buffers for nearest-plan search (Dijkstra / uniform-cost search).
+    // Reused across calls to avoid per-call allocations and O(w*h) clears.
+    mutable std::vector<float> m_nearestDist;
+    mutable std::vector<colony::pf::NodeId> m_nearestParent;
+    mutable std::vector<std::uint32_t> m_nearestStamp;
+    mutable std::uint32_t m_nearestStampValue = 1;
 
     std::mt19937 m_rng{};
 };

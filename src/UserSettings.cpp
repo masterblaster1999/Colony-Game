@@ -2,6 +2,7 @@
 
 #include "platform/win/PathUtilWin.h"
 #include "platform/win/WinFiles.h"
+#include "util/TextEncoding.h"
 
 #include <fstream>
 #include <string>
@@ -26,7 +27,7 @@ namespace {
     //
     // NOTE: SaveUserSettings always writes the latest schema version. LoadUserSettings
     // performs best-effort migration from older layouts so user preferences survive refactors.
-    constexpr int kUserSettingsSchemaVersion = 4;
+    constexpr int kUserSettingsSchemaVersion = 5;
 
     std::uint32_t ClampWindowWidth(std::uint32_t v) noexcept
     {
@@ -166,6 +167,12 @@ namespace {
         copy_if_missing("width",        window,   "width");
         copy_if_missing("height",       window,   "height");
 
+        // Window placement (newer schema stores these under window.*)
+        copy_if_missing("windowPosValid", window, "posValid");
+        copy_if_missing("windowPosX",     window, "posX");
+        copy_if_missing("windowPosY",     window, "posY");
+        copy_if_missing("windowMaximized", window, "maximized");
+
         copy_if_missing("vsync",              graphics, "vsync");
         copy_if_missing("fullscreen",         graphics, "fullscreen");
         copy_if_missing("maxFpsWhenVsyncOff",  graphics, "maxFpsWhenVsyncOff");
@@ -208,6 +215,10 @@ bool LoadUserSettings(UserSettings& out) noexcept
     if (!ReadFileToString(path, text))
         return false;
 
+    // Normalize to UTF-8 so the settings file can be edited in Notepad (UTF-16/with BOM) without breaking JSON parsing.
+    if (!colony::util::NormalizeTextToUtf8(text))
+        return false;
+
     // Allow // comments (same as input_bindings.json), and avoid exceptions.
     nlohmann::json j = nlohmann::json::parse(text, nullptr, false, /*ignore_comments*/ true);
     if (j.is_discarded() || !j.is_object())
@@ -226,6 +237,15 @@ bool LoadUserSettings(UserSettings& out) noexcept
             tmp.windowWidth = ClampWindowWidth(static_cast<std::uint32_t>(w->get<std::int64_t>()));
         if (auto h = it->find("height"); h != it->end() && h->is_number_integer())
             tmp.windowHeight = ClampWindowHeight(static_cast<std::uint32_t>(h->get<std::int64_t>()));
+
+        if (auto pv = it->find("posValid"); pv != it->end() && pv->is_boolean())
+            tmp.windowPosValid = pv->get<bool>();
+        if (auto px = it->find("posX"); px != it->end() && px->is_number_integer())
+            tmp.windowPosX = px->get<int>();
+        if (auto py = it->find("posY"); py != it->end() && py->is_number_integer())
+            tmp.windowPosY = py->get<int>();
+        if (auto mz = it->find("maximized"); mz != it->end() && mz->is_boolean())
+            tmp.windowMaximized = mz->get<bool>();
     }
 
     if (const auto it = j.find("graphics"); it != j.end() && it->is_object())
@@ -289,6 +309,10 @@ bool SaveUserSettings(const UserSettings& settings) noexcept
     j["window"] = {
         {"width", settings.windowWidth},
         {"height", settings.windowHeight},
+        {"posValid", settings.windowPosValid},
+        {"posX", settings.windowPosX},
+        {"posY", settings.windowPosY},
+        {"maximized", settings.windowMaximized},
     };
     j["graphics"] = {
         {"vsync", settings.vsync},

@@ -56,6 +56,11 @@ In the current window prototype (`AppWindow`):
 The prototype persists a small settings file at:
 
 - `%LOCALAPPDATA%\ColonyGame\settings.json`
+- `%LOCALAPPDATA%\ColonyGame\imgui.ini` (ImGui layout/state)
+  - If the UI ever disappears or ends up off-screen, use **Layout → Reset UI layout** from the in-game menu bar,
+    or delete this file and restart.
+  - New: you can also run `ColonyGame.exe --reset-imgui` (deletes it for you) or `ColonyGame.exe --safe-mode`
+    (ignores both `settings.json` and `imgui.ini` for that run).
 
 New in this patch:
 

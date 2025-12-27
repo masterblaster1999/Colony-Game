@@ -46,6 +46,18 @@ enum class Action : std::uint8_t {
     // Developer QOL: reload input bindings from disk (defaults to F5).
     ReloadBindings,
 
+    // Prototype persistence.
+    SaveWorld,
+    LoadWorld,
+
+    // Prototype editor QOL.
+    Undo,
+    Redo,
+
+    // Prototype build-planning QOL.
+    PlanPriorityUp,
+    PlanPriorityDown,
+
     Count
 };
 

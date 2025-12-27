@@ -46,7 +46,9 @@ HWND CreateDpiAwareWindow(HINSTANCE hInst,
         0,
         className,
         title,
-        WS_OVERLAPPEDWINDOW | WS_VISIBLE,
+        // Create hidden; caller decides when/how to show (prevents "flash" when
+        // we need to apply saved placement before first ShowWindow).
+        WS_OVERLAPPEDWINDOW,
         CW_USEDEFAULT,
         CW_USEDEFAULT,
         r.right - r.left,
@@ -81,6 +83,9 @@ void BorderlessFullscreen::InitFromCurrent(HWND hwnd) noexcept
     m_windowStyle   = static_cast<DWORD>(GetWindowLongW(hwnd, GWL_STYLE));
     m_windowExStyle = static_cast<DWORD>(GetWindowLongW(hwnd, GWL_EXSTYLE));
     GetWindowRect(hwnd, &m_windowRect);
+
+    m_windowPlacement.length = sizeof(WINDOWPLACEMENT);
+    m_hasWindowPlacement = (GetWindowPlacement(hwnd, &m_windowPlacement) != FALSE);
     m_fullscreen = false;
 }
 
@@ -95,6 +100,9 @@ void BorderlessFullscreen::Toggle(HWND hwnd) noexcept
         m_windowStyle   = static_cast<DWORD>(GetWindowLongW(hwnd, GWL_STYLE));
         m_windowExStyle = static_cast<DWORD>(GetWindowLongW(hwnd, GWL_EXSTYLE));
         GetWindowRect(hwnd, &m_windowRect);
+
+        m_windowPlacement.length = sizeof(WINDOWPLACEMENT);
+        m_hasWindowPlacement = (GetWindowPlacement(hwnd, &m_windowPlacement) != FALSE);
 
         MONITORINFO mi{ sizeof(mi) };
         if (GetMonitorInfoW(MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST), &mi))
@@ -148,15 +156,33 @@ void BorderlessFullscreen::Toggle(HWND hwnd) noexcept
         SetWindowLongW(hwnd, GWL_STYLE, static_cast<LONG>(m_windowStyle));
         SetWindowLongW(hwnd, GWL_EXSTYLE, static_cast<LONG>(m_windowExStyle));
 
-        SetWindowPos(
-            hwnd,
-            nullptr,
-            m_windowRect.left,
-            m_windowRect.top,
-            m_windowRect.right - m_windowRect.left,
-            m_windowRect.bottom - m_windowRect.top,
-            SWP_NOOWNERZORDER | SWP_FRAMECHANGED
-        );
+        if (m_hasWindowPlacement)
+        {
+            // Restores proper maximized state and work-area sizing.
+            (void)SetWindowPlacement(hwnd, &m_windowPlacement);
+            SetWindowPos(
+                hwnd,
+                nullptr,
+                0,
+                0,
+                0,
+                0,
+                SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOOWNERZORDER | SWP_FRAMECHANGED
+            );
+        }
+        else
+        {
+            // Fallback: raw rect restore.
+            SetWindowPos(
+                hwnd,
+                nullptr,
+                m_windowRect.left,
+                m_windowRect.top,
+                m_windowRect.right - m_windowRect.left,
+                m_windowRect.bottom - m_windowRect.top,
+                SWP_NOOWNERZORDER | SWP_FRAMECHANGED
+            );
+        }
 
         m_fullscreen = false;
     }

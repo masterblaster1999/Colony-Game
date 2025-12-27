@@ -1,6 +1,6 @@
 #pragma once
 
-#include <windows.h>
+#include "platform/win/WinCommon.h"
 
 namespace colony::appwin::win32 {
 

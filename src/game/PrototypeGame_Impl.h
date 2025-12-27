@@ -2,6 +2,9 @@
 
 #include "game/PrototypeGame.h"
 
+#include "game/editor/PlanHistory.h"
+#include "game/save/SaveMeta.h"
+
 #include "game/proto/ProtoWorld.h"
 #include "input/InputMapper.h"
 #include "loop/DebugCamera.h"
@@ -10,6 +13,7 @@
 #include <array>
 #include <filesystem>
 #include <limits>
+#include <memory>
 #include <string>
 #include <utility>
 #include <vector>
@@ -27,10 +31,16 @@ namespace fs = std::filesystem;
 using colony::appwin::DebugCameraController;
 using colony::appwin::DebugCameraState;
 
+// Background save worker (prototype). Defined in PrototypeGame_SaveLoad.cpp.
+struct AsyncSaveManager;
+
 struct PrototypeGame::Impl {
     colony::input::InputMapper input;
     DebugCameraController camera;
     proto::World world;
+
+    // Plan placement undo/redo.
+    colony::game::editor::PlanHistory planHistory;
 
     enum class Tool : std::uint8_t {
         Inspect = 0,
@@ -39,9 +49,19 @@ struct PrototypeGame::Impl {
         Farm,
         Stockpile,
         Erase,
+        Priority, // edits priority on existing plans (does not place new plans)
     };
 
     Tool tool = Tool::Floor;
+
+    // Plan placement tuning.
+    //  - 0..3 (displayed as 1..4)
+    int  planBrushPriority  = 1;
+    bool showPlanPriorities = false;
+
+    // Selection (Inspect tool)
+    int selectedX = -1;
+    int selectedY = -1;
 
     bool showPanels = true;
     bool showHelp   = false;
@@ -60,6 +80,66 @@ struct PrototypeGame::Impl {
     // Simple paint state (avoid re-placing on the same tile every frame while dragging).
     int lastPaintX = std::numeric_limits<int>::min();
     int lastPaintY = std::numeric_limits<int>::min();
+
+    // Rectangle paint (Shift + drag) state.
+    // This allows quickly placing/erasing a box of plans in one gesture.
+    bool rectPaintActive = false;
+    bool rectPaintErase  = false;
+    int  rectPaintStartX = 0;
+    int  rectPaintStartY = 0;
+    int  rectPaintEndX   = 0;
+    int  rectPaintEndY   = 0;
+
+    // Debug drawing / UX toggles.
+    bool showBrushPreview = true;
+    bool showJobPaths     = false;
+    bool showReservations = false;
+
+    // World reset parameters (editable from UI).
+    int worldResetW = 64;
+    int worldResetH = 64;
+    std::uint32_t worldResetSeed = 0xC0FFEEu;
+    bool worldResetUseRandomSeed = true;
+
+    // Persistence (prototype)
+    int saveSlot = 0;
+
+    // Autosave (prototype)
+    bool  autosaveEnabled         = true;
+    float autosaveIntervalSeconds = 300.f;
+    int   autosaveKeepCount       = 5;
+    float autosaveAccumSeconds    = 0.f;
+
+    // Async save worker (keeps autosaves/manual saves from hitching the frame).
+    std::unique_ptr<AsyncSaveManager> saveMgr;
+    double playtimeSeconds = 0.0; // real-time seconds since launch (for save metadata)
+
+    // Save browser state (uses small sidecar meta files to avoid parsing huge world JSON in UI).
+    struct SaveBrowserEntry
+    {
+        enum class Kind : std::uint8_t { Slot = 0, Autosave };
+
+        Kind kind = Kind::Slot;
+        int index = 0; // slot number or autosave index
+
+        fs::path path;
+        fs::path metaPath;
+
+        bool exists     = false;
+        bool metaExists = false;
+        bool metaOk     = false;
+
+        std::uintmax_t sizeBytes = 0;
+        save::SaveSummary summary{};
+        std::string metaError;
+    };
+
+    std::vector<SaveBrowserEntry> saveBrowserEntries;
+    int   saveBrowserSelected          = -1;
+    int   saveBrowserPendingDelete     = -1;
+    float saveBrowserPendingDeleteTtl  = 0.f;
+    bool  saveBrowserDirty             = true;
+
 
     // Input binding hot reload
     bool                        bindingHotReloadEnabled = false;
@@ -93,6 +173,28 @@ struct PrototypeGame::Impl {
 
     // Simulation
     void resetWorld();
+
+    // Persistence (prototype)
+    [[nodiscard]] fs::path defaultWorldSavePath() const;
+    [[nodiscard]] fs::path worldSaveDir() const;
+    [[nodiscard]] fs::path worldSavePathForSlot(int slot) const;
+    [[nodiscard]] fs::path autosavePathForIndex(int index) const;
+
+    bool saveWorldToPath(const fs::path& path, bool showStatus);
+    bool loadWorldFromPath(const fs::path& path, bool showStatus);
+    bool autosaveWorld();
+
+    bool saveWorld();
+    bool loadWorld();
+
+    // Save worker integration.
+    void pollAsyncSaves() noexcept;
+    void invalidatePendingAutosaves() noexcept;
+
+    // Plan editing history
+    bool undoPlans();
+    bool redoPlans();
+    void clearPlanHistory() noexcept;
 
     // Modules
     bool OnInput(std::span<const colony::input::InputEvent> events,

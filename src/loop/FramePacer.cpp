@@ -12,6 +12,14 @@ FramePacer::FramePacer(int maxFpsWhenVsyncOff) noexcept
     ResetFps();
 }
 
+FramePacer::~FramePacer() noexcept
+{
+    if (m_waitableTimer) {
+        CloseHandle(m_waitableTimer);
+        m_waitableTimer = nullptr;
+    }
+}
+
 void FramePacer::SetMaxFpsWhenVsyncOff(int maxFpsWhenVsyncOff) noexcept
 {
     // Clamp to a sane range. (0 == uncapped.)
@@ -101,6 +109,34 @@ void FramePacer::ThrottleBeforeMessagePump(bool vsync, bool unfocused) noexcept
     if (remaining <= 0)
         return;
 
+    // Prefer a high-resolution waitable timer (100ns units) when available.
+    // This avoids the millisecond quantization you get from a timeout-only wait.
+    //
+    // We still use MsgWaitForMultipleObjectsEx so Windows messages can wake us early.
+    const LONGLONG remainingHns = (remaining * 10'000'000LL) / m_freq.QuadPart; // 100ns units
+    if (remainingHns > 0)
+    {
+        EnsureWaitableTimer();
+        if (m_waitableTimer)
+        {
+            LARGE_INTEGER due{};
+            due.QuadPart = -remainingHns; // relative
+            if (SetWaitableTimer(m_waitableTimer, &due, 0, nullptr, nullptr, FALSE))
+            {
+                HANDLE h = m_waitableTimer;
+                (void)MsgWaitForMultipleObjectsEx(
+                    1,
+                    &h,
+                    INFINITE,
+                    QS_ALLINPUT,
+                    MWMO_INPUTAVAILABLE
+                );
+                return;
+            }
+        }
+    }
+
+    // Fallback: millisecond-granularity wait.
     const DWORD waitMs = static_cast<DWORD>((remaining * 1000) / m_freq.QuadPart);
     if (waitMs > 0) {
         MsgWaitForMultipleObjectsEx(
@@ -165,6 +201,31 @@ bool FramePacer::OnFramePresented(bool vsync, bool unfocused) noexcept
     }
 
     return fpsUpdated;
+}
+
+
+void FramePacer::EnsureWaitableTimer() noexcept
+{
+    if (m_waitableTimer)
+        return;
+
+    // Try a high-resolution timer first (Windows 10, version 1803+). On older OS versions this
+    // will fail with ERROR_INVALID_PARAMETER, so we fall back to a normal waitable timer.
+    HANDLE h = CreateWaitableTimerExW(nullptr, nullptr, CREATE_WAITABLE_TIMER_HIGH_RESOLUTION, TIMER_ALL_ACCESS);
+    if (!h)
+    {
+        const DWORD err = GetLastError();
+        if (err == ERROR_INVALID_PARAMETER || err == ERROR_NOT_SUPPORTED)
+            h = CreateWaitableTimerExW(nullptr, nullptr, 0, TIMER_ALL_ACCESS);
+    }
+
+    if (!h)
+        h = CreateWaitableTimerExW(nullptr, nullptr, 0, TIMER_ALL_ACCESS);
+
+    if (!h)
+        h = CreateWaitableTimerW(nullptr, FALSE, nullptr);
+
+    m_waitableTimer = h;
 }
 
 } // namespace colony::appwin

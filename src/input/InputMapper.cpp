@@ -63,6 +63,18 @@ static std::optional<colony::input::Action> ParseActionName(std::string_view nam
     // Developer QOL
     if (n == "reloadbindings" || n == "reloadbinds" || n == "reloadinputs" || n == "reload") return A::ReloadBindings;
 
+    // Prototype persistence
+    if (n == "saveworld" || n == "save" || n == "savegame" || n == "save_proto") return A::SaveWorld;
+    if (n == "loadworld" || n == "load" || n == "loadgame" || n == "load_proto") return A::LoadWorld;
+
+    // Prototype editor QOL
+    if (n == "undo" || n == "undoplans" || n == "undo_plan" || n == "undo_plans" || n == "ctrl+z") return A::Undo;
+    if (n == "redo" || n == "redoplans" || n == "redo_plan" || n == "redo_plans" || n == "ctrl+y" || n == "ctrl+shift+z") return A::Redo;
+
+    // Prototype build-planning QOL
+    if (n == "planpriorityup" || n == "priorityup" || n == "increasepriority") return A::PlanPriorityUp;
+    if (n == "planprioritydown" || n == "prioritydown" || n == "decreasepriority") return A::PlanPriorityDown;
+
     return std::nullopt;
 }
 
@@ -146,6 +158,35 @@ void InputMapper::SetDefaultBinds() noexcept
     // Hot reload input bindings (defaults to F5).
     AddBinding(Action::ReloadBindings, bindings::VK_F(5));
 
+    // Prototype persistence: quick save/load of the proto world.
+    // NOTE: F6/F7 are reserved for window-level hotkeys (FPS caps / unfocused behavior), so defaults use Ctrl+S / Ctrl+L.
+    // NOTE: Generic Ctrl/Shift/Alt modifiers are supported by the mapper (either L/R works).
+    {
+        const std::uint32_t chordSave[] = { bindings::kVK_CONTROL, static_cast<std::uint32_t>('S') };
+        AddBinding(Action::SaveWorld, std::span<const std::uint32_t>(chordSave, 2));
+    }
+    {
+        const std::uint32_t chordLoad[] = { bindings::kVK_CONTROL, static_cast<std::uint32_t>('L') };
+        AddBinding(Action::LoadWorld, std::span<const std::uint32_t>(chordLoad, 2));
+    }
+
+    // Prototype editor QOL: undo/redo plan placement.
+    {
+        const std::uint32_t chordUndo[] = { bindings::kVK_CONTROL, static_cast<std::uint32_t>('Z') };
+        AddBinding(Action::Undo, std::span<const std::uint32_t>(chordUndo, 2));
+    }
+    {
+        const std::uint32_t chordRedo[] = { bindings::kVK_CONTROL, static_cast<std::uint32_t>('Y') };
+        AddBinding(Action::Redo, std::span<const std::uint32_t>(chordRedo, 2));
+
+        // Common alternative on some editors: Ctrl+Shift+Z
+        const std::uint32_t chordRedo2[] = { bindings::kVK_CONTROL, bindings::kVK_SHIFT, static_cast<std::uint32_t>('Z') };
+        AddBinding(Action::Redo, std::span<const std::uint32_t>(chordRedo2, 3));
+    }
+
+    // Build planning QOL: plan priority up/down (defaults to PgUp/PgDn).
+    AddBinding(Action::PlanPriorityUp, bindings::kVK_PRIOR);
+    AddBinding(Action::PlanPriorityDown, bindings::kVK_NEXT);
     RecomputeActionStatesNoEvents();
 }
 
@@ -400,6 +441,37 @@ bool InputMapper::ConsumeEvent(const InputEvent& ev) noexcept
 
     bool recompute = false;
 
+    // Normalize generic modifiers (Shift/Ctrl/Alt) so bindings like "Ctrl+S" work
+    // regardless of whether the OS reports left/right variants.
+    //
+    // Windows commonly reports VK_LSHIFT/VK_RSHIFT (and similar for Ctrl/Alt),
+    // while human-friendly bindings often use VK_SHIFT/VK_CONTROL/VK_MENU.
+    auto syncGenericModifiers = [&]() noexcept
+    {
+        namespace bindings = colony::input::bindings;
+
+        auto sync = [&](std::uint32_t generic, std::uint32_t left, std::uint32_t right) noexcept
+        {
+            const std::size_t g = static_cast<std::size_t>(generic);
+            if (g >= kMaxInputCodes)
+                return;
+
+            const std::size_t l = static_cast<std::size_t>(left);
+            const std::size_t r = static_cast<std::size_t>(right);
+
+            const bool any =
+                (l < kMaxInputCodes && m_down.test(l)) ||
+                (r < kMaxInputCodes && m_down.test(r));
+
+            if (any) m_down.set(g);
+            else     m_down.reset(g);
+        };
+
+        sync(bindings::kVK_SHIFT,   bindings::kVK_LSHIFT,   bindings::kVK_RSHIFT);
+        sync(bindings::kVK_CONTROL, bindings::kVK_LCONTROL, bindings::kVK_RCONTROL);
+        sync(bindings::kVK_MENU,    bindings::kVK_LMENU,    bindings::kVK_RMENU);
+    };
+
     switch (ev.type)
     {
     case InputEventType::KeyDown:
@@ -410,6 +482,10 @@ bool InputMapper::ConsumeEvent(const InputEvent& ev) noexcept
         {
             const bool wasDown = m_down.test(code);
             m_down.set(code);
+
+            // Keep generic modifiers in sync (VK_SHIFT/VK_CONTROL/VK_MENU).
+            syncGenericModifiers();
+
             // Ignore repeats; but still keep state sane.
             recompute = (!wasDown);
         }
@@ -424,6 +500,10 @@ bool InputMapper::ConsumeEvent(const InputEvent& ev) noexcept
         {
             const bool wasDown = m_down.test(code);
             m_down.reset(code);
+
+            // Keep generic modifiers in sync (VK_SHIFT/VK_CONTROL/VK_MENU).
+            syncGenericModifiers();
+
             recompute = wasDown;
         }
         break;
@@ -433,6 +513,7 @@ bool InputMapper::ConsumeEvent(const InputEvent& ev) noexcept
         // Key/button up may never be delivered once focus is gone; clear everything and
         // emit releases for any active actions.
         m_down.reset();
+        syncGenericModifiers();
         recompute = true;
         break;
 
@@ -543,6 +624,12 @@ const char* InputMapper::ActionName(Action action) noexcept
     case Action::CameraZoomIn:     return "CameraZoomIn";
     case Action::CameraZoomOut:    return "CameraZoomOut";
     case Action::ReloadBindings:   return "ReloadBindings";
+    case Action::SaveWorld:        return "SaveWorld";
+    case Action::LoadWorld:        return "LoadWorld";
+    case Action::Undo:             return "Undo";
+    case Action::Redo:             return "Redo";
+    case Action::PlanPriorityUp:   return "PlanPriorityUp";
+    case Action::PlanPriorityDown: return "PlanPriorityDown";
     case Action::Count:            break;
     }
     return "Unknown";

@@ -2,6 +2,7 @@
 #include "platform/win/WinCommon.h"
 
 #include <memory>
+#include <optional>
 
 #include "DxDevice.h"
 
@@ -29,6 +30,37 @@ public:
     AppWindow(const AppWindow&) = delete;
     AppWindow& operator=(const AppWindow&) = delete;
 
+    struct CreateOptions
+    {
+        // Initial windowed client size (used as defaults if a settings.json does not exist
+        // or is being ignored via command line options).
+        int width  = 1280;
+        int height = 720;
+
+        // If true, we skip loading %LOCALAPPDATA%\ColonyGame\settings.json for this run.
+        bool ignoreUserSettings = false;
+
+        // If false, the app will not write settings.json (autosave + shutdown save are disabled).
+        bool settingsWriteEnabled = true;
+
+        // ImGui tooling/UI options
+        bool disableImGui    = false; // Skip ImGui initialization entirely.
+        bool disableImGuiIni = false; // Don't read/write imgui.ini (uses default layout each run).
+
+        // Optional runtime overrides (applied after settings.json is loaded).
+        std::optional<bool> vsync;
+        std::optional<bool> fullscreen;
+        std::optional<bool> rawMouse;
+        std::optional<int>  maxFrameLatency;
+        std::optional<int>  maxFpsWhenVsyncOff;
+        std::optional<bool> pauseWhenUnfocused;
+        std::optional<int>  maxFpsWhenUnfocused;
+    };
+
+    // Preferred overload: supports command-line overrides and safe-mode behavior.
+    bool Create(HINSTANCE hInst, int nCmdShow, const CreateOptions& opt);
+
+    // Backwards-compatible overload.
     bool Create(HINSTANCE hInst, int nCmdShow, int width, int height);
     int  MessageLoop();
 

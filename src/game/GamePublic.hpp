@@ -330,14 +330,34 @@ inline std::string expand_env_vars(std::string path) {
     return out;
 }
 
-// Join (A, B) with backslash if B is relative and A non-empty.
-inline std::string join_path(const std::string& base, const std::string& more) {
-    namespace fs = std::filesystem;
-    if (base.empty()) return more;
-    fs::path a = fs::u8path(base);
-    fs::path b = fs::u8path(more);
-    return fs::u8path((b.is_absolute() ? b : (a / b))).u8string();
+// Convert std::filesystem::path to UTF-8 std::string.
+//
+// Notes:
+//  - In C++20 and later, path::u8string() returns std::u8string (char8_t bytes).
+//  - This helper performs a byte-preserving bridge so callers can keep using std::string.
+inline std::string path_to_utf8_string(const std::filesystem::path& p)
+{
+#if defined(__cpp_char8_t) && (__cpp_char8_t >= 201811L)
+    const std::u8string u8 = p.u8string();
+    return std::string(reinterpret_cast<const char*>(u8.data()), u8.size());
+#else
+    return p.u8string();
+#endif
 }
+
+// Join (A, B) with backslash if B is relative and A non-empty.
+inline std::string join_path(const std::string& base, const std::string& more)
+{
+    namespace fs = std::filesystem;
+    if (base.empty())
+        return more;
+
+    const fs::path a = fs::u8path(base);
+    const fs::path b = fs::u8path(more);
+    const fs::path joined = b.is_absolute() ? b : (a / b);
+    return path_to_utf8_string(joined);
+}
+
 
 // Normalize slashes to backslashes and trim trailing slash (unless root).
 inline std::string normalize_backslashes(std::string p) {

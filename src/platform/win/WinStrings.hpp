@@ -15,7 +15,6 @@
 #include <Windows.h>
 #include <string>
 #include <string_view>
-#include <u8string>
 #include <cstring>   // std::strlen
 #include <cassert>
 

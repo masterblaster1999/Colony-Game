@@ -8,17 +8,35 @@
 #include <sstream>
 #include <string>
 
+#include <algorithm>
+
 // ----------------------------------------------------------------------------
 // AppWindow
 // ----------------------------------------------------------------------------
 
-bool AppWindow::Create(HINSTANCE hInst, int nCmdShow, int width, int height)
+bool AppWindow::Create(HINSTANCE hInst, int nCmdShow, const CreateOptions& opt)
 {
     m_impl = std::make_unique<Impl>();
 
+    // Command line / safe-mode can disable settings persistence.
+    m_impl->settingsWriteEnabled = opt.settingsWriteEnabled;
+
+    const int desiredW = (opt.width > 0) ? opt.width : 1280;
+    const int desiredH = (opt.height > 0) ? opt.height : 720;
+
+    const int clampedW = std::clamp(
+        desiredW,
+        static_cast<int>(colony::appwin::kMinWindowClientWidth),
+        static_cast<int>(colony::appwin::kMaxWindowClientWidth));
+
+    const int clampedH = std::clamp(
+        desiredH,
+        static_cast<int>(colony::appwin::kMinWindowClientHeight),
+        static_cast<int>(colony::appwin::kMaxWindowClientHeight));
+
     // Defaults (arguments win if no settings file exists yet).
-    m_impl->settings.windowWidth = static_cast<std::uint32_t>(width > 0 ? width : 1280);
-    m_impl->settings.windowHeight = static_cast<std::uint32_t>(height > 0 ? height : 720);
+    m_impl->settings.windowWidth = static_cast<std::uint32_t>(clampedW);
+    m_impl->settings.windowHeight = static_cast<std::uint32_t>(clampedH);
     m_impl->settings.vsync = m_vsync;
     m_impl->settings.fullscreen = false;
     m_impl->settings.maxFpsWhenVsyncOff = m_impl->pacer.MaxFpsWhenVsyncOff();
@@ -31,6 +49,7 @@ bool AppWindow::Create(HINSTANCE hInst, int nCmdShow, int width, int height)
     m_impl->settings.showDxgiDiagnostics = false;
 
     // Best-effort load: if it fails, we keep the defaults above.
+    if (!opt.ignoreUserSettings)
     {
         colony::appwin::UserSettings loaded = m_impl->settings;
         if (colony::appwin::LoadUserSettings(loaded))
@@ -40,7 +59,23 @@ bool AppWindow::Create(HINSTANCE hInst, int nCmdShow, int width, int height)
         }
     }
 
-    // Apply persisted settings.
+    // Apply optional overrides after settings.json is loaded.
+    if (opt.vsync)
+        m_impl->settings.vsync = *opt.vsync;
+    if (opt.fullscreen)
+        m_impl->settings.fullscreen = *opt.fullscreen;
+    if (opt.rawMouse)
+        m_impl->settings.rawMouse = *opt.rawMouse;
+    if (opt.maxFrameLatency)
+        m_impl->settings.maxFrameLatency = std::clamp(*opt.maxFrameLatency, 1, 16);
+    if (opt.maxFpsWhenVsyncOff)
+        m_impl->settings.maxFpsWhenVsyncOff = std::max(0, *opt.maxFpsWhenVsyncOff);
+    if (opt.pauseWhenUnfocused)
+        m_impl->settings.pauseWhenUnfocused = *opt.pauseWhenUnfocused;
+    if (opt.maxFpsWhenUnfocused)
+        m_impl->settings.maxFpsWhenUnfocused = std::max(0, *opt.maxFpsWhenUnfocused);
+
+    // Apply persisted/overridden settings.
     m_vsync = m_impl->settings.vsync;
     m_impl->pacer.SetMaxFpsWhenVsyncOff(m_impl->settings.maxFpsWhenVsyncOff);
     m_impl->pacer.SetMaxFpsWhenUnfocused(m_impl->settings.maxFpsWhenUnfocused);
@@ -59,6 +94,25 @@ bool AppWindow::Create(HINSTANCE hInst, int nCmdShow, int width, int height)
 
     if (!m_hwnd)
         return false;
+
+    // Restore last windowed placement (best-effort).
+    // We apply this before ShowWindow to avoid a visible "jump".
+    if (!m_impl->settings.fullscreen && m_impl->settings.windowPosValid)
+    {
+        POINT pt{ m_impl->settings.windowPosX, m_impl->settings.windowPosY };
+        if (MonitorFromPoint(pt, MONITOR_DEFAULTTONULL) != nullptr)
+        {
+            SetWindowPos(
+                m_hwnd,
+                nullptr,
+                pt.x,
+                pt.y,
+                0,
+                0,
+                SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE
+            );
+        }
+    }
 
     // Snapshot initial windowed placement for fullscreen toggling.
     m_impl->fullscreen.InitFromCurrent(m_hwnd);
@@ -89,10 +143,38 @@ bool AppWindow::Create(HINSTANCE hInst, int nCmdShow, int width, int height)
 #if defined(COLONY_WITH_IMGUI)
     // Tooling + gameplay UI overlay.
     // (ColonyDeps sets COLONY_WITH_IMGUI when ENABLE_IMGUI is enabled and imgui is available.)
-    m_impl->imguiReady = m_impl->imgui.initialize(m_hwnd, m_gfx.Device(), m_gfx.Context());
+    if (!opt.disableImGui)
+    {
+        const bool enableIniFile = !opt.disableImGuiIni;
+        m_impl->imguiIniEnabled = enableIniFile;
+        m_impl->imguiReady = m_impl->imgui.initialize(m_hwnd, m_gfx.Device(), m_gfx.Context(), enableIniFile);
+        if (!m_impl->imguiReady)
+        {
+            MessageBoxW(
+                m_hwnd,
+                L"ImGui failed to initialize, so the UI/world view will be disabled.\n\n"
+                L"Troubleshooting:\n"
+                L"  • Ensure vcpkg dependencies are installed and ENABLE_IMGUI is ON.\n"
+                L"  • If the UI was moved off-screen, try: ColonyGame.exe --reset-imgui\n"
+                L"  • For a recovery run, try: ColonyGame.exe --safe-mode\n",
+                L"ColonyGame - UI initialization failed",
+                MB_OK | MB_ICONWARNING);
+        }
+    }
+    else
+    {
+        m_impl->imguiReady = false;
+    }
 #endif
 
-    ShowWindow(m_hwnd, nCmdShow);
+    // Respect the shell if it explicitly asks us to start minimized.
+    const bool shellRequestedMinimized = (nCmdShow == SW_SHOWMINIMIZED) || (nCmdShow == SW_MINIMIZE) ||
+                                         (nCmdShow == SW_SHOWMINNOACTIVE) || (nCmdShow == SW_FORCEMINIMIZE);
+    const int showCmd = (!shellRequestedMinimized && !m_impl->settings.fullscreen && m_impl->settings.windowMaximized)
+                            ? SW_MAXIMIZE
+                            : nCmdShow;
+
+    ShowWindow(m_hwnd, showCmd);
     UpdateWindow(m_hwnd);
 
     // Apply initial fullscreen preference after the window is shown.
@@ -113,6 +195,14 @@ bool AppWindow::Create(HINSTANCE hInst, int nCmdShow, int width, int height)
 
     UpdateTitle();
     return true;
+}
+
+bool AppWindow::Create(HINSTANCE hInst, int nCmdShow, int width, int height)
+{
+    CreateOptions opt{};
+    opt.width  = width;
+    opt.height = height;
+    return Create(hInst, nCmdShow, opt);
 }
 
 void AppWindow::ToggleVsync()
@@ -207,7 +297,9 @@ void AppWindow::ShowHotkeysHelp()
         L"In-game (ImGui)\n"
         L"F1             Toggle panels\n"
         L"F2             Toggle help\n"
-        L"F5             Reload input bindings\n";
+        L"F5             Reload input bindings\n"
+        L"Ctrl+S         Save world (prototype)\n"
+        L"Ctrl+L         Load world (prototype)\n";
 
     MessageBoxW(m_hwnd ? m_hwnd : nullptr, msg, L"Colony Game - Hotkeys", MB_OK | MB_ICONINFORMATION);
 }
@@ -240,6 +332,11 @@ void AppWindow::UpdateTitle()
     if (!m_impl->settingsLoaded)
     {
         oss << L" | CFG DEFAULT";
+    }
+
+    if (!m_impl->settingsWriteEnabled)
+    {
+        oss << L" | CFG RO";
     }
 
     if (m_impl->input.Dropped() > 0)

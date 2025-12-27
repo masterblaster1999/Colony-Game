@@ -1,6 +1,6 @@
 #pragma once
 
-#include <windows.h>
+#include "platform/win/WinCommon.h"
 
 namespace colony::appwin::win32 {
 
@@ -38,6 +38,16 @@ private:
     bool  m_fullscreen = false;
     DWORD m_windowStyle = 0;
     DWORD m_windowExStyle = 0;
+
+    // Windowed-mode placement/state to restore when leaving borderless fullscreen.
+    //
+    // Using WINDOWPLACEMENT means we restore the correct "maximized" state and the
+    // correct *work-area* sizing (taskbar) instead of just slamming the raw
+    // monitor rectangle back into SetWindowPos.
+    WINDOWPLACEMENT m_windowPlacement{ sizeof(WINDOWPLACEMENT) };
+    bool            m_hasWindowPlacement = false;
+
+    // Fallback for safety (used if GetWindowPlacement fails for some reason).
     RECT  m_windowRect{};
 };
 

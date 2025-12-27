@@ -45,6 +45,10 @@ SOURCE_EXTS = {
     ".c", ".cc", ".cpp", ".cxx",
     ".rc",
     ".cmake",
+    # Windows resources / manifests are easy places to accidentally paste a patch,
+    # and those mistakes can be surprisingly hard to diagnose from build errors.
+    ".manifest",
+    ".xml",
 }
 
 SOURCE_BASENAMES = {

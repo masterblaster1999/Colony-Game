@@ -20,6 +20,8 @@ endif()
 set(_colony_game_sources
     # Windows entrypoint + thin app layer
     ${CMAKE_CURRENT_SOURCE_DIR}/app/EntryWinMain.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/app/CommandLineArgs.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/app/CommandLineArgs.h
     ${CMAKE_CURRENT_SOURCE_DIR}/AppMain.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/AppWindow.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/AppWindow_Create.cpp
@@ -49,13 +51,29 @@ set(_colony_game_sources
     ${CMAKE_CURRENT_SOURCE_DIR}/game/PrototypeGame.h
     ${CMAKE_CURRENT_SOURCE_DIR}/game/PrototypeGame_Impl.h
     ${CMAKE_CURRENT_SOURCE_DIR}/game/PrototypeGame_UI.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/game/PrototypeGame_UI_Help.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/game/PrototypeGame_UI_Panels.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/game/PrototypeGame_UI_BindingsEditor.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/game/PrototypeGame_UI_World.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/game/PrototypeGame_Input.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/game/PrototypeGame_SaveLoad.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/game/PrototypeGame_PlanHistory.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/game/PrototypeGame_Camera.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/game/PrototypeGame_Sim.cpp
 
     # Gameplay-forward prototype scaffolding
     ${CMAKE_CURRENT_SOURCE_DIR}/game/proto/ProtoWorld.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/game/proto/ProtoWorld.h
+
+    # Editor helpers (prototype)
+    ${CMAKE_CURRENT_SOURCE_DIR}/game/editor/PlanHistory.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/game/editor/PlanHistory.h
+
+    # Save system helpers (prototype)
+    ${CMAKE_CURRENT_SOURCE_DIR}/game/save/Base64.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/game/save/Base64.h
+    ${CMAKE_CURRENT_SOURCE_DIR}/game/save/SaveMeta.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/game/save/SaveMeta.h
 
     # Extracted modules (platform + loop) used by AppWindow
     ${CMAKE_CURRENT_SOURCE_DIR}/platform/win32/Win32Window.cpp

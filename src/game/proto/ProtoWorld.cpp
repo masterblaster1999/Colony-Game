@@ -1,8 +1,16 @@
 #include "game/proto/ProtoWorld.h"
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <limits>
+#include <queue>
+
+#include "platform/win/PathUtilWin.h"
+#include "util/TextEncoding.h"
+
+#include <fstream>
+#include <nlohmann/json.hpp>
 
 namespace colony::proto {
 
@@ -113,16 +121,20 @@ void World::reset(int w, int h, std::uint32_t seed)
     }
 
     // Random scatter of rocks (walls) to make pathfinding visible.
-    std::uniform_int_distribution<int> distX(1, m_w - 2);
-    std::uniform_int_distribution<int> distY(1, m_h - 2);
-    for (int i = 0; i < (m_w * m_h) / 60; ++i)
+    // Guard against tiny worlds: dist(1, w-2) becomes invalid when w <= 2.
+    if (m_w > 2 && m_h > 2)
     {
-        const int x = distX(m_rng);
-        const int y = distY(m_rng);
-        // Avoid the central start area.
-        if (std::abs(x - cx) < 6 && std::abs(y - cy) < 6)
-            continue;
-        cell(x, y).built = TileType::Wall;
+        std::uniform_int_distribution<int> distX(1, m_w - 2);
+        std::uniform_int_distribution<int> distY(1, m_h - 2);
+        for (int i = 0; i < (m_w * m_h) / 60; ++i)
+        {
+            const int x = distX(m_rng);
+            const int y = distY(m_rng);
+            // Avoid the central start area.
+            if (std::abs(x - cx) < 6 && std::abs(y - cy) < 6)
+                continue;
+            cell(x, y).built = TileType::Wall;
+        }
     }
 
     // Fresh inventory.
@@ -143,6 +155,16 @@ void World::reset(int w, int h, std::uint32_t seed)
     // Build nav map.
     m_nav = colony::pf::GridMap({m_w, m_h});
     syncAllNav();
+
+    // Build plan cache (should be empty on reset, but keep it correct even if
+    // future changes introduce pre-seeded plans).
+    rebuildPlannedCache();
+
+    // Build built-count cache.
+    rebuildBuiltCounts();
+
+    // Allow job assignment immediately after a reset.
+    m_jobAssignCooldown = 0.0;
 }
 
 bool World::inBounds(int x, int y) const noexcept
@@ -162,18 +184,57 @@ Cell& World::cell(int x, int y) noexcept
     return m_cells[idx(x, y)];
 }
 
-PlacePlanResult World::placePlan(int x, int y, TileType plan)
+PlacePlanResult World::placePlan(int x, int y, TileType plan, std::uint8_t planPriority)
 {
     if (!inBounds(x, y))
         return PlacePlanResult::OutOfBounds;
 
     Cell& c = cell(x, y);
 
+    // Clamp priority into the supported range (0..3).
+    if (planPriority > 3u)
+        planPriority = 3u;
+
+    const bool wasActivePlan = (c.planned != TileType::Empty && c.planned != c.built);
+
+    // Special-case: 'Empty' means "clear any existing plan" (not "plan to demolish built tiles").
+    // This keeps right-drag erase from creating a meaningless (Empty) plan on already-built cells.
+    if (plan == TileType::Empty)
+    {
+        if (c.planned == TileType::Empty)
+            return PlacePlanResult::NoChange;
+
+        // Refund the previous plan cost (prototype-friendly).
+        m_inv.wood += TileWoodCost(c.planned);
+
+        c.planned = TileType::Empty;
+        c.planPriority = 0;
+        c.workRemaining = 0.0f;
+        c.reservedBy = -1;
+
+        if (wasActivePlan)
+            planCacheRemove(x, y);
+
+        return PlacePlanResult::Ok;
+    }
+
     // Treat "planning to the already-built" state as a no-op.
     const TileType oldPlan = (c.planned == TileType::Empty) ? c.built : c.planned;
 
+    // If the plan type is unchanged, we may still want to change priority.
     if (oldPlan == plan)
+    {
+        // Only active plans have priority.
+        if (c.planned != TileType::Empty && c.planned != c.built)
+        {
+            if (c.planPriority != planPriority)
+            {
+                c.planPriority = planPriority;
+                return PlacePlanResult::Ok;
+            }
+        }
         return PlacePlanResult::NoChange;
+    }
 
     // Delta-cost the plan swap, but do not refund built tiles.
     const int oldCost = TileWoodCost(c.planned);
@@ -190,21 +251,33 @@ PlacePlanResult World::placePlan(int x, int y, TileType plan)
     if (plan == c.built)
     {
         c.planned = TileType::Empty;
+        c.planPriority = 0;
         c.workRemaining = 0.0f;
         c.reservedBy = -1;
     }
     else
     {
         c.planned = plan;
+        c.planPriority = planPriority;
         c.workRemaining = TileBuildTimeSeconds(plan);
         c.reservedBy = -1;
     }
+
+    const bool isActivePlan = (c.planned != TileType::Empty && c.planned != c.built);
+    if (wasActivePlan && !isActivePlan)
+        planCacheRemove(x, y);
+    else if (!wasActivePlan && isActivePlan)
+        planCacheAdd(x, y);
 
     return PlacePlanResult::Ok;
 }
 
 void World::clearAllPlans()
 {
+    // Refund and clear all plans.
+    //
+    // Even though we keep an active-plan cache, clearing is cheap and this
+    // keeps us robust if the cache ever becomes stale during experimentation.
     for (int y = 0; y < m_h; ++y)
     {
         for (int x = 0; x < m_w; ++x)
@@ -216,35 +289,69 @@ void World::clearAllPlans()
                 m_inv.wood += TileWoodCost(c.planned);
             }
             c.planned = TileType::Empty;
+            c.planPriority = 0;
             c.workRemaining = 0.0f;
             c.reservedBy = -1;
         }
     }
 
+    // Clear plan cache.
+    m_plannedCells.clear();
+    if (!m_plannedIndex.empty())
+        std::fill(m_plannedIndex.begin(), m_plannedIndex.end(), -1);
+
     for (Colonist& c : m_colonists)
         cancelJob(c);
+
+    // Allow immediate assignment after clearing plans.
+    m_jobAssignCooldown = 0.0;
+}
+
+void World::CancelAllJobsAndClearReservations() noexcept
+{
+    // Clear reservations first so any stale reservedBy markers are removed.
+    for (Cell& c : m_cells)
+        c.reservedBy = -1;
+
+    for (Colonist& c : m_colonists)
+        cancelJob(c);
+
+    // Allow immediate re-assignment after bulk edits (undo/redo, clear plans, load).
+    m_jobAssignCooldown = 0.0;
 }
 
 int World::plannedCount() const noexcept
 {
-    int n = 0;
-    for (const Cell& c : m_cells)
-    {
-        if (c.planned != TileType::Empty && c.planned != c.built)
-            ++n;
-    }
-    return n;
+    return static_cast<int>(m_plannedCells.size());
 }
 
 int World::builtCount(TileType t) const noexcept
 {
-    int n = 0;
+    const std::size_t i = static_cast<std::size_t>(t);
+    if (i >= m_builtCounts.size())
+        return 0;
+    return m_builtCounts[i];
+}
+
+void World::rebuildBuiltCounts() noexcept
+{
+    m_builtCounts.fill(0);
     for (const Cell& c : m_cells)
     {
-        if (c.built == t)
-            ++n;
+        const std::size_t i = static_cast<std::size_t>(c.built);
+        if (i < m_builtCounts.size())
+            ++m_builtCounts[i];
     }
-    return n;
+}
+
+void World::builtCountAdjust(TileType oldBuilt, TileType newBuilt) noexcept
+{
+    const std::size_t io = static_cast<std::size_t>(oldBuilt);
+    const std::size_t in = static_cast<std::size_t>(newBuilt);
+    if (io < m_builtCounts.size())
+        m_builtCounts[io] = std::max(0, m_builtCounts[io] - 1);
+    if (in < m_builtCounts.size())
+        ++m_builtCounts[in];
 }
 
 void World::tick(double dtSeconds)
@@ -262,7 +369,7 @@ void World::tick(double dtSeconds)
     }
 
     // Job assignment before stepping.
-    assignJobs();
+    assignJobs(dtSeconds);
 
     for (Colonist& c : m_colonists)
     {
@@ -289,11 +396,221 @@ void World::syncAllNav() noexcept
             syncNavCell(x, y);
 }
 
-void World::assignJobs()
+bool World::findPathToNearestAvailablePlan(int startX, int startY,
+                                          int& outPlanX, int& outPlanY,
+                                          std::vector<colony::pf::IVec2>& outPath,
+                                          int requiredPriority) const
 {
-    // Fast exit.
-    if (plannedCount() == 0)
+    outPlanX = -1;
+    outPlanY = -1;
+    outPath.clear();
+
+    if (m_plannedCells.empty())
+        return false;
+
+    if (!inBounds(startX, startY) || !m_nav.passable(startX, startY))
+        return false;
+
+    const int w = m_w;
+    const int h = m_h;
+    if (w <= 0 || h <= 0)
+        return false;
+
+    // Helper: does this walkable "work tile" touch an active, unreserved plan?
+    auto findAdjacentPlan = [&](int wx, int wy, int& planX, int& planY) -> bool
+    {
+        constexpr int kDirs[4][2] = { {1, 0}, {-1, 0}, {0, 1}, {0, -1} };
+        for (const auto& d : kDirs)
+        {
+            const int px = wx + d[0];
+            const int py = wy + d[1];
+            if (!inBounds(px, py))
+                continue;
+
+            const Cell& c = cell(px, py);
+            if (c.planned == TileType::Empty || c.planned == c.built)
+                continue;
+            if (requiredPriority >= 0 && static_cast<int>(c.planPriority) != requiredPriority)
+                continue;
+            if (c.reservedBy != -1)
+                continue;
+
+            planX = px;
+            planY = py;
+            return true;
+        }
+        return false;
+    };
+
+    // Dijkstra to the nearest work tile adjacent to any available plan.
+    constexpr float kInf = std::numeric_limits<float>::infinity();
+    const std::size_t n  = static_cast<std::size_t>(w * h);
+
+    // Scratch buffers (mutable) to avoid per-call allocations and O(n) clears.
+    if (m_nearestDist.size() != n)
+    {
+        m_nearestDist.assign(n, 0.0f);
+        m_nearestParent.assign(n, colony::pf::kInvalid);
+        m_nearestStamp.assign(n, 0u);
+        m_nearestStampValue = 1;
+    }
+
+    // Bump generation (stamp 0 means "never visited"). Handle wrap.
+    std::uint32_t stamp = m_nearestStampValue + 1u;
+    if (stamp == 0u)
+    {
+        std::fill(m_nearestStamp.begin(), m_nearestStamp.end(), 0u);
+        stamp = 1u;
+    }
+    m_nearestStampValue = stamp;
+
+    auto getDist = [&](colony::pf::NodeId id) -> float {
+        return (m_nearestStamp[id] == stamp) ? m_nearestDist[id] : kInf;
+    };
+
+    auto setNode = [&](colony::pf::NodeId id, float d, colony::pf::NodeId p) {
+        m_nearestStamp[id]  = stamp;
+        m_nearestDist[id]   = d;
+        m_nearestParent[id] = p;
+    };
+
+    struct QN
+    {
+        float d;
+        colony::pf::NodeId id;
+        bool operator<(const QN& o) const { return d > o.d; } // min-heap
+    };
+
+    std::priority_queue<QN> open;
+
+    const colony::pf::NodeId sid = colony::pf::to_id(startX, startY, w);
+    setNode(sid, 0.0f, colony::pf::kInvalid);
+    open.push({0.0f, sid});
+
+    while (!open.empty())
+    {
+        const QN cur = open.top();
+        open.pop();
+
+        if (cur.d > getDist(cur.id))
+            continue;
+
+        const colony::pf::IVec2 C = colony::pf::from_id(cur.id, w);
+
+        int planX = -1;
+        int planY = -1;
+        if (findAdjacentPlan(C.x, C.y, planX, planY))
+        {
+            outPlanX = planX;
+            outPlanY = planY;
+
+            // Reconstruct path: start -> current
+            std::vector<colony::pf::IVec2> rev;
+            colony::pf::NodeId t = cur.id;
+            while (t != colony::pf::kInvalid)
+            {
+                if (m_nearestStamp[t] != stamp)
+                    break;
+
+                rev.push_back(colony::pf::from_id(t, w));
+                if (t == sid)
+                    break;
+                t = m_nearestParent[t];
+            }
+
+            if (rev.empty() || rev.back().x != startX || rev.back().y != startY)
+                return false;
+
+            std::reverse(rev.begin(), rev.end());
+            outPath.swap(rev);
+            return !outPath.empty();
+        }
+
+        constexpr int DIRS = 8;
+        static const int dx[DIRS] = { 1, -1, 0, 0,  1,  1, -1, -1 };
+        static const int dy[DIRS] = { 0,  0, 1, -1, 1, -1,  1, -1 };
+
+        for (int dir = 0; dir < DIRS; ++dir)
+        {
+            if (!m_nav.can_step(C.x, C.y, dx[dir], dy[dir]))
+                continue;
+
+            const int nx = C.x + dx[dir];
+            const int ny = C.y + dy[dir];
+            if (!inBounds(nx, ny))
+                continue;
+
+            const colony::pf::NodeId nid = colony::pf::to_id(nx, ny, w);
+            const float nd = cur.d + m_nav.step_cost(C.x, C.y, dx[dir], dy[dir]);
+
+            if (nd < getDist(nid))
+            {
+                setNode(nid, nd, cur.id);
+                open.push({nd, nid});
+            }
+        }
+    }
+
+return false;
+}
+
+void World::assignJobs(double dtSeconds)
+{
+    if (dtSeconds <= 0.0)
         return;
+
+    // Fast exit: no plans.
+    if (m_plannedCells.empty())
+        return;
+
+    // If all plans are currently reserved, there's nothing to do.
+    // (Avoids running a full path search that cannot possibly succeed.)
+    bool anyUnreserved = false;
+    std::array<bool, 4> anyUnreservedAtPriority{};
+
+    for (const auto& pos : m_plannedCells)
+    {
+        if (!inBounds(pos.x, pos.y))
+            continue;
+        const Cell& c = cell(pos.x, pos.y);
+        if (c.planned == TileType::Empty || c.planned == c.built)
+            continue;
+        if (c.reservedBy == -1)
+        {
+            anyUnreserved = true;
+            const int pr = std::min(3, static_cast<int>(c.planPriority));
+            anyUnreservedAtPriority[static_cast<std::size_t>(pr)] = true;
+        }
+    }
+    if (!anyUnreserved)
+        return;
+
+
+    // Decrement throttle timer.
+    m_jobAssignCooldown = std::max(0.0, m_jobAssignCooldown - dtSeconds);
+
+    // If nobody is idle, clear the throttle so the next idle colonist is assigned immediately.
+    bool anyIdle = false;
+    for (const Colonist& c : m_colonists)
+    {
+        if (!c.hasJob)
+        {
+            anyIdle = true;
+            break;
+        }
+    }
+    if (!anyIdle)
+    {
+        m_jobAssignCooldown = 0.0;
+        return;
+    }
+
+    // Throttle assignment attempts to avoid CPU spikes when there are many
+    // plans but no reachable jobs (or when plans are rapidly edited).
+    if (m_jobAssignCooldown > 0.0)
+        return;
+
+    m_jobAssignCooldown = kJobAssignIntervalSeconds;
 
     for (Colonist& c : m_colonists)
     {
@@ -307,74 +624,73 @@ void World::assignJobs()
         if (!inBounds(sx, sy) || !m_nav.passable(sx, sy))
             continue;
 
-        int bestX = -1;
-        int bestY = -1;
-        std::vector<colony::pf::IVec2> bestPath;
-        std::size_t bestLen = std::numeric_limits<std::size_t>::max();
+        int targetX = -1;
+        int targetY = -1;
+        std::vector<colony::pf::IVec2> path;
 
-        // Naive scan: find the closest reachable plan.
-        // (Good enough for a small proto grid.)
-        for (int y = 0; y < m_h; ++y)
+        bool found = false;
+        // Prefer higher priority plans, then nearest within that priority.
+        // (Priority range is small; attempting in descending order is cheap and stable.)
+        for (int pr = 3; pr >= 0; --pr)
         {
-            for (int x = 0; x < m_w; ++x)
+            if (!anyUnreservedAtPriority[static_cast<std::size_t>(pr)])
+                continue;
+
+            if (findPathToNearestAvailablePlan(sx, sy, targetX, targetY, path, pr))
             {
-                Cell& cellRef = cell(x, y);
-                if (cellRef.planned == TileType::Empty || cellRef.planned == cellRef.built)
-                    continue;
-                if (cellRef.reservedBy != -1)
-                    continue;
-
-                Colonist tmp = c;
-                if (!computePathToAdjacent(tmp, x, y))
-                    continue;
-
-                const std::size_t len = tmp.path.size();
-                if (len == 0)
-                    continue;
-
-                if (len < bestLen)
-                {
-                    bestLen = len;
-                    bestX = x;
-                    bestY = y;
-                    bestPath = std::move(tmp.path);
-
-                    // Early-out if it's basically right here.
-                    if (bestLen <= 2)
-                        break;
-                }
-            }
-            if (bestLen <= 2)
+                found = true;
                 break;
+            }
         }
 
-        if (bestX < 0)
+        // Fallback: if we failed to find a reachable plan of any known priority,
+        // do a last attempt without filtering (handles corrupted saves/custom tools).
+        if (!found)
+            found = findPathToNearestAvailablePlan(sx, sy, targetX, targetY, path, /*requiredPriority=*/-1);
+
+        if (!found)
             continue;
 
         // Reserve the plan for this colonist.
-        Cell& target = cell(bestX, bestY);
+        Cell& target = cell(targetX, targetY);
         target.reservedBy = c.id;
 
         c.hasJob = true;
-        c.targetX = bestX;
-        c.targetY = bestY;
-        c.path = std::move(bestPath);
+        c.targetX = targetX;
+        c.targetY = targetY;
+        c.path = std::move(path);
         c.pathIndex = 0;
     }
 }
+
 
 bool World::computePathToAdjacent(Colonist& c, int targetX, int targetY)
 {
     c.path.clear();
     c.pathIndex = 0;
 
-    if (!inBounds(targetX, targetY))
-        return false;
-
     const int sx = static_cast<int>(std::floor(c.x));
     const int sy = static_cast<int>(std::floor(c.y));
 
-    if (!inBounds(sx, sy))
+    std::vector<colony::pf::IVec2> path;
+    if (!computePathToAdjacentFrom(sx, sy, targetX, targetY, path))
+        return false;
+
+    c.path.swap(path);
+    c.pathIndex = 0;
+    return !c.path.empty();
+}
+
+bool World::computePathToAdjacentFrom(int startX, int startY,
+                                     int targetX, int targetY,
+                                     std::vector<colony::pf::IVec2>& outPath) const
+{
+    outPath.clear();
+
+    if (!inBounds(targetX, targetY))
+        return false;
+
+    if (!inBounds(startX, startY))
         return false;
 
     colony::pf::AStar astar(m_nav);
@@ -395,7 +711,7 @@ bool World::computePathToAdjacent(Colonist& c, int targetX, int targetY)
         if (!m_nav.passable(nx, ny))
             continue;
 
-        const colony::pf::Path p = astar.find_path({sx, sy}, {nx, ny});
+        const colony::pf::Path p = astar.find_path({startX, startY}, {nx, ny});
         if (p.empty())
             continue;
 
@@ -409,9 +725,8 @@ bool World::computePathToAdjacent(Colonist& c, int targetX, int targetY)
     if (best.empty())
         return false;
 
-    c.path = std::move(best);
-    c.pathIndex = 0;
-    return true;
+    outPath.swap(best);
+    return !outPath.empty();
 }
 
 void World::stepColonist(Colonist& c, double dtSeconds)
@@ -536,6 +851,17 @@ void World::stepConstructionIfReady(Colonist& c, double dtSeconds)
 
 void World::cancelJob(Colonist& c) noexcept
 {
+    if (c.hasJob)
+    {
+        // If we owned a reservation on the target tile, release it.
+        if (inBounds(c.targetX, c.targetY))
+        {
+            Cell& t = cell(c.targetX, c.targetY);
+            if (t.reservedBy == c.id)
+                t.reservedBy = -1;
+        }
+    }
+
     c.hasJob = false;
     c.path.clear();
     c.pathIndex = 0;
@@ -554,12 +880,404 @@ void World::applyPlanIfComplete(int targetX, int targetY) noexcept
         return;
 
     // Commit.
-    c.built = c.planned;
+    const TileType oldBuilt = c.built;
+    const TileType newBuilt = c.planned;
+    c.built = newBuilt;
     c.planned = TileType::Empty;
+    c.planPriority = 0;
     c.workRemaining = 0.0f;
     c.reservedBy = -1;
 
+    // Remove from active plan cache.
+    planCacheRemove(targetX, targetY);
+
+    // Update built-count cache.
+    if (oldBuilt != newBuilt)
+        builtCountAdjust(oldBuilt, newBuilt);
+
     syncNavCell(targetX, targetY);
 }
+
+void World::rebuildPlannedCache() noexcept
+{
+    m_plannedCells.clear();
+    m_plannedIndex.assign(static_cast<std::size_t>(m_w * m_h), -1);
+
+    for (int y = 0; y < m_h; ++y)
+    {
+        for (int x = 0; x < m_w; ++x)
+        {
+            const Cell& c = cell(x, y);
+            if (c.planned != TileType::Empty && c.planned != c.built)
+                planCacheAdd(x, y);
+        }
+    }
+}
+
+void World::planCacheAdd(int x, int y) noexcept
+{
+    if (!inBounds(x, y))
+        return;
+    const std::size_t flat = idx(x, y);
+
+    if (flat >= m_plannedIndex.size())
+        return;
+
+    if (m_plannedIndex[flat] != -1)
+        return; // already tracked
+
+    const int newIndex = static_cast<int>(m_plannedCells.size());
+    m_plannedCells.push_back({x, y});
+    m_plannedIndex[flat] = newIndex;
+}
+
+void World::planCacheRemove(int x, int y) noexcept
+{
+    if (!inBounds(x, y))
+        return;
+    const std::size_t flat = idx(x, y);
+
+    if (flat >= m_plannedIndex.size())
+        return;
+
+    const int index = m_plannedIndex[flat];
+    if (index < 0)
+        return;
+
+    const int last = static_cast<int>(m_plannedCells.size()) - 1;
+    if (index != last)
+    {
+        const colony::pf::IVec2 moved = m_plannedCells[static_cast<std::size_t>(last)];
+        m_plannedCells[static_cast<std::size_t>(index)] = moved;
+        const std::size_t movedFlat = idx(moved.x, moved.y);
+        if (movedFlat < m_plannedIndex.size())
+            m_plannedIndex[movedFlat] = index;
+    }
+
+    m_plannedCells.pop_back();
+    m_plannedIndex[flat] = -1;
+}
+
+
+
+// -----------------------------------------------------------------------------
+// Persistence (prototype)
+// -----------------------------------------------------------------------------
+//
+// This is intentionally simple and versioned. The goal is to make the prototype
+// world state easy to persist for iteration/testing.
+//
+// Notes:
+//  - We do NOT serialize colonist jobs/paths. They are rebuilt on load.
+//  - We do NOT serialize per-cell reservations (reservedBy); those are derived
+//    from jobs and are cleared on load.
+
+namespace {
+
+[[nodiscard]] bool ReadFileToString(const std::filesystem::path& path, std::string& out) noexcept
+{
+    try
+    {
+        std::ifstream f(path, std::ios::binary);
+        if (!f)
+            return false;
+
+        f.seekg(0, std::ios::end);
+        const std::streamoff size = f.tellg();
+        if (size <= 0)
+        {
+            out.clear();
+            return true;
+        }
+        out.resize(static_cast<std::size_t>(size));
+
+        f.seekg(0, std::ios::beg);
+        const std::streamsize toRead = static_cast<std::streamsize>(size);
+        f.read(out.data(), toRead);
+
+        // Ensure the full file was read; this avoids subtle partial-read failures
+        // (AV scanners/locking) being treated as successful loads.
+        if (f.gcount() != toRead)
+            return false;
+
+        return true;
+    }
+    catch (...)
+    {
+        return false;
+    }
+}
+
+[[nodiscard]] TileType TileFromInt(int v) noexcept
+{
+    if (v < 0) v = 0;
+    if (v > static_cast<int>(TileType::Stockpile))
+        v = static_cast<int>(TileType::Stockpile);
+    return static_cast<TileType>(static_cast<std::uint8_t>(v));
+}
+
+} // namespace
+
+bool World::SaveJson(const std::filesystem::path& path, std::string* outError) const noexcept
+{
+    try
+    {
+        using json = nlohmann::json;
+
+        json j;
+        j["format"] = "ColonyGame.ProtoWorld";
+        j["version"] = 2;
+
+        j["size"] = { {"w", m_w}, {"h", m_h} };
+
+        j["inventory"] = {
+            {"wood", m_inv.wood},
+            {"food", m_inv.food},
+        };
+
+        j["tuning"] = {
+            {"buildWorkPerSecond", buildWorkPerSecond},
+            {"colonistWalkSpeed", colonistWalkSpeed},
+            {"farmFoodPerSecond", farmFoodPerSecond},
+            {"foodPerColonistPerSecond", foodPerColonistPerSecond},
+        };
+
+        // Cells are stored in a flat array in row-major order.
+        // Each entry (v2): [built, planned, workRemaining, planPriority]
+        json cells = json::array();
+
+        for (int y = 0; y < m_h; ++y)
+        {
+            for (int x = 0; x < m_w; ++x)
+            {
+                const Cell& c = cell(x, y);
+                cells.push_back(json::array({
+                    static_cast<int>(c.built),
+                    static_cast<int>(c.planned),
+                    c.workRemaining,
+                    static_cast<int>(c.planPriority),
+                }));
+            }
+        }
+        j["cells"] = std::move(cells);
+
+        // Colonists: persist identity + position only.
+        json cols = json::array();
+        for (const Colonist& c : m_colonists)
+        {
+            cols.push_back({
+                {"id", c.id},
+                {"x", c.x},
+                {"y", c.y},
+            });
+        }
+        j["colonists"] = std::move(cols);
+
+        const std::string bytes = j.dump(2);
+
+        if (!winpath::atomic_write_file(path, bytes))
+        {
+            if (outError) *outError = "Failed to write save file.";
+            return false;
+        }
+
+        return true;
+    }
+    catch (const std::exception& e)
+    {
+        if (outError) *outError = e.what();
+        return false;
+    }
+    catch (...)
+    {
+        if (outError) *outError = "Unknown error while saving.";
+        return false;
+    }
+}
+
+bool World::LoadJson(const std::filesystem::path& path, std::string* outError) noexcept
+{
+    try
+    {
+        std::string bytes;
+        if (!ReadFileToString(path, bytes))
+        {
+            if (outError) *outError = "Failed to read save file.";
+            return false;
+        }
+
+        if (!colony::util::NormalizeTextToUtf8(bytes))
+        {
+            if (outError) *outError = "Save file encoding is not valid UTF-8/UTF-16.";
+            return false;
+        }
+
+        using json = nlohmann::json;
+        json j = json::parse(bytes, nullptr, /*allow_exceptions=*/false, /*ignore_comments=*/true);
+        if (j.is_discarded() || !j.is_object())
+        {
+            if (outError) *outError = "Save file is not valid JSON.";
+            return false;
+        }
+
+        // Basic format/version check (best-effort; allow missing fields for early prototypes).
+        if (j.contains("format"))
+        {
+            const std::string fmt = j.value("format", "");
+            if (fmt != "ColonyGame.ProtoWorld")
+            {
+                if (outError) *outError = "Unsupported save format.";
+                return false;
+            }
+        }
+
+        const int version = j.value("version", 1);
+        if (version != 1 && version != 2)
+        {
+            if (outError) *outError = "Unsupported save version.";
+            return false;
+        }
+
+        const json size = j.value("size", json::object());
+        const int w = size.value("w", m_w);
+        const int h = size.value("h", m_h);
+        if (w <= 0 || h <= 0)
+        {
+            if (outError) *outError = "Invalid world size.";
+            return false;
+        }
+
+        // Reset to allocate buffers (we overwrite content below).
+        reset(w, h, /*seed=*/1);
+
+        // Inventory
+        if (j.contains("inventory"))
+        {
+            const json inv = j["inventory"];
+            m_inv.wood = inv.value("wood", m_inv.wood);
+            m_inv.food = inv.value("food", m_inv.food);
+        }
+
+        // Tuning
+        if (j.contains("tuning"))
+        {
+            const json t = j["tuning"];
+            buildWorkPerSecond = t.value("buildWorkPerSecond", buildWorkPerSecond);
+            colonistWalkSpeed = t.value("colonistWalkSpeed", colonistWalkSpeed);
+            farmFoodPerSecond = t.value("farmFoodPerSecond", farmFoodPerSecond);
+            foodPerColonistPerSecond = t.value("foodPerColonistPerSecond", foodPerColonistPerSecond);
+        }
+
+        // Cells
+        if (j.contains("cells") && j["cells"].is_array())
+        {
+            const json& cells = j["cells"];
+            const std::size_t expected = static_cast<std::size_t>(m_w * m_h);
+            if (cells.size() != expected)
+            {
+                if (outError) *outError = "Save file has wrong cell count.";
+                return false;
+            }
+
+            std::size_t i = 0;
+            for (int y = 0; y < m_h; ++y)
+            {
+                for (int x = 0; x < m_w; ++x)
+                {
+                    Cell& c = cell(x, y);
+                    c.reservedBy = -1; // always clear reservations on load
+
+                    const json& entry = cells[i++];
+                    if (!entry.is_array() || entry.size() < 2)
+                    {
+                        c.built = TileType::Empty;
+                        c.planned = TileType::Empty;
+                        c.planPriority = 0;
+                        c.workRemaining = 0.0f;
+                        continue;
+                    }
+
+                    c.built = TileFromInt(entry[0].get<int>());
+                    c.planned = TileFromInt(entry[1].get<int>());
+
+                    if (entry.size() >= 3 && entry[2].is_number())
+                        c.workRemaining = entry[2].get<float>();
+                    else
+                        c.workRemaining = 0.0f;
+
+                    // v2+ includes planPriority (0..3). Default to 0 for v1.
+                    c.planPriority = 0;
+                    if (entry.size() >= 4 && entry[3].is_number_integer())
+                    {
+                        int pr = entry[3].get<int>();
+                        pr = std::max(0, std::min(3, pr));
+                        c.planPriority = static_cast<std::uint8_t>(pr);
+                    }
+
+                    // Sanitize: priority/work are only meaningful for active plans.
+                    if (c.planned == TileType::Empty || c.planned == c.built)
+                    {
+                        c.planPriority = 0;
+                        c.workRemaining = 0.0f;
+                    }
+                }
+            }
+        }
+
+        // Colonists
+        m_colonists.clear();
+        if (j.contains("colonists") && j["colonists"].is_array())
+        {
+            for (const auto& item : j["colonists"])
+            {
+                if (!item.is_object())
+                    continue;
+
+                Colonist c;
+                c.id = item.value("id", static_cast<int>(m_colonists.size()));
+                c.x = item.value("x", 0.5f);
+                c.y = item.value("y", 0.5f);
+
+                // Clear job/path (reassigned on next tick).
+                c.hasJob = false;
+                c.targetX = 0;
+                c.targetY = 0;
+                c.path.clear();
+                c.pathIndex = 0;
+
+                // Clamp inside world bounds (in tile coordinates).
+                if (c.x < 0.0f) c.x = 0.0f;
+                if (c.y < 0.0f) c.y = 0.0f;
+                const float maxX = static_cast<float>(m_w) - 0.5f;
+                const float maxY = static_cast<float>(m_h) - 0.5f;
+                if (c.x > maxX) c.x = maxX;
+                if (c.y > maxY) c.y = maxY;
+
+                m_colonists.push_back(std::move(c));
+            }
+        }
+
+        // Rebuild derived caches (nav + planned cache).
+        syncAllNav();
+        rebuildPlannedCache();
+        rebuildBuiltCounts();
+
+        // Allow job assignment immediately after a load.
+        m_jobAssignCooldown = 0.0;
+
+        return true;
+    }
+    catch (const std::exception& e)
+    {
+        if (outError) *outError = e.what();
+        return false;
+    }
+    catch (...)
+    {
+        if (outError) *outError = "Unknown error while loading.";
+        return false;
+    }
+}
+
 
 } // namespace colony::proto
