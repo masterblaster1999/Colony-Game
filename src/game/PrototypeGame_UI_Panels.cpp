@@ -124,17 +124,27 @@ void PrototypeGame::Impl::drawPanelsWindow()
             const bool canRedo = planHistory.CanRedo();
 
             auto disabledButton = [&](const char* label, bool enabled) {
-                if (!enabled) {
-                    ImGui::PushItemFlag(ImGuiItemFlags_Disabled, true);
-                    ImGui::PushStyleVar(ImGuiStyleVar_Alpha, ImGui::GetStyle().Alpha * 0.5f);
-                }
-
+                // Use the public Dear ImGui API for disabling widgets.
+                // (ImGuiItemFlags_Disabled lives in imgui_internal.h and isn't part of the stable API.)
+                // BeginDisabled/EndDisabled was added in Dear ImGui 1.84.
+                // If you're building against an older ImGui, we gracefully fall back to
+                // a "visual-only" disable and gate the action below.
+#if defined(IMGUI_VERSION_NUM) && IMGUI_VERSION_NUM >= 18400
+                if (!enabled)
+                    ImGui::BeginDisabled(true);
                 const bool pressed = ImGui::Button(label);
-
-                if (!enabled) {
+                if (!enabled)
+                    ImGui::EndDisabled();
+#else
+                if (!enabled)
+                    ImGui::PushStyleVar(ImGuiStyleVar_Alpha, ImGui::GetStyle().Alpha * 0.5f);
+                const bool pressed = ImGui::Button(label);
+                if (!enabled)
                     ImGui::PopStyleVar();
-                    ImGui::PopItemFlag();
-                }
+#endif
+
+                // Even if ImGui still reports a click for some edge-case (e.g. custom shortcuts),
+                // we gate the action here.
                 return pressed && enabled;
             };
 

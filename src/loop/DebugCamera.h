@@ -18,6 +18,14 @@ struct DebugCameraState {
 // replaced later by your real camera + input system.
 class DebugCameraController {
 public:
+    // Zoom clamp for the prototype camera.
+    //
+    // NOTE:
+    // The World ImGui view also clamps to the same range so zooming via wheel
+    // and setting zoom directly (e.g. UI) behave consistently.
+    static constexpr float kMinZoom = 0.05f;
+    static constexpr float kMaxZoom = 20.0f;
+
     // Apply a drag delta.
     //  - orbit = left button (yaw/pitch)
     //  - pan   = middle OR right button
@@ -34,6 +42,9 @@ public:
     // Apply a multiplicative zoom factor (1.0f = no change).
     // Useful for continuous keyboard zoom (Q/E).
     bool ApplyZoomFactor(float factor) noexcept;
+
+    // Set absolute zoom (useful for UI-controlled zoom).
+    bool SetZoom(float zoom) noexcept;
 
     [[nodiscard]] const DebugCameraState& State() const noexcept { return m_state; }
 

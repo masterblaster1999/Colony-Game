@@ -149,7 +149,9 @@ int GameMain(HINSTANCE hInstance, PWSTR cmdLine, int nCmdShow)
 
     if (args.resetImGui)
     {
-        const fs::path dataDir = colony::appwin::winpath::writable_data_dir();
+        // ImGuiLayer persists imgui.ini under %LOCALAPPDATA%\\{Company} via the winpath helper.
+        // (winpath lives in the global namespace, not under colony::appwin.)
+        const fs::path dataDir = winpath::writable_data_dir();
         if (!dataDir.empty())
             tryDelete(dataDir / L"imgui.ini", L"imgui.ini");
     }

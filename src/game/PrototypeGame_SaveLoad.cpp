@@ -337,7 +337,9 @@ private:
             };
 
             json cells = json::array();
-            cells.reserve(s.cells.size());
+            // nlohmann::json does not expose reserve() directly; reserve the underlying
+            // array storage for faster writes when serializing large worlds.
+            cells.get_ref<json::array_t&>().reserve(s.cells.size());
             for (const Cell& c : s.cells)
             {
                 cells.push_back({
@@ -350,7 +352,7 @@ private:
             j["cells"] = std::move(cells);
 
             json colonists = json::array();
-            colonists.reserve(s.colonists.size());
+            colonists.get_ref<json::array_t&>().reserve(s.colonists.size());
             for (const Colonist& c : s.colonists)
                 colonists.push_back({ {"id", c.id}, {"x", c.x}, {"y", c.y} });
             j["colonists"] = std::move(colonists);
@@ -565,6 +567,18 @@ private:
     std::atomic<std::uint64_t> m_autosaveGeneration{1};
 };
 
+
+void AsyncSaveManagerDeleter::operator()(AsyncSaveManager* p) const noexcept
+{
+    delete p;
+}
+
+// NOTE: PrototypeGame::Impl is defined in PrototypeGame_Impl.h but owns a
+// std::unique_ptr<AsyncSaveManager> where AsyncSaveManager is defined above.
+// Defining the destructor out-of-line here ensures MSVC instantiates the
+// unique_ptr deleter with a complete type.
+PrototypeGame::Impl::~Impl() = default;
+
 fs::path PrototypeGame::Impl::worldSaveDir() const
 {
     // Ensure standard folders exist. It's cheap and makes save/load resilient.
@@ -608,7 +622,7 @@ bool PrototypeGame::Impl::saveWorldToPath(const fs::path& path, bool showStatus)
         return false;
 
     if (!saveMgr)
-        saveMgr = std::make_unique<AsyncSaveManager>();
+        saveMgr = AsyncSaveManagerPtr{ new AsyncSaveManager() };
 
     saveMgr->EnqueueManualSave(world, path, showStatus, playtimeSeconds);
 
@@ -667,7 +681,7 @@ bool PrototypeGame::Impl::autosaveWorld()
     autosaveKeepCount = std::max(1, std::min(autosaveKeepCount, 20));
 
     if (!saveMgr)
-        saveMgr = std::make_unique<AsyncSaveManager>();
+        saveMgr = AsyncSaveManagerPtr{ new AsyncSaveManager() };
 
     // Autosave runs on the background thread (rotation + write).
     saveMgr->EnqueueAutosave(world,

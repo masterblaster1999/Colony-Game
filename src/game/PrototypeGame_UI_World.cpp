@@ -113,7 +113,7 @@ void PrototypeGame::Impl::drawWorldWindow()
     cx.p0     = canvas_p0;
     cx.p1     = canvas_p1;
     cx.center = {canvas_p0.x + canvas_sz.x * 0.5f, canvas_p0.y + canvas_sz.y * 0.5f};
-    cx.tilePx = 24.f * std::max(0.05f, cam.zoom);
+    cx.tilePx = 24.f * std::max(DebugCameraController::kMinZoom, cam.zoom);
 
     // Zoom around mouse cursor (only when hovering the canvas).
     //
@@ -143,7 +143,7 @@ void PrototypeGame::Impl::drawWorldWindow()
                 for (int i = 0; i < -detents; ++i)
                     newZoom /= zoomFactorPerDetent;
             }
-            newZoom = clampf(newZoom, 0.05f, 20.f);
+            newZoom = clampf(newZoom, DebugCameraController::kMinZoom, DebugCameraController::kMaxZoom);
 
             // Apply zoom.
             camera.SetZoom(newZoom);
@@ -151,7 +151,7 @@ void PrototypeGame::Impl::drawWorldWindow()
             // Adjust pan so that the world under the cursor stays under the cursor.
             const DebugCameraState& cam2 = camera.State();
             CanvasXform cx2 = cx;
-            cx2.tilePx = 24.f * std::max(0.05f, cam2.zoom);
+            cx2.tilePx = 24.f * std::max(DebugCameraController::kMinZoom, cam2.zoom);
             const ImVec2 after = screenToWorld(cam2, cx2, mouse);
             (void)camera.ApplyPan(before.x - after.x, before.y - after.y);
         }

@@ -34,6 +34,12 @@ using colony::appwin::DebugCameraState;
 // Background save worker (prototype). Defined in PrototypeGame_SaveLoad.cpp.
 struct AsyncSaveManager;
 
+struct AsyncSaveManagerDeleter {
+    void operator()(AsyncSaveManager* p) const noexcept;
+};
+
+using AsyncSaveManagerPtr = std::unique_ptr<AsyncSaveManager, AsyncSaveManagerDeleter>;
+
 struct PrototypeGame::Impl {
     colony::input::InputMapper input;
     DebugCameraController camera;
@@ -111,7 +117,7 @@ struct PrototypeGame::Impl {
     float autosaveAccumSeconds    = 0.f;
 
     // Async save worker (keeps autosaves/manual saves from hitching the frame).
-    std::unique_ptr<AsyncSaveManager> saveMgr;
+    AsyncSaveManagerPtr saveMgr;
     double playtimeSeconds = 0.0; // real-time seconds since launch (for save metadata)
 
     // Save browser state (uses small sidecar meta files to avoid parsing huge world JSON in UI).
@@ -161,6 +167,14 @@ struct PrototypeGame::Impl {
 #endif
 
     Impl();
+
+    // NOTE: Impl owns a std::unique_ptr<AsyncSaveManager> where AsyncSaveManager
+    // is defined in PrototypeGame_SaveLoad.cpp.
+    //
+    // A std::unique_ptr to an incomplete type is fine *as a member*, but the
+    // destructor must be out-of-line in a .cpp that sees the complete type.
+    // Otherwise MSVC rightfully errors with "can't delete an incomplete type".
+    ~Impl();
 
     [[nodiscard]] proto::TileType toolTile() const noexcept;
     [[nodiscard]] const char* toolName() const noexcept;

@@ -70,8 +70,21 @@ bool DebugCameraController::ApplyZoomFactor(float factor) noexcept
         return false;
 
     m_state.zoom *= factor;
-    if (m_state.zoom < 0.1f) m_state.zoom = 0.1f;
-    if (m_state.zoom > 10.f) m_state.zoom = 10.f;
+    if (m_state.zoom < kMinZoom) m_state.zoom = kMinZoom;
+    if (m_state.zoom > kMaxZoom) m_state.zoom = kMaxZoom;
+    return true;
+}
+
+bool DebugCameraController::SetZoom(float zoom) noexcept
+{
+    // Defensive clamps so UI code can set arbitrary values safely.
+    if (zoom < kMinZoom) zoom = kMinZoom;
+    if (zoom > kMaxZoom) zoom = kMaxZoom;
+
+    if (zoom == m_state.zoom)
+        return false;
+
+    m_state.zoom = zoom;
     return true;
 }
 
