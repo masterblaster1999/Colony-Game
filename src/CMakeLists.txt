@@ -63,6 +63,7 @@ set(_colony_game_sources
 
     # Gameplay-forward prototype scaffolding
     ${CMAKE_CURRENT_SOURCE_DIR}/game/proto/ProtoWorld.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/game/proto/ProtoWorld_Persistence.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/game/proto/ProtoWorld.h
 
     # Editor helpers (prototype)

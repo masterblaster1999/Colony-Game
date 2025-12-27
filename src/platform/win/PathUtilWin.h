@@ -3,6 +3,8 @@
 #include <string>
 #include <string_view>
 #include <cstddef>
+#include <limits>
+#include <system_error>
 
 namespace winpath {
 
@@ -70,6 +72,15 @@ namespace winpath {
     // Writes `size` bytes atomically to `target`. Returns true on success.
     // Implementation writes to a temporary file in the same directory and then
     // replaces the target (e.g., via ReplaceFileW / MoveFileExW).
+    //
+    // Overload with `out_ec` provides the underlying Win32 failure reason
+    // (from GetLastError) as a std::error_code in std::system_category().
+    bool atomic_write_file(const std::filesystem::path& target,
+                           const void* data,
+                           std::size_t size,
+                           std::error_code* out_ec) noexcept;
+
+    // Convenience overload (no error details).
     bool atomic_write_file(const std::filesystem::path& target,
                            const void* data,
                            std::size_t size);
@@ -79,5 +90,47 @@ namespace winpath {
                                   std::string_view utf8) {
         return atomic_write_file(target, utf8.data(), utf8.size());
     }
+
+    // UTF-8 helper overload with error details.
+    inline bool atomic_write_file(const std::filesystem::path& target,
+                                  std::string_view utf8,
+                                  std::error_code* out_ec) noexcept {
+        return atomic_write_file(target, utf8.data(), utf8.size(), out_ec);
+    }
+
+
+
+    // ------------------------------------------------------------------------------------
+    // Robust file operations (Windows)
+    // ------------------------------------------------------------------------------------
+    //
+    // Windows file operations can fail transiently due to background scanners (Defender),
+    // Explorer preview handlers, or other processes briefly holding handles.
+    // These helpers retry a few times with backoff and treat "already gone" as success.
+
+    // Best-effort remove for a file (or empty directory).
+    // Returns true if the path was removed OR it did not exist.
+    bool remove_with_retry(const std::filesystem::path& path,
+                           std::error_code* out_ec = nullptr,
+                           int max_attempts = 64) noexcept;
+
+    // Best-effort rename/move.
+    // Returns true on success; false on failure.
+    bool rename_with_retry(const std::filesystem::path& from,
+                           const std::filesystem::path& to,
+                           std::error_code* out_ec = nullptr,
+                           int max_attempts = 64) noexcept;
+
+
+    // Robust read helper: reads a file into a string with retry/backoff for transient locks.
+    // This is useful on Windows where background scanners or Explorer can briefly lock files.
+    // - Returns true on success, false on failure.
+    // - On failure, `out_ec` (if provided) is set to the underlying Win32 reason.
+    // - If the file is larger than `max_bytes`, returns false with errc::file_too_large.
+    bool read_file_to_string_with_retry(const std::filesystem::path& path,
+                                        std::string& out,
+                                        std::error_code* out_ec = nullptr,
+                                        std::size_t max_bytes = (std::numeric_limits<std::size_t>::max)(),
+                                        int max_attempts = 64) noexcept;
 
 } // namespace winpath

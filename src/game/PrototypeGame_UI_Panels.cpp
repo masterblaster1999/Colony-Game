@@ -2,7 +2,10 @@
 
 #include "util/PathUtf8.h"
 
+#include "platform/win/PathUtilWin.h"
+
 #include <algorithm>
+#include <chrono>
 #include <cstdio>
 #include <system_error>
 #include <shellapi.h>
@@ -38,6 +41,15 @@ namespace {
     if (v <= static_cast<std::uint8_t>(proto::TileType::Stockpile))
         return static_cast<proto::TileType>(v);
     return proto::TileType::Empty;
+}
+
+[[nodiscard]] std::int64_t FileTimeToUnixSecondsUtc(fs::file_time_type ft) noexcept
+{
+    using namespace std::chrono;
+    // Convert file_clock -> system_clock (best effort; stable enough for UI labels).
+    const auto sctp = time_point_cast<system_clock::duration>(
+        ft - fs::file_time_type::clock::now() + system_clock::now());
+    return duration_cast<seconds>(sctp.time_since_epoch()).count();
 }
 
 void DrawSaveThumbnail(const save::SaveSummary& s) noexcept
@@ -303,6 +315,28 @@ void PrototypeGame::Impl::drawPanelsWindow()
                             e.metaError = err;
                     }
 
+                    
+                    // Compute best-effort timestamp for display.
+                    // Prefer meta's saved timestamp; fall back to filesystem mtime.
+                    e.displayUnixSecondsUtc = 0;
+                    e.timeFromMeta = false;
+                    if (e.metaOk && e.summary.savedUnixSecondsUtc > 0)
+                    {
+                        e.displayUnixSecondsUtc = e.summary.savedUnixSecondsUtc;
+                        e.timeFromMeta = true;
+                    }
+                    else
+                    {
+                        const fs::path tpath = e.exists ? e.path : (e.metaExists ? e.metaPath : fs::path{});
+                        if (!tpath.empty())
+                        {
+                            std::error_code tec;
+                            const fs::file_time_type ft = fs::last_write_time(tpath, tec);
+                            if (!tec)
+                                e.displayUnixSecondsUtc = FileTimeToUnixSecondsUtc(ft);
+                        }
+                    }
+
                     saveBrowserEntries.push_back(std::move(e));
                 }
 
@@ -340,6 +374,28 @@ void PrototypeGame::Impl::drawPanelsWindow()
                         e.metaOk = save::ReadMetaFile(e.metaPath, e.summary, &err);
                         if (!e.metaOk)
                             e.metaError = err;
+                    }
+
+                    
+                    // Compute best-effort timestamp for display.
+                    // Prefer meta's saved timestamp; fall back to filesystem mtime.
+                    e.displayUnixSecondsUtc = 0;
+                    e.timeFromMeta = false;
+                    if (e.metaOk && e.summary.savedUnixSecondsUtc > 0)
+                    {
+                        e.displayUnixSecondsUtc = e.summary.savedUnixSecondsUtc;
+                        e.timeFromMeta = true;
+                    }
+                    else
+                    {
+                        const fs::path tpath = e.exists ? e.path : (e.metaExists ? e.metaPath : fs::path{});
+                        if (!tpath.empty())
+                        {
+                            std::error_code tec;
+                            const fs::file_time_type ft = fs::last_write_time(tpath, tec);
+                            if (!tec)
+                                e.displayUnixSecondsUtc = FileTimeToUnixSecondsUtc(ft);
+                        }
                     }
 
                     saveBrowserEntries.push_back(std::move(e));
@@ -389,11 +445,13 @@ void PrototypeGame::Impl::drawPanelsWindow()
                     label = tmp;
                 }
 
-                if (e.metaOk)
+                const std::string when = save::FormatLocalTime(e.displayUnixSecondsUtc);
+                if (!when.empty())
                 {
-                    const std::string when = save::FormatLocalTime(e.summary.savedUnixSecondsUtc);
-                    if (!when.empty())
+                    if (e.timeFromMeta)
                         label += "  [" + when + "]";
+                    else
+                        label += "  [" + when + " (mtime)]";
                 }
 
                 if (!e.exists)
@@ -447,6 +505,11 @@ void PrototypeGame::Impl::drawPanelsWindow()
                     ImGui::TextDisabled("No meta file (create a new save to generate one).");
                 }
 
+                if (!e.timeFromMeta && e.displayUnixSecondsUtc > 0)
+                {
+                    ImGui::Text("Modified: %s", save::FormatLocalTime(e.displayUnixSecondsUtc).c_str());
+                }
+
                 ImGui::Spacing();
                 const bool canLoad = e.exists;
                 if (ImGui::Button("Load Selected"))
@@ -466,7 +529,7 @@ void PrototypeGame::Impl::drawPanelsWindow()
                 }
 
                 ImGui::SameLine();
-                const bool canDelete = e.exists;
+                const bool canDelete = e.exists || e.metaExists;
                 if (ImGui::Button("Delete##savebrowser_delete"))
                 {
                     if (canDelete)
@@ -476,7 +539,7 @@ void PrototypeGame::Impl::drawPanelsWindow()
                     }
                     else
                     {
-                        setStatus("Save file missing", 2.0f);
+                        setStatus("Nothing to delete", 2.0f);
                     }
                 }
 
@@ -487,19 +550,23 @@ void PrototypeGame::Impl::drawPanelsWindow()
 
                     if (ImGui::Button("CONFIRM DELETE"))
                     {
+                        const bool needWorld = e.exists;
+                        const bool needMeta  = e.metaExists;
+
                         std::error_code ec1;
-                        const bool ok1 = fs::remove(e.path, ec1) || !ec1;
+                        const bool ok1 = !needWorld || winpath::remove_with_retry(e.path, &ec1);
 
                         std::error_code ec2;
-                        (void)fs::remove(e.metaPath, ec2);
+                        const bool ok2 = !needMeta || winpath::remove_with_retry(e.metaPath, &ec2);
 
-                        if (ok1)
+                        if (ok1 && ok2)
                         {
-                            setStatus("Deleted save file", 2.0f);
+                            setStatus("Deleted save entry", 2.0f);
                         }
                         else
                         {
-                            setStatus(std::string("Delete failed: ") + ec1.message(), 4.0f);
+                            const std::error_code& use = (!ok1 ? ec1 : ec2);
+                            setStatus(std::string("Delete failed: ") + use.message(), 4.0f);
                         }
 
                         saveBrowserPendingDelete = -1;

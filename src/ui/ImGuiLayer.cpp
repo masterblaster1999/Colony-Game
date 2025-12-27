@@ -208,19 +208,51 @@ static void RequestFontRebuild(float scale /* 0 => auto */)
     g_dpiRebuildScale     = scale;
 }
 
+
+static std::filesystem::path GetWindowsFontsDir() noexcept
+{
+    // Most Windows installs keep system fonts in: %WINDIR%\Fonts (typically C:\Windows\Fonts).
+    std::wstring buf;
+    buf.resize(MAX_PATH);
+    UINT n = ::GetWindowsDirectoryW(buf.data(), static_cast<UINT>(buf.size()));
+    if (n == 0)
+        return {};
+
+    if (n >= buf.size())
+    {
+        buf.resize(static_cast<std::size_t>(n) + 1u);
+        n = ::GetWindowsDirectoryW(buf.data(), static_cast<UINT>(buf.size()));
+        if (n == 0 || n >= buf.size())
+            return {};
+    }
+
+    buf.resize(n);
+    return std::filesystem::path(buf) / L"Fonts";
+}
+
 static std::filesystem::path FindDefaultFontOnDisk()
 {
     const std::filesystem::path base = winpath::resource_dir() / L"fonts";
     if (base.empty())
         return {};
 
-    const std::filesystem::path candidates[] = {
-        base / L"Inter-Regular.ttf",
-        base / L"Inter.ttf",
-        base / L"Roboto-Regular.ttf",
-        base / L"Roboto-Medium.ttf",
-        base / L"SegoeUI.ttf",
-    };
+    std::vector<std::filesystem::path> candidates;
+    candidates.reserve(12);
+
+    // Prefer packaged game fonts first (consistent across machines).
+    candidates.push_back(base / L"Inter-Regular.ttf");
+    candidates.push_back(base / L"Inter.ttf");
+    candidates.push_back(base / L"Roboto-Regular.ttf");
+    candidates.push_back(base / L"Roboto-Medium.ttf");
+    candidates.push_back(base / L"SegoeUI.ttf");
+
+    // Fall back to system fonts (useful when running from a build output folder without /res/fonts).
+    if (const auto sysFonts = GetWindowsFontsDir(); !sysFonts.empty())
+    {
+        candidates.push_back(sysFonts / L"segoeui.ttf");
+        candidates.push_back(sysFonts / L"SegoeUI.ttf");
+        candidates.push_back(sysFonts / L"arial.ttf");
+    }
 
     for (const auto& p : candidates)
     {

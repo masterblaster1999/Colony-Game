@@ -108,11 +108,43 @@ CommandLineArgs ParseCommandLineArgs()
         const std::wstring_view raw(argv[i]);
         if (raw.empty())
             continue;
-
-        // Normalize /foo to --foo.
+        // Normalize Windows-style /foo switches:
+        //   /foo        -> --foo
+        //   /foo:bar    -> --foo:bar     (':' is supported by ConsumeValue)
+        //   /w 1280     -> -w 1280       (keep existing short aliases)
+        //
+        // This keeps Windows command lines ergonomic without duplicating the parser.
         std::wstring normalized(raw);
         if (!normalized.empty() && normalized[0] == L'/')
-            normalized[0] = L'-';
+        {
+            std::wstring_view rest(normalized);
+            rest.remove_prefix(1);
+
+            auto isSlashAlias = [&](std::wstring_view alias) -> bool {
+                if (rest.size() < alias.size())
+                    return false;
+                if (rest.substr(0, alias.size()) != alias)
+                    return false;
+                if (rest.size() == alias.size())
+                    return true;
+                const wchar_t next = rest[alias.size()];
+                return next == L':' || next == L'=';
+            };
+
+            if (isSlashAlias(L"?") || isSlashAlias(L"h") || isSlashAlias(L"w") ||
+                isSlashAlias(L"hgt") || isSlashAlias(L"mfl") || isSlashAlias(L"fps") ||
+                isSlashAlias(L"bgfps"))
+            {
+                // /w -> -w, etc.
+                normalized[0] = L'-';
+            }
+            else
+            {
+                // /safe-mode -> --safe-mode
+                normalized.erase(normalized.begin());
+                normalized.insert(0, L"--");
+            }
+        }
 
         const std::wstring lowered = ToLower(normalized);
         const std::wstring_view arg(lowered);

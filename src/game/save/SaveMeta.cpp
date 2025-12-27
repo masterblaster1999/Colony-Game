@@ -2,6 +2,8 @@
 
 #include "game/save/Base64.h"
 
+#include "platform/win/PathUtilWin.h"
+
 #include <algorithm>
 #include <cmath>
 #include <chrono>
@@ -24,40 +26,29 @@ constexpr std::size_t kMaxMetaFileBytes = 256u * 1024u;
 {
     out.clear();
 
-    std::ifstream f(path, std::ios::binary);
-    if (!f)
+    std::error_code ec;
+    if (!winpath::read_file_to_string_with_retry(path, out, &ec, kMaxMetaFileBytes, /*max_attempts=*/32))
     {
-        if (outErr) *outErr = "Failed to open file.";
-        return false;
-    }
-
-    f.seekg(0, std::ios::end);
-    const std::streamoff size = f.tellg();
-    if (size < 0)
-    {
-        if (outErr) *outErr = "Failed to query file size.";
-        return false;
-    }
-    if (static_cast<std::size_t>(size) > kMaxMetaFileBytes)
-    {
-        if (outErr) *outErr = "Meta file is unexpectedly large.";
-        return false;
-    }
-
-    out.resize(static_cast<std::size_t>(size));
-    f.seekg(0, std::ios::beg);
-    if (!out.empty())
-        f.read(out.data(), static_cast<std::streamsize>(out.size()));
-
-    if (!f && !out.empty())
-    {
-        if (outErr) *outErr = "Failed to read file contents.";
+        if (outErr)
+        {
+            *outErr = "Failed to read file";
+            if (ec)
+            {
+                *outErr += ": ";
+                *outErr += ec.message();
+                *outErr += " (code ";
+                *outErr += std::to_string(ec.value());
+                *outErr += ")";
+            }
+            *outErr += ".";
+        }
         out.clear();
         return false;
     }
 
     return true;
 }
+
 
 } // namespace
 

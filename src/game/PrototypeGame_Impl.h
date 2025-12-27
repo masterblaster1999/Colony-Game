@@ -12,6 +12,7 @@
 
 #include <array>
 #include <filesystem>
+#include <cstdint>
 #include <limits>
 #include <memory>
 #include <string>
@@ -136,6 +137,12 @@ struct PrototypeGame::Impl {
         bool metaOk     = false;
 
         std::uintmax_t sizeBytes = 0;
+
+        // Best-effort timestamp for list sorting/display.
+        // Prefer meta's savedUnixSecondsUtc; fall back to file's last_write_time.
+        std::int64_t displayUnixSecondsUtc = 0;
+        bool         timeFromMeta          = false;
+
         save::SaveSummary summary{};
         std::string metaError;
     };

@@ -42,7 +42,7 @@ set(_WIN_TU
 )
 
 # Exclude entrypoints / executable glue from legacy discovery.
-set(_cg_exclude_regex "(^|/)(HighPerfGPU|GpuPreference|WinLauncher|WinMain|win32_main|main_win|Bootstrap|WinBootstrap|CrashInitBridge|WinPath)\.(c|cpp)$")
+set(_cg_exclude_regex "(^|/)(HighPerfGPU|GpuPreference|WinLauncher|WinMain|win32_main|main_win|Bootstrap|WinBootstrap|CrashInitBridge|WinPath|winpath_atomic_write)\.(c|cpp)$")
 
 # Headers (IDE visibility)
 file(GLOB_RECURSE _WIN_HDR CONFIGURE_DEPENDS

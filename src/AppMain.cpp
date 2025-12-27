@@ -134,8 +134,8 @@ int GameMain(HINSTANCE hInstance, PWSTR cmdLine, int nCmdShow)
         if (existed)
         {
             WriteLog(log, std::wstring(L"[AppMain] Deleting ") + label + L": " + p.wstring());
-            fs::remove(p, ec);
-            if (ec)
+            const bool ok = winpath::remove_with_retry(p, &ec);
+            if (!ok || ec)
             {
                 const std::wstring err = std::wstring(L"Failed to delete ") + label + L"\n\n" + p.wstring() + L"\n\n" +
                                          L"Error: " + std::to_wstring(ec.value()) + L"\n";

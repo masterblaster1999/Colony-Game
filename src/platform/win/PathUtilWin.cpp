@@ -3,6 +3,7 @@
 #include <KnownFolders.h>   // FOLDERID_LocalAppData
 #include <filesystem>
 #include <system_error>
+#include <atomic>
 #include <algorithm>
 #include <cstdint>
 #include <string>
@@ -151,17 +152,130 @@ namespace winpath {
         (void)crashdump_dir();
         (void)saved_games_dir();
     }
-
     // --- Atomic write (implementation) ------------------------------------------
 
     namespace {
+
+        [[nodiscard]] static bool IsMissingPathError(const std::error_code& ec) noexcept
+        {
+            if (!ec)
+                return false;
+
+            if (ec == std::errc::no_such_file_or_directory)
+                return true;
+
+            const DWORD v = static_cast<DWORD>(ec.value());
+            return (v == ERROR_FILE_NOT_FOUND || v == ERROR_PATH_NOT_FOUND);
+        }
+
+        [[nodiscard]] static bool IsTransientSharingError(const std::error_code& ec) noexcept
+        {
+            if (!ec)
+                return false;
+
+            const DWORD v = static_cast<DWORD>(ec.value());
+            return (v == ERROR_SHARING_VIOLATION ||
+                    v == ERROR_LOCK_VIOLATION ||
+                    v == ERROR_ACCESS_DENIED ||
+                    v == ERROR_DELETE_PENDING);
+        }
+
+        [[nodiscard]] static bool IsTransientWin32Error(const DWORD v) noexcept
+        {
+            return (v == ERROR_SHARING_VIOLATION ||
+                    v == ERROR_LOCK_VIOLATION ||
+                    v == ERROR_ACCESS_DENIED ||
+                    v == ERROR_DELETE_PENDING);
+        }
+
+        static void ClearReadonlyAttributeBestEffort(const fs::path& p) noexcept
+        {
+            const std::wstring w = p.native();
+            if (w.empty())
+                return;
+
+            // If the file is read-only, clearing attributes often allows delete/rename/replace.
+            // Ignore failures (best effort).
+            (void)::SetFileAttributesW(w.c_str(), FILE_ATTRIBUTE_NORMAL);
+        }
+
+        static void SleepBackoffMs(int attempt) noexcept
+        {
+            // Exponential backoff for the first few tries, then cap.
+            const DWORD ms = (attempt < 6) ? (1u << attempt) : 50u;
+            ::Sleep(ms);
+        }
+
+        static void SetOutWin32Error(std::error_code* out_ec, DWORD e) noexcept
+        {
+            if (!out_ec)
+                return;
+
+            if (e == 0)
+            {
+                out_ec->clear();
+                return;
+            }
+
+            *out_ec = std::error_code(static_cast<int>(e), std::system_category());
+        }
+
+        [[nodiscard]] static bool WriteAll(HANDLE h,
+                                           const std::uint8_t* data,
+                                           std::size_t size_bytes,
+                                           DWORD& out_lastErr) noexcept
+        {
+            out_lastErr = 0;
+
+            std::size_t remaining = size_bytes;
+            const std::uint8_t* p = data;
+
+            // Write in chunks <= 1 MiB to avoid DWORD overflow and keep the syscall size sane.
+            constexpr DWORD CHUNK = (1u << 20); // 1 MiB
+
+            while (remaining > 0)
+            {
+                const DWORD toWrite = static_cast<DWORD>(std::min<std::size_t>(remaining, CHUNK));
+                DWORD written = 0;
+
+                if (!::WriteFile(h, p, toWrite, &written, nullptr))
+                {
+                    out_lastErr = ::GetLastError();
+                    return false;
+                }
+
+                if (written == 0)
+                {
+                    out_lastErr = ERROR_WRITE_FAULT;
+                    return false;
+                }
+
+                remaining -= written;
+                p += written;
+            }
+
+            return true;
+        }
+
         // Core implementation that operates on std::filesystem::path
         bool atomic_write_file_impl(const fs::path& requestedTarget,
                                     const void* data,
-                                    size_t size_bytes)
+                                    std::size_t size_bytes,
+                                    std::error_code* out_ec) noexcept
         {
+            if (out_ec)
+                out_ec->clear();
+
+            if (requestedTarget.empty())
+            {
+                if (out_ec) *out_ec = std::make_error_code(std::errc::invalid_argument);
+                return false;
+            }
+
             // Reject invalid buffer when size > 0
-            if (!data && size_bytes > 0) {
+            if (!data && size_bytes > 0)
+            {
+                if (out_ec) *out_ec = std::make_error_code(std::errc::invalid_argument);
                 return false;
             }
 
@@ -180,84 +294,399 @@ namespace winpath {
                 target = dir / target.filename();
             }
 
-            // Ensure target directory exists
-            std::error_code ec;
-            fs::create_directories(dir, ec); // ok if already exists
+            // Ensure target directory exists (non-throwing).
+            std::error_code dec;
+            if (!dir.empty())
+                fs::create_directories(dir, dec); // ok if already exists
 
-            // Build a temp filename in the same directory to allow atomic replace
-            const std::wstring tmpName =
-                L"." + target.filename().wstring() +
-                L".tmp." + std::to_wstring(GetCurrentProcessId()) +
-                L"_" + std::to_wstring(static_cast<unsigned long long>(GetTickCount64()));
+            // Create a unique temp file in the same directory to allow atomic replace.
+            // This MUST be unique across threads and rapid successive calls.
+            static std::atomic_uint32_t s_tmpCounter{0};
 
-            const fs::path tmp = dir / tmpName;
+            fs::path tmp;
+            HANDLE h = INVALID_HANDLE_VALUE;
+            DWORD createErr = 0;
 
-            // Create temp file for write. Use WRITE_THROUGH so data hits disk on FlushFileBuffers.
-            HANDLE h = CreateFileW(
-                tmp.c_str(),
-                GENERIC_WRITE,
-                0,               // no sharing
-                nullptr,
-                CREATE_ALWAYS,
-                FILE_ATTRIBUTE_TEMPORARY | FILE_FLAG_WRITE_THROUGH | FILE_FLAG_SEQUENTIAL_SCAN,
-                nullptr
-            );
-            if (h == INVALID_HANDLE_VALUE) {
+            for (int attempt = 0; attempt < 32; ++attempt)
+            {
+                const std::uint32_t n = (s_tmpCounter.fetch_add(1, std::memory_order_relaxed) + 1u);
+
+                std::wstring tmpName;
+                tmpName.reserve(64 + target.filename().wstring().size());
+                tmpName += L".";
+                tmpName += target.filename().wstring();
+                tmpName += L".tmp.";
+                tmpName += std::to_wstring(::GetCurrentProcessId());
+                tmpName += L".";
+                tmpName += std::to_wstring(::GetCurrentThreadId());
+                tmpName += L".";
+                tmpName += std::to_wstring(static_cast<unsigned long long>(::GetTickCount64()));
+                tmpName += L".";
+                tmpName += std::to_wstring(n);
+
+                tmp = dir.empty() ? fs::path(tmpName) : (dir / tmpName);
+
+                // Create temp file for write. Use WRITE_THROUGH so data hits disk on FlushFileBuffers.
+                h = ::CreateFileW(
+                    tmp.c_str(),
+                    GENERIC_WRITE,
+                    0,               // no sharing
+                    nullptr,
+                    CREATE_NEW,       // never clobber a concurrent writer's temp file
+                    FILE_ATTRIBUTE_TEMPORARY |
+                        FILE_ATTRIBUTE_NOT_CONTENT_INDEXED |
+                        FILE_FLAG_WRITE_THROUGH |
+                        FILE_FLAG_SEQUENTIAL_SCAN,
+                    nullptr
+                );
+
+                if (h != INVALID_HANDLE_VALUE)
+                    break;
+
+                createErr = ::GetLastError();
+                if (createErr != ERROR_FILE_EXISTS && createErr != ERROR_ALREADY_EXISTS)
+                {
+                    SetOutWin32Error(out_ec, createErr);
+                    return false;
+                }
+
+                // Extremely unlikely, but avoid tight looping if we collided.
+                SleepBackoffMs(attempt);
+            }
+
+            if (h == INVALID_HANDLE_VALUE)
+            {
+                SetOutWin32Error(out_ec, createErr ? createErr : ERROR_ALREADY_EXISTS);
                 return false;
             }
 
-            // Write contents (if any) in chunks <= 1 MiB to avoid DWORD overflow
-            size_t remaining = size_bytes;
-            const std::uint8_t* p = static_cast<const std::uint8_t*>(data);
-            constexpr DWORD CHUNK = (1u << 20); // 1 MiB
+            DWORD lastErr = 0;
+            const bool okWrite = WriteAll(h,
+                                         static_cast<const std::uint8_t*>(data),
+                                         size_bytes,
+                                         lastErr);
 
-            while (remaining > 0) {
-                const DWORD toWrite = static_cast<DWORD>(std::min<size_t>(remaining, CHUNK));
-                DWORD written = 0;
-                if (!WriteFile(h, p, toWrite, &written, nullptr) || written != toWrite) {
-                    CloseHandle(h);
-                    DeleteFileW(tmp.c_str());
-                    return false;
-                }
-                remaining -= written;
-                p += written;
+            if (!okWrite)
+            {
+                // Capture error before any other API calls.
+                if (lastErr == 0)
+                    lastErr = ::GetLastError();
+
+                ::CloseHandle(h);
+                (void)winpath::remove_with_retry(tmp);
+                SetOutWin32Error(out_ec, lastErr);
+                return false;
             }
 
-            // Ensure data hits disk before replacement
-            FlushFileBuffers(h);
-            CloseHandle(h);
+            // Ensure data hits disk before replacement.
+            if (!::FlushFileBuffers(h))
+            {
+                lastErr = ::GetLastError();
+                ::CloseHandle(h);
+                (void)winpath::remove_with_retry(tmp);
+                SetOutWin32Error(out_ec, lastErr);
+                return false;
+            }
 
-            // Try atomic replace first (preferred: preserves some metadata/ACLs when possible)
+            ::CloseHandle(h);
+
+            // Retry replace/move to tolerate transient Windows locks (Explorer/Defender).
             const DWORD replaceFlags =
                 REPLACEFILE_WRITE_THROUGH |
                 REPLACEFILE_IGNORE_MERGE_ERRORS |
                 REPLACEFILE_IGNORE_ACL_ERRORS;
 
-            if (ReplaceFileW(target.c_str(), tmp.c_str(), nullptr, replaceFlags, nullptr, nullptr)) {
-                return true;
+            constexpr int kMaxAttempts = 64;
+
+            for (int attempt = 0; attempt < kMaxAttempts; ++attempt)
+            {
+                if (::ReplaceFileW(target.c_str(), tmp.c_str(), nullptr, replaceFlags, nullptr, nullptr))
+                {
+                    return true;
+                }
+
+                lastErr = ::GetLastError();
+
+                // MoveFileExW works for both "target exists" and "target missing".
+                if (::MoveFileExW(tmp.c_str(), target.c_str(),
+                                  MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH))
+                {
+                    return true;
+                }
+
+                lastErr = ::GetLastError();
+
+                // Sometimes failures are due to read-only destination.
+                if (lastErr == ERROR_ACCESS_DENIED)
+                    ClearReadonlyAttributeBestEffort(target);
+
+                if (IsTransientWin32Error(lastErr))
+                {
+                    SleepBackoffMs(attempt);
+                    continue;
+                }
+
+                break;
             }
 
-            // Fallback: move/rename with replace + write-through (for brand-new files or when ReplaceFileW fails)
-            if (MoveFileExW(tmp.c_str(), target.c_str(),
-                            MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) {
-                return true;
-            }
+            // Failure: remove temp file (best effort).
+            (void)winpath::remove_with_retry(tmp);
 
-            // Failure: remove temp file
-            DeleteFileW(tmp.c_str());
+            SetOutWin32Error(out_ec, lastErr);
             return false;
         }
+
     } // anonymous namespace
 
-    // Atomically write `size_bytes` from `data` into `path` (wstring overload).
-    // Strategy: write to a temp file in the same directory, flush, then replace/rename.
-    bool atomic_write_file(const std::wstring& path, const void* data, size_t size_bytes) {
-        return atomic_write_file_impl(fs::path(path), data, size_bytes);
+    // Atomically write `size_bytes` from `data` into `target`, returning Win32 error details if requested.
+    bool atomic_write_file(const fs::path& target,
+                           const void* data,
+                           std::size_t size_bytes,
+                           std::error_code* out_ec) noexcept
+    {
+        return atomic_write_file_impl(target, data, size_bytes, out_ec);
     }
 
-    // Path overload to support headers that declare the std::filesystem::path signature.
-    bool atomic_write_file(const fs::path& target, const void* data, size_t size_bytes) {
-        return atomic_write_file_impl(target, data, size_bytes);
+    // Convenience overload (no error details).
+    bool atomic_write_file(const fs::path& target, const void* data, std::size_t size_bytes)
+    {
+        return atomic_write_file_impl(target, data, size_bytes, nullptr);
     }
+
+    // --- Robust file ops (Windows) ----------------------------------------------
+
+
+    bool remove_with_retry(const fs::path& path,
+                           std::error_code* out_ec,
+                           int max_attempts) noexcept
+    {
+        if (out_ec) out_ec->clear();
+        if (path.empty()) return true;
+
+        std::error_code ec;
+
+        const int attempts = (max_attempts <= 0) ? 1 : max_attempts;
+        for (int attempt = 0; attempt < attempts; ++attempt)
+        {
+            ec.clear();
+
+            // Non-throwing remove: clears ec on success.
+            (void)fs::remove(path, ec);
+
+            if (!ec)
+                return true;
+
+            if (IsMissingPathError(ec))
+                return true;
+
+            // If access denied, the file might be read-only (common for copied config files).
+            if (static_cast<DWORD>(ec.value()) == ERROR_ACCESS_DENIED)
+                ClearReadonlyAttributeBestEffort(path);
+
+            if (IsTransientSharingError(ec))
+            {
+                SleepBackoffMs(attempt);
+                continue;
+            }
+
+            if (out_ec) *out_ec = ec;
+            return false;
+        }
+
+        if (out_ec) *out_ec = ec;
+        return false;
+    }
+
+    bool rename_with_retry(const fs::path& from,
+                           const fs::path& to,
+                           std::error_code* out_ec,
+                           int max_attempts) noexcept
+    {
+        if (out_ec) out_ec->clear();
+        if (from.empty() || to.empty()) return false;
+
+        std::error_code ec;
+
+        const int attempts = (max_attempts <= 0) ? 1 : max_attempts;
+        for (int attempt = 0; attempt < attempts; ++attempt)
+        {
+            ec.clear();
+            fs::rename(from, to, ec);
+
+            if (!ec)
+                return true;
+
+            // Missing source isn't retryable.
+            if (IsMissingPathError(ec))
+            {
+                if (out_ec) *out_ec = ec;
+                return false;
+            }
+
+            // If access denied, clear read-only attribute on both ends best-effort.
+            if (static_cast<DWORD>(ec.value()) == ERROR_ACCESS_DENIED)
+            {
+                ClearReadonlyAttributeBestEffort(from);
+                ClearReadonlyAttributeBestEffort(to);
+            }
+
+            if (IsTransientSharingError(ec))
+            {
+                SleepBackoffMs(attempt);
+                continue;
+            }
+
+            if (out_ec) *out_ec = ec;
+            return false;
+        }
+
+        if (out_ec) *out_ec = ec;
+        return false;
+    }
+
+
+
+    bool read_file_to_string_with_retry(const fs::path& path,
+                                        std::string& out,
+                                        std::error_code* out_ec,
+                                        std::size_t max_bytes,
+                                        int max_attempts) noexcept
+    {
+        out.clear();
+        if (out_ec) out_ec->clear();
+
+        if (path.empty())
+        {
+            if (out_ec) *out_ec = std::make_error_code(std::errc::invalid_argument);
+            return false;
+        }
+
+        if (max_attempts <= 0)
+            max_attempts = 1;
+
+        DWORD lastErr = 0;
+
+        for (int attempt = 0; attempt < max_attempts; ++attempt)
+        {
+            lastErr = 0;
+
+            HANDLE h = ::CreateFileW(
+                path.c_str(),
+                GENERIC_READ,
+                FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                nullptr,
+                OPEN_EXISTING,
+                FILE_ATTRIBUTE_NORMAL | FILE_FLAG_SEQUENTIAL_SCAN,
+                nullptr);
+
+            if (h == INVALID_HANDLE_VALUE)
+            {
+                lastErr = ::GetLastError();
+
+                // Missing file isn't retryable.
+                if (lastErr == ERROR_FILE_NOT_FOUND || lastErr == ERROR_PATH_NOT_FOUND)
+                {
+                    SetOutWin32Error(out_ec, lastErr);
+                    return false;
+                }
+
+                if (IsTransientWin32Error(lastErr))
+                {
+                    SleepBackoffMs(attempt);
+                    continue;
+                }
+
+                SetOutWin32Error(out_ec, lastErr);
+                return false;
+            }
+
+            LARGE_INTEGER sz{};
+            if (!::GetFileSizeEx(h, &sz))
+            {
+                lastErr = ::GetLastError();
+                ::CloseHandle(h);
+
+                if (IsTransientWin32Error(lastErr))
+                {
+                    SleepBackoffMs(attempt);
+                    continue;
+                }
+
+                SetOutWin32Error(out_ec, lastErr);
+                return false;
+            }
+
+            if (sz.QuadPart < 0)
+            {
+                ::CloseHandle(h);
+                if (out_ec) *out_ec = std::make_error_code(std::errc::io_error);
+                return false;
+            }
+
+            const std::uint64_t u = static_cast<std::uint64_t>(sz.QuadPart);
+
+            if (u > static_cast<std::uint64_t>(max_bytes))
+            {
+                ::CloseHandle(h);
+                if (out_ec) *out_ec = std::make_error_code(std::errc::file_too_large);
+                return false;
+            }
+
+            const std::size_t size_bytes = static_cast<std::size_t>(u);
+            if (size_bytes == 0)
+            {
+                ::CloseHandle(h);
+                out.clear();
+                return true;
+            }
+
+            out.resize(size_bytes);
+
+            std::size_t offset = 0;
+            while (offset < size_bytes)
+            {
+                constexpr DWORD CHUNK = (1u << 20); // 1 MiB
+                const DWORD toRead = static_cast<DWORD>(std::min<std::size_t>(size_bytes - offset, CHUNK));
+                DWORD got = 0;
+                if (!::ReadFile(h, out.data() + offset, toRead, &got, nullptr))
+                {
+                    lastErr = ::GetLastError();
+                    break;
+                }
+                if (got == 0)
+                {
+                    lastErr = ERROR_READ_FAULT;
+                    break;
+                }
+                offset += got;
+            }
+
+            ::CloseHandle(h);
+
+            if (offset == size_bytes && lastErr == 0)
+            {
+                // Success.
+                return true;
+            }
+
+            // Partial read: treat as failure and retry if transient.
+            out.clear();
+
+            if (IsTransientWin32Error(lastErr))
+            {
+                SleepBackoffMs(attempt);
+                continue;
+            }
+
+            SetOutWin32Error(out_ec, lastErr);
+            return false;
+        }
+
+        // Exhausted retries.
+        out.clear();
+        SetOutWin32Error(out_ec, lastErr);
+        return false;
+    }
+
 
 } // namespace winpath

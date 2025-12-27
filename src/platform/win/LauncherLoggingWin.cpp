@@ -176,7 +176,7 @@ namespace
 
         for (std::size_t i = keep_count; i < entries.size(); ++i)
         {
-            fs::remove(entries[i].path, ec); // ignore failures
+            (void)winpath::remove_with_retry(entries[i].path, &ec); // ignore failures
         }
     }
 
@@ -232,7 +232,7 @@ std::wofstream OpenLogFile()
                                       L"_pid" + std::to_wstring(pid) + L".log");
 
             // Best-effort rename. If it fails (locked, permissions), we'll just overwrite.
-            fs::rename(mainLog, rotated, ec);
+            (void)winpath::rename_with_retry(mainLog, rotated, &ec);
         }
 
         // Keep newest 20 rotated logs for THIS baseName only.

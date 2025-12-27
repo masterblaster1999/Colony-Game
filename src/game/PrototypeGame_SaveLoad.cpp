@@ -1,5 +1,10 @@
 #include "game/PrototypeGame_Impl.h"
 
+#include "game/proto/ProtoWorld_SaveFormat.h"
+
+#include "platform/win/WinCommon.h"
+
+
 #include "platform/win/PathUtilWin.h"
 #include "util/PathUtf8.h"
 
@@ -14,6 +19,7 @@
 #include <exception>
 #include <iterator>
 #include <mutex>
+#include <string>
 #include <thread>
 
 #include <nlohmann/json.hpp>
@@ -175,6 +181,14 @@ struct AsyncSaveManager {
 
             {
                 std::lock_guard<std::mutex> lock(m_mutex);
+
+                // Coalesce autosaves: keep only the newest queued autosave snapshot.
+                // (Manual saves are preserved and will run before autosaves.)
+                m_queue.erase(
+                    std::remove_if(m_queue.begin(), m_queue.end(),
+                                   [](const Task& q) { return q.kind == Kind::Autosave; }),
+                    m_queue.end());
+
                 m_queue.push_back(std::move(t));
             }
             m_cv.notify_one();
@@ -286,13 +300,11 @@ private:
             if (!fs::exists(src, ec) || ec)
                 continue;
 
-            // Best-effort replace.
-            std::error_code rm;
-            fs::remove(dst, rm);
+            // Best-effort replace (handles transient Windows locks from scanners/Explorer).
+            (void)winpath::remove_with_retry(dst);
 
             std::error_code rn;
-            fs::rename(src, dst, rn);
-            if (rn) // keep meta file paired with the world file
+            if (!winpath::rename_with_retry(src, dst, &rn)) // keep meta file paired with the world file
                 continue;
 
             // Sidecar meta file (optional).
@@ -304,11 +316,10 @@ private:
             ec.clear();
             if (fs::exists(srcMeta, ec) && !ec)
             {
-                std::error_code rmMeta;
-                fs::remove(dstMeta, rmMeta);
+                (void)winpath::remove_with_retry(dstMeta);
 
                 std::error_code rnMeta;
-                fs::rename(srcMeta, dstMeta, rnMeta);
+                (void)winpath::rename_with_retry(srcMeta, dstMeta, &rnMeta);
             }
         }
     }
@@ -318,8 +329,8 @@ private:
         try
         {
             json j;
-            j["format"] = "colony_proto_world";
-            j["version"] = 2;
+            j["format"] = proto::savefmt::kWorldFormat;
+            j["version"] = proto::savefmt::kWorldVersion;
             j["size"] = { {"w", s.w}, {"h", s.h} };
             j["inventory"] = { {"wood", s.wood}, {"food", s.food} };
             j["tuning"] = {
@@ -365,9 +376,18 @@ private:
             if (!parent.empty())
                 fs::create_directories(parent, ec);
 
-            if (!winpath::atomic_write_file(path, bytes))
+            std::error_code wec;
+            if (!winpath::atomic_write_file(path, bytes.data(), bytes.size(), &wec))
             {
-                outErr = "atomic_write_file failed";
+                outErr = std::string("atomic_write_file failed for ") + colony::util::PathToUtf8String(path);
+                if (wec)
+                {
+                    outErr += ": ";
+                    outErr += wec.message();
+                    outErr += " (code ";
+                    outErr += std::to_string(wec.value());
+                    outErr += ")";
+                }
                 return false;
             }
 
@@ -457,9 +477,18 @@ private:
             if (!parent.empty())
                 fs::create_directories(parent, ec);
 
-            if (!winpath::atomic_write_file(metaPath, bytes))
+            std::error_code wec;
+            if (!winpath::atomic_write_file(metaPath, bytes.data(), bytes.size(), &wec))
             {
-                outErr = "atomic_write_file failed";
+                outErr = std::string("atomic_write_file failed for ") + colony::util::PathToUtf8String(metaPath);
+                if (wec)
+                {
+                    outErr += ": ";
+                    outErr += wec.message();
+                    outErr += " (code ";
+                    outErr += std::to_string(wec.value());
+                    outErr += ")";
+                }
                 return false;
             }
 
@@ -475,6 +504,24 @@ private:
 
     void workerMain() noexcept
     {
+        // Background worker: keep it debuggable + low impact on frame time.
+        // - Name thread (Visual Studio / ETW)
+        // - Lower base priority so input/render remain responsive
+        {
+            using SetThreadDescription_t = HRESULT (WINAPI*)(HANDLE, PCWSTR);
+
+            if (HMODULE k32 = ::GetModuleHandleW(L"kernel32.dll"))
+            {
+                auto pSetThreadDescription =
+                    reinterpret_cast<SetThreadDescription_t>(
+                        ::GetProcAddress(k32, "SetThreadDescription"));
+
+                if (pSetThreadDescription)
+                    (void)pSetThreadDescription(::GetCurrentThread(), L"AsyncSave");
+            }
+        }
+
+        (void)::SetThreadPriority(::GetCurrentThread(), THREAD_PRIORITY_BELOW_NORMAL);
         for (;;)
         {
             Task task;
@@ -513,6 +560,11 @@ private:
             {
                 const fs::path dir = task.pathOrDir;
                 RotateAutosaves(dir, task.keepCount);
+
+                // If a load/reset happened while we were rotating autosaves, don't write a stale snapshot.
+                const std::uint64_t genNow2 = m_autosaveGeneration.load(std::memory_order_acquire);
+                if (task.autosaveGen != genNow2)
+                    continue;
 
                 c.path = AutosavePathForIndex(dir, 0);
                 ok = WriteSnapshotJson(task.snap, Kind::Autosave, c.path, /*pretty=*/false, err);
