@@ -6,16 +6,17 @@
 //
 // Why this exists:
 //   - On Windows, common editors (including Notepad) may save JSON/INI files with a BOM,
-//     or as UTF-16 with a BOM.
+//     or as UTF-16/UTF-32 with a BOM.
 //   - Many parsers (including strict JSON parsers) expect UTF-8 without a BOM.
 //
 // What we do:
 //   - Strip UTF-8 BOM (EF BB BF) if present.
 //   - If the file starts with a UTF-16 BOM (FF FE or FE FF), decode UTF-16 and re-encode as UTF-8.
+//   - If the file starts with a UTF-32 BOM (FF FE 00 00 or 00 00 FE FF), decode UTF-32 and re-encode as UTF-8.
 //
 // Design goals:
 //   - Windows-friendly, but dependency-free (no <windows.h>, no deprecated <codecvt>).
-//   - Never throws (returns false on malformed UTF-16 or allocation failure).
+//   - Never throws (returns false on malformed UTF-16/UTF-32 or allocation failure).
 
 #include <cstddef>
 #include <cstdint>
@@ -53,6 +54,22 @@ inline std::uint16_t ReadU16(const unsigned char* p, bool little) noexcept
 {
     return little ? static_cast<std::uint16_t>(p[0] | (static_cast<std::uint16_t>(p[1]) << 8))
                   : static_cast<std::uint16_t>((static_cast<std::uint16_t>(p[0]) << 8) | p[1]);
+}
+
+inline std::uint32_t ReadU32(const unsigned char* p, bool little) noexcept
+{
+    if (little)
+    {
+        return (static_cast<std::uint32_t>(p[0])      ) |
+               (static_cast<std::uint32_t>(p[1]) <<  8) |
+               (static_cast<std::uint32_t>(p[2]) << 16) |
+               (static_cast<std::uint32_t>(p[3]) << 24);
+    }
+
+    return (static_cast<std::uint32_t>(p[0]) << 24) |
+           (static_cast<std::uint32_t>(p[1]) << 16) |
+           (static_cast<std::uint32_t>(p[2]) <<  8) |
+           (static_cast<std::uint32_t>(p[3])      );
 }
 
 inline bool ConvertUtf16BomToUtf8(std::string& bytes, bool little) noexcept
@@ -109,12 +126,48 @@ inline bool ConvertUtf16BomToUtf8(std::string& bytes, bool little) noexcept
     return true;
 }
 
+inline bool ConvertUtf32BomToUtf8(std::string& bytes, bool little) noexcept
+{
+    const std::size_t n = bytes.size();
+    if (n < 4)
+        return false;
+
+    const std::size_t payload = n - 4;
+    if ((payload & 3u) != 0u)
+        return false;
+
+    const auto* p = reinterpret_cast<const unsigned char*>(bytes.data()) + 4;
+    const std::size_t units = payload / 4;
+
+    std::string out;
+    out.reserve(units * 2); // heuristic (ASCII-heavy files)
+
+    for (std::size_t i = 0; i < units; ++i)
+    {
+        const std::uint32_t cp = ReadU32(p + (i * 4), little);
+
+        // UTF-32 code units must be Unicode scalar values.
+        // - Reject surrogate code points.
+        // - Reject values outside Unicode range.
+        if (cp > 0x10FFFFu)
+            return false;
+        if (cp >= 0xD800u && cp <= 0xDFFFu)
+            return false;
+
+        AppendUtf8(out, cp);
+    }
+
+    bytes.swap(out);
+    return true;
+}
+
 } // namespace detail
 
 // Normalizes `bytes` in place so parsers can safely treat it as UTF-8 text.
 //  - Strips UTF-8 BOM (EF BB BF) if present.
 //  - If UTF-16LE/UTF-16BE BOM is present, converts to UTF-8.
-// Returns false only for malformed UTF-16 or allocation failure.
+//  - If UTF-32LE/UTF-32BE BOM is present, converts to UTF-8.
+// Returns false only for malformed UTF-16/UTF-32 or allocation failure.
 inline bool NormalizeTextToUtf8(std::string& bytes) noexcept
 {
     try
@@ -130,6 +183,22 @@ inline bool NormalizeTextToUtf8(std::string& bytes) noexcept
                 bytes.erase(0, 3);
                 return true;
             }
+        }
+
+        // UTF-32 BOMs must be checked before UTF-16 BOMs.
+        // UTF-32LE starts with the same first two bytes as UTF-16LE: FF FE ...
+        if (bytes.size() >= 4)
+        {
+            const unsigned char b0 = static_cast<unsigned char>(bytes[0]);
+            const unsigned char b1 = static_cast<unsigned char>(bytes[1]);
+            const unsigned char b2 = static_cast<unsigned char>(bytes[2]);
+            const unsigned char b3 = static_cast<unsigned char>(bytes[3]);
+
+            // UTF-32 BOMs
+            if (b0 == 0xFFu && b1 == 0xFEu && b2 == 0x00u && b3 == 0x00u)
+                return detail::ConvertUtf32BomToUtf8(bytes, /*little=*/true);
+            if (b0 == 0x00u && b1 == 0x00u && b2 == 0xFEu && b3 == 0xFFu)
+                return detail::ConvertUtf32BomToUtf8(bytes, /*little=*/false);
         }
 
         if (bytes.size() >= 2)

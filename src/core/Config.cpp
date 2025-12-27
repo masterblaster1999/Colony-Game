@@ -1,5 +1,6 @@
 #include "Config.h"
 #include "Log.h"
+#include "util/TextEncoding.h"
 
 #if defined(_WIN32)
     #ifndef NOMINMAX
@@ -56,17 +57,48 @@ static bool ParseInt(std::string_view sv, int& out) noexcept
     return true;
 }
 
-static bool ParseBool(std::string_view sv) noexcept
+static bool EqualsI(std::string_view a, std::string_view b) noexcept
+{
+    if (a.size() != b.size())
+        return false;
+
+    for (std::size_t i = 0; i < a.size(); ++i)
+    {
+        const unsigned char ca = static_cast<unsigned char>(a[i]);
+        const unsigned char cb = static_cast<unsigned char>(b[i]);
+        if (std::tolower(ca) != std::tolower(cb))
+            return false;
+    }
+
+    return true;
+}
+
+static bool ParseBool(std::string_view sv, bool& out) noexcept
 {
     while (!sv.empty() && std::isspace(static_cast<unsigned char>(sv.front())))
         sv.remove_prefix(1);
     while (!sv.empty() && std::isspace(static_cast<unsigned char>(sv.back())))
         sv.remove_suffix(1);
 
-    std::string v(sv);
-    std::transform(v.begin(), v.end(), v.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+    // Common INI boolean tokens (case-insensitive):
+    //   true  values:  1, true, yes, on
+    //   false values:  0, false, no, off
+    if (sv == "1") { out = true; return true; }
+    if (sv == "0") { out = false; return true; }
 
-    return (v == "1" || v == "true" || v == "yes" || v == "on");
+    if (EqualsI(sv, "true") || EqualsI(sv, "yes") || EqualsI(sv, "on"))
+    {
+        out = true;
+        return true;
+    }
+
+    if (EqualsI(sv, "false") || EqualsI(sv, "no") || EqualsI(sv, "off"))
+    {
+        out = false;
+        return true;
+    }
+
+    return false;
 }
 
 // Tiny INI-style parser: key=value lines
@@ -96,21 +128,19 @@ bool LoadConfig(Config& cfg, const std::filesystem::path& saveDir)
     text = oss.str();
 #endif
 
+
+    // Config is user-editable. Normalize to UTF-8 so files saved by Windows editors
+    // (UTF-8 BOM / UTF-16 BOM) remain parseable.
+    if (!colony::util::NormalizeTextToUtf8(text))
+    {
+        LOG_WARN("LoadConfig: NormalizeTextToUtf8 failed for %s", path.string().c_str());
+        return false;
+    }
+
     std::istringstream iss(text);
     std::string line;
     while (std::getline(iss, line))
     {
-        // Strip UTF-8 BOM on first line if present.
-        if (!line.empty() && static_cast<unsigned char>(line[0]) == 0xEF)
-        {
-            if (line.size() >= 3 &&
-                static_cast<unsigned char>(line[1]) == 0xBB &&
-                static_cast<unsigned char>(line[2]) == 0xBF)
-            {
-                line.erase(0, 3);
-            }
-        }
-
         // Comments / empty
         std::string tmp = line;
         TrimInPlace(tmp);
@@ -124,6 +154,35 @@ bool LoadConfig(Config& cfg, const std::filesystem::path& saveDir)
         std::string v = tmp.substr(pos + 1);
         TrimInPlace(k);
         TrimInPlace(v);
+
+        // Strip trailing inline comments (simple INI-style).
+        // This makes config.ini friendlier to hand-edit, e.g.:
+        //   windowWidth=1280  # pixels
+        //   windowHeight=720  ; pixels
+        //   vsync=true        // enable vsync
+        {
+            const std::size_t hashPos  = v.find('#');
+            const std::size_t semiPos  = v.find(';');
+            const std::size_t slashPos = v.find("//");
+
+            std::size_t cut = std::string::npos;
+            auto consider = [&](std::size_t p)
+            {
+                if (p == std::string::npos) return;
+                if (cut == std::string::npos || p < cut) cut = p;
+            };
+
+            consider(hashPos);
+            consider(semiPos);
+            consider(slashPos);
+
+            if (cut != std::string::npos)
+            {
+                v.erase(cut);
+                TrimInPlace(v);
+            }
+        }
+
         if (k.empty()) continue;
 
         if (k == "windowWidth")
@@ -140,7 +199,9 @@ bool LoadConfig(Config& cfg, const std::filesystem::path& saveDir)
         }
         else if (k == "vsync")
         {
-            cfg.vsync = ParseBool(v);
+            bool parsed = cfg.vsync;
+            if (ParseBool(v, parsed))
+                cfg.vsync = parsed;
         }
     }
 

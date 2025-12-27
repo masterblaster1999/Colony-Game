@@ -19,6 +19,7 @@
 #include <cctype>
 #include <cstdio>
 #include <cstdint>
+#include <limits>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -57,6 +58,25 @@ inline constexpr std::uint32_t kVK_LCONTROL = 0xA2;
 inline constexpr std::uint32_t kVK_RCONTROL = 0xA3;
 inline constexpr std::uint32_t kVK_LMENU    = 0xA4;
 inline constexpr std::uint32_t kVK_RMENU    = 0xA5;
+
+// Numpad / keypad
+inline constexpr std::uint32_t kVK_NUMPAD0  = 0x60;
+inline constexpr std::uint32_t kVK_NUMPAD1  = 0x61;
+inline constexpr std::uint32_t kVK_NUMPAD2  = 0x62;
+inline constexpr std::uint32_t kVK_NUMPAD3  = 0x63;
+inline constexpr std::uint32_t kVK_NUMPAD4  = 0x64;
+inline constexpr std::uint32_t kVK_NUMPAD5  = 0x65;
+inline constexpr std::uint32_t kVK_NUMPAD6  = 0x66;
+inline constexpr std::uint32_t kVK_NUMPAD7  = 0x67;
+inline constexpr std::uint32_t kVK_NUMPAD8  = 0x68;
+inline constexpr std::uint32_t kVK_NUMPAD9  = 0x69;
+inline constexpr std::uint32_t kVK_MULTIPLY = 0x6A;
+inline constexpr std::uint32_t kVK_ADD      = 0x6B;
+inline constexpr std::uint32_t kVK_SEPARATOR = 0x6C;
+inline constexpr std::uint32_t kVK_SUBTRACT = 0x6D;
+inline constexpr std::uint32_t kVK_DECIMAL  = 0x6E;
+inline constexpr std::uint32_t kVK_DIVIDE   = 0x6F;
+inline constexpr std::uint32_t kVK_NUMLOCK  = 0x90;
 
 inline constexpr std::uint32_t kVK_F1  = 0x70;
 inline constexpr std::uint32_t kVK_F2  = 0x71;
@@ -124,6 +144,8 @@ inline std::optional<std::uint32_t> ParseInputCodeToken(std::string_view token) 
     if (t.empty())
         return std::nullopt;
 
+    const std::string_view tv(t);
+
     // Single character: treat as ASCII key. Normalize to uppercase.
     if (t.size() == 1)
     {
@@ -144,6 +166,56 @@ inline std::optional<std::uint32_t> ParseInputCodeToken(std::string_view token) 
         }
         if (n >= 1 && n <= 24)
             return static_cast<std::uint32_t>(kVK_F1 + static_cast<std::uint32_t>(n - 1));
+    }
+
+
+    // Numpad / keypad
+    if (t == "numlock") return kVK_NUMLOCK;
+
+    auto parseKeypadSuffix = [](std::string_view rest) noexcept -> std::optional<std::uint32_t>
+    {
+        if (rest.empty())
+            return std::nullopt;
+
+        // Digits: 0..9
+        if (rest.size() == 1)
+        {
+            const char c = rest[0];
+            if (c >= '0' && c <= '9')
+                return kVK_NUMPAD0 + static_cast<std::uint32_t>(c - '0');
+        }
+
+        // Operations
+        if (rest == "add" || rest == "plus") return kVK_ADD;
+        if (rest == "subtract" || rest == "minus") return kVK_SUBTRACT;
+        if (rest == "multiply" || rest == "mul" || rest == "asterisk") return kVK_MULTIPLY;
+        if (rest == "divide" || rest == "div" || rest == "slash") return kVK_DIVIDE;
+        if (rest == "decimal" || rest == "dot" || rest == "period") return kVK_DECIMAL;
+        if (rest == "separator") return kVK_SEPARATOR;
+
+        return std::nullopt;
+    };
+
+    // Accept a few common prefixes:
+    //   Numpad0..9 / NumpadAdd / NumpadSubtract / ...
+    //   Num0..9    / NumAdd    / ...
+    //   KP0..9     / KPAdd     / KPPlus / ...
+    if (tv.rfind("numpad", 0) == 0)
+    {
+        if (auto v = parseKeypadSuffix(tv.substr(6)))
+            return *v;
+    }
+
+    if (tv.rfind("num", 0) == 0)
+    {
+        if (auto v = parseKeypadSuffix(tv.substr(3)))
+            return *v;
+    }
+
+    if (tv.rfind("kp", 0) == 0)
+    {
+        if (auto v = parseKeypadSuffix(tv.substr(2)))
+            return *v;
     }
 
     // Arrow keys
@@ -191,6 +263,60 @@ inline std::optional<std::uint32_t> ParseInputCodeToken(std::string_view token) 
         return colony::input::kMouseWheelUp;
     if (t == "wheeldown" || t == "mwheeldown" || t == "mousewheeldown" || t == "scrolldown")
         return colony::input::kMouseWheelDown;
+
+    // Hex virtual-key tokens (round-trip for InputCodeToToken fallback).
+    // Accepts (case-insensitive):
+    //   VK_0x1B   (InputCodeToToken fallback format)
+    //   0x1B
+    //
+    // NOTE: This only supports keyboard VK codes (0..255). Mouse codes have dedicated tokens.
+
+    auto parseHexU32 = [](std::string_view hex) noexcept -> std::optional<std::uint32_t>
+    {
+        if (hex.empty())
+            return std::nullopt;
+
+        std::uint32_t v = 0;
+        for (char c : hex)
+        {
+            unsigned nib = 0;
+            if (c >= '0' && c <= '9')
+                nib = static_cast<unsigned>(c - '0');
+            else if (c >= 'a' && c <= 'f')
+                nib = 10u + static_cast<unsigned>(c - 'a');
+            else if (c >= 'A' && c <= 'F')
+                nib = 10u + static_cast<unsigned>(c - 'A');
+            else
+                return std::nullopt;
+
+            // Prevent overflow for absurdly long tokens.
+            if (v > (std::numeric_limits<std::uint32_t>::max)() / 16u)
+                return std::nullopt;
+
+            v = (v * 16u) + static_cast<std::uint32_t>(nib);
+        }
+        return v;
+    };
+
+    if (tv.rfind("vk_0x", 0) == 0)
+    {
+        if (auto v = parseHexU32(tv.substr(5)))
+        {
+            if (*v <= 0xFFu)
+                return *v;
+        }
+        return std::nullopt;
+    }
+
+    if (tv.rfind("0x", 0) == 0)
+    {
+        if (auto v = parseHexU32(tv.substr(2)))
+        {
+            if (*v <= 0xFFu)
+                return *v;
+        }
+        return std::nullopt;
+    }
 
     return std::nullopt;
 }
@@ -247,6 +373,21 @@ inline std::string InputCodeToToken(std::uint32_t code)
     default: break;
     }
 
+
+    // Numpad / keypad
+    if (code == kVK_NUMLOCK) return "NumLock";
+
+    if (code >= kVK_NUMPAD0 && code <= kVK_NUMPAD9) {
+        const std::uint32_t d = (code - kVK_NUMPAD0);
+        return "Numpad" + std::to_string(d);
+    }
+
+    if (code == kVK_MULTIPLY) return "NumpadMultiply";
+    if (code == kVK_ADD) return "NumpadAdd";
+    if (code == kVK_SEPARATOR) return "NumpadSeparator";
+    if (code == kVK_SUBTRACT) return "NumpadSubtract";
+    if (code == kVK_DECIMAL) return "NumpadDecimal";
+    if (code == kVK_DIVIDE) return "NumpadDivide";
     // Function keys.
     if (code >= kVK_F1 && code <= kVK_F24) {
         const std::uint32_t n = (code - kVK_F1) + 1;

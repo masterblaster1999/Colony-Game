@@ -107,3 +107,108 @@ TEST_CASE("core::LoadConfig tolerates corrupt values (does not throw)")
     std::error_code dec;
     fs::remove_all(dir, dec);
 }
+
+TEST_CASE("core::LoadConfig ignores invalid boolean values (does not clobber existing config)")
+{
+    const fs::path dir = make_unique_temp_dir() / "invalid_bool";
+    std::error_code ec;
+    fs::create_directories(dir, ec);
+
+    const fs::path p = dir / "config.ini";
+    {
+        std::ofstream f(p, std::ios::binary | std::ios::trunc);
+        REQUIRE(f.good());
+        f << "windowWidth=800\n";
+        f << "vsync=not_a_bool\n";
+    }
+
+    core::Config cfg;
+    cfg.windowWidth = 1; // should update
+    cfg.vsync = true;    // should remain unchanged (invalid bool)
+
+    CHECK(core::LoadConfig(cfg, dir));
+    CHECK(cfg.windowWidth == 800);
+    CHECK(cfg.vsync == true);
+
+    std::error_code dec;
+    fs::remove_all(dir, dec);
+}
+
+TEST_CASE("core::LoadConfig supports UTF-16LE BOM (Windows-style) config.ini")
+{
+    const fs::path dir = make_unique_temp_dir() / "utf16le_bom";
+    std::error_code ec;
+    fs::create_directories(dir, ec);
+
+    const fs::path p = dir / "config.ini";
+
+    // This is what a simple ASCII config looks like when saved as UTF-16LE with BOM:
+    //   FF FE  'w' 00 'i' 00 ...
+    const std::string ascii =
+        "windowWidth=800\n"
+        "windowHeight=600\n"
+        "vsync=0\n";
+
+    std::string bytes;
+    bytes.reserve(2 + ascii.size() * 2);
+    bytes.push_back(static_cast<char>(0xFF));
+    bytes.push_back(static_cast<char>(0xFE));
+
+    for (unsigned char c : ascii)
+    {
+        bytes.push_back(static_cast<char>(c));
+        bytes.push_back('\0'); // UTF-16LE: low byte then 0x00 for ASCII
+    }
+
+    {
+        std::ofstream f(p, std::ios::binary | std::ios::trunc);
+        REQUIRE(f.good());
+        f.write(bytes.data(), static_cast<std::streamsize>(bytes.size()));
+    }
+
+    core::Config cfg;
+    cfg.windowWidth = 1;
+    cfg.windowHeight = 2;
+    cfg.vsync = true;
+
+    CHECK(core::LoadConfig(cfg, dir));
+    CHECK(cfg.windowWidth == 800);
+    CHECK(cfg.windowHeight == 600);
+    CHECK(cfg.vsync == false);
+
+    std::error_code dec;
+    fs::remove_all(dir, dec);
+}
+
+
+
+TEST_CASE("core::LoadConfig supports inline comments after values")
+{
+    const fs::path dir = make_unique_temp_dir() / "inline_comments";
+    std::error_code ec;
+    fs::create_directories(dir, ec);
+
+    const fs::path p = dir / "config.ini";
+    {
+        std::ofstream f(p, std::ios::binary | std::ios::trunc);
+        REQUIRE(f.good());
+        f << "windowWidth=800 # pixels\n";
+        f << "windowHeight=600 ; pixels\n";
+        f << "vsync=true // enable vsync\n";
+        f << "; whole line comment\n";
+        f << "# whole line comment\n";
+    }
+
+    core::Config cfg;
+    cfg.windowWidth = 1;
+    cfg.windowHeight = 2;
+    cfg.vsync = false;
+
+    CHECK(core::LoadConfig(cfg, dir));
+    CHECK(cfg.windowWidth == 800);
+    CHECK(cfg.windowHeight == 600);
+    CHECK(cfg.vsync == true);
+
+    std::error_code dec;
+    fs::remove_all(dir, dec);
+}

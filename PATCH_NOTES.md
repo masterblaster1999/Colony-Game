@@ -1,3 +1,178 @@
+# Colony-Game Patch (Round 23)
+
+This patch improves **input binding usability** by adding first-class **numpad / keypad** tokens.
+
+Why: numpad keys have distinct Win32 virtual-key codes (e.g. `VK_NUMPAD0..9`, `VK_ADD`, ...), and
+players commonly bind actions to them. Previously, those keys were printed as fallback hex tokens
+(e.g. `VK_0x60`) which is inconvenient to read/edit.
+
+## Changes
+- **New tokens (InputCodeToToken):**
+  - `NumLock`
+  - `Numpad0` .. `Numpad9`
+  - `NumpadAdd`, `NumpadSubtract`, `NumpadMultiply`, `NumpadDivide`, `NumpadDecimal`
+- **Parser aliases (ParseInputCodeToken):** accepts common short forms:
+  - `Num0`..`Num9`
+  - `KP0`..`KP9`
+  - `KPPlus`, `KPMul`, `KPDiv`, etc.
+- **Tests:** added doctest coverage for parsing + round-trip stability.
+
+## Files
+- `src/input/InputBindingParse.h`
+- `tests/test_input_binding_parse_numpad.cpp`
+- `PATCH_NOTES.md`
+
+---
+
+# Colony-Game Patch (Round 22)
+
+This patch adds **regression tests** for `winpath::read_file_to_string_with_retry`.
+
+Why: multiple user-editable files are loaded via this helper on Windows. It retries reads with
+backoff to avoid transient sharing/locking issues (antivirus scans, Explorer preview handlers,
+editors doing temp-file swaps) so settings/bindings don't randomly fall back to defaults.
+
+## Changes
+- **Tests:** verify:
+  - successful full-file read round-trip
+  - empty file behavior (returns true and clears output)
+  - `max_bytes` guardrail returns `std::errc::file_too_large`
+  - missing-file reports Win32 error codes (`ERROR_FILE_NOT_FOUND` / `ERROR_PATH_NOT_FOUND`)
+  - empty path reports `std::errc::invalid_argument`
+
+## Files
+- `tests/test_winpath_read_with_retry.cpp`
+- `PATCH_NOTES.md`
+
+---
+
+# Colony-Game Patch (Round 21)
+
+This patch improves **config.ini usability** by supporting **inline comments** after values:
+
+- **New:** values may include trailing comments introduced by `#`, `;`, or `//` (e.g. `windowWidth=1280 # pixels`).
+- This matches how many INI-style config files are commonly hand-edited, and prevents comments from breaking numeric/bool parsing.
+- **Tests:** added a doctest regression case covering `#`, `;`, and `//` inline comments.
+
+## Files
+- `src/core/Config.cpp`
+- `tests/test_core_config.cpp`
+- `PATCH_NOTES.md`
+
+---
+
+# Colony-Game Patch (Round 20)
+
+This patch improves **durable atomic writes** in `cg::io::write_atomic` on Windows:
+
+- **Parity:** When write-through mode is enabled, `ReplaceFileW` is now called with `REPLACEFILE_WRITE_THROUGH` (a documented flag, though Microsoft notes it is not supported), matching our `MoveFileExW` path using `MOVEFILE_WRITE_THROUGH`.
+- **Correctness:** if `ReplaceFileW` fails but the fallback `MoveFileExW` succeeds, the call is still a success and now leaves the `err` string empty (previously it could return `true` with a stale error message).
+- **Tests:** added Windows-only doctest coverage for `.bak` behavior (backup contains the previous version) and that `make_backup=false` does not create a backup file.
+
+## Files
+- `src/io/AtomicFileWin.cpp`
+- `tests/test_io_atomic_file.cpp`
+- `PATCH_NOTES.md`
+
+---
+
+# Colony-Game Patch (Round 19)
+
+This patch improves **text encoding normalization** (`colony::util::NormalizeTextToUtf8`) by adding **UTF-32 BOM** support:
+
+- **New:** Detect and convert UTF-32LE (`FF FE 00 00`) and UTF-32BE (`00 00 FE FF`) BOM-prefixed text to UTF-8.
+- **Safety:** Reject invalid UTF-32 scalar values (surrogate range `U+D800..U+DFFF` and code points above `U+10FFFF`).
+- **Tests:** extended the encoding regression suite with UTF-32 conversion + rejection cases.
+
+## Files
+- `src/util/TextEncoding.h`
+- `tests/test_text_encoding.cpp`
+- `PATCH_NOTES.md`
+
+---
+
+# Colony-Game Patch (Round 18)
+
+This patch improves **config.ini encoding robustness**:
+
+- **Fix:** `core::LoadConfig()` now normalizes the loaded config file to UTF-8 via `colony::util::NormalizeTextToUtf8()` before parsing, so `config.ini` saved as **UTF-8 with BOM** or **UTF-16 with BOM** remains readable.
+- **Tests:** added a regression test covering a UTF-16LE BOM `config.ini`.
+
+## Files
+- `src/core/Config.cpp`
+- `tests/test_core_config.cpp`
+- `PATCH_NOTES.md`
+
+---
+
+# Colony-Game Patch (Round 17)
+
+This patch improves **input binding token round-tripping**:
+
+- **Fix:** `ParseInputCodeToken()` now accepts the `VK_0xNN` format emitted by `InputCodeToToken()` for unknown/rare keyboard virtual-key codes.
+- **Also accept:** bare `0xNN` hex tokens.
+- **Tests:** added doctest coverage for parsing and chord strings that include these hex tokens.
+
+## Files
+- `src/input/InputBindingParse.h`
+- `tests/test_input_binding_parse_vk_hex.cpp`
+- `PATCH_NOTES.md`
+
+---
+
+# Colony-Game Patch (Round 16)
+
+This patch improves **config.ini robustness** by parsing booleans conservatively:
+
+- **Accept** common INI tokens (case-insensitive): `1/0`, `true/false`, `yes/no`, `on/off`.
+- **Do not clobber** existing config on invalid bool values (e.g. `vsync=maybe` now leaves the current setting unchanged instead of forcing `false`).
+- **Tests:** added a doctest regression case covering the invalid-bool behavior.
+
+## Files
+- `src/core/Config.cpp`
+- `tests/test_core_config.cpp`
+- `PATCH_NOTES.md`
+
+---
+
+# Colony-Game Patch (Round 15)
+
+This patch adds **regression tests for text encoding normalization**.
+
+Why: several user-editable files (settings, input bindings, saves) are loaded as text. On Windows,
+editors like Notepad commonly write **UTF-8 with BOM** or **UTF-16 with BOM**. The project includes
+`colony::util::NormalizeTextToUtf8()` so these files can be edited without breaking JSON/INI parsing.
+
+## Changes
+- **Tests:** added doctest coverage for UTF-8 BOM stripping and UTF-16LE/UTF-16BE BOM conversion,
+  including surrogate-pair handling and invalid UTF-16 rejection.
+
+## Files
+- `tests/test_text_encoding.cpp`
+- `PATCH_NOTES.md`
+
+---
+
+# Colony-Game Patch (Round 14)
+
+This patch adds **unit test coverage for command-line parsing** and makes the parser easier to test:
+
+- **Refactor:** exposed `ParseCommandLineArgsFromArgv(...)` so tests can exercise the real parsing logic without touching process-global Windows APIs.
+- **Tests:** added doctest coverage for:
+  - case-insensitive flags
+  - Windows-style `/switch` normalization (`/w`, `/hgt`, `/safe-mode`, ...)
+  - `:` and `=` value separators (`--width=1280`, `--height:720`)
+  - “last override wins” behavior for boolean overrides (e.g. `--fullscreen` then `--windowed`)
+  - predictable unknown/bad-value reporting
+
+## Files
+- `src/app/CommandLineArgs.h`
+- `src/app/CommandLineArgs.cpp`
+- `tests/test_command_line_args.cpp`
+- `PATCH_NOTES.md`
+
+---
+
 # Colony-Game Patch (Round 13)
 
 This patch improves **pathfinding API correctness** by honoring output-shape options in `JpsOptions`:

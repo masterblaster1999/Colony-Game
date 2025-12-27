@@ -248,9 +248,10 @@ public:
     bool commit(bool make_backup, std::string* err_out) {
         if (!ok_ || !file_.valid()) { if (err_out) *err_out = "AtomicWriter not open"; return false; }
 
+        // 1) Flush file contents to disk (best-effort). If this fails we still attempt to publish
+        //    the temp file to avoid litter, but we report failure to the caller.
         if (!::FlushFileBuffers(file_.get())) {
             if (err_out) *err_out = "FlushFileBuffers failed: " + format_win32_error(::GetLastError());
-            // fallthrough: we still try to rename to avoid temp litter, but mark as failed
             ok_ = false;
         }
         file_.reset(); // close handle before rename
@@ -258,38 +259,55 @@ public:
         const DWORD attrs = ::GetFileAttributesW(finalW_.c_str());
         const bool target_exists = (attrs != INVALID_FILE_ATTRIBUTES);
 
-        // If target exists and is readonly, best-effort clear READONLY to avoid ReplaceFile failures
+        // If target exists and is readonly, best-effort clear READONLY to avoid ReplaceFile failures.
         if (target_exists && (attrs & FILE_ATTRIBUTE_READONLY)) clear_readonly_if_set(finalW_);
 
         bool replaced = false;
+        std::string replace_error;
         if (target_exists) {
             // Use ReplaceFileW to preserve metadata when possible.
             const std::wstring bak = make_backup ? (finalW_ + L".bak") : L"";
-            const DWORD flags = REPLACEFILE_IGNORE_MERGE_ERRORS | REPLACEFILE_IGNORE_ACL_ERRORS;
+
+            DWORD flags = REPLACEFILE_IGNORE_MERGE_ERRORS | REPLACEFILE_IGNORE_ACL_ERRORS;
+            if (write_through_) flags |= REPLACEFILE_WRITE_THROUGH;
+
             if (::ReplaceFileW(finalW_.c_str(), tmpW_.c_str(),
                                make_backup ? bak.c_str() : nullptr, flags,
                                nullptr, nullptr)) {
                 replaced = true;
             } else {
-                if (err_out) *err_out = "ReplaceFileW failed: " + format_win32_error(::GetLastError());
+                // ReplaceFileW can fail for reasons like missing destination, permissions, or
+                // transient locks; we'll fall back to MoveFileExW. Keep the error for diagnostics.
+                replace_error = "ReplaceFileW failed: " + format_win32_error(::GetLastError());
             }
         }
 
         if (!replaced) {
-            // Either target doesn't exist or ReplaceFileW failed; try MoveFileExW() replacement
-            const DWORD move_flags = MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH;
+            // Either target doesn't exist or ReplaceFileW failed; try MoveFileExW() replacement.
+            DWORD move_flags = MOVEFILE_REPLACE_EXISTING;
+            if (write_through_) move_flags |= MOVEFILE_WRITE_THROUGH;
+
             if (!::MoveFileExW(tmpW_.c_str(), finalW_.c_str(), move_flags)) {
-                if (err_out) *err_out = "MoveFileExW failed: " + format_win32_error(::GetLastError());
-                // If rename failed, clean up temp file to avoid litter
+                if (err_out) {
+                    *err_out = "MoveFileExW failed: " + format_win32_error(::GetLastError());
+                    if (!replace_error.empty()) *err_out += " (after " + replace_error + ")";
+                }
+                // If rename failed, clean up temp file to avoid litter.
                 ::DeleteFileW(tmpW_.c_str());
                 return false;
             }
         }
 
-        // Success path: ensure temp is gone (ReplaceFileW already removed it)
+        // Success path: ensure temp is gone (ReplaceFileW already removed it).
         ::DeleteFileW(tmpW_.c_str());
+
+        // If we succeeded and are returning success, ensure the error string is empty even if
+        // ReplaceFileW failed and we fell back to MoveFileExW.
+        if (ok_ && err_out) err_out->clear();
+
         return ok_;
     }
+
 
     ~AtomicWriter() {
         // Best-effort cleanup if user forgot to commit or commit failed

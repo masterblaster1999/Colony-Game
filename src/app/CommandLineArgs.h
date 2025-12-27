@@ -1,7 +1,9 @@
 #pragma once
 
 #include <optional>
+#include <span>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace colony::appwin {
@@ -42,6 +44,13 @@ struct CommandLineArgs
     // Any unknown/unsupported args are collected here (so we can show a useful error).
     std::vector<std::wstring> unknown;
 };
+
+// Parse an argv-style list (argv[0] is the program name).
+//
+// This is primarily intended for unit tests and tools. The main executable
+// uses ParseCommandLineArgs() which reads the process command line via
+// CommandLineToArgvW().
+[[nodiscard]] CommandLineArgs ParseCommandLineArgsFromArgv(std::span<const std::wstring_view> argv);
 
 // Parse the process command line using CommandLineToArgvW(GetCommandLineW()).
 [[nodiscard]] CommandLineArgs ParseCommandLineArgs();

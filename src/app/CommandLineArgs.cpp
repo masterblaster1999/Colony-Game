@@ -8,7 +8,9 @@
 #include <cwctype>
 #include <limits>
 #include <sstream>
+#include <span>
 #include <string_view>
+#include <vector>
 
 namespace colony::appwin {
 
@@ -85,19 +87,13 @@ namespace {
 
 } // namespace
 
-CommandLineArgs ParseCommandLineArgs()
+CommandLineArgs ParseCommandLineArgsFromArgv(std::span<const std::wstring_view> argv)
 {
     CommandLineArgs out;
 
-    int argc = 0;
-    LPWSTR* argv = ::CommandLineToArgvW(::GetCommandLineW(), &argc);
-    if (!argv)
-        return out;
+    const int argc = static_cast<int>(argv.size());
     if (argc <= 1)
-    {
-        ::LocalFree(argv);
         return out;
-    }
 
     auto addUnknown = [&](std::wstring_view raw) {
         out.unknown.emplace_back(raw);
@@ -105,7 +101,7 @@ CommandLineArgs ParseCommandLineArgs()
 
     for (int i = 1; i < argc; ++i)
     {
-        const std::wstring_view raw(argv[i]);
+        const std::wstring_view raw = argv[static_cast<std::size_t>(i)];
         if (raw.empty())
             continue;
         // Normalize Windows-style /foo switches:
@@ -182,7 +178,7 @@ CommandLineArgs ParseCommandLineArgs()
                 addUnknown(raw);
                 return;
             }
-            const auto parsed = ParseInt(argv[i + 1]);
+            const auto parsed = ParseInt(argv[static_cast<std::size_t>(i + 1)]);
             if (!parsed) {
                 addUnknown(raw);
                 return;
@@ -249,6 +245,22 @@ CommandLineArgs ParseCommandLineArgs()
         addUnknown(raw);
     }
 
+    return out;
+}
+
+CommandLineArgs ParseCommandLineArgs()
+{
+    int argc = 0;
+    LPWSTR* argv = ::CommandLineToArgvW(::GetCommandLineW(), &argc);
+    if (!argv)
+        return {};
+
+    std::vector<std::wstring_view> args;
+    args.reserve(static_cast<std::size_t>(argc));
+    for (int i = 0; i < argc; ++i)
+        args.emplace_back(argv[i]);
+
+    CommandLineArgs out = ParseCommandLineArgsFromArgv(args);
     ::LocalFree(argv);
     return out;
 }
