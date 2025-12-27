@@ -507,13 +507,20 @@ static void DrawDockspaceAndMenuBar(HWND hwnd)
             }
             else
             {
+                // Deleting can fail transiently on Windows if another process (Defender, Explorer preview,
+                // or an editor) is briefly holding the file. Use the retry/backoff helper so this
+                // in-game reset action is reliable.
+                std::error_code existsEc;
+                const bool existedBefore = std::filesystem::exists(g_imguiIniPath, existsEc) && !existsEc;
+
                 std::error_code ec;
-                const bool removed = std::filesystem::remove(g_imguiIniPath, ec);
-                if (ec)
+                const bool ok = winpath::remove_with_retry(g_imguiIniPath, &ec, /*max_attempts=*/32);
+                if (!ok || ec)
                 {
-                    g_resetLayoutStatus = "Failed to delete imgui.ini: " + ec.message();
+                    g_resetLayoutStatus = "Failed to delete imgui.ini: " + ec.message() +
+                                          " (code " + std::to_string(ec.value()) + ")";
                 }
-                else if (!removed)
+                else if (!existedBefore)
                 {
                     g_resetLayoutStatus = "imgui.ini was not found (already deleted?). Restart the game anyway.";
                 }

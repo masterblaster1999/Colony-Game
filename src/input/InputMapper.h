@@ -104,7 +104,9 @@ public:
     // Convenience: searches for a bindings file in a few common locations,
     // starting at the current working directory and walking up a few parents.
     //
-    // Looks for:
+    // Looks for (in order):
+    //   winpath::config_dir()/input_bindings.json   (Windows per-user override)
+    //   winpath::config_dir()/input_bindings.ini    (Windows per-user override)
     //   assets/config/input_bindings.json
     //   assets/config/input_bindings.ini
     //   input_bindings.json

@@ -104,7 +104,17 @@ bool PlanHistory::Redo(colony::proto::World& world)
 
     const bool ok = apply(world, cmd, /*useAfter=*/true);
     if (ok)
+    {
         m_undo.push_back(std::move(cmd));
+
+        // Respect the configured history cap even if it was changed after the
+        // command was originally committed (e.g., user lowers max commands).
+        if (m_undo.size() > m_maxCommands)
+        {
+            const auto trim = static_cast<std::ptrdiff_t>(m_undo.size() - m_maxCommands);
+            m_undo.erase(m_undo.begin(), m_undo.begin() + trim);
+        }
+    }
 
     return ok;
 }

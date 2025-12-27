@@ -275,13 +275,22 @@ std::vector<Cell> jps_find_path_impl(const IGrid& grid, Cell start, Cell goal, c
         out.push_back(Cell{ p.first, p.second });
     }
 
-    // Make output safe for “move cell-by-cell” consumers.
-    out = densify_if_needed(gv, out, opt);
+    // Honor output-shape options:
+    // - returnDensePath=true  => callers expect a step-by-step path (adjacent grid cells)
+    // - returnDensePath=false => callers want the raw JPS "jump points" (may have gaps)
+    // - preferJumpPoints=true => overrides returnDensePath and keeps the sparse jump-point output
+    const bool wantDense = opt.returnDensePath && !opt.preferJumpPoints;
 
-    // Optional: string-pull, then densify again so the mover still gets step-by-step cells.
     if (opt.smoothPath) {
-        const auto waypoints = smooth_waypoints(gv, out, opt);
-        out = densify_if_needed(gv, waypoints, opt);
+        // Path smoothing ("string pulling") works best on a dense path, but we still allow
+        // sparse output by returning the smoothed waypoints when wantDense==false.
+        const auto dense     = densify_if_needed(gv, out, opt);
+        const auto waypoints = smooth_waypoints(gv, dense, opt);
+        out = wantDense ? densify_if_needed(gv, waypoints, opt) : waypoints;
+    }
+    else if (wantDense) {
+        // Make output safe for “move cell-by-cell” consumers.
+        out = densify_if_needed(gv, out, opt);
     }
 
     return out;

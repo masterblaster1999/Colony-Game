@@ -159,6 +159,7 @@ CommandLineArgs ParseCommandLineArgs()
         if (arg == L"--safe-mode" || arg == L"--safe") { out.safeMode = true; continue; }
         if (arg == L"--reset-settings" || arg == L"--reset-config") { out.resetSettings = true; continue; }
         if (arg == L"--reset-imgui" || arg == L"--reset-ui") { out.resetImGui = true; continue; }
+        if (arg == L"--reset-bindings" || arg == L"--reset-input-bindings" || arg == L"--reset-inputs" || arg == L"--reset-binds") { out.resetBindings = true; continue; }
         if (arg == L"--ignore-settings") { out.ignoreSettings = true; continue; }
         if (arg == L"--ignore-imgui-ini") { out.ignoreImGuiIni = true; continue; }
         if (arg == L"--no-imgui" || arg == L"--no-ui" || arg == L"--noimgui") { out.disableImGui = true; continue; }
@@ -260,6 +261,7 @@ std::wstring BuildCommandLineHelpText()
     oss << L"  --safe-mode                 Run with defaults (ignore settings.json and imgui.ini)\n";
     oss << L"  --reset-settings             Delete %LOCALAPPDATA%\\ColonyGame\\settings.json\n";
     oss << L"  --reset-imgui                Delete %LOCALAPPDATA%\\ColonyGame\\imgui.ini\n";
+    oss << L"  --reset-bindings             Delete per-user input_bindings.{json|ini} overrides\n";
     oss << L"  --ignore-settings            Don't read settings.json (does not delete it)\n";
     oss << L"  --ignore-imgui-ini            Don't read imgui.ini (does not delete it)\n";
     oss << L"  --no-imgui                    Disable ImGui overlay entirely\n\n";
@@ -282,6 +284,7 @@ std::wstring BuildCommandLineHelpText()
     oss << L"Examples\n";
     oss << L"  ColonyGame.exe --safe-mode\n";
     oss << L"  ColonyGame.exe --reset-imgui\n";
+    oss << L"  ColonyGame.exe --reset-bindings\n";
     oss << L"  ColonyGame.exe --windowed --novsync --maxfps 240\n";
     return oss.str();
 }

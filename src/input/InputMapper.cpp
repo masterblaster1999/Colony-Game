@@ -2,6 +2,10 @@
 
 #include "util/TextEncoding.h"
 
+#if defined(_WIN32)
+#include "platform/win/PathUtilWin.h"
+#endif
+
 #include "input/InputBindingParse.h"
 
 #include <algorithm>
@@ -20,6 +24,18 @@ static bool ReadFileToString(const std::filesystem::path& path, std::string& out
 {
     out.clear();
 
+#if defined(_WIN32)
+    // Input bindings are user-editable and may be briefly locked by editors or scanners while saving.
+    // Use retry/backoff reads to avoid spurious fallbacks to default bindings during hot-reload.
+    constexpr std::size_t kMaxBindingsBytes = 4u * 1024u * 1024u; // 4 MiB guardrail
+
+    std::error_code ec;
+    if (!winpath::read_file_to_string_with_retry(path, out, &ec, kMaxBindingsBytes, /*max_attempts=*/32))
+        return false;
+
+    // Treat empty files as invalid.
+    return !out.empty();
+#else
     std::ifstream f(path, std::ios::binary);
     if (!f)
         return false;
@@ -35,6 +51,7 @@ static bool ReadFileToString(const std::filesystem::path& path, std::string& out
     // Ensure the full file was read; this avoids subtle partial-read failures
     // (AV scanners/locking) being treated as successful loads.
     return (f.gcount() == static_cast<std::streamsize>(sz));
+#endif
 }
 
 static std::optional<colony::input::Action> ParseActionName(std::string_view name)
@@ -237,6 +254,31 @@ bool InputMapper::LoadFromDefaultPaths() noexcept
     std::filesystem::path base = std::filesystem::current_path(ec);
     if (ec || base.empty())
         base = std::filesystem::path(".");
+
+#if defined(_WIN32)
+    // Prefer a per-user override under %LOCALAPPDATA%\ColonyGame. This avoids
+    // requiring write access to the install directory to customize bindings.
+    {
+        const std::filesystem::path userDir = winpath::config_dir();
+        if (!userDir.empty())
+        {
+            const std::filesystem::path userCandidates[] = {
+                userDir / "input_bindings.json",
+                userDir / "input_bindings.ini",
+            };
+
+            for (const auto& c : userCandidates)
+            {
+                ec.clear();
+                if (std::filesystem::exists(c, ec) && !ec)
+                {
+                    if (LoadFromFile(c))
+                        return true;
+                }
+            }
+        }
+    }
+#endif
 
     for (int depth = 0; depth <= kMaxParents; ++depth)
     {

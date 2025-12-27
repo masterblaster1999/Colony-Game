@@ -156,6 +156,25 @@ int GameMain(HINSTANCE hInstance, PWSTR cmdLine, int nCmdShow)
             tryDelete(dataDir / L"imgui.ini", L"imgui.ini");
     }
 
+    if (args.resetBindings)
+    {
+        // Delete per-user overrides first (preferred location on Windows).
+        const fs::path cfgDir = winpath::config_dir();
+        if (!cfgDir.empty())
+        {
+            tryDelete(cfgDir / L"input_bindings.json", L"input_bindings.json (user)");
+            tryDelete(cfgDir / L"input_bindings.ini",  L"input_bindings.ini (user)");
+        }
+
+        // Also remove any exe-dir overrides (rare, but common in dev setups).
+        const fs::path exeDir = winpath::exe_dir();
+        if (!exeDir.empty())
+        {
+            tryDelete(exeDir / L"input_bindings.json", L"input_bindings.json (exe)");
+            tryDelete(exeDir / L"input_bindings.ini",  L"input_bindings.ini (exe)");
+        }
+    }
+
     WriteLog(log, L"[AppMain] Creating AppWindow...");
 
     AppWindow::CreateOptions opt{};

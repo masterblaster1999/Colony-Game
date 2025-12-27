@@ -6,7 +6,7 @@
 
 #include <doctest/doctest.h>
 
-#include "pathfinding/Jps.hpp"
+#include <pathfinding/Jps.hpp>
 
 #include <cstddef> // std::size_t
 #include <vector>
@@ -110,3 +110,59 @@ TEST_CASE("Jps: Corner cutting guard") {
     }
 }
 
+TEST_CASE("Jps: Dense vs jump-point output options") {
+    colony_smoke_jps::JpsTestGrid g(10, 10);
+
+    const Cell s{1, 1};
+    const Cell t{8, 1};
+
+    SUBCASE("returnDensePath = true produces adjacent step path") {
+        auto o = colony_smoke_jps::DefaultOptsJps();
+        o.allowDiagonal     = false;
+        o.dontCrossCorners  = true;
+        o.returnDensePath   = true;
+        o.preferJumpPoints  = false;
+        o.smoothPath        = false;
+
+        const auto path = jps_find_path(g, s, t, o);
+        REQUIRE(path.size() == 8u);
+        CHECK(path.front() == s);
+        CHECK(path.back()  == t);
+
+        for (std::size_t i = 1; i < path.size(); ++i) {
+            int dx = path[i].x - path[i - 1].x;
+            int dy = path[i].y - path[i - 1].y;
+            if (dx < 0) dx = -dx;
+            if (dy < 0) dy = -dy;
+            CHECK((dx + dy) == 1);
+        }
+    }
+
+    SUBCASE("returnDensePath = false keeps jump points (may have gaps)") {
+        auto o = colony_smoke_jps::DefaultOptsJps();
+        o.allowDiagonal     = false;
+        o.dontCrossCorners  = true;
+        o.returnDensePath   = false;
+        o.preferJumpPoints  = false;
+        o.smoothPath        = false;
+
+        const auto path = jps_find_path(g, s, t, o);
+        REQUIRE(path.size() == 2u);
+        CHECK(path.front() == s);
+        CHECK(path.back()  == t);
+    }
+
+    SUBCASE("preferJumpPoints overrides returnDensePath") {
+        auto o = colony_smoke_jps::DefaultOptsJps();
+        o.allowDiagonal     = false;
+        o.dontCrossCorners  = true;
+        o.returnDensePath   = true;
+        o.preferJumpPoints  = true;
+        o.smoothPath        = false;
+
+        const auto path = jps_find_path(g, s, t, o);
+        REQUIRE(path.size() == 2u);
+        CHECK(path.front() == s);
+        CHECK(path.back()  == t);
+    }
+}

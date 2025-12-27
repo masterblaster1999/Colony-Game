@@ -21,6 +21,7 @@ struct CommandLineArgs
     bool safeMode = false;          // --safe-mode
     bool resetSettings = false;     // --reset-settings
     bool resetImGui = false;        // --reset-imgui
+    bool resetBindings = false;    // --reset-bindings
 
     bool ignoreSettings = false;    // --ignore-settings (don't read settings.json)
     bool ignoreImGuiIni = false;    // --ignore-imgui-ini (don't read imgui.ini)

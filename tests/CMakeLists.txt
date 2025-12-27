@@ -223,6 +223,25 @@ _colony_tests_add_objlib(colony_worldgen_core_obj   "${COLONY_WORLDGEN_CORE_SOUR
 _colony_tests_add_objlib(colony_worldgen_stages_obj "${COLONY_WORLDGEN_STAGE_SOURCES}")
 _colony_tests_add_objlib(colony_pcg_obj             "${COLONY_PCG_SOURCES}")
 
+# ------------------------------------------------------------
+# Prototype game modules used by some tests (kept minimal)
+# ------------------------------------------------------------
+# A few tests exercise the prototype simulation/persistence and editor undo/redo
+# helpers. These sources are not part of colony::core/colony::nav libs, so we
+# compile them into the test binary explicitly.
+
+set(COLONY_PROTO_TEST_SOURCES "")
+
+if(EXISTS "${CMAKE_SOURCE_DIR}/src/game/proto/ProtoWorld.cpp")
+  list(APPEND COLONY_PROTO_TEST_SOURCES
+    "${CMAKE_SOURCE_DIR}/src/game/proto/ProtoWorld.cpp"
+    "${CMAKE_SOURCE_DIR}/src/game/proto/ProtoWorld_Persistence.cpp"
+    "${CMAKE_SOURCE_DIR}/src/game/editor/PlanHistory.cpp"
+  )
+endif()
+
+_colony_tests_add_objlib(colony_proto_obj "${COLONY_PROTO_TEST_SOURCES}")
+
 # Fix MSB8027 for the tests' own sources too
 colony_msvc_unique_objnames_for_sources(COLONY_TEST_SOURCES)
 

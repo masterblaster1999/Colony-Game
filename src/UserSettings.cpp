@@ -4,7 +4,6 @@
 #include "platform/win/WinFiles.h"
 #include "util/TextEncoding.h"
 
-#include <fstream>
 #include <string>
 
 #include <nlohmann/json.hpp>
@@ -94,15 +93,20 @@ namespace {
     bool ReadFileToString(const std::filesystem::path& p, std::string& out) noexcept
     {
         out.clear();
-        std::ifstream f(p, std::ios::binary);
-        if (!f) return false;
-        f.seekg(0, std::ios::end);
-        const std::streamoff sz = f.tellg();
-        if (sz <= 0) return false;
-        f.seekg(0, std::ios::beg);
-        out.resize(static_cast<std::size_t>(sz));
-        f.read(out.data(), static_cast<std::streamsize>(sz));
-        return (f.gcount() == static_cast<std::streamsize>(sz));
+
+        // Settings can be briefly locked by background scanners (Defender), Explorer preview handlers,
+        // or editors saving via temporary file swaps. Use our Win32 retry/backoff helper.
+        constexpr std::size_t kMaxSettingsBytes = 4u * 1024u * 1024u; // 4 MiB guardrail
+
+        std::error_code ec;
+        if (!winpath::read_file_to_string_with_retry(p, out, &ec, kMaxSettingsBytes, /*max_attempts=*/32))
+            return false;
+
+        // Treat empty files as "no settings".
+        if (out.empty())
+            return false;
+
+        return true;
     }
 
     int ReadSettingsVersion(const nlohmann::json& j) noexcept

@@ -3,6 +3,10 @@
 #include "input/InputBindingParse.h"
 #include "util/PathUtf8.h"
 
+#if defined(_WIN32)
+#include "platform/win/PathUtilWin.h"
+#endif
+
 #include <algorithm>
 #include <fstream>
 #include <system_error>
@@ -63,6 +67,25 @@ static bool InputTextStdString(const char* label, std::string* str, ImGuiInputTe
 {
     outError.clear();
 
+#if defined(_WIN32)
+    // Use atomic writes so an editor "Save" can't leave a partial/truncated bindings file if the app crashes.
+    // Also includes retry/backoff to tolerate transient Windows locks from AV/Explorer.
+    std::error_code ec;
+    if (!winpath::atomic_write_file(path, text, &ec))
+    {
+        outError = "Write failed: " + colony::util::PathToUtf8String(path);
+        if (ec)
+        {
+            outError += " (";
+            outError += ec.message();
+            outError += ", code ";
+            outError += std::to_string(ec.value());
+            outError += ")";
+        }
+        return false;
+    }
+    return true;
+#else
     std::error_code ec;
     if (path.has_parent_path()) {
         fs::create_directories(path.parent_path(), ec);
@@ -83,6 +106,7 @@ static bool InputTextStdString(const char* label, std::string* str, ImGuiInputTe
         return false;
     }
     return true;
+#endif
 }
 
 [[nodiscard]] bool parseBindingsField(std::string_view field,
@@ -160,12 +184,53 @@ void PrototypeGame::Impl::drawBindingsEditorWindow()
 
     // One-time init when opened.
     if (!bindingsEditorInit) {
+#if defined(_WIN32)
+        // Default to a per-user override path so the editor can save even when the game is installed
+        // under Program Files (read-only). The loader prefers this location as well.
+        const fs::path userDir  = winpath::config_dir();
+        const fs::path userJson = userDir.empty() ? fs::path{} : (userDir / "input_bindings.json");
+        const fs::path userIni  = userDir.empty() ? fs::path{} : (userDir / "input_bindings.ini");
+
+        auto pickUserPathFor = [&](const fs::path& ref) -> fs::path {
+            const std::string ext = colony::input::bindings::ToLowerCopy(ref.extension().string());
+            if (ext == ".ini" && !userIni.empty())
+                return userIni;
+            if (!userJson.empty())
+                return userJson;
+            if (!userIni.empty())
+                return userIni;
+            return {};
+        };
+#endif
+
         if (!bindingsLoadedPath.empty()) {
+#if defined(_WIN32)
+            const fs::path userPreferred = pickUserPathFor(bindingsLoadedPath);
+
+            // If the loaded path is already a per-user override, edit it in place.
+            // Otherwise, default to the per-user path so "Save" doesn't require install-dir permissions.
+            if (!userDir.empty() && bindingsLoadedPath.parent_path() == userDir)
+                bindingsEditorTargetPath = bindingsLoadedPath;
+            else if (!userPreferred.empty())
+                bindingsEditorTargetPath = userPreferred;
+            else
+                bindingsEditorTargetPath = bindingsLoadedPath;
+#else
             bindingsEditorTargetPath = bindingsLoadedPath;
-        } else if (!bindingCandidates.empty()) {
-            bindingsEditorTargetPath = bindingCandidates.front().first;
+#endif
         } else {
-            bindingsEditorTargetPath = fs::path("assets") / "config" / "input_bindings.json";
+#if defined(_WIN32)
+            if (!userJson.empty())
+                bindingsEditorTargetPath = userJson;
+            else if (!userIni.empty())
+                bindingsEditorTargetPath = userIni;
+            else
+#endif
+            if (!bindingCandidates.empty()) {
+                bindingsEditorTargetPath = bindingCandidates.front().first;
+            } else {
+                bindingsEditorTargetPath = fs::path("assets") / "config" / "input_bindings.json";
+            }
         }
 
         for (std::size_t i = 0; i < static_cast<std::size_t>(colony::input::Action::Count); ++i) {
@@ -196,7 +261,38 @@ void PrototypeGame::Impl::drawBindingsEditorWindow()
     ImGui::TextDisabled("Wheel tokens: WheelUp, WheelDown");
     ImGui::Separator();
 
+    if (!bindingsLoadedPath.empty())
+        ImGui::TextWrapped("Loaded file: %s", colony::util::PathToUtf8String(bindingsLoadedPath).c_str());
+    else
+        ImGui::TextWrapped("Loaded file: (defaults)");
+
     ImGui::TextWrapped("Target file: %s", colony::util::PathToUtf8String(bindingsEditorTargetPath).c_str());
+
+#if defined(_WIN32)
+    {
+        const fs::path userDir = winpath::config_dir();
+        if (!userDir.empty())
+        {
+            const fs::path userJson = userDir / "input_bindings.json";
+            const fs::path userIni  = userDir / "input_bindings.ini";
+
+            ImGui::TextDisabled("Quick target:");
+            if (ImGui::Button("Per-user JSON"))
+                bindingsEditorTargetPath = userJson;
+            ImGui::SameLine();
+            if (ImGui::Button("Per-user INI"))
+                bindingsEditorTargetPath = userIni;
+            if (!bindingsLoadedPath.empty())
+            {
+                ImGui::SameLine();
+                if (ImGui::Button("Loaded file"))
+                    bindingsEditorTargetPath = bindingsLoadedPath;
+            }
+
+            ImGui::Separator();
+        }
+    }
+#endif
 
     // Buttons
     if (ImGui::Button("Apply (runtime)"))

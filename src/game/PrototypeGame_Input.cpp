@@ -5,6 +5,10 @@
 #include <algorithm>
 #include <system_error>
 
+#if defined(_WIN32)
+#include "platform/win/PathUtilWin.h"
+#endif
+
 namespace colony::game {
 
 namespace {
@@ -14,6 +18,18 @@ constexpr int kMaxBindingParents = 5;
 std::vector<fs::path> CollectBindingPaths()
 {
     std::vector<fs::path> out;
+
+    // Prefer a per-user override under %LOCALAPPDATA%\\ColonyGame.
+    // This avoids requiring write access to the install directory to customize bindings.
+#if defined(_WIN32)
+    const fs::path userDir = winpath::config_dir();
+    if (!userDir.empty())
+    {
+        out.push_back(userDir / "input_bindings.json");
+        out.push_back(userDir / "input_bindings.ini");
+    }
+#endif
+
 
     std::error_code ec;
     fs::path base = fs::current_path(ec);

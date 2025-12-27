@@ -1,3 +1,168 @@
+# Colony-Game Patch (Round 13)
+
+This patch improves **pathfinding API correctness** by honoring output-shape options in `JpsOptions`:
+
+- **Fix:** `jps_find_path_impl()` now respects `returnDensePath` and `preferJumpPoints` (previously the adapter always densified the path).
+- **Tests:** added doctest coverage validating dense (step-by-step) output vs sparse “jump point” output.
+
+## Files
+- `pathfinding/JpsAdapter.cpp`
+- `tests/test_jps.cpp`
+- `PATCH_NOTES.md`
+
+---
+
+# Colony-Game Patch (Round 12)
+
+This patch focuses on **undo/redo stability + test coverage** for the prototype plan editor:
+
+- **Fix:** `PlanHistory::Redo()` now enforces the configured **max history cap** even if the cap is lowered after an undo (previously redo could grow the undo stack beyond the new cap).
+- **Tests:** added a dedicated doctest suite for PlanHistory (undo/redo round-trip, duplicate tile edit merge, and history-cap trimming behavior).
+- **Build/Test plumbing:** the test target now compiles the minimal prototype modules it exercises (`ProtoWorld` persistence + `PlanHistory`) directly into `colony_tests`, so tests that call `World::SaveJson/LoadJson()` link reliably.
+
+## Files
+- `src/game/editor/PlanHistory.cpp`
+- `tests/test_plan_history.cpp`
+- `tests/CMakeLists.txt`
+- `PATCH_NOTES.md`
+
+---
+
+# Colony-Game Patch (Round 11)
+
+This patch improves **input bindings ergonomics on Windows** by adding a **per-user override location**
+under `%LOCALAPPDATA%\ColonyGame`, so players can customize bindings without editing files inside the install directory.
+
+- **Per-user bindings search path**: the game now checks `%LOCALAPPDATA%\ColonyGame\input_bindings.{json|ini}` first,
+  then falls back to the existing `assets/config/...` and working-directory candidates.
+- **Bindings Editor defaults to the per-user target** (and adds quick target buttons for per-user JSON/INI and the currently loaded file).
+- **New CLI recovery flag**: `--reset-bindings` deletes per-user `input_bindings.{json|ini}` overrides (and any exe-dir overrides).
+
+## Files
+- `src/game/PrototypeGame_Input.cpp`
+- `src/game/PrototypeGame_UI_BindingsEditor.cpp`
+- `src/input/InputMapper.cpp`
+- `src/input/InputMapper.h`
+- `src/app/CommandLineArgs.cpp`
+- `src/app/CommandLineArgs.h`
+- `src/AppMain.cpp`
+
+---
+
+# Colony-Game Patch (Round 10)
+
+This patch continues the **Windows robustness** theme with two small but high-impact improvements:
+
+- **ImGui layout reset is now resilient**: deleting `imgui.ini` uses `winpath::remove_with_retry()` so transient file locks (Defender, Explorer preview handlers, editors) don’t make the in-game reset action randomly fail.
+- **Added CI tests** for the retry helpers (`remove_with_retry` + `rename_with_retry`), including deleting **read-only** files.
+
+## Fixes & improvements
+
+### 1) ImGui “Reset UI layout” delete uses winpath retry helper
+The ImGui debug menu includes **Reset UI layout (delete imgui.ini)**. Previously it used `std::filesystem::remove`, which can fail intermittently on Windows when another process briefly holds a handle to the file.
+
+**Change:** use `winpath::remove_with_retry()` and surface the Windows error code in the UI status string when deletion fails.
+
+**Files:**
+- `src/ui/ImGuiLayer.cpp`
+
+### 2) Tests for winpath retry ops
+Added a small Windows-only regression suite covering:
+- `rename_with_retry()` successful rename
+- `rename_with_retry()` error reporting when the source is missing
+- `remove_with_retry()` removing a **read-only** file (clears the attribute best-effort)
+
+**Files:**
+- `tests/test_winpath_retry_ops.cpp`
+
+---
+
+# Colony-Game Patch (Round 9)
+
+This patch continues the **stability + DX polish** work:
+
+- **Config saves are now atomic on Windows** (`core::SaveConfig`) to prevent truncated `config.ini` on crashes or transient locks.
+- **Config loads are more resilient**: Windows reads use retry/backoff + size guard, and parsing no longer throws on corrupt values.
+- **Added tests** covering config save/load and corrupt-value tolerance.
+- **Lint workflow cancels older runs** (concurrency) and uses least-privilege permissions to reduce CI noise and overlap.
+
+## Fixes & improvements
+
+### 1) Atomic + resilient config.ini (core::Config)
+`src/core/Config.cpp` was using `std::stoi` and `std::ofstream(..., trunc)` directly. That had two practical issues:
+
+- A malformed `config.ini` could throw (and potentially crash) during startup.
+- On Windows, a save could be truncated if the process died mid-write or if a transient lock interfered.
+
+**Improvements:**
+- Safe parsing via `std::from_chars` (no exceptions) + whitespace/comment handling.
+- Windows loads use `winpath::read_file_to_string_with_retry()` with a 1 MiB guardrail.
+- Windows saves use `winpath::atomic_write_file()` and report actionable errors via `LOG_ERROR`.
+- Save now ensures the directory exists (`create_directories`).
+
+**Files:**
+- `src/core/Config.cpp`
+
+### 2) Tests for config save/load robustness
+Added a small regression suite ensuring:
+- Save creates the directory and writes `config.ini`
+- Load round-trips values
+- Corrupt values don’t throw and don’t clobber existing defaults
+
+**Files:**
+- `tests/test_core_config.cpp`
+
+### 3) Lint workflow: concurrency + least-privilege
+The PR lint workflow now cancels older runs on the same ref/PR and runs with minimal permissions.
+
+**Files:**
+- `.github/workflows/lint.yml`
+
+---
+
+# Colony-Game Patch (Round 8)
+
+This patch continues the **Windows robustness** theme, focusing on **user-editable config files**:
+
+- **Settings & input bindings now load with retry/backoff** to tolerate transient file locks from Defender, Explorer preview handlers, or editors.
+- **Bindings editor saves atomically** (temp file + replace) to avoid partial/truncated writes and to play nicely with hot-reload.
+- **Added test coverage** for the Win32 IO helpers (atomic write + max-bytes guard).
+- Minor include hygiene: `test_jps.cpp` now includes the public header via `<pathfinding/Jps.hpp>`.
+
+## Fixes & improvements
+
+### 1) Robust settings.json reads (retry/backoff + size guardrail)
+`LoadUserSettings()` now uses `winpath::read_file_to_string_with_retry()` so a brief sharing/lock violation doesn't force the game back to defaults.
+
+**Files:**
+- `src/UserSettings.cpp`
+
+### 2) Robust input bindings reads (retry/backoff + size guardrail)
+`InputMapper::LoadFromFile()` now uses the robust Windows read helper. This reduces “bindings temporarily reset to defaults” during hot reload if the bindings file is mid-save.
+
+**Files:**
+- `src/input/InputMapper.cpp`
+
+### 3) Bindings editor saves atomically (and with retry)
+The in-app bindings editor now writes via `winpath::atomic_write_file()` (temp file + replace + retry/backoff).
+
+**Files:**
+- `src/game/PrototypeGame_UI_BindingsEditor.cpp`
+
+### 4) Tests for winpath IO helpers
+Added small targeted tests for `atomic_write_file()` and `read_file_to_string_with_retry()` (including the `max_bytes` guard).
+
+**Files:**
+- `tests/test_atomic_write.cpp`
+
+### 5) Include hygiene
+Use angle brackets for the public pathfinding header include.
+
+**Files:**
+- `tests/test_jps.cpp`
+
+---
+
 # Colony-Game Patch (Round 7)
 
 This patch focuses on **Windows-only robustness and maintainability**:
