@@ -87,6 +87,11 @@ TEST_CASE("ProtoWorld SaveJson format/version and legacy format compatibility")
         w.colonists()[0].role.set(RoleId::Builder);
         w.colonists()[0].role.level = 2;
         w.colonists()[0].role.xp    = 123;
+
+        // v9+: work priorities
+        w.colonists()[0].workPrio.build = 1;
+        w.colonists()[0].workPrio.farm = 0;
+        w.colonists()[0].workPrio.haul = 3;
     }
 
     // A tiny bit of state so the file isn't totally trivial.
@@ -159,6 +164,14 @@ TEST_CASE("ProtoWorld SaveJson format/version and legacy format compatibility")
         REQUIRE(c0.contains("roleXp"));
         CHECK(c0["roleXp"].is_number());
         CHECK(c0["roleXp"].get<int>() == 123);
+
+
+        // v9+: work priorities
+        REQUIRE(c0.contains("workPriorities"));
+        REQUIRE(c0["workPriorities"].is_object());
+        CHECK(c0["workPriorities"]["build"].get<int>() == 1);
+        CHECK(c0["workPriorities"]["farm"].get<int>() == 0);
+        CHECK(c0["workPriorities"]["haul"].get<int>() == 3);
     }
 
     // v5+ cells include farmGrowth as the 6th array element (and keep builtFromPlan at index 4).
@@ -240,6 +253,11 @@ TEST_CASE("ProtoWorld SaveJson format/version and legacy format compatibility")
         CHECK(loaded.colonists()[0].role.role == w.colonists()[0].role.role);
         CHECK(loaded.colonists()[0].role.level == w.colonists()[0].role.level);
         CHECK(loaded.colonists()[0].role.xp == w.colonists()[0].role.xp);
+
+
+        CHECK(loaded.colonists()[0].workPrio.build == w.colonists()[0].workPrio.build);
+        CHECK(loaded.colonists()[0].workPrio.farm == w.colonists()[0].workPrio.farm);
+        CHECK(loaded.colonists()[0].workPrio.haul == w.colonists()[0].workPrio.haul);
     }
 
 }

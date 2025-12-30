@@ -79,6 +79,7 @@ proto::TileType PrototypeGame::Impl::toolTile() const noexcept
     switch (tool) {
     case Tool::Floor: return proto::TileType::Floor;
     case Tool::Wall: return proto::TileType::Wall;
+    case Tool::Door: return proto::TileType::Door;
     case Tool::Farm: return proto::TileType::Farm;
     case Tool::Stockpile: return proto::TileType::Stockpile;
     case Tool::Demolish: return proto::TileType::Remove;
@@ -96,6 +97,7 @@ const char* PrototypeGame::Impl::toolName() const noexcept
     case Tool::Inspect: return "Inspect";
     case Tool::Floor: return "Plan Floor";
     case Tool::Wall: return "Plan Wall";
+    case Tool::Door: return "Plan Door";
     case Tool::Farm: return "Plan Farm";
     case Tool::Stockpile: return "Plan Stockpile";
     case Tool::Demolish: return "Demolish";

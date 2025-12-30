@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
+#include <cstdint>
 #include <limits>
 
 namespace colony::game {
@@ -46,6 +47,7 @@ struct CanvasXform {
     case proto::TileType::Wall: return IM_COL32(30, 30, 34, 255);
     case proto::TileType::Farm: return IM_COL32(40, 90, 40, 255);
     case proto::TileType::Stockpile: return IM_COL32(110, 80, 30, 255);
+    case proto::TileType::Door: return IM_COL32(145, 110, 55, 255);
     case proto::TileType::Tree: return IM_COL32(25, 115, 25, 255);
     case proto::TileType::Remove: return IM_COL32(160, 60, 60, 255);
     }
@@ -57,6 +59,19 @@ struct CanvasXform {
     // Same palette, but semi-transparent.
     const ImU32 c = tileFillColor(t);
     return (c & 0x00FFFFFFu) | 0x88000000u;
+}
+
+[[nodiscard]] ImU32 roomOverlayColor(int roomId, bool indoors) noexcept
+{
+    // Deterministic pseudo-random color from room id.
+    std::uint32_t h = static_cast<std::uint32_t>(roomId) * 2654435761u;
+
+    const int r = 60 + static_cast<int>((h >> 0) & 0x7F);
+    const int g = 60 + static_cast<int>((h >> 8) & 0x7F);
+    const int b = 60 + static_cast<int>((h >> 16) & 0x7F);
+    const int a = indoors ? 60 : 25;
+
+    return IM_COL32(r, g, b, a);
 }
 
 using PlanSnapshot = colony::game::editor::PlanHistory::TileSnapshot;
@@ -219,6 +234,15 @@ void PrototypeGame::Impl::drawWorldWindow()
                     dl->AddRect(p0, p1, IM_COL32(255, 245, 170, 150), 0.f, 0, 2.f);
             }
 
+            // Rooms overlay (indoors)
+            if (showRoomsOverlay && cx.tilePx >= 8.f)
+            {
+                const int rid = world.roomIdAt(x, y);
+                const proto::World::RoomInfo* ri = world.roomInfoById(rid);
+                if (ri && ri->indoors)
+                    dl->AddRectFilled(p0, p1, roomOverlayColor(ri->id, ri->indoors));
+            }
+
             // Planned overlay
             if (c.planned != proto::TileType::Empty && c.planned != c.built) {
                 if (c.planned == proto::TileType::Remove)
@@ -280,6 +304,25 @@ void PrototypeGame::Impl::drawWorldWindow()
         }
     }
 
+    // Room labels (indoors only)
+    if (showRoomIds && cx.tilePx >= 18.f)
+    {
+        for (int rid = 0; rid < world.roomCount(); ++rid)
+        {
+            const proto::World::RoomInfo* ri = world.roomInfoById(rid);
+            if (!ri || !ri->indoors)
+                continue;
+
+            const float wx = (static_cast<float>(ri->minX + ri->maxX) + 1.0f) * 0.5f;
+            const float wy = (static_cast<float>(ri->minY + ri->maxY) + 1.0f) * 0.5f;
+            const ImVec2 pos = worldToScreen(cam3, cx, {wx, wy});
+
+            char buf[16] = {};
+            (void)std::snprintf(buf, sizeof(buf), "R%d", ri->id);
+            dl->AddText({pos.x - 8.f, pos.y - 6.f}, IM_COL32(255, 255, 255, 200), buf);
+        }
+    }
+
     // Draw colonists
     for (const proto::Colonist& c : world.colonists()) {
         const ImVec2 pos = worldToScreen(cam3, cx, {c.x, c.y});
@@ -292,6 +335,8 @@ void PrototypeGame::Impl::drawWorldWindow()
             bodyCol = IM_COL32(120, 240, 120, 255);
         else if (c.jobKind == proto::Colonist::JobKind::Harvest)
             bodyCol = IM_COL32(90, 200, 240, 255);
+        else if (c.jobKind == proto::Colonist::JobKind::HaulWood)
+            bodyCol = IM_COL32(210, 170, 100, 255);
         else if (c.jobKind == proto::Colonist::JobKind::ManualMove)
             bodyCol = IM_COL32(200, 120, 240, 255);
 

@@ -23,7 +23,7 @@ using json = nlohmann::json;
     if (v < 0) v = 0;
 
     // v6+: allow Tree (and future built tiles) while still rejecting plan-only tile values.
-    const int maxBuilt = static_cast<int>(TileType::Tree);
+    const int maxBuilt = static_cast<int>(TileType::Door);
     if (v > maxBuilt)
         v = maxBuilt;
 
@@ -39,10 +39,16 @@ using json = nlohmann::json;
 [[nodiscard]] TileType PlanTileFromInt(int v) noexcept
 {
     if (v < 0) v = 0;
-    if (v > static_cast<int>(TileType::Remove))
-        v = static_cast<int>(TileType::Remove);
+
+    // Plans can include any buildable tile type plus the plan-only "Remove".
+    // (Tree plans are not exposed in the main UI, but we keep the format permissive for editor tools.)
+    const int maxPlan = static_cast<int>(TileType::Door);
+    if (v > maxPlan)
+        v = maxPlan;
+
     return static_cast<TileType>(static_cast<std::uint8_t>(v));
 }
+
 
 [[nodiscard]] bool IsNumber(const json& v) noexcept
 {
@@ -237,6 +243,13 @@ bool World::SaveJson(const std::filesystem::path& path, std::string* outError) c
                 {"role", RoleDefOf(c.role.role).name},
                 {"roleLevel", static_cast<int>(c.role.level)},
                 {"roleXp", static_cast<std::uint32_t>(c.role.xp)},
+
+                // v9+: per-colonist work priorities.
+                {"workPriorities", {
+                    {"build", static_cast<int>(c.workPrio.build)},
+                    {"farm", static_cast<int>(c.workPrio.farm)},
+                    {"haul", static_cast<int>(c.workPrio.haul)},
+                }},
             });
         j["colonists"] = std::move(colonists);
 
@@ -552,6 +565,24 @@ bool World::LoadJson(const std::filesystem::path& path, std::string* outError) n
                     }
                 }
 
+                // Work priorities (v9+). Optional field so older saves still load.
+                // Priorities are clamped into the supported range [0..4].
+                if (version >= 9 && item.contains("workPriorities") && item["workPriorities"].is_object())
+                {
+                    const json& wp = item["workPriorities"];
+
+                    WorkPriorities p = DefaultWorkPriorities(c.role.role);
+                    p.build = static_cast<std::uint8_t>(std::clamp(ObjInt(wp, "build", static_cast<int>(p.build)), 0, 4));
+                    p.farm  = static_cast<std::uint8_t>(std::clamp(ObjInt(wp, "farm",  static_cast<int>(p.farm)),  0, 4));
+                    p.haul  = static_cast<std::uint8_t>(std::clamp(ObjInt(wp, "haul",  static_cast<int>(p.haul)),  0, 4));
+
+                    c.workPrio = ClampWorkPriorities(p);
+                }
+                else
+                {
+                    c.workPrio = DefaultWorkPriorities(c.role.role);
+                }
+
                 // Clear job/path (reassigned on next tick).
                 c.jobKind = Colonist::JobKind::None;
                 c.hasJob = false;
@@ -580,6 +611,9 @@ bool World::LoadJson(const std::filesystem::path& path, std::string* outError) n
         rebuildBuiltCounts();
         rebuildFarmCache();
         rebuildLooseWoodCache();
+
+        // Recompute derived room/indoors cache.
+        rebuildRooms();
 
         // Allow job assignment immediately after a load.
         m_jobAssignCooldown = 0.0;

@@ -23,6 +23,25 @@ namespace {
     return std::max(lo, std::min(v, hi));
 }
 
+[[nodiscard]] int posToTile(float p) noexcept
+{
+    return static_cast<int>(std::floor(p));
+}
+
+[[nodiscard]] bool TileIsRoomSpace(TileType t) noexcept
+{
+    switch (t)
+    {
+    case TileType::Empty:
+    case TileType::Floor:
+    case TileType::Farm:
+    case TileType::Stockpile:
+        return true;
+    default:
+        return false;
+    }
+}
+
 // -----------------------------------------------------------------------------
 // Colonist role helpers (prototype)
 // -----------------------------------------------------------------------------
@@ -30,6 +49,36 @@ namespace {
 [[nodiscard]] bool HasCap(const colony::proto::Colonist& c, Capability cap) noexcept
 {
     return HasAny(c.role.caps(), cap);
+}
+
+// Work priority helpers (prototype).
+//
+// Priorities use the range:
+//   0 = Off, 1 = Highest ... 4 = Lowest
+//
+// For convenience, we treat Off as "infinite" priority.
+static constexpr int kWorkPrioOff = 9999;
+
+[[nodiscard]] int WorkPrioEff(std::uint8_t p) noexcept
+{
+    return (p == 0u) ? kWorkPrioOff : static_cast<int>(p);
+}
+
+[[nodiscard]] int BestWorkPrio(const colony::proto::Colonist& c,
+                              bool buildAvailable,
+                              bool farmAvailable,
+                              bool haulAvailable) noexcept
+{
+    int best = kWorkPrioOff;
+
+    if (buildAvailable && HasCap(c, Capability::Building))
+        best = std::min(best, WorkPrioEff(c.workPrio.build));
+    if (farmAvailable && HasCap(c, Capability::Farming))
+        best = std::min(best, WorkPrioEff(c.workPrio.farm));
+    if (haulAvailable && HasCap(c, Capability::Hauling))
+        best = std::min(best, WorkPrioEff(c.workPrio.haul));
+
+    return best;
 }
 
 [[nodiscard]] float LevelMoveBonus(const colony::proto::Colonist& c) noexcept
@@ -90,6 +139,7 @@ const char* TileTypeName(TileType t) noexcept
     case TileType::Stockpile: return "Stockpile";
     case TileType::Remove: return "Demolish";
     case TileType::Tree: return "Tree";
+    case TileType::Door: return "Door";
     default: return "?";
     }
 }
@@ -110,6 +160,7 @@ int TileWoodCost(TileType t) noexcept
     case TileType::Stockpile: return 1;
     case TileType::Remove: return 0;
     case TileType::Tree: return 0;
+    case TileType::Door: return 1;
     default: return 0;
     }
 }
@@ -125,6 +176,7 @@ float TileBuildTimeSeconds(TileType t) noexcept
     case TileType::Stockpile: return 0.55f;
     case TileType::Remove: return 0.65f;
     case TileType::Tree: return 0.90f;
+    case TileType::Door: return 0.70f;
     default: return 0.50f;
     }
 }
@@ -193,18 +245,6 @@ void World::reset(int w, int h, std::uint32_t seed)
     if (inBounds(cx, cy))
         cell(cx, cy).built = TileType::Stockpile;
 
-    // Border walls for orientation.
-    for (int x = 0; x < m_w; ++x)
-    {
-        cell(x, 0).built = TileType::Wall;
-        cell(x, m_h - 1).built = TileType::Wall;
-    }
-    for (int y = 0; y < m_h; ++y)
-    {
-        cell(0, y).built = TileType::Wall;
-        cell(m_w - 1, y).built = TileType::Wall;
-    }
-
     // Random scatter of rocks (walls) to make pathfinding visible.
     // Guard against tiny worlds: dist(1, w-2) becomes invalid when w <= 2.
     if (m_w > 2 && m_h > 2)
@@ -222,7 +262,6 @@ void World::reset(int w, int h, std::uint32_t seed)
         }
     }
 
-    
     // Random scatter of trees (forestry resource).
     if (m_w > 2 && m_h > 2)
     {
@@ -239,12 +278,12 @@ void World::reset(int w, int h, std::uint32_t seed)
             if (std::abs(x - cx) < 6 && std::abs(y - cy) < 6)
                 continue;
 
-            Cell& c = cell(x, y);
-            if (c.built != TileType::Empty)
+            Cell& cc = cell(x, y);
+            if (cc.built != TileType::Empty)
                 continue;
 
-            c.built = TileType::Tree;
-            c.builtFromPlan = false;
+            cc.built = TileType::Tree;
+            cc.builtFromPlan = false;
         }
     }
 
@@ -261,40 +300,35 @@ void World::reset(int w, int h, std::uint32_t seed)
         c.x = static_cast<float>(cx) + 0.5f + static_cast<float>((i % 2) - 1) * 0.5f;
         c.y = static_cast<float>(cy) + 0.5f + static_cast<float>((i / 2) - 1) * 0.5f;
 
+        // Player-control state.
+        c.drafted = false;
+
+        // Start everyone as Workers with role-default work priorities.
+        c.role.set(RoleId::Worker);
+        c.workPrio = DefaultWorkPriorities(c.role.role);
+
+        // Start everyone with a full personal food reserve.
         const float maxPersonalFood = static_cast<float>(std::max(0.0, colonistMaxPersonalFood));
         c.personalFood = maxPersonalFood;
+
+        // Clear job/path state.
+        c.hasJob = false;
         c.jobKind = Colonist::JobKind::None;
-    
-if (c.hasJob && c.jobKind == Colonist::JobKind::HaulWood)
-{
-    // Release the pickup reservation so other haulers can take it.
-    if (inBounds(c.haulPickupX, c.haulPickupY))
-    {
-        Cell& src = cell(c.haulPickupX, c.haulPickupY);
-        if (src.looseWoodReservedBy == c.id)
-            src.looseWoodReservedBy = -1;
-    }
-
-    // If the colonist is carrying wood, drop it near their current tile.
-    if (c.carryingWood > 0)
-    {
-        const int tx = clampi(posToTile(c.x), 0, m_w - 1);
-        const int ty = clampi(posToTile(c.y), 0, m_h - 1);
-        dropLooseWoodNear(tx, ty, c.carryingWood);
-        c.carryingWood = 0;
-    }
-
-    c.haulingToDropoff = false;
-    c.haulWorkRemaining = 0.0f;
-}
-
-    c.hasJob = false;
+        c.targetX = 0;
+        c.targetY = 0;
+        c.path.clear();
+        c.pathIndex = 0;
         c.eatWorkRemaining = 0.0f;
         c.harvestWorkRemaining = 0.0f;
 
-    c.haulWorkRemaining = 0.0f;
-    c.carryingWood = 0;
-    c.haulingToDropoff = false;
+        // Hauling state.
+        c.carryingWood = 0;
+        c.haulPickupX = 0;
+        c.haulPickupY = 0;
+        c.haulDropX = 0;
+        c.haulDropY = 0;
+        c.haulingToDropoff = false;
+        c.haulWorkRemaining = 0.0f;
 
         m_colonists.push_back(std::move(c));
     }
@@ -315,6 +349,9 @@ if (c.hasJob && c.jobKind == Colonist::JobKind::HaulWood)
 
     // Build loose-wood cache.
     rebuildLooseWoodCache();
+
+    // Build room cache (indoors/outdoors).
+    rebuildRooms();
 
     // Allow job assignment immediately after a reset.
     m_jobAssignCooldown = 0.0;
@@ -670,6 +707,7 @@ void World::clearAllPlans()
     // Allow immediate assignment after clearing plans.
     m_jobAssignCooldown = 0.0;
     m_harvestAssignCooldown = 0.0;
+    m_haulAssignCooldown = 0.0;
     m_treeSpreadAccum = 0.0;
 }
 
@@ -680,6 +718,7 @@ void World::CancelAllJobsAndClearReservations() noexcept
     {
         c.reservedBy = -1;
         c.farmReservedBy = -1;
+        c.looseWoodReservedBy = -1;
     }
 
     for (Colonist& c : m_colonists)
@@ -688,6 +727,7 @@ void World::CancelAllJobsAndClearReservations() noexcept
     // Allow immediate re-assignment after bulk edits (undo/redo, clear plans, load).
     m_jobAssignCooldown = 0.0;
     m_harvestAssignCooldown = 0.0;
+    m_haulAssignCooldown = 0.0;
     m_treeSpreadAccum = 0.0;
 }
 
@@ -702,6 +742,146 @@ int World::builtCount(TileType t) const noexcept
     if (i >= m_builtCounts.size())
         return 0;
     return m_builtCounts[i];
+}
+
+
+int World::roomIdAt(int x, int y) const noexcept
+{
+    if (!inBounds(x, y))
+        return -1;
+
+    const std::size_t i = idx(x, y);
+    if (i >= m_roomIds.size())
+        return -1;
+
+    return m_roomIds[i];
+}
+
+bool World::tileIndoors(int x, int y) const noexcept
+{
+    const int rid = roomIdAt(x, y);
+    const RoomInfo* info = roomInfoById(rid);
+    return info ? info->indoors : false;
+}
+
+const World::RoomInfo* World::roomInfoById(int roomId) const noexcept
+{
+    if (roomId < 0)
+        return nullptr;
+
+    const std::size_t i = static_cast<std::size_t>(roomId);
+    if (i >= m_rooms.size())
+        return nullptr;
+
+    return &m_rooms[i];
+}
+
+void World::rebuildRooms() noexcept
+{
+    m_roomsDirty = false;
+
+    const int w = m_w;
+    const int h = m_h;
+
+    if (w <= 0 || h <= 0)
+    {
+        m_roomIds.clear();
+        m_rooms.clear();
+        m_indoorsRoomCount = 0;
+        m_indoorsTileCount = 0;
+        return;
+    }
+
+    const std::size_t n = static_cast<std::size_t>(w * h);
+
+    m_roomIds.assign(n, -1);
+    m_rooms.clear();
+    m_indoorsRoomCount = 0;
+    m_indoorsTileCount = 0;
+
+    std::vector<colony::pf::IVec2> stack;
+    stack.reserve(256);
+
+    int nextId = 0;
+
+    constexpr int kDirs[4][2] = { {1, 0}, {-1, 0}, {0, 1}, {0, -1} };
+
+    for (int y = 0; y < h; ++y)
+    {
+        for (int x = 0; x < w; ++x)
+        {
+            const std::size_t flat = idx(x, y);
+
+            if (m_roomIds[flat] != -1)
+                continue;
+
+            if (!TileIsRoomSpace(cell(x, y).built))
+                continue;
+
+            RoomInfo info;
+            info.id = nextId;
+            info.minX = x;
+            info.maxX = x;
+            info.minY = y;
+            info.maxY = y;
+
+            bool touchesBorder = (x == 0 || y == 0 || x == w - 1 || y == h - 1);
+            int area = 0;
+
+            stack.clear();
+            stack.push_back({x, y});
+            m_roomIds[flat] = nextId;
+
+            while (!stack.empty())
+            {
+                const colony::pf::IVec2 p = stack.back();
+                stack.pop_back();
+
+                ++area;
+
+                info.minX = std::min(info.minX, p.x);
+                info.minY = std::min(info.minY, p.y);
+                info.maxX = std::max(info.maxX, p.x);
+                info.maxY = std::max(info.maxY, p.y);
+
+                if (p.x == 0 || p.y == 0 || p.x == w - 1 || p.y == h - 1)
+                    touchesBorder = true;
+
+                for (const auto& d : kDirs)
+                {
+                    const int nx = p.x + d[0];
+                    const int ny = p.y + d[1];
+
+                    if (!inBounds(nx, ny))
+                        continue;
+
+                    const std::size_t nf = idx(nx, ny);
+
+                    if (m_roomIds[nf] != -1)
+                        continue;
+
+                    if (!TileIsRoomSpace(cell(nx, ny).built))
+                        continue;
+
+                    m_roomIds[nf] = nextId;
+                    stack.push_back({nx, ny});
+                }
+            }
+
+            info.area = area;
+            info.indoors = !touchesBorder;
+
+            m_rooms.push_back(info);
+
+            if (info.indoors)
+            {
+                ++m_indoorsRoomCount;
+                m_indoorsTileCount += area;
+            }
+
+            ++nextId;
+        }
+    }
 }
 
 int World::harvestableFarmCount() const noexcept
@@ -738,6 +918,11 @@ void World::builtCountAdjust(TileType oldBuilt, TileType newBuilt) noexcept
         m_builtCounts[io] = std::max(0, m_builtCounts[io] - 1);
     if (in < m_builtCounts.size())
         ++m_builtCounts[in];
+
+
+    // Room topology only changes when a tile transitions between open-space and a boundary.
+    if (TileIsRoomSpace(oldBuilt) != TileIsRoomSpace(newBuilt))
+        m_roomsDirty = true;
 }
 
 void World::tick(double dtSeconds)
@@ -912,6 +1097,9 @@ void World::tick(double dtSeconds)
         stepHaulIfReady(c, dtSeconds);
         stepEatingIfReady(c, dtSeconds);
     }
+
+    if (m_roomsDirty)
+        rebuildRooms();
 }
 
 void World::syncNavCell(int x, int y) noexcept
@@ -1785,6 +1973,39 @@ void World::assignHarvestJobs(double dtSeconds)
     if (!anyUnreserved)
         return;
 
+    // For per-colonist work priorities, determine whether other work types are currently available.
+    bool buildWorkAvailable = false;
+    for (const auto& pos : m_plannedCells)
+    {
+        if (!inBounds(pos.x, pos.y))
+            continue;
+        const Cell& pc = cell(pos.x, pos.y);
+        if (pc.planned == TileType::Empty || pc.planned == pc.built)
+            continue;
+        if (pc.reservedBy == -1)
+        {
+            buildWorkAvailable = true;
+            break;
+        }
+    }
+
+    bool haulWorkAvailable = false;
+    if (builtCount(TileType::Stockpile) > 0 && m_looseWoodTotal > 0)
+    {
+        for (const auto& pos : m_looseWoodCells)
+        {
+            if (!inBounds(pos.x, pos.y))
+                continue;
+            const Cell& wc = cell(pos.x, pos.y);
+            if (wc.looseWood <= 0)
+                continue;
+            if (wc.looseWoodReservedBy != -1)
+                continue;
+            haulWorkAvailable = true;
+            break;
+        }
+    }
+
     m_harvestAssignCooldown = std::max(0.0, m_harvestAssignCooldown - dtSeconds);
     if (m_harvestAssignCooldown > 0.0)
         return;
@@ -1846,6 +2067,14 @@ void World::assignHarvestJobs(double dtSeconds)
         // If we have food, let hungry colonists eat first.
         if (!foodEmpty && eatThreshold > 0.0f && c.personalFood <= eatThreshold)
             continue;
+
+        // Respect per-colonist work priorities (unless we're bootstrapping from 0 food).
+        if (!foodEmpty)
+        {
+            const int best = BestWorkPrio(c, buildWorkAvailable, /*farmAvailable=*/anyUnreserved, haulWorkAvailable);
+            if (best == kWorkPrioOff || WorkPrioEff(c.workPrio.farm) != best)
+                continue;
+        }
 
         const int sx = static_cast<int>(std::floor(c.x));
         const int sy = static_cast<int>(std::floor(c.y));
@@ -1918,6 +2147,42 @@ void World::assignJobs(double dtSeconds)
     if (!anyUnreserved)
         return;
 
+    // For per-colonist work priorities, determine whether other work types are currently available.
+    bool farmWorkAvailable = false;
+    for (const auto& pos : m_farmCells)
+    {
+        if (!inBounds(pos.x, pos.y))
+            continue;
+
+        const Cell& fc = cell(pos.x, pos.y);
+        if (fc.built != TileType::Farm)
+            continue;
+        if (fc.farmGrowth < 1.0f)
+            continue;
+        if (fc.farmReservedBy != -1)
+            continue;
+
+        farmWorkAvailable = true;
+        break;
+    }
+
+    bool haulWorkAvailable = false;
+    if (builtCount(TileType::Stockpile) > 0 && m_looseWoodTotal > 0)
+    {
+        for (const auto& pos : m_looseWoodCells)
+        {
+            if (!inBounds(pos.x, pos.y))
+                continue;
+            const Cell& wc = cell(pos.x, pos.y);
+            if (wc.looseWood <= 0)
+                continue;
+            if (wc.looseWoodReservedBy != -1)
+                continue;
+
+            haulWorkAvailable = true;
+            break;
+        }
+    }
 
     // Decrement throttle timer.
     m_jobAssignCooldown = std::max(0.0, m_jobAssignCooldown - dtSeconds);
@@ -1932,8 +2197,12 @@ void World::assignJobs(double dtSeconds)
         if (!c.hasJob && !c.drafted && HasCap(c, Capability::Building) &&
             (eatThreshold <= 0.0f || c.personalFood > eatThreshold))
         {
-            anyIdleBuilder = true;
-            break;
+            const int best = BestWorkPrio(c, /*buildAvailable=*/anyUnreserved, farmWorkAvailable, haulWorkAvailable);
+            if (best != kWorkPrioOff && WorkPrioEff(c.workPrio.build) == best)
+            {
+                anyIdleBuilder = true;
+                break;
+            }
         }
     }
     if (!anyIdleBuilder)
@@ -1965,6 +2234,13 @@ void World::assignJobs(double dtSeconds)
         // Hungry colonists should not pick up construction jobs.
         if (eatThreshold > 0.0f && c.personalFood <= eatThreshold)
             continue;
+
+        // Respect per-colonist work priorities.
+        {
+            const int best = BestWorkPrio(c, /*buildAvailable=*/anyUnreserved, farmWorkAvailable, haulWorkAvailable);
+            if (best == kWorkPrioOff || WorkPrioEff(c.workPrio.build) != best)
+                continue;
+        }
 
         const int sx = static_cast<int>(std::floor(c.x));
         const int sy = static_cast<int>(std::floor(c.y));
@@ -2017,6 +2293,9 @@ void World::assignJobs(double dtSeconds)
 
 void World::assignHaulJobs(double dtSeconds)
 {
+    if (dtSeconds <= 0.0)
+        return;
+
     if (m_looseWoodCells.empty() || m_looseWoodTotal <= 0)
         return;
 
@@ -2025,12 +2304,64 @@ void World::assignHaulJobs(double dtSeconds)
         return;
 
     // Throttle pathfinding work.
-    m_haulAssignCooldown -= dtSeconds;
+    m_haulAssignCooldown = std::max(0.0, m_haulAssignCooldown - dtSeconds);
     if (m_haulAssignCooldown > 0.0)
         return;
     m_haulAssignCooldown = 0.15;
 
-    const float eatThreshold = static_cast<float>(hungerEatThreshold);
+    // Early out if all loose wood stacks are reserved.
+    bool haulWorkAvailable = false;
+    for (const auto& pos : m_looseWoodCells)
+    {
+        if (!inBounds(pos.x, pos.y))
+            continue;
+        const Cell& wc = cell(pos.x, pos.y);
+        if (wc.looseWood <= 0)
+            continue;
+        if (wc.looseWoodReservedBy != -1)
+            continue;
+
+        haulWorkAvailable = true;
+        break;
+    }
+    if (!haulWorkAvailable)
+        return;
+
+    // For per-colonist work priorities, determine whether other work types are currently available.
+    bool buildWorkAvailable = false;
+    for (const auto& pos : m_plannedCells)
+    {
+        if (!inBounds(pos.x, pos.y))
+            continue;
+        const Cell& pc = cell(pos.x, pos.y);
+        if (pc.planned == TileType::Empty || pc.planned == pc.built)
+            continue;
+        if (pc.reservedBy == -1)
+        {
+            buildWorkAvailable = true;
+            break;
+        }
+    }
+
+    bool farmWorkAvailable = false;
+    for (const auto& pos : m_farmCells)
+    {
+        if (!inBounds(pos.x, pos.y))
+            continue;
+
+        const Cell& fc = cell(pos.x, pos.y);
+        if (fc.built != TileType::Farm)
+            continue;
+        if (fc.farmGrowth < 1.0f)
+            continue;
+        if (fc.farmReservedBy != -1)
+            continue;
+
+        farmWorkAvailable = true;
+        break;
+    }
+
+    const float eatThreshold = static_cast<float>(std::max(0.0, colonistEatThresholdFood));
 
     for (auto& c : m_colonists)
     {
@@ -2046,6 +2377,13 @@ void World::assignHaulJobs(double dtSeconds)
         // Let hungry colonists prioritize eating if there's food available.
         if (eatThreshold > 0.0f && c.personalFood <= eatThreshold && m_inv.food > 0)
             continue;
+
+        // Respect per-colonist work priorities.
+        {
+            const int best = BestWorkPrio(c, buildWorkAvailable, farmWorkAvailable, /*haulAvailable=*/haulWorkAvailable);
+            if (best == kWorkPrioOff || WorkPrioEff(c.workPrio.haul) != best)
+                continue;
+        }
 
         int woodX = -1;
         int woodY = -1;
@@ -2631,12 +2969,43 @@ void World::cancelJob(Colonist& c) noexcept
         }
     }
 
+    if (c.hasJob && c.jobKind == Colonist::JobKind::HaulWood)
+    {
+        // Release the pickup reservation so other haulers can take it.
+        if (inBounds(c.haulPickupX, c.haulPickupY))
+        {
+            Cell& src = cell(c.haulPickupX, c.haulPickupY);
+            if (src.looseWoodReservedBy == c.id)
+                src.looseWoodReservedBy = -1;
+        }
+
+        // If the colonist is carrying wood, drop it near their current tile so it can be re-hauled.
+        if (c.carryingWood > 0)
+        {
+            const int tx = clampi(posToTile(c.x), 0, m_w - 1);
+            const int ty = clampi(posToTile(c.y), 0, m_h - 1);
+            dropLooseWoodNear(tx, ty, c.carryingWood);
+        }
+
+        c.carryingWood = 0;
+        c.haulingToDropoff = false;
+        c.haulWorkRemaining = 0.0f;
+        c.haulPickupX = 0;
+        c.haulPickupY = 0;
+        c.haulDropX = 0;
+        c.haulDropY = 0;
+    }
+
     c.hasJob = false;
     c.jobKind = Colonist::JobKind::None;
     c.path.clear();
     c.pathIndex = 0;
     c.eatWorkRemaining = 0.0f;
     c.harvestWorkRemaining = 0.0f;
+
+    // Always clear hauling timers/state when a job is canceled.
+    c.haulWorkRemaining = 0.0f;
+    c.haulingToDropoff = false;
 }
 
 void World::applyPlanIfComplete(int targetX, int targetY) noexcept
@@ -2646,66 +3015,71 @@ void World::applyPlanIfComplete(int targetX, int targetY) noexcept
 
     Cell& c = cell(targetX, targetY);
 
-    const TileType newBuilt = c.planned;
-    if (newBuilt == TileType::Empty || newBuilt == c.built)
+    const TileType plan = c.planned;
+    if (plan == TileType::Empty || plan == c.built)
         return;
+
+    const TileType oldBuilt = c.built;
+
+    // "Demolish" is a plan-only marker; it resolves to an Empty built tile.
+    const bool isDeconstruct = (plan == TileType::Remove);
+    const TileType newBuilt = isDeconstruct ? TileType::Empty : plan;
 
     int woodToDrop = 0;
 
-    // If the plan is just "remove" then we refund the wood cost (if any).
-    // This is a prototype; we only refund wood for tiles that were built from a plan,
-    // so natural trees don't become an infinite wood machine.
-    if (newBuilt == TileType::Empty && c.builtFromPlan)
-    {
-        woodToDrop += std::max(0, TileWoodCost(c.built));
-    }
+    // Deconstruction refund: only refund wood for tiles that were built from a plan
+    // (prototype-friendly; prevents turning natural obstacles into infinite resources).
+    if (isDeconstruct && oldBuilt != TileType::Empty && c.builtFromPlan)
+        woodToDrop += std::max(0, TileWoodCost(oldBuilt));
 
-    // If we chopped a tree, yield some wood (tuning). Wood becomes a loose resource
-    // that must be hauled to a stockpile before it is usable.
-    if (c.built == TileType::Tree && newBuilt != TileType::Tree)
-    {
+    // Tree chopping yield (either demolish or building over a tree).
+    if (oldBuilt == TileType::Tree && newBuilt != TileType::Tree)
         woodToDrop += std::max(0, treeChopYieldWood);
-    }
 
-    // Clear previous built counts.
-    if (c.built != TileType::Empty)
-    {
-        --m_builtCounts[static_cast<int>(c.built)];
-        if (c.built == TileType::Farm)
-            farmCacheRemove(targetX, targetY);
-    }
+    // If the tile is about to become non-walkable, any loose wood on it needs to be pushed out.
+    const int looseWoodOnTile = c.looseWood;
 
-    // Apply.
+    // Update derived caches before overwriting the cell.
+    if (oldBuilt == TileType::Farm)
+        farmCacheRemove(targetX, targetY);
+
+    builtCountAdjust(oldBuilt, newBuilt);
+
+    // Apply the build.
     c.built = newBuilt;
     c.planned = TileType::Empty;
     c.workRemaining = 0.0f;
     c.planPriority = 0;
     c.reservedBy = -1;
-    c.builtFromPlan = true;
 
-    // Applying a plan invalidates any hauling reservation on this tile.
+    // Any build/deconstruct invalidates hauling reservations for this tile.
     c.looseWoodReservedBy = -1;
 
-    if (c.built != TileType::Farm)
+    // Track whether the current built tile was produced by a plan.
+    // Natural trees are not plan-built; empty tiles are not "built."
+    c.builtFromPlan = (newBuilt != TileType::Empty && newBuilt != TileType::Tree);
+
+    // Farm state.
+    if (newBuilt == TileType::Farm)
+    {
+        c.farmGrowth = 0.0f;
+        c.farmReservedBy = -1;
+        farmCacheAdd(targetX, targetY);
+    }
+    else
     {
         c.farmGrowth = 0.0f;
         c.farmReservedBy = -1;
     }
 
-    // Update built counts.
-    ++m_builtCounts[static_cast<int>(c.built)];
-    if (c.built == TileType::Farm)
-        farmCacheAdd(targetX, targetY);
-
-    // Rebuild nav locally.
-    syncNavAt(targetX, targetY);
+    // Update nav locally.
+    syncNavCell(targetX, targetY);
 
     // If the tile is now non-walkable, push out any loose wood so it's not trapped.
-    if (!TileIsWalkable(c.built) && c.looseWood > 0)
+    if (!TileIsWalkable(c.built) && looseWoodOnTile > 0)
     {
-        const int stuck = c.looseWood;
-        adjustLooseWood(targetX, targetY, -stuck);
-        woodToDrop += stuck;
+        adjustLooseWood(targetX, targetY, -looseWoodOnTile);
+        woodToDrop += looseWoodOnTile;
     }
 
     if (woodToDrop > 0)
@@ -2714,7 +3088,6 @@ void World::applyPlanIfComplete(int targetX, int targetY) noexcept
     // Remove from planned cache.
     planCacheRemove(targetX, targetY);
 }
-
 
 void World::rebuildPlannedCache() noexcept
 {

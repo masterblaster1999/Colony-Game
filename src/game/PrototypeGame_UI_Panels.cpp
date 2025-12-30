@@ -25,6 +25,7 @@ namespace {
     case proto::TileType::Wall: return IM_COL32(30, 30, 34, 255);
     case proto::TileType::Farm: return IM_COL32(40, 90, 40, 255);
     case proto::TileType::Stockpile: return IM_COL32(110, 80, 30, 255);
+    case proto::TileType::Door: return IM_COL32(145, 110, 55, 255);
     case proto::TileType::Tree: return IM_COL32(25, 115, 25, 255);
     case proto::TileType::Remove: return IM_COL32(160, 60, 60, 255);
     }
@@ -40,8 +41,8 @@ namespace {
 
 [[nodiscard]] proto::TileType SafeTileTypeFromNibble(std::uint8_t v) noexcept
 {
-    // TileType is currently 0..6 (up through Tree); anything else is treated as Empty.
-    if (v <= static_cast<std::uint8_t>(proto::TileType::Tree))
+    // TileType is currently 0..7 (up through Door); anything else is treated as Empty.
+    if (v <= static_cast<std::uint8_t>(proto::TileType::Door))
         return static_cast<proto::TileType>(v);
     return proto::TileType::Empty;
 }
@@ -198,6 +199,7 @@ void PrototypeGame::Impl::drawPanelsWindow()
         ImGui::Text("Food: %.1f", inv.food);
         ImGui::Text("Built Farms: %d", world.builtCount(proto::TileType::Farm));
         ImGui::Text("Trees: %d", world.builtCount(proto::TileType::Tree));
+        ImGui::Text("Doors: %d", world.builtCount(proto::TileType::Door));
         ImGui::Text("Ready to Harvest: %d", world.harvestableFarmCount());
 
         // Hunger snapshot (v3+)
@@ -264,14 +266,30 @@ void PrototypeGame::Impl::drawPanelsWindow()
             {
                 int buildCapable = 0;
                 int farmCapable  = 0;
+                int haulCapable  = 0;
+
+                int buildEnabled = 0;
+                int farmEnabled  = 0;
+                int haulEnabled  = 0;
+
                 for (const auto& c : world.colonists())
                 {
-                    const auto caps = c.role.caps();
-                    if (HasAny(caps, Capability::Building)) ++buildCapable;
-                    if (HasAny(caps, Capability::Farming))  ++farmCapable;
+                    const auto caps    = c.role.caps();
+                    const bool canBuild = HasAny(caps, Capability::Building);
+                    const bool canFarm  = HasAny(caps, Capability::Farming);
+                    const bool canHaul  = HasAny(caps, Capability::Hauling);
+
+                    if (canBuild) ++buildCapable;
+                    if (canFarm)  ++farmCapable;
+                    if (canHaul)  ++haulCapable;
+
+                    if (canBuild && c.workPrio.build > 0) ++buildEnabled;
+                    if (canFarm  && c.workPrio.farm  > 0) ++farmEnabled;
+                    if (canHaul  && c.workPrio.haul  > 0) ++haulEnabled;
                 }
 
-                ImGui::TextDisabled("Role caps: Build %d  Farm %d", buildCapable, farmCapable);
+                ImGui::TextDisabled("Role caps:   Build %d  Farm %d  Haul %d", buildCapable, farmCapable, haulCapable);
+                ImGui::TextDisabled("Work enabled: Build %d  Farm %d  Haul %d", buildEnabled, farmEnabled, haulEnabled);
 
                 if (ImGui::SmallButton("All Workers"))
                 {
@@ -290,25 +308,62 @@ void PrototypeGame::Impl::drawPanelsWindow()
                     for (const auto& c : world.colonists())
                         (void)world.SetColonistRole(c.id, RoleId::Farmer);
                 }
+                ImGui::SameLine();
+                if (ImGui::SmallButton("All Haulers"))
+                {
+                    for (const auto& c : world.colonists())
+                        (void)world.SetColonistRole(c.id, RoleId::Hauler);
+                }
 
-                if (world.plannedCount() > 0 && buildCapable == 0)
-                    ImGui::TextColored(ImVec4(1.0f, 0.75f, 0.25f, 1.0f), "WARNING: No colonists can Build. Plans won't be completed.");
-                if (world.harvestableFarmCount() > 0 && farmCapable == 0)
-                    ImGui::TextColored(ImVec4(1.0f, 0.75f, 0.25f, 1.0f), "WARNING: No colonists can Farm. Harvests won't happen.");
+                if (ImGui::SmallButton("Reset Work (role defaults)"))
+                {
+                    for (auto& c : world.colonists())
+                        c.workPrio = proto::DefaultWorkPriorities(c.role.role);
+                }
+
+                const ImVec4 warnCol{1.0f, 0.75f, 0.25f, 1.0f};
+
+                if (world.plannedCount() > 0)
+                {
+                    if (buildCapable == 0)
+                        ImGui::TextColored(warnCol, "WARNING: No colonists can Build. Plans won't be completed.");
+                    else if (buildEnabled == 0)
+                        ImGui::TextColored(warnCol, "WARNING: Build is disabled by Work priorities (all Off).");
+                }
+
+                if (world.harvestableFarmCount() > 0)
+                {
+                    if (farmCapable == 0)
+                        ImGui::TextColored(warnCol, "WARNING: No colonists can Farm. Harvests won't happen.");
+                    else if (farmEnabled == 0)
+                        ImGui::TextColored(warnCol, "WARNING: Farming is disabled by Work priorities (all Off).");
+                }
+
+                if (world.looseWoodTotal() > 0)
+                {
+                    if (haulCapable == 0)
+                        ImGui::TextColored(warnCol, "WARNING: No colonists can Haul. Loose wood won't be collected.");
+                    else if (haulEnabled == 0)
+                        ImGui::TextColored(warnCol, "WARNING: Hauling is disabled by Work priorities (all Off).");
+                }
+
             }
 
             const float maxPersonalFood = static_cast<float>(std::max(0.0, world.colonistMaxPersonalFood));
 
             const ImGuiTableFlags flags = ImGuiTableFlags_RowBg | ImGuiTableFlags_Borders | ImGuiTableFlags_Resizable
-                                        | ImGuiTableFlags_SizingFixedFit | ImGuiTableFlags_ScrollY;
+                                        | ImGuiTableFlags_SizingFixedFit | ImGuiTableFlags_ScrollY | ImGuiTableFlags_ScrollX;
             const float tableH = std::min(260.0f, ImGui::GetTextLineHeightWithSpacing() * 9.0f);
-            if (ImGui::BeginTable("colonists_table", 8, flags, ImVec2(0, tableH)))
+            if (ImGui::BeginTable("colonists_table", 11, flags, ImVec2(0, tableH)))
             {
                 ImGui::TableSetupScrollFreeze(0, 1);
                 ImGui::TableSetupColumn("Select");
                 ImGui::TableSetupColumn("Draft");
                 ImGui::TableSetupColumn("Role");
                 ImGui::TableSetupColumn("Lvl");
+                ImGui::TableSetupColumn("B", ImGuiTableColumnFlags_WidthFixed, 36.0f);
+                ImGui::TableSetupColumn("F", ImGuiTableColumnFlags_WidthFixed, 36.0f);
+                ImGui::TableSetupColumn("H", ImGuiTableColumnFlags_WidthFixed, 36.0f);
                 ImGui::TableSetupColumn("Job");
                 ImGui::TableSetupColumn("Food");
                 ImGui::TableSetupColumn("Pos");
@@ -401,6 +456,51 @@ void PrototypeGame::Impl::drawPanelsWindow()
                         ImGui::TextDisabled("%u/%u", xp, static_cast<unsigned>(RoleComponent::kXpPerLevel));
                     }
 
+                    // Work priorities (Build / Farm / Haul)
+                    static const char* kWorkPrioItems[] = {"Off", "1", "2", "3", "4"};
+
+                    auto drawWorkPrio = [&](const char* id, std::uint8_t& prio, const char* tooltip)
+                    {
+                        int p = static_cast<int>(prio);
+                        if (p < 0) p = 0;
+                        if (p > 4) p = 4;
+
+                        ImGui::SetNextItemWidth(34.0f);
+                        if (ImGui::Combo(id, &p, kWorkPrioItems, IM_ARRAYSIZE(kWorkPrioItems)))
+                            prio = static_cast<std::uint8_t>(p);
+
+                        if (ImGui::IsItemHovered())
+                        {
+                            ImGui::BeginTooltip();
+                            ImGui::TextUnformatted(tooltip);
+                            ImGui::EndTooltip();
+                        }
+                    };
+
+                    // Build prio
+                    ImGui::TableNextColumn();
+                    {
+                        char id[32];
+                        std::snprintf(id, sizeof(id), "##prioB_%d", c.id);
+                        drawWorkPrio(id, c.workPrio.build, "Build priority\n0=Off, 1=Highest, 4=Lowest");
+                    }
+
+                    // Farm prio
+                    ImGui::TableNextColumn();
+                    {
+                        char id[32];
+                        std::snprintf(id, sizeof(id), "##prioF_%d", c.id);
+                        drawWorkPrio(id, c.workPrio.farm, "Farm priority\n0=Off, 1=Highest, 4=Lowest");
+                    }
+
+                    // Haul prio
+                    ImGui::TableNextColumn();
+                    {
+                        char id[32];
+                        std::snprintf(id, sizeof(id), "##prioH_%d", c.id);
+                        drawWorkPrio(id, c.workPrio.haul, "Haul priority\n0=Off, 1=Highest, 4=Lowest");
+                    }
+
                     // Job
                     ImGui::TableNextColumn();
                     const char* job = c.drafted && !c.hasJob ? "Drafted" : "Idle";
@@ -411,6 +511,7 @@ void PrototypeGame::Impl::drawPanelsWindow()
                         case proto::Colonist::JobKind::Eat: job = "Eating"; break;
                         case proto::Colonist::JobKind::Harvest: job = "Harvest"; break;
                         case proto::Colonist::JobKind::BuildPlan: job = "Building"; break;
+                    case proto::Colonist::JobKind::HaulWood: job = "Hauling"; break;
                         case proto::Colonist::JobKind::ManualMove: job = "Move"; break;
                         default: job = "Working"; break;
                         }
@@ -968,6 +1069,18 @@ void PrototypeGame::Impl::drawPanelsWindow()
             ImGui::Text("Built: %s", proto::TileTypeName(c.built));
             ImGui::TextDisabled("%s", c.builtFromPlan ? "Player-built" : "Seeded");
 
+            const int rid = world.roomIdAt(selectedX, selectedY);
+            if (const proto::World::RoomInfo* ri = world.roomInfoById(rid))
+            {
+                ImGui::Text("Room: %s", ri->indoors ? "Indoors" : "Outdoors");
+                ImGui::SameLine();
+                ImGui::TextDisabled("(R%d, %d tiles)", ri->id, ri->area);
+            }
+            else
+            {
+                ImGui::TextDisabled("Room: (none)");
+            }
+
             if (c.built == proto::TileType::Tree)
                 ImGui::TextDisabled("Chop yield: %d wood", std::max(0, world.treeChopYieldWood));
 
@@ -1367,6 +1480,10 @@ void PrototypeGame::Impl::drawPanelsWindow()
         ImGui::Checkbox("Show colonist paths", &showJobPaths);
         ImGui::Checkbox("Show reservations", &showReservations);
         ImGui::Checkbox("Show plan priorities", &showPlanPriorities);
+        ImGui::Checkbox("Show rooms overlay", &showRoomsOverlay);
+        ImGui::SameLine();
+        ImGui::Checkbox("Show room IDs", &showRoomIds);
+        ImGui::Text("Indoors: %d rooms, %d tiles", world.indoorsRoomCount(), world.indoorsTileCount());
 
         ImGui::Separator();
         ImGui::TextUnformatted("Simulation");

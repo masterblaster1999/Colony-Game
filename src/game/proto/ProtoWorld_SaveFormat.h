@@ -23,6 +23,8 @@ inline constexpr const char* kWorldFormatLegacy = "colony_proto_world"; // legac
 //  v6: Trees + forestry tuning (tree chopping yield + regrowth)
 //  v7: Colonist roles + XP/level progression
 //  v8: Loose wood items + hauling tuning (stockpiles become a logistics hub)
-inline constexpr int         kWorldVersion      = 8;
+//  v9: Per-colonist work priorities (build/farm/haul)
+//  v10: Doors (new tile type) + derived room/indoors cache
+inline constexpr int         kWorldVersion      = 10;
 
 } // namespace colony::proto::savefmt

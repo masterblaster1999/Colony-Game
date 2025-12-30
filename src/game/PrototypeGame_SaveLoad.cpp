@@ -1,4 +1,6 @@
 #include "game/PrototypeGame_Impl.h"
+#include "game/Role.hpp"
+#include <cstdint>
 
 #include "game/proto/ProtoWorld_SaveFormat.h"
 
@@ -55,7 +57,6 @@ struct AsyncSaveManager {
         float farmGrowth = 0.0f;
         int looseWood = 0;
     };
-
     struct Colonist {
         int id = 0;
         float x = 0.5f;
@@ -63,7 +64,19 @@ struct AsyncSaveManager {
 
         // v3+ hunger
         float personalFood = 0.0f;
+
+        // v7+: roles + drafted state
+        bool drafted = false;
+        RoleId role = RoleId::Worker;
+        std::uint16_t roleLevel = 1;
+        std::uint32_t roleXp = 0;
+
+        // v9+: work priorities
+        std::uint8_t workPrioBuild = 2;
+        std::uint8_t workPrioFarm  = 2;
+        std::uint8_t workPrioHaul  = 2;
     };
+
 
     struct Snapshot {
         int w = 0;
@@ -313,7 +326,18 @@ private:
             out.id = c.id;
             out.x = c.x;
             out.y = c.y;
+
             out.personalFood = c.personalFood;
+
+            out.drafted = c.drafted;
+            out.role = c.role.role;
+            out.roleLevel = c.role.level;
+            out.roleXp = static_cast<std::uint32_t>(c.role.xp);
+
+            out.workPrioBuild = c.workPrio.build;
+            out.workPrioFarm = c.workPrio.farm;
+            out.workPrioHaul = c.workPrio.haul;
+
             s.colonists.push_back(out);
         }
 
@@ -386,17 +410,11 @@ private:
                 {"colonistMaxPersonalFood", s.colonistMaxPersonalFood},
                 {"colonistEatThresholdFood", s.colonistEatThresholdFood},
                 {"colonistEatDurationSeconds", s.colonistEatDurationSeconds},
-            };
+
+                // v8+: hauling tuning
                 {"haulCarryCapacity", s.haulCarryCapacity},
                 {"haulPickupDurationSeconds", s.haulPickupDurationSeconds},
                 {"haulDropoffDurationSeconds", s.haulDropoffDurationSeconds},
-            };
-
-            // Optional extra metadata (loader ignores unknown fields).
-            j["meta"] = {
-                {"kind", (kind == Kind::Autosave) ? "autosave" : "manual"},
-                {"savedUnixSecondsUtc", s.savedUnixSecondsUtc},
-                {"playtimeSeconds", s.playtimeSeconds},
             };
 
             json cells = json::array();
@@ -424,7 +442,20 @@ private:
                     {"id", c.id},
                     {"x", c.x},
                     {"y", c.y},
+
+                    // v7+: roles + drafted state
+                    {"drafted", c.drafted},
                     {"personalFood", c.personalFood},
+                    {"role", RoleDefOf(c.role).name},
+                    {"roleLevel", static_cast<int>(c.roleLevel)},
+                    {"roleXp", static_cast<std::uint32_t>(c.roleXp)},
+
+                    // v9+: work priorities
+                    {"workPriorities", {
+                        {"build", static_cast<int>(c.workPrioBuild)},
+                        {"farm", static_cast<int>(c.workPrioFarm)},
+                        {"haul", static_cast<int>(c.workPrioHaul)},
+                    }},
                 });
             j["colonists"] = std::move(colonists);
 

@@ -1,73 +1,145 @@
-# Colony-Game Patch (Round 31)
+# Colony-Game Patch (Round 33)
 
-This round adds a **Colonist Roles + XP/Level progression** layer on top of the existing prototype AI.
+This round adds **Doors** plus a first-pass **Rooms / Indoors** system, and fixes a long-standing issue where **Demolish (Remove) plans** could accidentally turn into a permanent built tile.
 
-The goal is to make colonies feel less "blob-like" by letting colonists specialize, move/work at different speeds, and naturally improve over time.
-
-It also bumps the proto-world save format to **v7** (and fixes a load/version edge-case from the previous bump).
+It also bumps the proto-world save format to **v10**.
 
 ## New gameplay/simulation
 
-### 1) Colonist Roles (capabilities)
-Each colonist now has a **Role** (from `game/Role.hpp`) that defines:
+### 1) Doors (new TileType + tool)
 
-- **Capabilities** (what jobs they will auto-take)
-- **Move multiplier** (walk speed)
-- **Work multiplier** (task speed)
+- New buildable tile: **Door**
+- Doors are **walkable** (colonists can path through them)
+- Doors act as a **room boundary** for indoors detection (they separate rooms)
 
-Autonomous job assignment now respects capabilities:
+Hotkey:
+- **0** = Door tool
 
-- **Build plans** require `Capability::Building`
-- **Harvest jobs** require `Capability::Farming`
+### 2) Demolish plans now truly deconstruct
 
-Manual orders (drafted colonists) still work as before.
+Previously, completing a **Demolish** plan could incorrectly apply `TileType::Remove` as the *built* tile (and wood refunds would never trigger).
 
-### 2) Role-based speed multipliers
-Roles affect how fast colonists perform tasks:
+Now:
+- Demolish resolves to **Empty built tiles**
+- **Plan-built** structures return their **wood cost** when demolished
+- Chopping/removing a **Tree** drops **wood yield**
+- If a tile becomes **non-walkable**, any loose wood on it is pushed out so it can’t get trapped
 
-- **Movement**: `colonistWalkSpeed * role.moveMult`
-- **Work**: build/harvest/eat speeds are scaled by `role.workMult`
+### 3) Rooms / Indoors cache
 
-### 3) XP + Leveling
-Colonists earn **XP** for completing real work:
+The world now computes a lightweight room graph:
 
-- Completing a **plan** (construction/demolition)
-- Completing a **harvest**
+- A “room” is a connected component of **open tiles** (Empty/Floor/Farm/Stockpile)
+- Open areas are separated by **boundaries** (Wall/Tree/Door + map edge)
+- A room is marked **Indoors** if it is **not connected to the map edge**
 
-XP feeds a simple level-up curve (`RoleComponent::kXpPerLevel`).
-Each level grants small bonuses on top of the role multipliers:
-
-- **+1% move speed per level**
-- **+2% work speed per level**
+The cache rebuilds automatically when room topology changes (e.g., building/removing walls/doors, tree spread).
 
 ## UI improvements
 
-### Colony panel
-- Colonists table now includes:
-  - **Role** (dropdown)
-  - **Level + XP** (tooltip shows effective move/work multipliers)
-  - **XP0** button to reset a colonist’s XP/level
-- Added quick role assignment buttons:
-  - **All Workers / All Builders / All Farmers**
-- Added warnings if you have pending work but **no capable colonists** (e.g. zero builders).
+### 1) Rooms overlay + room IDs
 
-### World rendering
-- When zoomed in, colonists show a small **role+level label** (e.g. `B2`, `F1`).
+In **View / Debug**:
+- **Show rooms overlay**: shades indoor tiles by room
+- **Show room IDs**: labels indoor rooms with “R#” in the world view
 
-## Save format (ProtoWorld v7)
+### 2) Tile inspection shows room info
 
-- **Version bump:** `kWorldVersion` is now **7**.
-- New per-colonist fields:
-  - `role` (stored by **name**)
-  - `roleLevel`
-  - `roleXp`
+The selection panel now shows:
+- Whether the tile is in a room-space tile
+- Room ID + Indoors/Outdoors + area (tile count)
 
-### Compatibility / bug fix
-- Loader now accepts versions **1..kWorldVersion**.
-  - This fixes the prior state where saves written with the latest version could be rejected on load.
+### 3) Stats show door count
+
+The main colony panel now includes a **Doors** count.
+
+## World generation change
+
+- Removed the old “border walls for orientation” from fresh `reset()` worlds so the Outdoors/Indoors heuristic works as intended (the map edge represents “outside”).
+
+## Save format + persistence
+
+### Save format bump to v10
+- **Version bump:** `kWorldVersion` is now **10**
+- Tile enums now include **Door**; persistence clamps were updated so Door tiles round-trip correctly.
+
+---
+
+# Colony-Game Patch (Round 32)
+
+This round adds a **Work Priorities** layer (Build / Farm / Haul) and tightens up the **hauling + save-system** so the colony behaves more predictably over longer sessions.
+
+It also bumps the proto-world save format to **v9**.
+
+## New gameplay/simulation
+
+### 1) Per-colonist Work Priorities (Build / Farm / Haul)
+
+Each colonist now has editable work priorities:
+
+- **0 = Off** (never auto-take that work type)
+- **1 = Highest**
+- **4 = Lowest**
+
+The job assignment logic now checks these priorities when deciding which autonomous jobs a colonist should take.
+
+Notes:
+- If priorities tie, the engine's existing assignment order still breaks ties.
+- When the colony inventory has **0 food**, farmers will still bootstrap food production (ignoring priorities) so new worlds don't deadlock.
+
+### 2) Hauling job cancellation is now safe
+
+Canceling or preempting hauling jobs (drafting, hunger preemption, manual stop, etc.) now:
+
+- Releases the **pickup reservation** correctly
+- Drops any **carried wood** back onto the ground near the colonist so it can be re-hauled
+- Clears hauling state cleanly
+
+This fixes cases where wood stacks could remain permanently reserved and/or wood could vanish when a hauling job was interrupted.
+
+## UI improvements
+
+### 1) Colony panel: Work priority controls
+
+The Colonists table now includes three extra columns:
+
+- **B** = Build priority
+- **F** = Farm priority
+- **H** = Haul priority
+
+There is also a quick button to reset all colonists' work priorities to role-based defaults.
+
+Warnings were expanded to distinguish:
+- "No one can do this work" vs
+- "This work is disabled by priorities"
+
+### 2) Better job labeling / visuals
+
+- UI job text now recognizes **Hauling**
+- World view colors hauling colonists distinctly
+
+## Save format + persistence
+
+### 1) Save format bump to v9
+- **Version bump:** `kWorldVersion` is now **9**
+- New per-colonist JSON fields:
+  - `workPriorities.build`
+  - `workPriorities.farm`
+  - `workPriorities.haul`
+
+Older saves still load: missing work priorities default from role/capabilities.
+
+### 2) Async snapshot writer fixed
+The async save snapshot JSON writer now includes:
+- `drafted`
+- `role`, `roleLevel`, `roleXp`
+- `workPriorities`
+
+This brings snapshot saves back in sync with the authoritative world-save format.
 
 ## Tests
 
 - Updated the proto-world save-format test to assert:
-  - v7 version value
-  - colonist role/level/xp fields exist and round-trip
+  - v9 version value
+  - work priorities exist in JSON and round-trip correctly
+

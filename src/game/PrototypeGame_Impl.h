@@ -57,6 +57,7 @@ struct PrototypeGame::Impl {
         Inspect = 0,
         Floor,
         Wall,
+        Door,
         Farm,
         Stockpile,
         Demolish,
@@ -71,6 +72,10 @@ struct PrototypeGame::Impl {
     //  - 0..3 (displayed as 1..4)
     int  planBrushPriority  = 1;
     bool showPlanPriorities = false;
+
+    // Rooms / indoors overlay
+    bool showRoomsOverlay = false;
+    bool showRoomIds      = false;
 
     // Selection (Inspect tool)
     int selectedX = -1;

@@ -32,7 +32,11 @@ enum class TileType : std::uint8_t {
 
     // Natural obstacle/resource: can be chopped (via Demolish plan) for wood.
     Tree,
+
+    // Door: passable barrier that still counts as a room boundary for indoors detection.
+    Door,
 };
+
 
 [[nodiscard]] const char* TileTypeName(TileType t) noexcept;
 [[nodiscard]] bool TileIsWalkable(TileType t) noexcept;
@@ -43,6 +47,60 @@ struct Inventory {
     int wood = 50;
     float food = 20.0f;
 };
+
+// -----------------------------------------------------------------
+// Work priorities (prototype)
+// -----------------------------------------------------------------
+// Per-colonist priorities for autonomous work selection.
+//  - 0 = Off (never take this job autonomously)
+//  - 1 = Highest
+//  - 4 = Lowest
+//
+// Ties are broken by the engine's job assignment order (Harvest > Build > Haul).
+struct WorkPriorities
+{
+    std::uint8_t build = 2;
+    std::uint8_t farm  = 2;
+    std::uint8_t haul  = 2;
+};
+
+[[nodiscard]] inline constexpr WorkPriorities ClampWorkPriorities(WorkPriorities p) noexcept
+{
+    auto clamp01_4 = [](std::uint8_t v) constexpr noexcept -> std::uint8_t {
+        return (v > 4u) ? 4u : v;
+    };
+    p.build = clamp01_4(p.build);
+    p.farm  = clamp01_4(p.farm);
+    p.haul  = clamp01_4(p.haul);
+    return p;
+}
+
+// Default priorities biased by role/capabilities.
+// Jobs a role cannot perform default to Off (0).
+[[nodiscard]] inline constexpr WorkPriorities DefaultWorkPriorities(RoleId role) noexcept
+{
+    WorkPriorities p{};
+    p.build = 0;
+    p.farm  = 0;
+    p.haul  = 0;
+
+    const Capability caps = RoleDefOf(role).caps;
+
+    if (HasAny(caps, Capability::Building)) p.build = 2;
+    if (HasAny(caps, Capability::Farming))  p.farm  = 2;
+    if (HasAny(caps, Capability::Hauling))  p.haul  = 2;
+
+    // Role-flavored bias (still editable by the player).
+    switch (role)
+    {
+    case RoleId::Builder: if (p.build) p.build = 1; break;
+    case RoleId::Farmer:  if (p.farm)  p.farm  = 1; break;
+    case RoleId::Hauler:  if (p.haul)  p.haul  = 1; break;
+    default: break;
+    }
+
+    return p;
+}
 
 struct Cell {
     TileType built = TileType::Empty;
@@ -116,6 +174,9 @@ struct Colonist {
     //
     // role.level / role.xp are updated as colonists complete work.
     RoleComponent role{};
+
+    // Per-colonist work priorities (autonomous job selection).
+    WorkPriorities workPrio = DefaultWorkPriorities(RoleId::Worker);
 
     // -----------------------------------------------------------------
     // Player control
@@ -259,6 +320,39 @@ public:
     // Total wood dropped on the ground (not yet in the global inventory).
     [[nodiscard]] int looseWoodTotal() const noexcept { return m_looseWoodTotal; }
 
+    // -----------------------------------------------------------------
+    // Rooms / indoors-outdoors (prototype)
+    // -----------------------------------------------------------------
+    // A "room" is a connected component of open tiles (Empty/Floor/Farm/Stockpile)
+    // separated by room boundaries (Wall/Tree/Door and out-of-bounds).
+    //
+    // A room is considered "indoors" if it is not reachable from the map edge
+    // through open tiles (i.e., it's fully enclosed).
+    struct RoomInfo
+    {
+        int id = -1;
+        bool indoors = false;
+        int area = 0;
+
+        // Bounding box in tile coordinates (inclusive).
+        int minX = 0;
+        int minY = 0;
+        int maxX = 0;
+        int maxY = 0;
+    };
+
+    // Returns -1 if this tile is not considered a room-space tile.
+    [[nodiscard]] int roomIdAt(int x, int y) const noexcept;
+    [[nodiscard]] bool tileIndoors(int x, int y) const noexcept;
+
+    // Returns nullptr if roomId is invalid.
+    [[nodiscard]] const RoomInfo* roomInfoById(int roomId) const noexcept;
+
+    [[nodiscard]] int roomCount() const noexcept { return static_cast<int>(m_rooms.size()); }
+    [[nodiscard]] int indoorsRoomCount() const noexcept { return m_indoorsRoomCount; }
+    [[nodiscard]] int indoorsTileCount() const noexcept { return m_indoorsTileCount; }
+
+
     // Simulation tick (fixed dt). dt is seconds.
     void tick(double dtSeconds);
 
@@ -316,7 +410,7 @@ public:
     double haulDropoffDurationSeconds  = 0.25;
 
 private:
-    static constexpr std::size_t kTileTypeCount = static_cast<std::size_t>(TileType::Tree) + 1u;
+    static constexpr std::size_t kTileTypeCount = static_cast<std::size_t>(TileType::Door) + 1u;
 
     [[nodiscard]] std::size_t idx(int x, int y) const noexcept
     {
@@ -354,6 +448,10 @@ private:
     void looseWoodCacheAdd(int x, int y) noexcept;
     void looseWoodCacheRemove(int x, int y) noexcept;
     void adjustLooseWood(int x, int y, int delta) noexcept;
+
+    // Rooms (indoors/outdoors) derived from built tile topology.
+    void rebuildRooms() noexcept;
+
 
     // Job assignment: assign idle colonists to nearby unreserved plans.
     // Throttled to avoid doing expensive path searches every tick when no jobs can be found.
@@ -456,6 +554,13 @@ private:
     std::vector<colony::pf::IVec2> m_looseWoodCells;
     std::vector<int>              m_looseWoodIndex;
     int                           m_looseWoodTotal = 0;
+
+    // Room cache: per-tile room id (-1 for non-room-space tiles) plus room metadata.
+    std::vector<int> m_roomIds;
+    std::vector<RoomInfo> m_rooms;
+    int m_indoorsRoomCount = 0;
+    int m_indoorsTileCount = 0;
+    bool m_roomsDirty = true;
 
     std::array<int, kTileTypeCount> m_builtCounts{};
 
