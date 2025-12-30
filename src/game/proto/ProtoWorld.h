@@ -3,8 +3,12 @@
 #include <cstdint>
 #include <array>
 #include <filesystem>
+#include <functional>
+#include <list>
 #include <random>
 #include <string>
+#include <string_view>
+#include <unordered_map>
 #include <vector>
 
 #include "game/Role.hpp"
@@ -63,6 +67,21 @@ struct WorkPriorities
     std::uint8_t farm  = 2;
     std::uint8_t haul  = 2;
 };
+
+// -----------------------------------------------------------------
+// Pathfinding tuning (prototype)
+// -----------------------------------------------------------------
+// AStar: classic A* pathfinding.
+// JumpPointSearch: JPS (usually faster on open grids); expanded back into
+// tile-by-tile steps so movement/path validation remains correct.
+enum class PathAlgo : std::uint8_t
+{
+    AStar = 0,
+    JumpPointSearch = 1,
+};
+
+[[nodiscard]] const char* PathAlgoName(PathAlgo a) noexcept;
+[[nodiscard]] PathAlgo PathAlgoFromName(std::string_view s) noexcept;
 
 [[nodiscard]] inline constexpr WorkPriorities ClampWorkPriorities(WorkPriorities p) noexcept
 {
@@ -409,6 +428,52 @@ public:
     double haulPickupDurationSeconds   = 0.25;
     double haulDropoffDurationSeconds  = 0.25;
 
+    // -----------------------------------------------------------------
+    // Pathfinding (prototype)
+    // -----------------------------------------------------------------
+    // pathAlgo:
+    //   - AStar: classic A*.
+    //   - JumpPointSearch: JPS (usually faster on open grids). Any JPS output
+    //     is expanded back into tile-by-tile steps so movement & validation
+    //     remain correct.
+    PathAlgo pathAlgo = PathAlgo::AStar;
+
+    // Path cache: speeds up repeated direct-order and repath queries.
+    // Cached paths are validated against the current nav grid before reuse.
+    bool pathCacheEnabled = true;
+    int  pathCacheMaxEntries = 1024;
+
+    // Terrain traversal costs (affects both pathfinding cost and actual movement):
+    //   - Farms are slower to traverse.
+    //   - Stockpiles are slightly slower (clutter).
+    //   - Doors are slightly slower (opening).
+    bool navUseTerrainCosts = true;
+
+    struct PathfindStats
+    {
+        std::uint64_t reqTile = 0;
+        std::uint64_t reqAdjacent = 0;
+        std::uint64_t hitTile = 0;
+        std::uint64_t hitAdjacent = 0;
+        std::uint64_t computedAStar = 0;
+        std::uint64_t computedJps = 0;
+        std::uint64_t invalidated = 0;
+        std::uint64_t evicted = 0;
+    };
+
+    // Debug/maintenance helpers.
+    void ClearPathCache() noexcept;
+    void ResetPathStats() noexcept;
+
+    [[nodiscard]] std::size_t pathCacheSize() const noexcept;
+    [[nodiscard]] PathfindStats pathStats() const noexcept;
+
+    // Convenience setters that apply any required side effects (nav rebuild, cache trim).
+    bool SetNavTerrainCostsEnabled(bool enabled) noexcept;
+    bool SetPathAlgo(PathAlgo algo) noexcept;
+    bool SetPathCacheEnabled(bool enabled) noexcept;
+    bool SetPathCacheMaxEntries(int maxEntries) noexcept;
+
 private:
     static constexpr std::size_t kTileTypeCount = static_cast<std::size_t>(TileType::Door) + 1u;
 
@@ -533,6 +598,48 @@ private:
     void rebuildBuiltCounts() noexcept;
     void builtCountAdjust(TileType oldBuilt, TileType newBuilt) noexcept;
 
+    // -----------------------------------------------------------------
+    // Path cache (LRU)
+    // -----------------------------------------------------------------
+    struct PathCacheKey
+    {
+        int sx = 0;
+        int sy = 0;
+        int tx = 0;
+        int ty = 0;
+        std::uint8_t mode = 0; // 0 = tile, 1 = adjacent-to-target
+
+        bool operator==(const PathCacheKey& o) const noexcept
+        {
+            return sx == o.sx && sy == o.sy && tx == o.tx && ty == o.ty && mode == o.mode;
+        }
+    };
+
+    struct PathCacheKeyHash
+    {
+        std::size_t operator()(const PathCacheKey& k) const noexcept
+        {
+            // A small hash combiner (similar to boost::hash_combine).
+            auto mix = [](std::size_t& h, std::size_t v) noexcept {
+                h ^= v + 0x9e3779b97f4a7c15ull + (h << 6) + (h >> 2);
+            };
+
+            std::size_t h = 0;
+            mix(h, std::hash<int>{}(k.sx));
+            mix(h, std::hash<int>{}(k.sy));
+            mix(h, std::hash<int>{}(k.tx));
+            mix(h, std::hash<int>{}(k.ty));
+            mix(h, static_cast<std::size_t>(k.mode));
+            return h;
+        }
+    };
+
+    struct PathCacheValue
+    {
+        std::vector<colony::pf::IVec2> path;
+        std::list<PathCacheKey>::iterator lruIt;
+    };
+
     int m_w = 0;
     int m_h = 0;
 
@@ -577,6 +684,10 @@ private:
     mutable std::vector<colony::pf::NodeId> m_nearestParent;
     mutable std::vector<std::uint32_t> m_nearestStamp;
     mutable std::uint32_t m_nearestStampValue = 1;
+
+    mutable std::list<PathCacheKey> m_pathCacheLru;
+    mutable std::unordered_map<PathCacheKey, PathCacheValue, PathCacheKeyHash> m_pathCache;
+    mutable PathfindStats m_pathStats{};
 
     std::mt19937 m_rng{};
 };

@@ -94,6 +94,12 @@ TEST_CASE("ProtoWorld SaveJson format/version and legacy format compatibility")
         w.colonists()[0].workPrio.haul = 3;
     }
 
+    // v11: Pathfinding tuning (ensure these round-trip and appear in the JSON).
+    w.pathAlgo = colony::proto::PathAlgo::JumpPointSearch;
+    w.pathCacheEnabled = false;
+    w.pathCacheMaxEntries = 123;
+    w.navUseTerrainCosts = false;
+
     // A tiny bit of state so the file isn't totally trivial.
     (void)w.placePlan(1, 1, colony::proto::TileType::Wall, /*priority*/ 2);
 
@@ -138,6 +144,17 @@ TEST_CASE("ProtoWorld SaveJson format/version and legacy format compatibility")
     CHECK(j["tuning"].contains("haulCarryCapacity"));
     CHECK(j["tuning"].contains("haulPickupDurationSeconds"));
     CHECK(j["tuning"].contains("haulDropoffDurationSeconds"));
+
+    // v11+ fields: pathfinding tuning
+    CHECK(j["tuning"].contains("pathfindingAlgorithm"));
+    CHECK(j["tuning"].contains("pathCacheEnabled"));
+    CHECK(j["tuning"].contains("pathCacheMaxEntries"));
+    CHECK(j["tuning"].contains("navTerrainCostsEnabled"));
+
+    CHECK(j["tuning"]["pathfindingAlgorithm"].get<std::string>() == "JPS");
+    CHECK(j["tuning"]["pathCacheEnabled"].get<bool>() == false);
+    CHECK(j["tuning"]["pathCacheMaxEntries"].get<int>() == 123);
+    CHECK(j["tuning"]["navTerrainCostsEnabled"].get<bool>() == false);
 
     REQUIRE(j.contains("colonists"));
     REQUIRE(j["colonists"].is_array());
@@ -233,6 +250,12 @@ TEST_CASE("ProtoWorld SaveJson format/version and legacy format compatibility")
     CHECK(loaded.width() == w.width());
     CHECK(loaded.height() == w.height());
     CHECK(loaded.inventory().wood == w.inventory().wood);
+
+    // v11: pathfinding tuning should round-trip.
+    CHECK(loaded.pathAlgo == w.pathAlgo);
+    CHECK(loaded.pathCacheEnabled == w.pathCacheEnabled);
+    CHECK(loaded.pathCacheMaxEntries == w.pathCacheMaxEntries);
+    CHECK(loaded.navUseTerrainCosts == w.navUseTerrainCosts);
 
 
     CHECK(loaded.cell(2, 2).builtFromPlan == w.cell(2, 2).builtFromPlan);

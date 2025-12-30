@@ -211,6 +211,12 @@ bool World::SaveJson(const std::filesystem::path& path, std::string* outError) c
             {"haulCarryCapacity", haulCarryCapacity},
             {"haulPickupDurationSeconds", haulPickupDurationSeconds},
             {"haulDropoffDurationSeconds", haulDropoffDurationSeconds},
+
+            // v11+ pathfinding tuning
+            {"pathfindingAlgorithm", std::string{PathAlgoName(pathAlgo)}},
+            {"pathCacheEnabled", pathCacheEnabled},
+            {"pathCacheMaxEntries", pathCacheMaxEntries},
+            {"navTerrainCostsEnabled", navUseTerrainCosts},
         };
 
         json cells = json::array();
@@ -389,6 +395,12 @@ bool World::LoadJson(const std::filesystem::path& path, std::string* outError) n
             haulPickupDurationSeconds = ObjDouble(t, "haulPickupDurationSeconds", haulPickupDurationSeconds);
             haulDropoffDurationSeconds = ObjDouble(t, "haulDropoffDurationSeconds", haulDropoffDurationSeconds);
 
+            // v11+ pathfinding tuning (optional; missing fields are fine for old saves).
+            pathAlgo = PathAlgoFromName(ObjString(t, "pathfindingAlgorithm", std::string{PathAlgoName(pathAlgo)}));
+            pathCacheEnabled = ObjBool(t, "pathCacheEnabled", pathCacheEnabled);
+            pathCacheMaxEntries = ObjInt(t, "pathCacheMaxEntries", pathCacheMaxEntries);
+            navUseTerrainCosts = ObjBool(t, "navTerrainCostsEnabled", navUseTerrainCosts);
+
             // Sanitize.
             colonistMaxPersonalFood    = std::max(0.0, colonistMaxPersonalFood);
             treeChopYieldWood          = std::max(0, treeChopYieldWood);
@@ -401,6 +413,10 @@ bool World::LoadJson(const std::filesystem::path& path, std::string* outError) n
             haulCarryCapacity = std::max(0, haulCarryCapacity);
             haulPickupDurationSeconds = std::max(0.0, haulPickupDurationSeconds);
             haulDropoffDurationSeconds = std::max(0.0, haulDropoffDurationSeconds);
+
+            pathCacheMaxEntries = std::clamp(pathCacheMaxEntries, 0, 16384);
+            if (pathCacheMaxEntries == 0)
+                pathCacheEnabled = false;
         }
 
         // Cells

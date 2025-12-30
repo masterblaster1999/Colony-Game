@@ -107,6 +107,12 @@ struct AsyncSaveManager {
         double haulPickupDurationSeconds = 0.25;
         double haulDropoffDurationSeconds = 0.25;
 
+        // v11+ pathfinding tuning
+        proto::PathAlgo pathAlgo = proto::PathAlgo::AStar;
+        bool pathCacheEnabled = true;
+        int pathCacheMaxEntries = 1024;
+        bool navTerrainCostsEnabled = true;
+
         std::vector<Cell> cells;
         std::vector<Colonist> colonists;
 
@@ -290,6 +296,12 @@ private:
         s.haulPickupDurationSeconds = world.haulPickupDurationSeconds;
         s.haulDropoffDurationSeconds = world.haulDropoffDurationSeconds;
 
+            // v11+ pathfinding tuning
+            s.pathAlgo = world.pathAlgo;
+            s.pathCacheEnabled = world.pathCacheEnabled;
+            s.pathCacheMaxEntries = world.pathCacheMaxEntries;
+            s.navTerrainCostsEnabled = world.navUseTerrainCosts;
+
         // Summary counts (cheap, cached inside World).
         s.plannedCount    = world.plannedCount();
         s.builtFloors     = world.builtCount(proto::TileType::Floor);
@@ -415,6 +427,12 @@ private:
                 {"haulCarryCapacity", s.haulCarryCapacity},
                 {"haulPickupDurationSeconds", s.haulPickupDurationSeconds},
                 {"haulDropoffDurationSeconds", s.haulDropoffDurationSeconds},
+
+                // v11+: pathfinding tuning
+                {"pathfindingAlgorithm", std::string{proto::PathAlgoName(s.pathAlgo)}},
+                {"pathCacheEnabled", s.pathCacheEnabled},
+                {"pathCacheMaxEntries", s.pathCacheMaxEntries},
+                {"navTerrainCostsEnabled", s.navTerrainCostsEnabled},
             };
 
             json cells = json::array();

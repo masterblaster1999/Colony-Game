@@ -1594,6 +1594,67 @@ void PrototypeGame::Impl::drawPanelsWindow()
                 ImGui::TextDisabled("Full stomach: ~%.0fs", fullSec);
                 ImGui::TextDisabled("At threshold: ~%.0fs", atThresholdSec);
             }
+
+            ImGui::SeparatorText("Pathfinding");
+
+            {
+                // Algorithm selection
+                int algoIdx = (world.pathAlgo == proto::PathAlgo::AStar) ? 0 : 1;
+                const char* algoItems[] = { "AStar", "JPS" };
+                if (ImGui::Combo("Algorithm", &algoIdx, algoItems, IM_ARRAYSIZE(algoItems)))
+                {
+                    const proto::PathAlgo newAlgo = (algoIdx == 0) ? proto::PathAlgo::AStar : proto::PathAlgo::JumpPointSearch;
+                    world.SetPathAlgo(newAlgo);
+                }
+                ImGui::SameLine();
+                ImGui::TextDisabled("(direct orders + repathing)");
+
+                // Path cache knobs
+                bool cacheEnabled = world.pathCacheEnabled;
+                if (ImGui::Checkbox("Enable path cache", &cacheEnabled))
+                    world.SetPathCacheEnabled(cacheEnabled);
+
+                int maxEntries = world.pathCacheMaxEntries;
+                if (ImGui::SliderInt("Cache max entries", &maxEntries, 0, 8192, "%d", ImGuiSliderFlags_Logarithmic))
+                    world.SetPathCacheMaxEntries(maxEntries);
+
+                // Terrain costs
+                bool terrainCosts = world.navUseTerrainCosts;
+                if (ImGui::Checkbox("Terrain traversal costs", &terrainCosts))
+                    (void)world.SetNavTerrainCostsEnabled(terrainCosts);
+
+                ImGui::TextDisabled("Farms/stockpiles/doors become slightly slower to cross, affecting both movement and path costs.");
+
+                // Stats + maintenance
+                const proto::World::PathfindStats stats = world.pathStats();
+                const std::size_t cacheSize = world.pathCacheSize();
+
+                if (ImGui::Button("Clear cache"))
+                    world.ClearPathCache();
+                ImGui::SameLine();
+                if (ImGui::Button("Reset stats"))
+                    world.ResetPathStats();
+
+                ImGui::Text("Cache: %zu / %d", cacheSize, std::max(0, world.pathCacheMaxEntries));
+
+                const unsigned long long reqTile = static_cast<unsigned long long>(stats.reqTile);
+                const unsigned long long reqAdj = static_cast<unsigned long long>(stats.reqAdjacent);
+                const unsigned long long hitTile = static_cast<unsigned long long>(stats.hitTile);
+                const unsigned long long hitAdj = static_cast<unsigned long long>(stats.hitAdjacent);
+                const unsigned long long invalid = static_cast<unsigned long long>(stats.invalidated);
+                const unsigned long long evicted = static_cast<unsigned long long>(stats.evicted);
+                const unsigned long long astar = static_cast<unsigned long long>(stats.computedAStar);
+                const unsigned long long jps = static_cast<unsigned long long>(stats.computedJps);
+
+                const double totalReq = static_cast<double>(reqTile + reqAdj);
+                const double totalHit = static_cast<double>(hitTile + hitAdj);
+                const double hitRate = (totalReq > 0.0) ? (100.0 * totalHit / totalReq) : 0.0;
+
+                ImGui::Text("Req: tile %llu (hit %llu), adj %llu (hit %llu)", reqTile, hitTile, reqAdj, hitAdj);
+                ImGui::Text("Hit rate: %.1f%%", hitRate);
+                ImGui::Text("Compute: A* %llu, JPS %llu", astar, jps);
+                ImGui::Text("Invalidated: %llu, evicted: %llu", invalid, evicted);
+            }
         }
 
         ImGui::Separator();

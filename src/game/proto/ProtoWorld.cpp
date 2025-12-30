@@ -1,5 +1,7 @@
 #include "game/proto/ProtoWorld.h"
 
+#include "colony/pathfinding/JPS.hpp"
+
 #include <algorithm>
 #include <array>
 #include <cmath>
@@ -40,6 +42,127 @@ namespace {
     default:
         return false;
     }
+}
+
+[[nodiscard]] float TileNavCost(TileType t) noexcept
+{
+    // NOTE: Costs must be >= 1.0f to keep the octile heuristic admissible.
+    //       Lower costs would let A* overestimate and break optimality.
+    switch (t)
+    {
+    case TileType::Farm:      return 1.25f; // crops / uneven ground
+    case TileType::Stockpile: return 1.10f; // clutter
+    case TileType::Door:      return 1.05f; // opening
+    default:                  return 1.00f;
+    }
+}
+
+void ExpandSparsePath(const std::vector<colony::pf::IVec2>& in,
+                      std::vector<colony::pf::IVec2>& out)
+{
+    out.clear();
+    if (in.empty())
+        return;
+
+    out.reserve(in.size() * 2);
+    out.push_back(in.front());
+
+    for (std::size_t i = 1; i < in.size(); ++i)
+    {
+        colony::pf::IVec2 cur = out.back();
+        const colony::pf::IVec2 tgt = in[i];
+
+        const int stepX = (tgt.x > cur.x) ? 1 : (tgt.x < cur.x) ? -1 : 0;
+        const int stepY = (tgt.y > cur.y) ? 1 : (tgt.y < cur.y) ? -1 : 0;
+
+        // JPS should only return straight or perfect-diagonal segments. However,
+        // we keep this robust by stepping each axis independently until we reach
+        // the target.
+        while (cur.x != tgt.x || cur.y != tgt.y)
+        {
+            if (cur.x != tgt.x) cur.x += stepX;
+            if (cur.y != tgt.y) cur.y += stepY;
+            out.push_back(cur);
+        }
+    }
+}
+
+[[nodiscard]] bool ValidateDensePath(const colony::pf::GridMap& nav,
+                                    int w,
+                                    int h,
+                                    const std::vector<colony::pf::IVec2>& path) noexcept
+{
+    if (path.empty())
+        return false;
+
+    for (const auto& p : path)
+    {
+        if (p.x < 0 || p.x >= w || p.y < 0 || p.y >= h)
+            return false;
+        if (!nav.passable(p.x, p.y))
+            return false;
+    }
+
+    for (std::size_t i = 1; i < path.size(); ++i)
+    {
+        const auto a = path[i - 1];
+        const auto b = path[i];
+        const int dx = b.x - a.x;
+        const int dy = b.y - a.y;
+        if (dx < -1 || dx > 1 || dy < -1 || dy > 1)
+            return false;
+        if (dx == 0 && dy == 0)
+            return false;
+        if (!nav.can_step(a.x, a.y, dx, dy))
+            return false;
+    }
+
+    return true;
+}
+
+[[nodiscard]] float DensePathCost(const colony::pf::GridMap& nav,
+                                 const std::vector<colony::pf::IVec2>& path) noexcept
+{
+    if (path.size() < 2)
+        return 0.0f;
+
+    float cost = 0.0f;
+    for (std::size_t i = 1; i < path.size(); ++i)
+    {
+        const auto a = path[i - 1];
+        const auto b = path[i];
+        const int dx = b.x - a.x;
+        const int dy = b.y - a.y;
+        cost += nav.step_cost(a.x, a.y, dx, dy);
+    }
+    return cost;
+}
+
+[[nodiscard]] bool ComputePathAlgo(const colony::pf::GridMap& nav,
+                                  PathAlgo algo,
+                                  int startX,
+                                  int startY,
+                                  int targetX,
+                                  int targetY,
+                                  std::vector<colony::pf::IVec2>& outPath)
+{
+    outPath.clear();
+
+    if (algo == PathAlgo::JumpPointSearch)
+    {
+        colony::pf::JPS jps(nav);
+        const colony::pf::Path p = jps.find_path({startX, startY}, {targetX, targetY});
+        if (p.points.empty())
+            return false;
+
+        ExpandSparsePath(p.points, outPath);
+        return !outPath.empty();
+    }
+
+    colony::pf::AStar astar(nav);
+    const colony::pf::Path p = astar.find_path({startX, startY}, {targetX, targetY});
+    outPath = p.points;
+    return !outPath.empty();
 }
 
 // -----------------------------------------------------------------------------
@@ -142,6 +265,25 @@ const char* TileTypeName(TileType t) noexcept
     case TileType::Door: return "Door";
     default: return "?";
     }
+}
+
+const char* PathAlgoName(PathAlgo a) noexcept
+{
+    switch (a)
+    {
+    case PathAlgo::AStar: return "AStar";
+    case PathAlgo::JumpPointSearch: return "JPS";
+    default: return "?";
+    }
+}
+
+PathAlgo PathAlgoFromName(std::string_view s) noexcept
+{
+    if (s == "AStar" || s == "astar" || s == "A*" || s == "A-Star")
+        return PathAlgo::AStar;
+    if (s == "JPS" || s == "jps" || s == "JumpPointSearch" || s == "jump-point-search")
+        return PathAlgo::JumpPointSearch;
+    return PathAlgo::AStar;
 }
 
 bool TileIsWalkable(TileType t) noexcept
@@ -358,6 +500,9 @@ void World::reset(int w, int h, std::uint32_t seed)
     m_harvestAssignCooldown = 0.0;
     m_haulAssignCooldown = 0.0;
     m_treeSpreadAccum = 0.0;
+
+    // Fresh world, fresh counters.
+    ResetPathStats();
 }
 
 bool World::inBounds(int x, int y) const noexcept
@@ -1111,6 +1256,9 @@ void World::syncNavCell(int x, int y) noexcept
 
     // NOTE: passable is an int in the public API.
     m_nav.set_walkable(x, y, TileIsWalkable(built) ? 1 : 0);
+
+    const float cost = navUseTerrainCosts ? TileNavCost(built) : 1.0f;
+    m_nav.set_tile_cost(x, y, cost);
 }
 
 void World::syncAllNav() noexcept
@@ -1118,6 +1266,86 @@ void World::syncAllNav() noexcept
     for (int y = 0; y < m_h; ++y)
         for (int x = 0; x < m_w; ++x)
             syncNavCell(x, y);
+
+    // A full nav rebuild invalidates any cached paths (even if the topology is the
+    // same, traversal costs might have changed).
+    ClearPathCache();
+}
+
+void World::ClearPathCache() noexcept
+{
+    m_pathCache.clear();
+    m_pathCacheLru.clear();
+}
+
+void World::ResetPathStats() noexcept
+{
+    m_pathStats = {};
+}
+
+std::size_t World::pathCacheSize() const noexcept
+{
+    return m_pathCache.size();
+}
+
+World::PathfindStats World::pathStats() const noexcept
+{
+    return m_pathStats;
+}
+
+bool World::SetNavTerrainCostsEnabled(bool enabled) noexcept
+{
+    if (navUseTerrainCosts == enabled)
+        return false;
+
+    navUseTerrainCosts = enabled;
+    syncAllNav(); // also clears the path cache
+    return true;
+}
+
+bool World::SetPathAlgo(PathAlgo algo) noexcept
+{
+    if (pathAlgo == algo)
+        return false;
+
+    pathAlgo = algo;
+    ClearPathCache();
+    return true;
+}
+
+bool World::SetPathCacheEnabled(bool enabled) noexcept
+{
+    if (pathCacheEnabled == enabled)
+        return false;
+
+    pathCacheEnabled = enabled;
+    if (!pathCacheEnabled)
+        ClearPathCache();
+    return true;
+}
+
+bool World::SetPathCacheMaxEntries(int maxEntries) noexcept
+{
+    maxEntries = clampi(maxEntries, 0, 16384);
+    if (pathCacheMaxEntries == maxEntries)
+        return false;
+
+    pathCacheMaxEntries = maxEntries;
+
+    if (pathCacheMaxEntries <= 0)
+    {
+        ClearPathCache();
+        return true;
+    }
+
+    while (m_pathCache.size() > static_cast<std::size_t>(pathCacheMaxEntries) && !m_pathCacheLru.empty())
+    {
+        const PathCacheKey oldKey = m_pathCacheLru.back();
+        m_pathCacheLru.pop_back();
+        (void)m_pathCache.erase(oldKey);
+        ++m_pathStats.evicted;
+    }
+    return true;
 }
 
 bool World::findPathToNearestAvailablePlan(int startX, int startY,
@@ -2442,39 +2670,81 @@ bool World::computePathToAdjacentFrom(int startX, int startY,
                                      std::vector<colony::pf::IVec2>& outPath) const
 {
     outPath.clear();
+    ++m_pathStats.reqAdjacent;
 
-    if (!inBounds(targetX, targetY))
+    if (!inBounds(startX, startY) || !inBounds(targetX, targetY))
+        return false;
+    if (!m_nav.passable(startX, startY))
         return false;
 
-    if (!inBounds(startX, startY))
-        return false;
+    const bool useCache = pathCacheEnabled && pathCacheMaxEntries > 0;
+    const PathCacheKey key{ startX, startY, targetX, targetY, 1 };
 
-    colony::pf::AStar astar(m_nav);
+    auto isValidCached = [&](const std::vector<colony::pf::IVec2>& p) -> bool
+    {
+        if (!ValidateDensePath(m_nav, m_w, m_h, p))
+            return false;
+        if (p.front().x != startX || p.front().y != startY)
+            return false;
+        const auto end = p.back();
+        const int manhattan = std::abs(end.x - targetX) + std::abs(end.y - targetY);
+        return manhattan == 1;
+    };
+
+    if (useCache)
+    {
+        auto it = m_pathCache.find(key);
+        if (it != m_pathCache.end())
+        {
+            if (isValidCached(it->second.path))
+            {
+                // Touch LRU.
+                m_pathCacheLru.splice(m_pathCacheLru.begin(), m_pathCacheLru, it->second.lruIt);
+                outPath = it->second.path;
+                ++m_pathStats.hitAdjacent;
+                return true;
+            }
+
+            // Stale entry.
+            m_pathCacheLru.erase(it->second.lruIt);
+            m_pathCache.erase(it);
+            ++m_pathStats.invalidated;
+        }
+    }
+
+    // Choose an adjacent walkable tile as the work position.
+    // We prefer minimal travel cost (includes terrain multipliers).
+    constexpr int kDirs[4][2] = { {1, 0}, {-1, 0}, {0, 1}, {0, -1} };
 
     std::vector<colony::pf::IVec2> best;
+    float bestCost = std::numeric_limits<float>::infinity();
     std::size_t bestLen = std::numeric_limits<std::size_t>::max();
 
-    // Choose any adjacent walkable tile as the work position.
-    constexpr int kDirs[4][2] = { {1, 0}, {-1, 0}, {0, 1}, {0, -1} };
+    std::vector<colony::pf::IVec2> tmp;
 
     for (const auto& d : kDirs)
     {
-        const int nx = targetX + d[0];
-        const int ny = targetY + d[1];
-
-        if (!inBounds(nx, ny))
-            continue;
-        if (!m_nav.passable(nx, ny))
+        const int gx = targetX + d[0];
+        const int gy = targetY + d[1];
+        if (!inBounds(gx, gy) || !m_nav.passable(gx, gy))
             continue;
 
-        const colony::pf::Path p = astar.find_path({startX, startY}, {nx, ny});
-        if (p.empty())
+        if (!ComputePathAlgo(m_nav, pathAlgo, startX, startY, gx, gy, tmp))
             continue;
 
-        if (p.points.size() < bestLen)
+        if (pathAlgo == PathAlgo::JumpPointSearch)
+            ++m_pathStats.computedJps;
+        else
+            ++m_pathStats.computedAStar;
+
+        const float cost = DensePathCost(m_nav, tmp);
+        const std::size_t len = tmp.size();
+
+        if (cost < bestCost || (cost == bestCost && len < bestLen))
         {
-            bestLen = p.points.size();
-            best = p.points;
+            bestCost = cost;
+            bestLen = len;
+            best = tmp;
         }
     }
 
@@ -2482,6 +2752,24 @@ bool World::computePathToAdjacentFrom(int startX, int startY,
         return false;
 
     outPath.swap(best);
+
+    if (useCache)
+    {
+        while (m_pathCache.size() >= static_cast<std::size_t>(pathCacheMaxEntries) && !m_pathCacheLru.empty())
+        {
+            const PathCacheKey oldKey = m_pathCacheLru.back();
+            m_pathCacheLru.pop_back();
+            (void)m_pathCache.erase(oldKey);
+            ++m_pathStats.evicted;
+        }
+
+        m_pathCacheLru.push_front(key);
+        PathCacheValue v;
+        v.path = outPath;
+        v.lruIt = m_pathCacheLru.begin();
+        m_pathCache.emplace(key, std::move(v));
+    }
+
     return !outPath.empty();
 }
 
@@ -2507,20 +2795,72 @@ bool World::computePathToTileFrom(int startX, int startY,
                                  std::vector<colony::pf::IVec2>& outPath) const
 {
     outPath.clear();
+    ++m_pathStats.reqTile;
 
-    if (!inBounds(targetX, targetY))
+    if (!inBounds(startX, startY) || !inBounds(targetX, targetY))
         return false;
-    if (!inBounds(startX, startY))
+    if (!m_nav.passable(startX, startY))
         return false;
     if (!m_nav.passable(targetX, targetY))
         return false;
 
-    colony::pf::AStar astar(m_nav);
-    const colony::pf::Path p = astar.find_path({startX, startY}, {targetX, targetY});
-    if (p.empty())
+    const bool useCache = pathCacheEnabled && pathCacheMaxEntries > 0;
+    const PathCacheKey key{ startX, startY, targetX, targetY, 0 };
+
+    auto isValidCached = [&](const std::vector<colony::pf::IVec2>& p) -> bool
+    {
+        if (!ValidateDensePath(m_nav, m_w, m_h, p))
+            return false;
+        if (p.front().x != startX || p.front().y != startY)
+            return false;
+        const auto end = p.back();
+        return end.x == targetX && end.y == targetY;
+    };
+
+    if (useCache)
+    {
+        auto it = m_pathCache.find(key);
+        if (it != m_pathCache.end())
+        {
+            if (isValidCached(it->second.path))
+            {
+                m_pathCacheLru.splice(m_pathCacheLru.begin(), m_pathCacheLru, it->second.lruIt);
+                outPath = it->second.path;
+                ++m_pathStats.hitTile;
+                return true;
+            }
+
+            m_pathCacheLru.erase(it->second.lruIt);
+            m_pathCache.erase(it);
+            ++m_pathStats.invalidated;
+        }
+    }
+
+    if (!ComputePathAlgo(m_nav, pathAlgo, startX, startY, targetX, targetY, outPath))
         return false;
 
-    outPath = p.points;
+    if (pathAlgo == PathAlgo::JumpPointSearch)
+        ++m_pathStats.computedJps;
+    else
+        ++m_pathStats.computedAStar;
+
+    if (useCache)
+    {
+        while (m_pathCache.size() >= static_cast<std::size_t>(pathCacheMaxEntries) && !m_pathCacheLru.empty())
+        {
+            const PathCacheKey oldKey = m_pathCacheLru.back();
+            m_pathCacheLru.pop_back();
+            (void)m_pathCache.erase(oldKey);
+            ++m_pathStats.evicted;
+        }
+
+        m_pathCacheLru.push_front(key);
+        PathCacheValue v;
+        v.path = outPath;
+        v.lruIt = m_pathCacheLru.begin();
+        m_pathCache.emplace(key, std::move(v));
+    }
+
     return !outPath.empty();
 }
 
@@ -2637,9 +2977,11 @@ void World::stepColonist(Colonist& c, double dtSeconds)
 
     // Walk along the path.
     const float baseSpeed = static_cast<float>(std::max(0.1, colonistWalkSpeed));
-    const float speed     = baseSpeed * EffectiveMoveMult(c);
+    const float speedBase = baseSpeed * EffectiveMoveMult(c);
 
-    while (c.pathIndex < c.path.size())
+    double timeLeft = dtSeconds;
+
+    while (timeLeft > 0.0 && c.pathIndex < c.path.size())
     {
         const colony::pf::IVec2 p = c.path[c.pathIndex];
         const float goalX = static_cast<float>(p.x) + 0.5f;
@@ -2651,19 +2993,29 @@ void World::stepColonist(Colonist& c, double dtSeconds)
 
         if (dist < 1.0e-3f)
         {
-            ++c.pathIndex;
-            continue;
-        }
-
-        const float step = speed * static_cast<float>(dtSeconds);
-        if (step >= dist)
-        {
+            // Snap to the node to avoid accumulating tiny drift errors.
             c.x = goalX;
             c.y = goalY;
             ++c.pathIndex;
             continue;
         }
 
+        // Optional terrain traversal costs (farms/stockpiles/doors) slow movement
+        // and are also reflected in the nav step cost.
+        const float costMul = navUseTerrainCosts ? std::max(1.0f, m_nav.tile_cost(p.x, p.y)) : 1.0f;
+        const float segSpeed = std::max(0.01f, speedBase / costMul);
+
+        const double tNeed = static_cast<double>(dist / segSpeed);
+        if (tNeed <= timeLeft)
+        {
+            c.x = goalX;
+            c.y = goalY;
+            ++c.pathIndex;
+            timeLeft -= tNeed;
+            continue;
+        }
+
+        const float step = segSpeed * static_cast<float>(timeLeft);
         c.x += dx / dist * step;
         c.y += dy / dist * step;
         break;

@@ -25,6 +25,7 @@ inline constexpr const char* kWorldFormatLegacy = "colony_proto_world"; // legac
 //  v8: Loose wood items + hauling tuning (stockpiles become a logistics hub)
 //  v9: Per-colonist work priorities (build/farm/haul)
 //  v10: Doors (new tile type) + derived room/indoors cache
-inline constexpr int         kWorldVersion      = 10;
+//  v11: Pathfinding tuning (AStar/JPS selection, path cache knobs, terrain traversal costs)
+inline constexpr int         kWorldVersion      = 11;
 
 } // namespace colony::proto::savefmt

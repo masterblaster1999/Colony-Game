@@ -1,3 +1,70 @@
+# Colony-Game Patch (Round 34)
+
+This round focuses on **Pathfinding + movement** improvements:
+
+- Adds a selectable pathfinding algorithm (**AStar** or **JPS**) for direct orders/repathing.
+- Adds an optional **LRU path cache** to reduce repeated A* calls.
+- Introduces optional **terrain traversal costs** that affect both path costs and actual walk speed.
+- Fixes a subtle movement integration issue where colonists could "double-spend" their movement budget when snapping across multiple path nodes in a single tick.
+
+It also bumps the proto-world save format to **v11**.
+
+## New gameplay/simulation
+
+### 1) Pathfinding algorithm toggle (AStar vs JPS)
+
+Under **Tuning / Pathfinding**:
+
+- **Algorithm = AStar** (baseline)
+- **Algorithm = JPS** (Jump Point Search; expanded back into tile-by-tile steps for safe movement)
+
+### 2) LRU path cache (validated)
+
+The world now maintains an optional LRU cache for direct `(start, goal)` pathfinding queries.
+
+- Cached paths are **validated** against the current nav grid before reuse.
+- Invalid paths are discarded and recomputed.
+
+This mainly helps with repeated manual orders and repathing spikes.
+
+### 3) Terrain traversal costs (optional)
+
+When enabled, some built tiles carry a higher traversal cost:
+
+- **Farm**: slower
+- **Stockpile**: slightly slower
+- **Door**: tiny penalty
+
+These costs influence:
+
+- Path selection (higher-cost terrain is avoided when reasonable)
+- Actual walk speed while crossing those tiles
+
+## UI improvements
+
+### 1) Pathfinding controls + stats
+
+Added a new **Tuning / Pathfinding** section:
+
+- Algorithm selector
+- Cache enable + max entries
+- Terrain costs enable
+- Buttons to clear cache + reset stats
+- Live stats: requests/hits, hit rate, computed paths (AStar/JPS), invalidations, evictions
+
+## Save format + persistence
+
+### Save format bump to v11
+
+- **Version bump:** `kWorldVersion` is now **11**
+- Added persisted tuning fields:
+  - `pathfindingAlgorithm`
+  - `pathCacheEnabled`
+  - `pathCacheMaxEntries`
+  - `navTerrainCostsEnabled`
+
+---
+
 # Colony-Game Patch (Round 33)
 
 This round adds **Doors** plus a first-pass **Rooms / Indoors** system, and fixes a long-standing issue where **Demolish (Remove) plans** could accidentally turn into a permanent built tile.

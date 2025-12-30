@@ -40,19 +40,52 @@ public:
             if (cur == gid) return reconstruct(gid, sid, w, _cost);
 
             const auto C = from_id(cur, w);
-            // Identify pruned neighbors (set of directions to try)
-            const auto dirs = (dir.x==0 && dir.y==0) ? all_dirs() : pruned_dirs(C, dir);
-            for (auto d : dirs) {
-                NodeId jp{};
-                float step_g{};
-                if (!jump(C.x, C.y, d.x, d.y, gid, jp, step_g)) continue;
-                if (closed[jp]) continue;
-                const float g_new = _cost[cur].g + step_g;
-                if (_cost[jp].parent == kInvalid || g_new < _cost[jp].g) {
-                    _cost[jp].g = g_new;
-                    _cost[jp].f = g_new + octile(jp, gid, w);
-                    _cost[jp].parent = cur;
-                    open.push({ _cost[jp].f, jp, d });
+
+            // Identify pruned neighbors (set of directions to try).
+            // NOTE: all_dirs() returns a fixed-size array while pruned_dirs() returns a vector;
+            // keep the two branches separate to avoid a conditional-expression type mismatch.
+            if (dir.x == 0 && dir.y == 0)
+            {
+                const auto dirs = all_dirs();
+                for (auto d : dirs)
+                {
+                    NodeId jp{};
+                    float step_g{};
+                    if (!jump(C.x, C.y, d.x, d.y, gid, jp, step_g))
+                        continue;
+                    if (closed[jp])
+                        continue;
+
+                    const float g_new = _cost[cur].g + step_g;
+                    if (_cost[jp].parent == kInvalid || g_new < _cost[jp].g)
+                    {
+                        _cost[jp].g = g_new;
+                        _cost[jp].f = g_new + octile(jp, gid, w);
+                        _cost[jp].parent = cur;
+                        open.push({ _cost[jp].f, jp, d });
+                    }
+                }
+            }
+            else
+            {
+                const auto dirs = pruned_dirs(C, dir);
+                for (auto d : dirs)
+                {
+                    NodeId jp{};
+                    float step_g{};
+                    if (!jump(C.x, C.y, d.x, d.y, gid, jp, step_g))
+                        continue;
+                    if (closed[jp])
+                        continue;
+
+                    const float g_new = _cost[cur].g + step_g;
+                    if (_cost[jp].parent == kInvalid || g_new < _cost[jp].g)
+                    {
+                        _cost[jp].g = g_new;
+                        _cost[jp].f = g_new + octile(jp, gid, w);
+                        _cost[jp].parent = cur;
+                        open.push({ _cost[jp].f, jp, d });
+                    }
                 }
             }
         }
