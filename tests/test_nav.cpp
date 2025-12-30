@@ -136,3 +136,66 @@ TEST_CASE("Navigator: multi-cluster path between clusters")
 
     CHECK(p.has_value());
 }
+
+TEST_CASE("ClusterGrid: repeated queries don't bias the abstract graph with stale temp edges")
+{
+    using namespace colony_smoke_nav_test;
+
+    // Map layout (64x32) split into 2 clusters horizontally (32x32):
+    //  - Left cluster: row y=16 is a wall except a single gap at x=2.
+    //  - Right cluster: row y=16 is a solid wall (no gap).
+    // This creates a situation where:
+    //  - goal at (60,8) is reachable via the "upper" border portals.
+    //  - goal at (60,24) is reachable via "lower" border portals.
+    //  - BUT the goal at (60,24) is NOT reachable from an upper portal *within the right cluster*.
+    //
+    // The old implementation permanently added portal->temp edges and reused temp IDs between
+    // queries, leaving stale edge weights in the portal graph. That could bias the A* over the
+    // abstract graph into choosing an upper portal for the second query, yielding a huge detour.
+
+    NavTestGrid g(64, 32);
+
+    // Carve the horizontal walls.
+    for (int x = 0; x < 64; ++x)
+    {
+        if (x >= 32)
+        {
+            // Right cluster: solid wall.
+            g.SetPassable(x, 16, false);
+        }
+        else
+        {
+            // Left cluster: wall with a single gap.
+            g.SetPassable(x, 16, x == 2);
+        }
+    }
+
+    colony::nav::ClusterGridSettings s;
+    s.clusterW = 32;
+    s.clusterH = 32;
+    s.portalStride = 4;
+    s.diagonals = colony::nav::DiagonalPolicy::AllowedIfNoCut;
+
+    colony::nav::ClusterGrid cluster(static_cast<const colony::nav::IGridMap&>(g), s);
+
+    const colony::nav::Coord start{2, 2};
+    const colony::nav::Coord goalTop{60, 8};
+    const colony::nav::Coord goalBottom{60, 24};
+
+    // 1) Warm-up query (build portals + cache intra-cluster edges).
+    auto p1 = cluster.FindPath(start, goalTop);
+    REQUIRE(p1.has_value());
+
+    // 2) Second query: should not be biased by stale portal->temp edges.
+    auto p2 = cluster.FindPath(start, goalBottom);
+    REQUIRE(p2.has_value());
+
+    // Sanity.
+    CHECK(p2->points.front() == start);
+    CHECK(p2->points.back() == goalBottom);
+
+    // With correct per-query temp edges, the path is ~80 steps (down through the gap, then right).
+    // If stale temp edges bias the abstract plan, it can detour into the upper portal first,
+    // exploding the path length well past 120.
+    CHECK(p2->points.size() < 120);
+}

@@ -3,6 +3,8 @@
 #include "game/proto/ProtoWorld.h"
 #include "game/proto/ProtoWorld_SaveFormat.h"
 
+#include "game/Role.hpp"
+
 #include <chrono>
 #include <filesystem>
 #include <fstream>
@@ -76,8 +78,33 @@ TEST_CASE("ProtoWorld SaveJson format/version and legacy format compatibility")
     w.inventory().wood = 42;
     w.inventory().food = 13.5f;
 
+    // Verify that player-control state persists (drafted colonists).
+    if (!w.colonists().empty())
+    {
+        w.colonists()[0].drafted = true;
+
+        // v7+: roles + progression
+        w.colonists()[0].role.set(RoleId::Builder);
+        w.colonists()[0].role.level = 2;
+        w.colonists()[0].role.xp    = 123;
+    }
+
     // A tiny bit of state so the file isn't totally trivial.
     (void)w.placePlan(1, 1, colony::proto::TileType::Wall, /*priority*/ 2);
+
+    // Mark a tile as player-built to verify v4 cell field round-trips.
+    w.cell(2, 2).builtFromPlan = true;
+
+    // Set up a farm tile with a non-trivial growth value to verify v5 persistence.
+    w.cell(3, 2).built = colony::proto::TileType::Farm;
+    w.cell(3, 2).farmGrowth = 0.75f;
+
+    // Set up a tree tile to verify v6 built tile round-trips.
+    w.cell(1, 2).built = colony::proto::TileType::Tree;
+    w.cell(1, 2).builtFromPlan = false;
+
+    // v8: loose wood piles (hauled to stockpiles)
+    w.cell(4, 2).looseWood = 7;
 
     std::string err;
     REQUIRE_MESSAGE(w.SaveJson(pNew, &err), err);
@@ -91,6 +118,96 @@ TEST_CASE("ProtoWorld SaveJson format/version and legacy format compatibility")
     CHECK(j.value("format", "") == std::string(kWorldFormat));
     CHECK(j.value("version", 0) == kWorldVersion);
 
+    // v3+ fields: hunger tuning + per-colonist personalFood.
+    REQUIRE(j.contains("tuning"));
+    REQUIRE(j["tuning"].is_object());
+    CHECK(j["tuning"].contains("colonistMaxPersonalFood"));
+    CHECK(j["tuning"].contains("colonistEatThresholdFood"));
+    CHECK(j["tuning"].contains("colonistEatDurationSeconds"));
+    CHECK(j["tuning"].contains("farmGrowDurationSeconds"));
+    CHECK(j["tuning"].contains("farmHarvestYieldFood"));
+    CHECK(j["tuning"].contains("farmHarvestDurationSeconds"));
+    CHECK(j["tuning"].contains("treeChopYieldWood"));
+    CHECK(j["tuning"].contains("treeSpreadAttemptsPerSecond"));
+    CHECK(j["tuning"].contains("treeSpreadChancePerAttempt"));
+    CHECK(j["tuning"].contains("haulCarryCapacity"));
+    CHECK(j["tuning"].contains("haulPickupDurationSeconds"));
+    CHECK(j["tuning"].contains("haulDropoffDurationSeconds"));
+
+    REQUIRE(j.contains("colonists"));
+    REQUIRE(j["colonists"].is_array());
+    if (!j["colonists"].empty())
+    {
+        const auto& c0 = j["colonists"][0];
+        REQUIRE(c0.is_object());
+        REQUIRE(c0.contains("personalFood"));
+        CHECK(c0["personalFood"].is_number());
+
+        REQUIRE(c0.contains("drafted"));
+        CHECK(c0["drafted"].is_boolean());
+        CHECK(c0["drafted"].get<bool>() == true);
+
+        // v7+: roles + progression
+        REQUIRE(c0.contains("role"));
+        CHECK(c0["role"].is_string());
+        CHECK(c0["role"].get<std::string>() == std::string(RoleDefOf(RoleId::Builder).name));
+
+        REQUIRE(c0.contains("roleLevel"));
+        CHECK(c0["roleLevel"].is_number_integer());
+        CHECK(c0["roleLevel"].get<int>() == 2);
+
+        REQUIRE(c0.contains("roleXp"));
+        CHECK(c0["roleXp"].is_number());
+        CHECK(c0["roleXp"].get<int>() == 123);
+    }
+
+    // v5+ cells include farmGrowth as the 6th array element (and keep builtFromPlan at index 4).
+    REQUIRE(j.contains("cells"));
+    REQUIRE(j["cells"].is_array());
+    if (!j["cells"].empty())
+    {
+        const auto& e0 = j["cells"][0];
+        REQUIRE(e0.is_array());
+        CHECK(e0.size() >= 7);
+    }
+
+    {
+        const int fx = 3;
+        const int fy = 2;
+        const std::size_t idx = static_cast<std::size_t>(fy * w.width() + fx);
+        REQUIRE(idx < j["cells"].size());
+
+        const auto& ef = j["cells"][idx];
+        REQUIRE(ef.is_array());
+        REQUIRE(ef.size() >= 7);
+        CHECK(ef[0].get<int>() == static_cast<int>(colony::proto::TileType::Farm));
+        CHECK(ef[5].get<float>() == doctest::Approx(0.75f));
+    }
+
+    {
+        const int tx = 1;
+        const int ty = 2;
+        const std::size_t idx = static_cast<std::size_t>(ty * w.width() + tx);
+        REQUIRE(idx < j["cells"].size());
+
+        const auto& et = j["cells"][idx];
+        REQUIRE(et.is_array());
+        REQUIRE(et.size() >= 7);
+        CHECK(et[0].get<int>() == static_cast<int>(colony::proto::TileType::Tree));
+    }
+
+    {
+        const int lx = 4;
+        const int ly = 2;
+        const std::size_t idx = static_cast<std::size_t>(ly * w.width() + lx);
+        REQUIRE(idx < j["cells"].size());
+
+        const auto& lw = j["cells"][idx];
+        REQUIRE(lw.is_array());
+        REQUIRE(lw.size() >= 7);
+        CHECK(lw[6].get<int>() == 7);
+    }
+
     // Rewrite the same payload with the legacy format string.
     nlohmann::json jLegacy = j;
     jLegacy["format"] = kWorldFormatLegacy;
@@ -103,5 +220,26 @@ TEST_CASE("ProtoWorld SaveJson format/version and legacy format compatibility")
     CHECK(loaded.width() == w.width());
     CHECK(loaded.height() == w.height());
     CHECK(loaded.inventory().wood == w.inventory().wood);
+
+
+    CHECK(loaded.cell(2, 2).builtFromPlan == w.cell(2, 2).builtFromPlan);
+
+    CHECK(loaded.cell(3, 2).built == colony::proto::TileType::Farm);
+    CHECK(loaded.cell(3, 2).farmGrowth == doctest::Approx(0.75f));
+
+    CHECK(loaded.cell(1, 2).built == colony::proto::TileType::Tree);
+
+    CHECK(loaded.cell(4, 2).looseWood == 7);
+
+    REQUIRE(loaded.colonists().size() == w.colonists().size());
+    if (!loaded.colonists().empty())
+    {
+        CHECK(loaded.colonists()[0].personalFood == doctest::Approx(w.colonists()[0].personalFood));
+        CHECK(loaded.colonists()[0].drafted == w.colonists()[0].drafted);
+
+        CHECK(loaded.colonists()[0].role.role == w.colonists()[0].role.role);
+        CHECK(loaded.colonists()[0].role.level == w.colonists()[0].role.level);
+        CHECK(loaded.colonists()[0].role.xp == w.colonists()[0].role.xp);
+    }
 
 }

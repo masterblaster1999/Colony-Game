@@ -64,6 +64,10 @@ private:
     std::unordered_map<ClusterKey, std::vector<PortalId>, ClusterKeyHash> clusterToPortals_;
     bool portalsBuilt_ = false;
 
+    // Cache which clusters already have their intra-cluster portal edges built.
+    // This avoids repeating O(P^2) scans per query once a cluster has been processed.
+    std::unordered_set<ClusterKey, ClusterKeyHash> intraEdgesBuilt_;
+
     void BuildAllPortals(); // step-1: simple global construction
     void AddPortalPair(const Coord& a, const Coord& b); // border pair creates 2 portals and a cross-edge
     // Compute/ensure intra-cluster portal edges exist (uses JPS with bbox on that cluster)

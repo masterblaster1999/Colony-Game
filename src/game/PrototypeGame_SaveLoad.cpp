@@ -50,13 +50,19 @@ struct AsyncSaveManager {
         std::uint8_t built = 0;
         std::uint8_t planned = 0;
         std::uint8_t planPriority = 0;
+        std::uint8_t builtFromPlan = 0; // v4+ (0/1)
         float workRemaining = 0.0f;
+        float farmGrowth = 0.0f;
+        int looseWood = 0;
     };
 
     struct Colonist {
         int id = 0;
         float x = 0.5f;
         float y = 0.5f;
+
+        // v3+ hunger
+        float personalFood = 0.0f;
     };
 
     struct Snapshot {
@@ -68,8 +74,25 @@ struct AsyncSaveManager {
 
         double buildWorkPerSecond = 1.0;
         double colonistWalkSpeed = 3.0;
-        double farmFoodPerSecond = 0.25;
+        double farmGrowDurationSeconds = 40.0;
+        double farmHarvestYieldFood = 10.0;
+        double farmHarvestDurationSeconds = 1.0;
+
+        // v6+ forestry tuning
+        int treeChopYieldWood = 4;
+        double treeSpreadAttemptsPerSecond = 2.5;
+        double treeSpreadChancePerAttempt = 0.15;
         double foodPerColonistPerSecond = 0.05;
+
+        // v3+ hunger/eating tuning
+        double colonistMaxPersonalFood = 6.0;
+        double colonistEatThresholdFood = 2.0;
+        double colonistEatDurationSeconds = 1.5;
+
+        // v8+ hauling tuning
+        int haulCarryCapacity = 25;
+        double haulPickupDurationSeconds = 0.25;
+        double haulDropoffDurationSeconds = 0.25;
 
         std::vector<Cell> cells;
         std::vector<Colonist> colonists;
@@ -238,8 +261,21 @@ private:
 
         s.buildWorkPerSecond = world.buildWorkPerSecond;
         s.colonistWalkSpeed = world.colonistWalkSpeed;
-        s.farmFoodPerSecond = world.farmFoodPerSecond;
+        s.farmGrowDurationSeconds = world.farmGrowDurationSeconds;
+    s.farmHarvestYieldFood = world.farmHarvestYieldFood;
+    s.farmHarvestDurationSeconds = world.farmHarvestDurationSeconds;
+        s.treeChopYieldWood = world.treeChopYieldWood;
+        s.treeSpreadAttemptsPerSecond = world.treeSpreadAttemptsPerSecond;
+        s.treeSpreadChancePerAttempt = world.treeSpreadChancePerAttempt;
         s.foodPerColonistPerSecond = world.foodPerColonistPerSecond;
+
+        s.colonistMaxPersonalFood = world.colonistMaxPersonalFood;
+        s.colonistEatThresholdFood = world.colonistEatThresholdFood;
+        s.colonistEatDurationSeconds = world.colonistEatDurationSeconds;
+
+        s.haulCarryCapacity = world.haulCarryCapacity;
+        s.haulPickupDurationSeconds = world.haulPickupDurationSeconds;
+        s.haulDropoffDurationSeconds = world.haulDropoffDurationSeconds;
 
         // Summary counts (cheap, cached inside World).
         s.plannedCount    = world.plannedCount();
@@ -261,7 +297,10 @@ private:
                 out.built = static_cast<std::uint8_t>(c.built);
                 out.planned = static_cast<std::uint8_t>(c.planned);
                 out.workRemaining = c.workRemaining;
+                out.farmGrowth = c.farmGrowth;
                 out.planPriority = c.planPriority;
+                out.builtFromPlan = c.builtFromPlan ? 1u : 0u;
+                out.looseWood = c.looseWood;
                 s.cells[static_cast<std::size_t>(y * s.w + x)] = out;
             }
         }
@@ -274,6 +313,7 @@ private:
             out.id = c.id;
             out.x = c.x;
             out.y = c.y;
+            out.personalFood = c.personalFood;
             s.colonists.push_back(out);
         }
 
@@ -336,8 +376,20 @@ private:
             j["tuning"] = {
                 {"buildWorkPerSecond", s.buildWorkPerSecond},
                 {"colonistWalkSpeed", s.colonistWalkSpeed},
-                {"farmFoodPerSecond", s.farmFoodPerSecond},
+                {"farmGrowDurationSeconds", s.farmGrowDurationSeconds},
+                {"farmHarvestYieldFood", s.farmHarvestYieldFood},
+                {"farmHarvestDurationSeconds", s.farmHarvestDurationSeconds},
+                {"treeChopYieldWood", s.treeChopYieldWood},
+                {"treeSpreadAttemptsPerSecond", s.treeSpreadAttemptsPerSecond},
+                {"treeSpreadChancePerAttempt", s.treeSpreadChancePerAttempt},
                 {"foodPerColonistPerSecond", s.foodPerColonistPerSecond},
+                {"colonistMaxPersonalFood", s.colonistMaxPersonalFood},
+                {"colonistEatThresholdFood", s.colonistEatThresholdFood},
+                {"colonistEatDurationSeconds", s.colonistEatDurationSeconds},
+            };
+                {"haulCarryCapacity", s.haulCarryCapacity},
+                {"haulPickupDurationSeconds", s.haulPickupDurationSeconds},
+                {"haulDropoffDurationSeconds", s.haulDropoffDurationSeconds},
             };
 
             // Optional extra metadata (loader ignores unknown fields).
@@ -358,6 +410,9 @@ private:
                     static_cast<int>(c.planned),
                     c.workRemaining,
                     static_cast<int>(c.planPriority),
+                    static_cast<int>(c.builtFromPlan),
+                    c.farmGrowth,
+                    c.looseWood,
                 });
             }
             j["cells"] = std::move(cells);
@@ -365,7 +420,12 @@ private:
             json colonists = json::array();
             colonists.get_ref<json::array_t&>().reserve(s.colonists.size());
             for (const Colonist& c : s.colonists)
-                colonists.push_back({ {"id", c.id}, {"x", c.x}, {"y", c.y} });
+                colonists.push_back({
+                    {"id", c.id},
+                    {"x", c.x},
+                    {"y", c.y},
+                    {"personalFood", c.personalFood},
+                });
             j["colonists"] = std::move(colonists);
 
             const std::string bytes = pretty ? j.dump(2) : j.dump();
@@ -704,6 +764,13 @@ bool PrototypeGame::Impl::loadWorldFromPath(const fs::path& path, bool showStatu
 
     // Avoid "stuck drag" behavior and stale paint state after a load that may change world size.
     clearPlanHistory();
+
+    // Clear selection state (tile + colonist) — the loaded world may have
+    // different dimensions/contents.
+    selectedX = -1;
+    selectedY = -1;
+    selectedColonistId = -1;
+    followSelectedColonist = false;
 
     // Keep the reset UI in sync with the loaded size.
     worldResetW = world.width();

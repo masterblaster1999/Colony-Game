@@ -1,5 +1,7 @@
 #pragma once
 #include "GridTypes.hpp"
+
+#include <algorithm>
 #include <vector>
 
 namespace colony::pf {

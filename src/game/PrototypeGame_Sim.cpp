@@ -45,6 +45,12 @@ void PrototypeGame::Impl::resetWorld()
 
     clearPlanHistory();
 
+    // Clear selection state (tile + colonist).
+    selectedX = -1;
+    selectedY = -1;
+    selectedColonistId = -1;
+    followSelectedColonist = false;
+
     // Recenter camera.
     const DebugCameraState& s = camera.State();
     const float cx            = std::max(0.0f, static_cast<float>(world.width()) * 0.5f);
@@ -82,7 +88,7 @@ bool PrototypeGame::Impl::Update(float dtSeconds, bool uiWantsKeyboard, bool /*u
     pollBindingHotReload(dtSeconds);
 
     // Keyboard camera pan/zoom
-    const bool cameraChanged = updateCameraKeyboard(dtSeconds, uiWantsKeyboard);
+    bool cameraChanged = updateCameraKeyboard(dtSeconds, uiWantsKeyboard);
 
     // Simulation (fixed-step)
     if (!paused) {
@@ -99,6 +105,20 @@ bool PrototypeGame::Impl::Update(float dtSeconds, bool uiWantsKeyboard, bool /*u
         if (steps == maxCatchupSteps && simAccumulator >= fixedDt) {
             // Drop extra time if we fell behind.
             simAccumulator = std::fmod(simAccumulator, fixedDt);
+        }
+    }
+
+    // Optional camera follow (selection-driven).
+    if (followSelectedColonist && selectedColonistId >= 0)
+    {
+        for (const proto::Colonist& c : world.colonists())
+        {
+            if (c.id != selectedColonistId)
+                continue;
+
+            const DebugCameraState& s = camera.State();
+            cameraChanged |= camera.ApplyPan(c.x - s.panX, c.y - s.panY);
+            break;
         }
     }
 

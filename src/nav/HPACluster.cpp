@@ -1,4 +1,5 @@
 #include "HPACluster.h"
+
 #include <queue>
 #include <unordered_map>
 
@@ -70,8 +71,19 @@ void ClusterGrid::BuildAllPortals() {
 }
 
 void ClusterGrid::EnsureIntraClusterEdges(const ClusterKey& k) {
+    // If we've already built the intra-cluster edges for this cluster, we're done.
+    // (Edges are cached on the Portal objects and never duplicated.)
+    if (intraEdgesBuilt_.contains(k)) {
+        return;
+    }
+
     const auto& plist = PortalsInCluster(k);
-    if (plist.size() <= 1) return;
+    if (plist.size() <= 1) {
+        // Even if there is nothing to connect, remember we processed this cluster so
+        // repeated queries don't keep re-checking it.
+        intraEdgesBuilt_.insert(k);
+        return;
+    }
 
     // Build bbox for this cluster
     Coord minB{ k.cx * s_.clusterW, k.cy * s_.clusterH };
@@ -107,6 +119,9 @@ void ClusterGrid::EnsureIntraClusterEdges(const ClusterKey& k) {
             pb.edges.emplace_back(pa.id, w);
         }
     }
+
+    // Mark cluster as processed so future queries don't rescan all portal pairs.
+    intraEdgesBuilt_.insert(k);
 }
 
 std::optional<std::vector<Coord>> ClusterGrid::HighLevelPlan(const Coord& start, const Coord& goal) {
@@ -118,93 +133,177 @@ std::optional<std::vector<Coord>> ClusterGrid::HighLevelPlan(const Coord& start,
     // Ensure portals exist for the clusters on the route (global build for step-1)
     if (!portalsBuilt_) BuildAllPortals();
 
-    // Create two temporary portals for start/goal and connect to their cluster portals (with JPS distances)
-    PortalId sId{ static_cast<int32_t>(portals_.size()) };
-    PortalId gId{ static_cast<int32_t>(portals_.size()+1) };
-    portals_.push_back(Portal{ sId, start, KeyFor(start), {} });
-    portals_.push_back(Portal{ gId, goal,  KeyFor(goal),  {} });
+    // IMPORTANT:
+    // The previous implementation appended temporary "start" and "goal" portals into `portals_`
+    // and permanently added edges from real portals to those temporary nodes.
+    // Since the temp node indices are reused across calls, that caused:
+    //   - stale edge weights (computed for a previous query's start/goal)
+    //   - duplicate edges accumulating per query (unbounded memory growth)
+    //   - incorrect high-level plans (can select portals unreachable from the current start/goal)
+    // This implementation keeps the portal graph immutable and injects per-query temp edges locally.
 
-    auto conTmp = [&](PortalId pid) {
-        auto& p = portals_[pid.id];
-        const auto& plist = PortalsInCluster(p.cluster);
-        EnsureIntraClusterEdges(p.cluster);
+    // Temporary node ids (negative so they never collide with real portal indices).
+    constexpr int32_t kTmpStart = -1;
+    constexpr int32_t kTmpGoal  = -2;
 
-        // bbox: cluster of this portal
-        Coord minB{ p.cluster.cx * s_.clusterW, p.cluster.cy * s_.clusterH };
-        Coord maxB{ std::min(minB.x + s_.clusterW - 1, m_.Width()-1),
-                    std::min(minB.y + s_.clusterH - 1, m_.Height()-1) };
-        JPSOptions opt; opt.diagonals = s_.diagonals; opt.bboxMin=minB; opt.bboxMax=maxB; opt.hasBBox=true;
+    struct Edge { int32_t to; float w; };
 
-        // connect temporary node to all cluster portals
+    // Extra per-query edges for the two temp nodes.
+    std::vector<Edge> startEdges;
+    std::vector<Edge> goalEdges;
+    // Portal -> temp edges (used so the search can reach the goal temp node).
+    std::unordered_map<int32_t, std::vector<Edge>> extraPortalEdges;
+
+    auto nodePos = [&](int32_t id) -> Coord {
+        if (id == kTmpStart) return start;
+        if (id == kTmpGoal)  return goal;
+        return portals_.at(static_cast<size_t>(id)).pos;
+    };
+
+    auto pathCost = [&](const Path& pth) -> float {
+        float w = 0.0f;
+        for (size_t t = 1; t < pth.points.size(); ++t) {
+            const int dx = std::abs(pth.points[t].x - pth.points[t-1].x);
+            const int dy = std::abs(pth.points[t].y - pth.points[t-1].y);
+            w += (dx == 1 && dy == 1) ? kCostDiagonal : kCostStraight;
+            w += m_.ExtraCost(pth.points[t].x, pth.points[t].y);
+        }
+        return w;
+    };
+
+    auto connectTempToCluster = [&](int32_t tempId,
+                                   const Coord& tempPos,
+                                   const ClusterKey& ck,
+                                   std::vector<Edge>& outTempEdges)
+    {
+        const auto& plist = PortalsInCluster(ck);
+        if (plist.empty()) return;
+
+        EnsureIntraClusterEdges(ck);
+
+        // Restrict these connections to the temp node's cluster so we get a true
+        // intra-cluster cost (and avoid leaving the cluster via other portals).
+        Coord minB{ ck.cx * s_.clusterW, ck.cy * s_.clusterH };
+        Coord maxB{ std::min(minB.x + s_.clusterW - 1, m_.Width()  - 1),
+                    std::min(minB.y + s_.clusterH - 1, m_.Height() - 1) };
+
+        JPSOptions opt;
+        opt.diagonals = s_.diagonals;
+        opt.bboxMin = minB;
+        opt.bboxMax = maxB;
+        opt.hasBBox = true;
+
         for (auto pid2 : plist) {
-            auto pth = FindPathJPS(m_, p.pos, portals_[pid2.id].pos, opt);
-            if (!pth) continue;
-            float w = 0.0f;
-            for (size_t t=1;t<pth->points.size();++t) {
-                int dx = std::abs(pth->points[t].x - pth->points[t-1].x);
-                int dy = std::abs(pth->points[t].y - pth->points[t-1].y);
-                w += (dx==1 && dy==1) ? kCostDiagonal : kCostStraight;
-                w += m_.ExtraCost(pth->points[t].x, pth->points[t].y);
-            }
-            portals_[pid.id].edges.emplace_back(pid2, w);
-            portals_[pid2.id].edges.emplace_back(pid, w);
+            const Coord& ppos = portals_[pid2.id].pos;
+            auto seg = FindPathJPS(m_, tempPos, ppos, opt);
+            if (!seg) continue;
+            const float w = pathCost(*seg);
+
+            outTempEdges.push_back(Edge{ pid2.id, w });
+            extraPortalEdges[pid2.id].push_back(Edge{ tempId, w });
         }
     };
-    conTmp(sId);
-    conTmp(gId);
 
-    // Also ensure intra-cluster edges exist for all clusters (step-1: simple but safe)
-    for (int cy=0; cy<clustersY_; ++cy)
-        for (int cx=0; cx<clustersX_; ++cx)
-            EnsureIntraClusterEdges({cx,cy});
+    const ClusterKey startC = KeyFor(start);
+    const ClusterKey goalC  = KeyFor(goal);
 
-    // A* on portals graph
-    struct QN { PortalId id; float g, f; };
-    struct Cmp { bool operator()(const QN& a, const QN& b) const { return a.f > b.f; } };
+    connectTempToCluster(kTmpStart, start, startC, startEdges);
+    connectTempToCluster(kTmpGoal,  goal,  goalC,  goalEdges);
+
+    // If either endpoint can't connect to any portal in its cluster, the abstract graph
+    // can't bridge clusters (Navigator will fall back to JPS/A*).
+    if (startEdges.empty() || goalEdges.empty()) {
+        return std::nullopt;
+    }
+
+    // A* on portal graph + 2 temp nodes.
+    struct QN { int32_t id; float g; float f; };
+    struct Cmp { bool operator()(const QN& a, const QN& b) const noexcept { return a.f > b.f; } };
+
     std::priority_queue<QN, std::vector<QN>, Cmp> open;
     std::unordered_map<int32_t, float> gScore;
     std::unordered_map<int32_t, int32_t> parent;
-    auto H = [&](const PortalId& a, const PortalId& b){
-        return Octile(portals_[a.id].pos, portals_[b.id].pos);
+
+    auto H = [&](int32_t a, int32_t b) -> float {
+        return Octile(nodePos(a), nodePos(b));
     };
 
-    gScore[sId.id] = 0.0f;
-    open.push({ sId, 0.0f, H(sId, gId) });
+    gScore[kTmpStart] = 0.0f;
+    open.push(QN{ kTmpStart, 0.0f, H(kTmpStart, kTmpGoal) });
 
-    bool found=false;
+    bool found = false;
     while (!open.empty()) {
-        auto cur = open.top(); open.pop();
-        if (cur.id.id == gId.id) { found=true; break; }
-        for (auto [to, w] : portals_[cur.id.id].edges) {
-            float ng = cur.g + w;
-            auto it = gScore.find(to.id);
+        const auto cur = open.top();
+        open.pop();
+
+        if (cur.id == kTmpGoal) {
+            found = true;
+            break;
+        }
+
+        // Skip stale queue entries.
+        auto itBest = gScore.find(cur.id);
+        if (itBest != gScore.end() && cur.g > itBest->second) {
+            continue;
+        }
+
+        auto relax = [&](int32_t to, float w) {
+            const float ng = cur.g + w;
+            auto it = gScore.find(to);
             if (it == gScore.end() || ng < it->second) {
-                gScore[to.id] = ng;
-                parent[to.id] = cur.id.id;
-                open.push({ to, ng, ng + H(to, gId) });
+                gScore[to] = ng;
+                parent[to] = cur.id;
+                open.push(QN{ to, ng, ng + H(to, kTmpGoal) });
+            }
+        };
+
+        if (cur.id == kTmpStart) {
+            for (const auto& e : startEdges) relax(e.to, e.w);
+            continue;
+        }
+
+        if (cur.id < 0) {
+            // Goal temp node (or other temp): no need to expand.
+            continue;
+        }
+
+        // Real portal node.
+        const Portal& p = portals_.at(static_cast<size_t>(cur.id));
+        EnsureIntraClusterEdges(p.cluster);
+
+        for (const auto& [to, w] : p.edges) {
+            relax(to.id, w);
+        }
+        if (auto itExtra = extraPortalEdges.find(cur.id); itExtra != extraPortalEdges.end()) {
+            for (const auto& e : itExtra->second) {
+                relax(e.to, e.w);
             }
         }
     }
 
     if (!found) {
-        // cleanup temps
-        portals_.pop_back(); portals_.pop_back();
         return std::nullopt;
     }
 
-    // reconstruct portal sequence
-    std::vector<Coord> waypoints;
-    int at = gId.id;
-    waypoints.push_back(portals_[at].pos);
-    while (at != sId.id) {
-        at = parent.at(at);
-        waypoints.push_back(portals_[at].pos);
+    // Reconstruct portal/waypoint sequence: start, portals..., goal.
+    std::vector<int32_t> seq;
+    for (int32_t at = kTmpGoal;;) {
+        seq.push_back(at);
+        if (at == kTmpStart) break;
+        auto it = parent.find(at);
+        if (it == parent.end()) {
+            // Shouldn't happen, but keep this robust.
+            return std::nullopt;
+        }
+        at = it->second;
     }
-    std::reverse(waypoints.begin(), waypoints.end());
+    std::reverse(seq.begin(), seq.end());
 
-    // cleanup temps but keep cached edges
-    portals_.pop_back(); portals_.pop_back();
-
+    std::vector<Coord> waypoints;
+    waypoints.reserve(seq.size());
+    for (int32_t id : seq) {
+        waypoints.push_back(nodePos(id));
+    }
     return waypoints;
 }
 

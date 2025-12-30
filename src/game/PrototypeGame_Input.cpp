@@ -81,9 +81,11 @@ proto::TileType PrototypeGame::Impl::toolTile() const noexcept
     case Tool::Wall: return proto::TileType::Wall;
     case Tool::Farm: return proto::TileType::Farm;
     case Tool::Stockpile: return proto::TileType::Stockpile;
+    case Tool::Demolish: return proto::TileType::Remove;
     case Tool::Erase: return proto::TileType::Empty;
     case Tool::Inspect: return proto::TileType::Empty;
     case Tool::Priority: return proto::TileType::Empty;
+    case Tool::Blueprint: return proto::TileType::Empty;
     }
     return proto::TileType::Empty;
 }
@@ -96,8 +98,10 @@ const char* PrototypeGame::Impl::toolName() const noexcept
     case Tool::Wall: return "Plan Wall";
     case Tool::Farm: return "Plan Farm";
     case Tool::Stockpile: return "Plan Stockpile";
+    case Tool::Demolish: return "Demolish";
     case Tool::Erase: return "Erase Plan";
     case Tool::Priority: return "Paint Priority";
+    case Tool::Blueprint: return "Blueprint Paste";
     }
     return "(unknown)";
 }
@@ -210,6 +214,8 @@ bool PrototypeGame::Impl::OnInput(std::span<const colony::input::InputEvent> eve
             case '5': tool = Tool::Stockpile; changed = true; break;
             case '6': tool = Tool::Erase; changed = true; break;
             case '7': tool = Tool::Priority; changed = true; break;
+            case '8': tool = Tool::Demolish; changed = true; break;
+            case '9': tool = Tool::Blueprint; changed = true; break;
 
             case 'P':
                 paused = !paused;

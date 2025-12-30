@@ -70,6 +70,9 @@ set(_colony_game_sources
     ${CMAKE_CURRENT_SOURCE_DIR}/game/editor/PlanHistory.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/game/editor/PlanHistory.h
 
+    ${CMAKE_CURRENT_SOURCE_DIR}/game/editor/Blueprint.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/game/editor/Blueprint.h
+
     # Save system helpers (prototype)
     ${CMAKE_CURRENT_SOURCE_DIR}/game/save/Base64.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/game/save/Base64.h

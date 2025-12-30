@@ -2,6 +2,7 @@
 
 #include "game/PrototypeGame.h"
 
+#include "game/editor/Blueprint.h"
 #include "game/editor/PlanHistory.h"
 #include "game/save/SaveMeta.h"
 
@@ -11,8 +12,8 @@
 #include "platform/win32/Win32Debug.h"
 
 #include <array>
-#include <filesystem>
 #include <cstdint>
+#include <filesystem>
 #include <limits>
 #include <memory>
 #include <string>
@@ -49,14 +50,19 @@ struct PrototypeGame::Impl {
     // Plan placement undo/redo.
     colony::game::editor::PlanHistory planHistory;
 
+    // Copy/paste-able plan blueprint (Inspect selection -> Blueprint tool).
+    colony::game::editor::PlanBlueprint blueprint;
+
     enum class Tool : std::uint8_t {
         Inspect = 0,
         Floor,
         Wall,
         Farm,
         Stockpile,
+        Demolish,
         Erase,
-        Priority, // edits priority on existing plans (does not place new plans)
+        Priority,  // edits priority on existing plans (does not place new plans)
+        Blueprint, // stamps a copied plan blueprint
     };
 
     Tool tool = Tool::Floor;
@@ -69,6 +75,34 @@ struct PrototypeGame::Impl {
     // Selection (Inspect tool)
     int selectedX = -1;
     int selectedY = -1;
+
+    // Selected colonist (Inspect tool). -1 = none.
+    int  selectedColonistId   = -1;
+    bool followSelectedColonist = false;
+
+    // Selection rectangle (Inspect + Shift + drag)
+    bool selectRectActive = false;
+    bool selectRectHas    = false;
+    int  selectRectStartX = 0;
+    int  selectRectStartY = 0;
+    int  selectRectEndX   = 0;
+    int  selectRectEndY   = 0;
+
+    // Blueprint copy/paste options.
+    bool blueprintCopyPlansOnly     = false; // if true, copies only active plans (ignores built)
+    bool blueprintPasteIncludeEmpty = false; // if true, Empty cells erase plans
+
+    enum class BlueprintAnchor : std::uint8_t { TopLeft = 0, Center = 1 };
+    BlueprintAnchor blueprintAnchor = BlueprintAnchor::TopLeft;
+
+    // Minimap
+    bool  showMinimap         = true;
+    int   minimapSizePx       = 200;
+    bool  minimapShowPlans    = true;
+    bool  minimapShowColonists = true;
+    bool  minimapShowViewport = true;
+    float lastWorldCanvasW    = 0.f;
+    float lastWorldCanvasH    = 0.f;
 
     bool showPanels = true;
     bool showHelp   = false;

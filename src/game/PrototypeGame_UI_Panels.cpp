@@ -5,6 +5,7 @@
 #include "platform/win/PathUtilWin.h"
 
 #include <algorithm>
+#include <cmath>
 #include <chrono>
 #include <cstdio>
 #include <system_error>
@@ -24,6 +25,8 @@ namespace {
     case proto::TileType::Wall: return IM_COL32(30, 30, 34, 255);
     case proto::TileType::Farm: return IM_COL32(40, 90, 40, 255);
     case proto::TileType::Stockpile: return IM_COL32(110, 80, 30, 255);
+    case proto::TileType::Tree: return IM_COL32(25, 115, 25, 255);
+    case proto::TileType::Remove: return IM_COL32(160, 60, 60, 255);
     }
     return IM_COL32(255, 0, 255, 255);
 }
@@ -37,8 +40,8 @@ namespace {
 
 [[nodiscard]] proto::TileType SafeTileTypeFromNibble(std::uint8_t v) noexcept
 {
-    // TileType is currently 0..4; anything else is treated as Empty.
-    if (v <= static_cast<std::uint8_t>(proto::TileType::Stockpile))
+    // TileType is currently 0..6 (up through Tree); anything else is treated as Empty.
+    if (v <= static_cast<std::uint8_t>(proto::TileType::Tree))
         return static_cast<proto::TileType>(v);
     return proto::TileType::Empty;
 }
@@ -111,6 +114,74 @@ void DrawSaveThumbnail(const save::SaveSummary& s) noexcept
     }
 }
 
+
+
+void DrawBlueprintThumbnail(const colony::game::editor::PlanBlueprint& bp, bool includeEmpty) noexcept
+{
+    if (bp.Empty())
+        return;
+
+    const int bw = bp.w;
+    const int bh = bp.h;
+    if (bw <= 0 || bh <= 0)
+        return;
+
+    const std::size_t expected = static_cast<std::size_t>(bw) * static_cast<std::size_t>(bh);
+    if (bp.packed.size() != expected)
+        return;
+
+    // Fit inside a 128x128 square while preserving aspect ratio.
+    float w = 128.0f;
+    float h = 128.0f;
+    if (bw > 0 && bh > 0)
+    {
+        const float aspect = static_cast<float>(bw) / static_cast<float>(bh);
+        if (aspect >= 1.0f)
+            h = w / aspect;
+        else
+            w = h * aspect;
+    }
+
+    const ImVec2 p0 = ImGui::GetCursorScreenPos();
+    const ImVec2 p1 = ImVec2(p0.x + w, p0.y + h);
+
+    // Reserve the space.
+    ImGui::InvisibleButton("##blueprint_thumb", ImVec2(w, h));
+
+    ImDrawList* dl = ImGui::GetWindowDrawList();
+    dl->AddRectFilled(p0, p1, IM_COL32(10, 10, 12, 255));
+    dl->AddRect(p0, p1, IM_COL32(60, 60, 70, 255));
+
+    // Downsample large blueprints.
+    const int sampleW = std::max(1, std::min(bw, 64));
+    const int sampleH = std::max(1, std::min(bh, 64));
+
+    const float cellW = w / static_cast<float>(sampleW);
+    const float cellH = h / static_cast<float>(sampleH);
+
+    for (int y = 0; y < sampleH; ++y)
+    {
+        const int wy = (y * bh) / sampleH;
+        for (int x = 0; x < sampleW; ++x)
+        {
+            const int wx = (x * bw) / sampleW;
+            const std::size_t idx = static_cast<std::size_t>(wy) * static_cast<std::size_t>(bw) + static_cast<std::size_t>(wx);
+            const std::uint8_t packed = bp.packed[idx];
+
+            const proto::TileType plan = colony::game::editor::BlueprintUnpackTile(packed);
+            if (plan == proto::TileType::Empty && !includeEmpty)
+                continue;
+
+            const ImVec2 a = ImVec2(p0.x + cellW * x,     p0.y + cellH * y);
+            const ImVec2 b = ImVec2(p0.x + cellW * (x+1), p0.y + cellH * (y+1));
+
+            if (plan == proto::TileType::Empty)
+                dl->AddRectFilled(a, b, IM_COL32(220, 80, 80, 160));
+            else
+                dl->AddRectFilled(a, b, TileFillColor(plan));
+        }
+    }
+}
 } // namespace
 
 void PrototypeGame::Impl::drawPanelsWindow()
@@ -126,6 +197,267 @@ void PrototypeGame::Impl::drawPanelsWindow()
         ImGui::Text("Wood: %d", inv.wood);
         ImGui::Text("Food: %.1f", inv.food);
         ImGui::Text("Built Farms: %d", world.builtCount(proto::TileType::Farm));
+        ImGui::Text("Trees: %d", world.builtCount(proto::TileType::Tree));
+        ImGui::Text("Ready to Harvest: %d", world.harvestableFarmCount());
+
+        // Hunger snapshot (v3+)
+        {
+            const float maxPersonalFood = static_cast<float>(std::max(0.0, world.colonistMaxPersonalFood));
+            const float threshold = static_cast<float>(std::max(0.0, world.colonistEatThresholdFood));
+            if (maxPersonalFood > 0.0f && !world.colonists().empty())
+            {
+                float sum = 0.0f;
+                int hungry = 0;
+                for (const auto& c : world.colonists())
+                {
+                    sum += std::max(0.0f, c.personalFood);
+                    if (c.personalFood <= threshold)
+                        ++hungry;
+                }
+                const float avg = sum / static_cast<float>(world.colonists().size());
+                ImGui::Text("Avg Personal Food: %.1f / %.1f", avg, maxPersonalFood);
+                ImGui::Text("Hungry: %d", hungry);
+            }
+        }
+
+        if (ImGui::CollapsingHeader("Colonists"))
+        {
+            ImGui::TextDisabled("Inspect tool: left-click a colonist to select. Drafted colonists ignore auto build/harvest.\n"
+                                "While drafted: right-click in the world to order Move / Build / Harvest.");
+
+            if (ImGui::Button("Draft all"))
+            {
+                for (const auto& c : world.colonists())
+                    world.SetColonistDrafted(c.id, true);
+            }
+            ImGui::SameLine();
+            if (ImGui::Button("Undraft all"))
+            {
+                for (const auto& c : world.colonists())
+                    world.SetColonistDrafted(c.id, false);
+            }
+            ImGui::SameLine();
+
+            // Follow toggle only makes sense with a selection.
+            if (selectedColonistId < 0)
+                followSelectedColonist = false;
+
+#if defined(IMGUI_VERSION_NUM) && IMGUI_VERSION_NUM >= 18400
+            ImGui::BeginDisabled(selectedColonistId < 0);
+            ImGui::Checkbox("Follow selected", &followSelectedColonist);
+            ImGui::EndDisabled();
+#else
+            if (selectedColonistId < 0)
+            {
+                bool dummy = false;
+                (void)ImGui::Checkbox("Follow selected", &dummy);
+                ImGui::SameLine();
+                ImGui::TextDisabled("(select a colonist)");
+            }
+            else
+            {
+                ImGui::Checkbox("Follow selected", &followSelectedColonist);
+            }
+#endif
+
+            // Roles overview / quick assignment.
+            {
+                int buildCapable = 0;
+                int farmCapable  = 0;
+                for (const auto& c : world.colonists())
+                {
+                    const auto caps = c.role.caps();
+                    if (HasAny(caps, Capability::Building)) ++buildCapable;
+                    if (HasAny(caps, Capability::Farming))  ++farmCapable;
+                }
+
+                ImGui::TextDisabled("Role caps: Build %d  Farm %d", buildCapable, farmCapable);
+
+                if (ImGui::SmallButton("All Workers"))
+                {
+                    for (const auto& c : world.colonists())
+                        (void)world.SetColonistRole(c.id, RoleId::Worker);
+                }
+                ImGui::SameLine();
+                if (ImGui::SmallButton("All Builders"))
+                {
+                    for (const auto& c : world.colonists())
+                        (void)world.SetColonistRole(c.id, RoleId::Builder);
+                }
+                ImGui::SameLine();
+                if (ImGui::SmallButton("All Farmers"))
+                {
+                    for (const auto& c : world.colonists())
+                        (void)world.SetColonistRole(c.id, RoleId::Farmer);
+                }
+
+                if (world.plannedCount() > 0 && buildCapable == 0)
+                    ImGui::TextColored(ImVec4(1.0f, 0.75f, 0.25f, 1.0f), "WARNING: No colonists can Build. Plans won't be completed.");
+                if (world.harvestableFarmCount() > 0 && farmCapable == 0)
+                    ImGui::TextColored(ImVec4(1.0f, 0.75f, 0.25f, 1.0f), "WARNING: No colonists can Farm. Harvests won't happen.");
+            }
+
+            const float maxPersonalFood = static_cast<float>(std::max(0.0, world.colonistMaxPersonalFood));
+
+            const ImGuiTableFlags flags = ImGuiTableFlags_RowBg | ImGuiTableFlags_Borders | ImGuiTableFlags_Resizable
+                                        | ImGuiTableFlags_SizingFixedFit | ImGuiTableFlags_ScrollY;
+            const float tableH = std::min(260.0f, ImGui::GetTextLineHeightWithSpacing() * 9.0f);
+            if (ImGui::BeginTable("colonists_table", 8, flags, ImVec2(0, tableH)))
+            {
+                ImGui::TableSetupScrollFreeze(0, 1);
+                ImGui::TableSetupColumn("Select");
+                ImGui::TableSetupColumn("Draft");
+                ImGui::TableSetupColumn("Role");
+                ImGui::TableSetupColumn("Lvl");
+                ImGui::TableSetupColumn("Job");
+                ImGui::TableSetupColumn("Food");
+                ImGui::TableSetupColumn("Pos");
+                ImGui::TableSetupColumn("Actions");
+                ImGui::TableHeadersRow();
+
+                for (auto& c : world.colonists())
+                {
+                    ImGui::TableNextRow();
+
+                    // Select
+                    ImGui::TableNextColumn();
+                    char idLabel[16];
+                    std::snprintf(idLabel, sizeof(idLabel), "C%02d", c.id);
+                    const bool isSel = (c.id == selectedColonistId);
+                    if (ImGui::Selectable(idLabel, isSel))
+                    {
+                        selectedColonistId = c.id;
+                        selectedX = static_cast<int>(std::floor(c.x));
+                        selectedY = static_cast<int>(std::floor(c.y));
+                    }
+
+                    // Draft
+                    ImGui::TableNextColumn();
+                    bool drafted = c.drafted;
+                    char draftId[32];
+                    std::snprintf(draftId, sizeof(draftId), "##draft_%d", c.id);
+                    if (ImGui::Checkbox(draftId, &drafted))
+                        world.SetColonistDrafted(c.id, drafted);
+
+                    // Role
+                    ImGui::TableNextColumn();
+                    {
+                        char roleId[32];
+                        std::snprintf(roleId, sizeof(roleId), "##role_%d", c.id);
+                        const char* preview = RoleDefOf(c.role.role).name;
+
+                        if (ImGui::BeginCombo(roleId, preview))
+                        {
+                            for (int i = 0; i < static_cast<int>(RoleId::Count); ++i)
+                            {
+                                const RoleId rid = static_cast<RoleId>(i);
+                                const bool selected = (c.role.role == rid);
+
+                                if (ImGui::Selectable(RoleDefOf(rid).name, selected))
+                                {
+                                    (void)world.SetColonistRole(c.id, rid);
+                                }
+                                if (selected)
+                                    ImGui::SetItemDefaultFocus();
+
+                                if (ImGui::IsItemHovered())
+                                {
+                                    const auto caps = RoleDefOf(rid).caps;
+                                    ImGui::BeginTooltip();
+                                    ImGui::TextUnformatted(RoleDefOf(rid).name);
+                                    ImGui::Separator();
+                                    ImGui::Text("Move x%.2f  Work x%.2f", RoleDefOf(rid).moveMult, RoleDefOf(rid).workMult);
+                                    ImGui::TextDisabled("Caps: %s%s%s%s",
+                                        HasAny(caps, Capability::Building) ? "Build " : "",
+                                        HasAny(caps, Capability::Farming)   ? "Farm "  : "",
+                                        HasAny(caps, Capability::Hauling)   ? "Haul "  : "",
+                                        HasAny(caps, Capability::Combat)    ? "Combat" : "");
+                                    ImGui::EndTooltip();
+                                }
+                            }
+                            ImGui::EndCombo();
+                        }
+                    }
+
+                    // Level/XP
+                    ImGui::TableNextColumn();
+                    {
+                        const auto lvl = static_cast<unsigned>(std::max<std::uint16_t>(1, c.role.level));
+                        const auto xp  = static_cast<unsigned>(c.role.xp);
+                        ImGui::Text("L%u", lvl);
+
+                        if (ImGui::IsItemHovered())
+                        {
+                            const float moveEff = c.role.move() * (1.0f + 0.01f * static_cast<float>(lvl - 1));
+                            const float workEff = c.role.work() * (1.0f + 0.02f * static_cast<float>(lvl - 1));
+                            ImGui::BeginTooltip();
+                            ImGui::Text("XP: %u/%u", xp, static_cast<unsigned>(RoleComponent::kXpPerLevel));
+                            ImGui::Text("Effective move x%.2f", moveEff);
+                            ImGui::Text("Effective work x%.2f", workEff);
+                            ImGui::EndTooltip();
+                        }
+
+                        ImGui::SameLine();
+                        ImGui::TextDisabled("%u/%u", xp, static_cast<unsigned>(RoleComponent::kXpPerLevel));
+                    }
+
+                    // Job
+                    ImGui::TableNextColumn();
+                    const char* job = c.drafted && !c.hasJob ? "Drafted" : "Idle";
+                    if (c.hasJob)
+                    {
+                        switch (c.jobKind)
+                        {
+                        case proto::Colonist::JobKind::Eat: job = "Eating"; break;
+                        case proto::Colonist::JobKind::Harvest: job = "Harvest"; break;
+                        case proto::Colonist::JobKind::BuildPlan: job = "Building"; break;
+                        case proto::Colonist::JobKind::ManualMove: job = "Move"; break;
+                        default: job = "Working"; break;
+                        }
+                    }
+                    ImGui::TextUnformatted(job);
+
+                    // Food
+                    ImGui::TableNextColumn();
+                    if (maxPersonalFood > 0.0f)
+                        ImGui::Text("%.1f / %.1f", c.personalFood, maxPersonalFood);
+                    else
+                        ImGui::Text("%.1f", c.personalFood);
+
+                    // Pos
+                    ImGui::TableNextColumn();
+                    ImGui::Text("%.1f, %.1f", c.x, c.y);
+
+                    // Actions
+                    ImGui::TableNextColumn();
+                    char stopId[32];
+                    std::snprintf(stopId, sizeof(stopId), "Stop##%d", c.id);
+                    if (ImGui::SmallButton(stopId))
+                        (void)world.CancelColonistJob(c.id);
+
+                    ImGui::SameLine();
+                    char resetId[32];
+                    std::snprintf(resetId, sizeof(resetId), "XP0##%d", c.id);
+                    if (ImGui::SmallButton(resetId))
+                    {
+                        c.role.level = 1;
+                        c.role.xp = 0;
+                    }
+
+                    if (c.id == selectedColonistId)
+                    {
+                        ImGui::SameLine();
+                        if (ImGui::SmallButton("Focus"))
+                        {
+                            const DebugCameraState& s = camera.State();
+                            (void)camera.ApplyPan(c.x - s.panX, c.y - s.panY);
+                        }
+                    }
+                }
+
+                ImGui::EndTable();
+            }
+        }
 
         ImGui::Separator();
         ImGui::Text("Plans Pending: %d", world.plannedCount());
@@ -607,9 +939,17 @@ void PrototypeGame::Impl::drawPanelsWindow()
         toolRadio(Tool::Stockpile, "5  Stockpile", proto::TileType::Stockpile);
         toolRadio(Tool::Erase, "6  Erase", proto::TileType::Empty);
         toolRadio(Tool::Priority, "7  Priority", proto::TileType::Empty);
+        toolRadio(Tool::Demolish, "8  Demolish", proto::TileType::Remove);
+        toolRadio(Tool::Blueprint, "9  Blueprint Paste", proto::TileType::Empty);
 
         if (tool == Tool::Priority)
             ImGui::TextDisabled("Paints the current Brush Priority onto existing plans (no cost).");
+
+        if (tool == Tool::Demolish)
+            ImGui::TextDisabled("Marks built tiles for deconstruction (refunds wood for player-built tiles). Use right-drag to clear plans.");
+
+        if (tool == Tool::Blueprint)
+            ImGui::TextDisabled("Stamps the current blueprint as plans (copy/load from the Blueprints section below). Right-drag still clears plans.");
 
         // Brush priority (0..3 -> P1..P4)
         {
@@ -626,6 +966,10 @@ void PrototypeGame::Impl::drawPanelsWindow()
             const proto::Cell& c = world.cell(selectedX, selectedY);
             ImGui::Text("Tile: (%d, %d)", selectedX, selectedY);
             ImGui::Text("Built: %s", proto::TileTypeName(c.built));
+            ImGui::TextDisabled("%s", c.builtFromPlan ? "Player-built" : "Seeded");
+
+            if (c.built == proto::TileType::Tree)
+                ImGui::TextDisabled("Chop yield: %d wood", std::max(0, world.treeChopYieldWood));
 
             if (c.planned != proto::TileType::Empty && c.planned != c.built)
             {
@@ -679,6 +1023,344 @@ void PrototypeGame::Impl::drawPanelsWindow()
             ImGui::TextDisabled("No selection (use Inspect tool and click a tile).");
         }
 
+
+
+        ImGui::Separator();
+        if (ImGui::CollapsingHeader("Blueprints", ImGuiTreeNodeFlags_DefaultOpen))
+        {
+            ImGui::TextDisabled("Inspect: Shift + Left-drag in the world to select a rectangle.");
+
+            const bool hasSel = (selectRectHas || selectRectActive);
+            int sx0 = 0;
+            int sy0 = 0;
+            int sx1 = 0;
+            int sy1 = 0;
+
+            if (hasSel)
+            {
+                sx0 = std::clamp(std::min(selectRectStartX, selectRectEndX), 0, world.width() - 1);
+                sy0 = std::clamp(std::min(selectRectStartY, selectRectEndY), 0, world.height() - 1);
+                sx1 = std::clamp(std::max(selectRectStartX, selectRectEndX), 0, world.width() - 1);
+                sy1 = std::clamp(std::max(selectRectStartY, selectRectEndY), 0, world.height() - 1);
+
+                ImGui::Text("Selection: (%d,%d) -> (%d,%d)  (%dx%d)", sx0, sy0, sx1, sy1, (sx1 - sx0 + 1), (sy1 - sy0 + 1));
+            }
+            else
+            {
+                ImGui::TextDisabled("Selection: none");
+            }
+
+            ImGui::Checkbox("Copy plans only (ignore built tiles)", &blueprintCopyPlansOnly);
+
+            if (ImGui::Button("Copy selection -> blueprint"))
+            {
+                if (!hasSel)
+                {
+                    setStatus("Blueprint copy: no selection (Inspect + Shift + drag).", 3.0f);
+                }
+                else
+                {
+                    const int bw = sx1 - sx0 + 1;
+                    const int bh = sy1 - sy0 + 1;
+
+                    blueprint.w = bw;
+                    blueprint.h = bh;
+                    blueprint.packed.assign(static_cast<std::size_t>(bw) * static_cast<std::size_t>(bh), 0);
+
+                    std::size_t nonEmpty = 0;
+
+                    for (int y = 0; y < bh; ++y)
+                    {
+                        for (int x = 0; x < bw; ++x)
+                        {
+                            const proto::Cell& c = world.cell(sx0 + x, sy0 + y);
+                            const bool hasActivePlan = (c.planned != proto::TileType::Empty && c.planned != c.built);
+
+                            proto::TileType t = proto::TileType::Empty;
+                            std::uint8_t pr = 0;
+
+                            if (blueprintCopyPlansOnly)
+                            {
+                                if (hasActivePlan)
+                                {
+                                    t  = c.planned;
+                                    pr = static_cast<std::uint8_t>(std::clamp(c.planPriority, 0, 3));
+                                }
+                            }
+                            else
+                            {
+                                if (hasActivePlan)
+                                {
+                                    t  = c.planned;
+                                    pr = static_cast<std::uint8_t>(std::clamp(c.planPriority, 0, 3));
+                                }
+                                else
+                                {
+                                    t  = c.built;
+                                    pr = 0;
+                                }
+                            }
+
+                            // Blueprints are for plans; clamp out non-plan tiles (e.g. Trees).
+                            if (static_cast<std::uint8_t>(t) > static_cast<std::uint8_t>(proto::TileType::Remove))
+                                t = proto::TileType::Empty;
+
+                            if (t != proto::TileType::Empty)
+                                ++nonEmpty;
+
+                            blueprint.packed[static_cast<std::size_t>(y * bw + x)] = colony::game::editor::BlueprintPack(t, pr);
+                        }
+                    }
+
+                    setStatus("Blueprint copied: " + std::to_string(bw) + "x" + std::to_string(bh) + " (" + std::to_string(nonEmpty) + " non-empty)");
+                }
+            }
+            ImGui::SameLine();
+            if (ImGui::Button("Clear selection"))
+            {
+                selectRectActive = false;
+                selectRectHas    = false;
+                setStatus("Selection cleared");
+            }
+
+            ImGui::Separator();
+
+            if (blueprint.Empty())
+            {
+                ImGui::TextDisabled("Blueprint: empty");
+            }
+            else
+            {
+                ImGui::Text("Blueprint: %dx%d", blueprint.w, blueprint.h);
+                DrawBlueprintThumbnail(blueprint, blueprintPasteIncludeEmpty);
+            }
+
+            if (ImGui::Button("Copy blueprint -> clipboard"))
+            {
+                if (blueprint.Empty())
+                {
+                    setStatus("Blueprint copy: nothing to copy.", 3.0f);
+                }
+                else
+                {
+                    const std::string json = colony::game::editor::PlanBlueprintToJson(blueprint);
+                    ImGui::SetClipboardText(json.c_str());
+                    setStatus("Blueprint copied to clipboard");
+                }
+            }
+            ImGui::SameLine();
+            if (ImGui::Button("Load blueprint <- clipboard"))
+            {
+                const char* clip = ImGui::GetClipboardText();
+                if (!clip || !clip[0])
+                {
+                    setStatus("Blueprint paste: clipboard is empty.", 3.0f);
+                }
+                else
+                {
+                    std::string err;
+                    colony::game::editor::PlanBlueprint tmp;
+                    if (!colony::game::editor::PlanBlueprintFromJson(clip, tmp, &err))
+                    {
+                        setStatus("Blueprint paste: invalid data. " + err, 4.0f);
+                    }
+                    else
+                    {
+                        blueprint = std::move(tmp);
+                        setStatus("Blueprint loaded: " + std::to_string(blueprint.w) + "x" + std::to_string(blueprint.h));
+                    }
+                }
+            }
+            ImGui::SameLine();
+            if (ImGui::Button("Clear blueprint"))
+            {
+                blueprint.Clear();
+                setStatus("Blueprint cleared");
+            }
+
+            ImGui::Separator();
+
+            ImGui::Checkbox("Paste includes empty cells (erases plans)", &blueprintPasteIncludeEmpty);
+
+            int anchor = (blueprintAnchor == BlueprintAnchor::TopLeft) ? 0 : 1;
+            if (ImGui::Combo("Paste anchor", &anchor, "Top-left\0Center\0"))
+            {
+                blueprintAnchor = (anchor == 0) ? BlueprintAnchor::TopLeft : BlueprintAnchor::Center;
+            }
+
+            if (ImGui::Button("Select Blueprint tool (9)"))
+            {
+                tool = Tool::Blueprint;
+                setStatus("Tool: Blueprint Paste");
+            }
+        }
+
+        ImGui::Separator();
+        if (ImGui::CollapsingHeader("Minimap", ImGuiTreeNodeFlags_DefaultOpen))
+        {
+            ImGui::Checkbox("Show minimap", &showMinimap);
+            ImGui::SameLine();
+            ImGui::SliderInt("Size", &minimapSizePx, 120, 400, "%d px");
+
+            ImGui::Checkbox("Plans", &minimapShowPlans);
+            ImGui::SameLine();
+            ImGui::Checkbox("Colonists", &minimapShowColonists);
+            ImGui::SameLine();
+            ImGui::Checkbox("Viewport", &minimapShowViewport);
+
+            if (showMinimap)
+            {
+                const int worldW = world.width();
+                const int worldH = world.height();
+
+                if (worldW > 0 && worldH > 0)
+                {
+                    const float maxSize = static_cast<float>(minimapSizePx);
+                    float mapW = maxSize;
+                    float mapH = maxSize;
+
+                    const float aspect = static_cast<float>(worldW) / static_cast<float>(worldH);
+                    if (aspect >= 1.f)
+                        mapH = maxSize / aspect;
+                    else
+                        mapW = maxSize * aspect;
+
+                    ImDrawList* dl = ImGui::GetWindowDrawList();
+
+                    const ImVec2 p0 = ImGui::GetCursorScreenPos();
+                    const ImVec2 sz = {mapW, mapH};
+                    const ImVec2 p1 = {p0.x + mapW, p0.y + mapH};
+
+                    ImGui::InvisibleButton("##minimap", sz, ImGuiButtonFlags_MouseButtonLeft);
+
+                    const bool hovered = ImGui::IsItemHovered();
+                    const bool active  = ImGui::IsItemActive();
+
+                    dl->AddRectFilled(p0, p1, IM_COL32(8, 8, 10, 255));
+                    dl->AddRect(p0, p1, IM_COL32(70, 70, 80, 255));
+
+                    const int sampleW = std::clamp(static_cast<int>(mapW), 32, 240);
+                    const int sampleH = std::clamp(static_cast<int>(mapH), 32, 240);
+                    const float cellW = mapW / static_cast<float>(sampleW);
+                    const float cellH = mapH / static_cast<float>(sampleH);
+
+                    for (int sy = 0; sy < sampleH; ++sy)
+                    {
+                        const int wy = (sy * worldH) / sampleH;
+                        for (int sx = 0; sx < sampleW; ++sx)
+                        {
+                            const int wx = (sx * worldW) / sampleW;
+
+                            const proto::Cell& c = world.cell(wx, wy);
+
+                            const ImVec2 a = {p0.x + cellW * static_cast<float>(sx), p0.y + cellH * static_cast<float>(sy)};
+                            const ImVec2 b = {a.x + cellW + 0.5f, a.y + cellH + 0.5f};
+
+                            dl->AddRectFilled(a, b, TileFillColor(c.built));
+
+                            if (minimapShowPlans && c.planned != proto::TileType::Empty && c.planned != c.built)
+                                dl->AddRectFilled(a, b, TilePlanColor(c.planned));
+                        }
+                    }
+
+                    // Colonists
+                    if (minimapShowColonists)
+                    {
+                        for (const proto::Colonist& c : world.colonists())
+                        {
+                            const float u = std::clamp(c.x / static_cast<float>(worldW), 0.f, 1.f);
+                            const float v = std::clamp(c.y / static_cast<float>(worldH), 0.f, 1.f);
+                            const ImVec2 mp = {p0.x + u * mapW, p0.y + v * mapH};
+                            dl->AddCircleFilled(mp, 2.2f, IM_COL32(235, 235, 245, 220));
+                        }
+                    }
+
+                    // Selection (single tile)
+                    if (selectedX >= 0 && selectedY >= 0)
+                    {
+                        const float u0 = static_cast<float>(selectedX) / static_cast<float>(worldW);
+                        const float v0 = static_cast<float>(selectedY) / static_cast<float>(worldH);
+                        const float u1 = static_cast<float>(selectedX + 1) / static_cast<float>(worldW);
+                        const float v1 = static_cast<float>(selectedY + 1) / static_cast<float>(worldH);
+                        dl->AddRect({p0.x + u0 * mapW, p0.y + v0 * mapH}, {p0.x + u1 * mapW, p0.y + v1 * mapH}, IM_COL32(255, 255, 255, 180));
+                    }
+
+                    // Selection rectangle
+                    if (selectRectHas || selectRectActive)
+                    {
+                        const int rx0 = std::clamp(std::min(selectRectStartX, selectRectEndX), 0, worldW - 1);
+                        const int ry0 = std::clamp(std::min(selectRectStartY, selectRectEndY), 0, worldH - 1);
+                        const int rx1 = std::clamp(std::max(selectRectStartX, selectRectEndX), 0, worldW - 1);
+                        const int ry1 = std::clamp(std::max(selectRectStartY, selectRectEndY), 0, worldH - 1);
+
+                        const float u0 = static_cast<float>(rx0) / static_cast<float>(worldW);
+                        const float v0 = static_cast<float>(ry0) / static_cast<float>(worldH);
+                        const float u1 = static_cast<float>(rx1 + 1) / static_cast<float>(worldW);
+                        const float v1 = static_cast<float>(ry1 + 1) / static_cast<float>(worldH);
+
+                        dl->AddRect({p0.x + u0 * mapW, p0.y + v0 * mapH}, {p0.x + u1 * mapW, p0.y + v1 * mapH}, IM_COL32(255, 240, 140, 200), 0.f, 0, 2.f);
+                    }
+
+                    // Viewport rectangle (approx)
+                    if (minimapShowViewport && lastWorldCanvasW > 0.f && lastWorldCanvasH > 0.f)
+                    {
+                        const auto& cam = camera.State();
+                        const float tilePx = 24.f * std::max(DebugCameraController::kMinZoom, cam.zoom);
+                        if (tilePx > 0.f)
+                        {
+                            const float halfW = lastWorldCanvasW / (2.f * tilePx);
+                            const float halfH = lastWorldCanvasH / (2.f * tilePx);
+
+                            float minX = cam.panX - halfW;
+                            float minY = cam.panY - halfH;
+                            float maxX = cam.panX + halfW;
+                            float maxY = cam.panY + halfH;
+
+                            minX = std::clamp(minX, 0.f, static_cast<float>(worldW));
+                            maxX = std::clamp(maxX, 0.f, static_cast<float>(worldW));
+                            minY = std::clamp(minY, 0.f, static_cast<float>(worldH));
+                            maxY = std::clamp(maxY, 0.f, static_cast<float>(worldH));
+
+                            const ImVec2 v0 = {p0.x + (minX / static_cast<float>(worldW)) * mapW, p0.y + (minY / static_cast<float>(worldH)) * mapH};
+                            const ImVec2 v1 = {p0.x + (maxX / static_cast<float>(worldW)) * mapW, p0.y + (maxY / static_cast<float>(worldH)) * mapH};
+
+                            dl->AddRect(v0, v1, IM_COL32(255, 255, 255, 160), 0.f, 0, 2.f);
+                        }
+                    }
+
+                    if ((hovered || active) && ImGui::IsMouseDown(ImGuiMouseButton_Left))
+                    {
+                        const auto& cam = camera.State();
+
+                        const ImVec2 mp = ImGui::GetIO().MousePos;
+                        float u = (mp.x - p0.x) / mapW;
+                        float v = (mp.y - p0.y) / mapH;
+
+                        u = std::clamp(u, 0.f, 0.9999f);
+                        v = std::clamp(v, 0.f, 0.9999f);
+
+                        const int tx = std::clamp(static_cast<int>(u * static_cast<float>(worldW)), 0, worldW - 1);
+                        const int ty = std::clamp(static_cast<int>(v * static_cast<float>(worldH)), 0, worldH - 1);
+
+                        const float desiredPanX = static_cast<float>(tx) + 0.5f;
+                        const float desiredPanY = static_cast<float>(ty) + 0.5f;
+
+                        camera.ApplyPan(desiredPanX - cam.panX, desiredPanY - cam.panY);
+                    }
+
+                    if (hovered)
+                        ImGui::SetTooltip("Click/drag to jump the camera.");
+                }
+                else
+                {
+                    ImGui::TextDisabled("Minimap unavailable (world size is zero)");
+                }
+            }
+            else
+            {
+                ImGui::TextDisabled("Minimap hidden");
+            }
+        }
         ImGui::Separator();
         ImGui::TextUnformatted("View / Debug");
         ImGui::Checkbox("Brush preview", &showBrushPreview);
@@ -707,17 +1389,94 @@ void PrototypeGame::Impl::drawPanelsWindow()
         {
             float build = static_cast<float>(world.buildWorkPerSecond);
             float walk  = static_cast<float>(world.colonistWalkSpeed);
-            float farm  = static_cast<float>(world.farmFoodPerSecond);
+            float farmGrowDur    = static_cast<float>(world.farmGrowDurationSeconds);
+            float farmYield      = static_cast<float>(world.farmHarvestYieldFood);
+            float farmHarvestDur = static_cast<float>(world.farmHarvestDurationSeconds);
             float eat   = static_cast<float>(world.foodPerColonistPerSecond);
+
+            float maxPersonalFood = static_cast<float>(world.colonistMaxPersonalFood);
+            float eatThreshold    = static_cast<float>(world.colonistEatThresholdFood);
+            float eatDur          = static_cast<float>(world.colonistEatDurationSeconds);
 
             if (ImGui::SliderFloat("Build work/s", &build, 0.05f, 10.0f, "%.2f", ImGuiSliderFlags_Logarithmic))
                 world.buildWorkPerSecond = static_cast<double>(build);
             if (ImGui::SliderFloat("Walk speed (tiles/s)", &walk, 0.25f, 12.0f, "%.2f", ImGuiSliderFlags_Logarithmic))
                 world.colonistWalkSpeed = static_cast<double>(walk);
-            if (ImGui::SliderFloat("Farm food/s", &farm, 0.0f, 2.0f, "%.2f"))
-                world.farmFoodPerSecond = static_cast<double>(farm);
+            ImGui::SeparatorText("Farming");
+
+            if (ImGui::SliderFloat("Grow duration (s)", &farmGrowDur, 1.0f, 180.0f, "%.1f", ImGuiSliderFlags_Logarithmic))
+            {
+                farmGrowDur = std::max(1.0f, farmGrowDur);
+                world.farmGrowDurationSeconds = static_cast<double>(farmGrowDur);
+            }
+            if (ImGui::SliderFloat("Harvest yield (food)", &farmYield, 0.0f, 50.0f, "%.1f"))
+            {
+                farmYield = std::max(0.0f, farmYield);
+                world.farmHarvestYieldFood = static_cast<double>(farmYield);
+            }
+            if (ImGui::SliderFloat("Harvest duration (s)", &farmHarvestDur, 0.0f, 10.0f, "%.1f"))
+            {
+                farmHarvestDur = std::max(0.0f, farmHarvestDur);
+                world.farmHarvestDurationSeconds = static_cast<double>(farmHarvestDur);
+            }
+
+            if (farmGrowDur > 0.0f && farmYield > 0.0f)
+            {
+                const int farms = world.builtCount(proto::TileType::Farm);
+                const float perFarm = farmYield / farmGrowDur;
+                ImGui::TextDisabled("Avg output: %.2f food/s (%.2f per farm)", perFarm * farms, perFarm);
+            }
             if (ImGui::SliderFloat("Food/colonist/s", &eat, 0.0f, 0.5f, "%.3f", ImGuiSliderFlags_Logarithmic))
                 world.foodPerColonistPerSecond = static_cast<double>(eat);
+
+            ImGui::SeparatorText("Forestry");
+
+            int yield = world.treeChopYieldWood;
+            if (ImGui::SliderInt("Tree chop yield (wood)", &yield, 0, 25))
+                world.treeChopYieldWood = std::max(0, yield);
+
+            float attempts = static_cast<float>(world.treeSpreadAttemptsPerSecond);
+            if (ImGui::SliderFloat("Tree spread attempts/s", &attempts, 0.0f, 50.0f, "%.2f", ImGuiSliderFlags_Logarithmic))
+                world.treeSpreadAttemptsPerSecond = std::max(0.0, static_cast<double>(attempts));
+
+            float chance = static_cast<float>(world.treeSpreadChancePerAttempt);
+            if (ImGui::SliderFloat("Tree spread chance", &chance, 0.0f, 1.0f, "%.2f"))
+                world.treeSpreadChancePerAttempt = std::clamp(static_cast<double>(chance), 0.0, 1.0);
+
+            ImGui::TextDisabled("Demolish trees to gather wood. Trees can slowly regrow on nearby empty tiles.");
+            ImGui::TextDisabled("(Regrowth is capped at ~20%% of the map to avoid total overgrowth.)");
+
+            ImGui::SeparatorText("Hunger");
+
+            if (ImGui::SliderFloat("Max personal food", &maxPersonalFood, 0.0f, 20.0f, "%.1f"))
+            {
+                maxPersonalFood = std::max(0.0f, maxPersonalFood);
+                world.colonistMaxPersonalFood = static_cast<double>(maxPersonalFood);
+
+                // Keep the threshold sane when the max shrinks.
+                eatThreshold = std::clamp(eatThreshold, 0.0f, maxPersonalFood);
+                world.colonistEatThresholdFood = static_cast<double>(eatThreshold);
+            }
+
+            if (ImGui::SliderFloat("Eat threshold", &eatThreshold, 0.0f, std::max(0.0f, maxPersonalFood), "%.1f"))
+            {
+                eatThreshold = std::clamp(eatThreshold, 0.0f, std::max(0.0f, maxPersonalFood));
+                world.colonistEatThresholdFood = static_cast<double>(eatThreshold);
+            }
+
+            if (ImGui::SliderFloat("Eat duration (s)", &eatDur, 0.0f, 10.0f, "%.1f"))
+            {
+                eatDur = std::max(0.0f, eatDur);
+                world.colonistEatDurationSeconds = static_cast<double>(eatDur);
+            }
+
+            if (eat > 0.0f && maxPersonalFood > 0.0f)
+            {
+                const float fullSec = maxPersonalFood / eat;
+                const float atThresholdSec = eatThreshold / eat;
+                ImGui::TextDisabled("Full stomach: ~%.0fs", fullSec);
+                ImGui::TextDisabled("At threshold: ~%.0fs", atThresholdSec);
+            }
         }
 
         ImGui::Separator();
