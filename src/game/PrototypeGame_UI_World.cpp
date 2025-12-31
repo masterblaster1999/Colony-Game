@@ -412,6 +412,70 @@ void PrototypeGame::Impl::drawWorldWindow()
                 }
             }
         }
+
+// Manual order queue overlay for the selected colonist.
+if (c.id == selectedColonistId && !c.manualQueue.empty())
+{
+    const proto::Colonist::ManualOrder& o0 = c.manualQueue.front();
+    const bool frontActive =
+        c.hasJob &&
+        ((o0.kind == proto::Colonist::ManualOrder::Kind::Move && c.jobKind == proto::Colonist::JobKind::ManualMove) ||
+         (o0.kind == proto::Colonist::ManualOrder::Kind::Build && c.jobKind == proto::Colonist::JobKind::BuildPlan) ||
+         (o0.kind == proto::Colonist::ManualOrder::Kind::Harvest && c.jobKind == proto::Colonist::JobKind::Harvest)) &&
+        c.targetX == o0.x && c.targetY == o0.y;
+
+    const float r = std::max(2.0f, cx.tilePx * 0.12f);
+
+    // Draw connecting lines between queued order targets (skipping the in-progress front order, if any).
+    ImVec2 prev = pos;
+    if (frontActive)
+        prev = worldToScreen(cam3, cx, {o0.x + 0.5f, o0.y + 0.5f});
+
+    const std::size_t startIdx = frontActive ? 1 : 0;
+    for (std::size_t qi = startIdx; qi < c.manualQueue.size(); ++qi)
+    {
+        const auto& o = c.manualQueue[qi];
+        ImVec2 pt = worldToScreen(cam3, cx, {o.x + 0.5f, o.y + 0.5f});
+        dl->AddLine(prev, pt, IM_COL32(255, 255, 255, 80), 1.0f);
+        prev = pt;
+    }
+
+    // Draw the order markers.
+    for (std::size_t qi = 0; qi < c.manualQueue.size(); ++qi)
+    {
+        const auto& o = c.manualQueue[qi];
+        ImVec2 pt = worldToScreen(cam3, cx, {o.x + 0.5f, o.y + 0.5f});
+
+        ImU32 col = IM_COL32(220, 220, 220, 180);
+        switch (o.kind)
+        {
+        case proto::Colonist::ManualOrder::Kind::Move:
+            col = IM_COL32(200, 120, 240, 180);
+            break;
+        case proto::Colonist::ManualOrder::Kind::Build:
+            col = IM_COL32(240, 240, 90, 180);
+            break;
+        case proto::Colonist::ManualOrder::Kind::Harvest:
+            col = IM_COL32(90, 200, 240, 180);
+            break;
+        default:
+            break;
+        }
+
+        dl->AddCircleFilled(pt, r, col);
+        if (qi == 0 && frontActive)
+            dl->AddCircle(pt, r + 1.5f, IM_COL32(255, 255, 255, 180), 0, 2.0f);
+
+        // Numeric labels when zoomed in.
+        if (cx.tilePx >= 18.0f)
+        {
+            const std::string label = std::to_string(qi + 1);
+            dl->AddText({pt.x - r * 0.6f + 1.0f, pt.y - r * 0.8f + 1.0f}, IM_COL32(0, 0, 0, 220),
+                        label.c_str());
+            dl->AddText({pt.x - r * 0.6f, pt.y - r * 0.8f}, IM_COL32(255, 255, 255, 220), label.c_str());
+        }
+    }
+}
     }
 
     // Helper: apply a rectangle of plans in one shot.
@@ -901,6 +965,50 @@ void PrototypeGame::Impl::drawWorldWindow()
                             lastPaintX      = std::numeric_limits<int>::min();
                             lastPaintY      = std::numeric_limits<int>::min();
                         }
+else if (ImGui::IsMouseClicked(ImGuiMouseButton_Right) && tool == Tool::Inspect)
+{
+    // Inspect tool: Shift+Right-click queues a manual order for the selected drafted colonist.
+    if (selectedColonistId < 0)
+    {
+        setStatus("No colonist selected (left-click a colonist to select).", 2.5f);
+    }
+    else
+    {
+        proto::Cell& cell = world.cell(tx, ty);
+        proto::OrderResult r = proto::OrderResult::Ok;
+
+        // If the tile has an active plan, queue a build order.
+        if (cell.planned != proto::TileType::Empty && cell.planned != cell.built)
+        {
+            r = world.OrderColonistBuild(selectedColonistId, tx, ty, true);
+            if (r == proto::OrderResult::Ok)
+                setStatus("Queued C" + std::to_string(selectedColonistId) + " to build at " +
+                              std::to_string(tx) + "," + std::to_string(ty),
+                          2.5f);
+        }
+        // Otherwise if it's a ripe farm, queue a harvest order.
+        else if (cell.built == proto::TileType::Farm)
+        {
+            r = world.OrderColonistHarvest(selectedColonistId, tx, ty, true);
+            if (r == proto::OrderResult::Ok)
+                setStatus("Queued C" + std::to_string(selectedColonistId) + " to harvest at " +
+                              std::to_string(tx) + "," + std::to_string(ty),
+                          2.5f);
+        }
+        // Otherwise queue a move order.
+        else
+        {
+            r = world.OrderColonistMove(selectedColonistId, tx, ty, true);
+            if (r == proto::OrderResult::Ok)
+                setStatus("Queued C" + std::to_string(selectedColonistId) + " to move to " +
+                              std::to_string(tx) + "," + std::to_string(ty),
+                          2.5f);
+        }
+
+        if (r != proto::OrderResult::Ok)
+            setStatus(std::string("Queue order failed: ") + proto::OrderResultName(r), 2.5f);
+    }
+}
                     }
 
                     // Blueprint tool: click to stamp the loaded blueprint.

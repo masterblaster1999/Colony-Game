@@ -1,212 +1,98 @@
-# Colony-Game Patch (Round 34)
+# Colony-Game Patch (Round 36)
 
-This round focuses on **Pathfinding + movement** improvements:
+This round adds a **manual order queue** for **drafted colonists** (combat-style command queue):
 
-- Adds a selectable pathfinding algorithm (**AStar** or **JPS**) for direct orders/repathing.
-- Adds an optional **LRU path cache** to reduce repeated A* calls.
-- Introduces optional **terrain traversal costs** that affect both path costs and actual walk speed.
-- Fixes a subtle movement integration issue where colonists could "double-spend" their movement budget when snapping across multiple path nodes in a single tick.
+- **Shift + Right-click** (Inspect tool) now **queues** manual orders (Move / Build / Harvest).
+- Queued orders execute **in sequence**, and the **front order persists** through interruptions
+  (e.g. hunger/eating) until it completes.
+- UI improvements:
+  - Colonist table shows **Q#** when a manual queue exists, plus a **ClrQ** button.
+  - Selected-colonist **Manual Orders** tree lets you **reorder / delete / clear** queued orders.
+  - The world view draws **queue markers** (numbered dots) for the selected colonist.
 
-It also bumps the proto-world save format to **v11**.
+## How to use
 
-## New gameplay/simulation
-
-### 1) Pathfinding algorithm toggle (AStar vs JPS)
-
-Under **Tuning / Pathfinding**:
-
-- **Algorithm = AStar** (baseline)
-- **Algorithm = JPS** (Jump Point Search; expanded back into tile-by-tile steps for safe movement)
-
-### 2) LRU path cache (validated)
-
-The world now maintains an optional LRU cache for direct `(start, goal)` pathfinding queries.
-
-- Cached paths are **validated** against the current nav grid before reuse.
-- Invalid paths are discarded and recomputed.
-
-This mainly helps with repeated manual orders and repathing spikes.
-
-### 3) Terrain traversal costs (optional)
-
-When enabled, some built tiles carry a higher traversal cost:
-
-- **Farm**: slower
-- **Stockpile**: slightly slower
-- **Door**: tiny penalty
-
-These costs influence:
-
-- Path selection (higher-cost terrain is avoided when reasonable)
-- Actual walk speed while crossing those tiles
-
-## UI improvements
-
-### 1) Pathfinding controls + stats
-
-Added a new **Tuning / Pathfinding** section:
-
-- Algorithm selector
-- Cache enable + max entries
-- Terrain costs enable
-- Buttons to clear cache + reset stats
-- Live stats: requests/hits, hit rate, computed paths (AStar/JPS), invalidations, evictions
-
-## Save format + persistence
-
-### Save format bump to v11
-
-- **Version bump:** `kWorldVersion` is now **11**
-- Added persisted tuning fields:
-  - `pathfindingAlgorithm`
-  - `pathCacheEnabled`
-  - `pathCacheMaxEntries`
-  - `navTerrainCostsEnabled`
-
----
-
-# Colony-Game Patch (Round 33)
-
-This round adds **Doors** plus a first-pass **Rooms / Indoors** system, and fixes a long-standing issue where **Demolish (Remove) plans** could accidentally turn into a permanent built tile.
-
-It also bumps the proto-world save format to **v10**.
-
-## New gameplay/simulation
-
-### 1) Doors (new TileType + tool)
-
-- New buildable tile: **Door**
-- Doors are **walkable** (colonists can path through them)
-- Doors act as a **room boundary** for indoors detection (they separate rooms)
-
-Hotkey:
-- **0** = Door tool
-
-### 2) Demolish plans now truly deconstruct
-
-Previously, completing a **Demolish** plan could incorrectly apply `TileType::Remove` as the *built* tile (and wood refunds would never trigger).
-
-Now:
-- Demolish resolves to **Empty built tiles**
-- **Plan-built** structures return their **wood cost** when demolished
-- Chopping/removing a **Tree** drops **wood yield**
-- If a tile becomes **non-walkable**, any loose wood on it is pushed out so it can’t get trapped
-
-### 3) Rooms / Indoors cache
-
-The world now computes a lightweight room graph:
-
-- A “room” is a connected component of **open tiles** (Empty/Floor/Farm/Stockpile)
-- Open areas are separated by **boundaries** (Wall/Tree/Door + map edge)
-- A room is marked **Indoors** if it is **not connected to the map edge**
-
-The cache rebuilds automatically when room topology changes (e.g., building/removing walls/doors, tree spread).
-
-## UI improvements
-
-### 1) Rooms overlay + room IDs
-
-In **View / Debug**:
-- **Show rooms overlay**: shades indoor tiles by room
-- **Show room IDs**: labels indoor rooms with “R#” in the world view
-
-### 2) Tile inspection shows room info
-
-The selection panel now shows:
-- Whether the tile is in a room-space tile
-- Room ID + Indoors/Outdoors + area (tile count)
-
-### 3) Stats show door count
-
-The main colony panel now includes a **Doors** count.
-
-## World generation change
-
-- Removed the old “border walls for orientation” from fresh `reset()` worlds so the Outdoors/Indoors heuristic works as intended (the map edge represents “outside”).
-
-## Save format + persistence
-
-### Save format bump to v10
-- **Version bump:** `kWorldVersion` is now **10**
-- Tile enums now include **Door**; persistence clamps were updated so Door tiles round-trip correctly.
-
----
-
-# Colony-Game Patch (Round 32)
-
-This round adds a **Work Priorities** layer (Build / Farm / Haul) and tightens up the **hauling + save-system** so the colony behaves more predictably over longer sessions.
-
-It also bumps the proto-world save format to **v9**.
-
-## New gameplay/simulation
-
-### 1) Per-colonist Work Priorities (Build / Farm / Haul)
-
-Each colonist now has editable work priorities:
-
-- **0 = Off** (never auto-take that work type)
-- **1 = Highest**
-- **4 = Lowest**
-
-The job assignment logic now checks these priorities when deciding which autonomous jobs a colonist should take.
+1) Select a colonist (Inspect tool → **Left-click** the colonist).
+2) **Draft** the colonist.
+3) Issue orders:
+   - **Right-click**: replaces the queue with a single order (immediate).
+   - **Shift + Right-click**: **adds** an order to the end of the queue.
 
 Notes:
-- If priorities tie, the engine's existing assignment order still breaks ties.
-- When the colony inventory has **0 food**, farmers will still bootstrap food production (ignoring priorities) so new worlds don't deadlock.
+- Build orders only queue on **planned** tiles.
+- Harvest orders only queue on **ripe farms** (growth ≥ 1.0), matching the previous behavior.
 
-### 2) Hauling job cancellation is now safe
+## Save compatibility
 
-Canceling or preempting hauling jobs (drafting, hunger preemption, manual stop, etc.) now:
+- Save format version bumped to **v12** to persist the manual order queue.
+- Older saves still load (queue defaults empty).
 
-- Releases the **pickup reservation** correctly
-- Drops any **carried wood** back onto the ground near the colonist so it can be re-hauled
-- Clears hauling state cleanly
+## Code changes (Round 36)
 
-This fixes cases where wood stacks could remain permanently reserved and/or wood could vanish when a hauling job was interrupted.
+- `src/game/proto/ProtoWorld.h/.cpp`
+  - Added `Colonist::ManualOrder` + `manualQueue`
+  - Added queue execution + completion popping
+  - Added Shift-queue support to `OrderColonistMove/Build/Harvest`
+- `src/game/proto/ProtoWorld_Persistence.cpp`
+  - Save/load `manualQueue`
+- `src/game/proto/ProtoWorld_SaveFormat.h`
+  - Save version → v12
+- `src/game/PrototypeGame_UI_World.cpp`
+  - Shift+Right-click queuing
+  - World overlay for queued orders
+- `src/game/PrototypeGame_UI_Panels.cpp`
+  - Queue indicators + queue management UI
 
-## UI improvements
+---
 
-### 1) Colony panel: Work priority controls
+# Colony-Game Patch (Round 35)
 
-The Colonists table now includes three extra columns:
+This round focuses on **Blueprint tooling** improvements (planning/QoL):
 
-- **B** = Build priority
-- **F** = Farm priority
-- **H** = Haul priority
+- Adds **Blueprint transforms**: rotate (CW / CCW / 180) and flip (horizontal / vertical).
+- Adds a **Blueprint Library (Disk)** panel:
+  - Save the current blueprint to disk under the game's Saved Games folder.
+  - Browse saved blueprints (newest-first), preview them, load into the active blueprint, and delete.
+  - Quick button to open the blueprint folder in Explorer.
 
-There is also a quick button to reset all colonists' work priorities to role-based defaults.
+## New editor tools / UI
 
-Warnings were expanded to distinguish:
-- "No one can do this work" vs
-- "This work is disabled by priorities"
+### 1) Blueprint transforms
 
-### 2) Better job labeling / visuals
+In **Panels → Blueprints**, you now have transform buttons:
 
-- UI job text now recognizes **Hauling**
-- World view colors hauling colonists distinctly
+- **Rotate CW / CCW / 180**
+- **Flip Horizontal / Vertical**
 
-## Save format + persistence
+These operate directly on the current blueprint (including priorities) and preserve the packed plan data.
 
-### 1) Save format bump to v9
-- **Version bump:** `kWorldVersion` is now **9**
-- New per-colonist JSON fields:
-  - `workPriorities.build`
-  - `workPriorities.farm`
-  - `workPriorities.haul`
+### 2) Blueprint library (disk)
 
-Older saves still load: missing work priorities default from role/capabilities.
+In **Panels → Blueprints → Blueprint Library (Disk)**:
 
-### 2) Async snapshot writer fixed
-The async save snapshot JSON writer now includes:
-- `drafted`
-- `role`, `roleLevel`, `roleXp`
-- `workPriorities`
+- Choose a **Save name** and click **Save current** to write a blueprint file.
+- Use **Refresh** to rescan the folder.
+- Select a file to see a **preview** and then:
+  - **Load selected → current blueprint**
+  - **Delete selected**
 
-This brings snapshot saves back in sync with the authoritative world-save format.
+Blueprints are stored at:
 
-## Tests
+- `<Saved Games>/<Product>/blueprints`
+  - (The exact Saved Games base is resolved by PathUtilWin and will fall back to LocalAppData if needed.)
 
-- Updated the proto-world save-format test to assert:
-  - v9 version value
-  - work priorities exist in JSON and round-trip correctly
+## Implementation notes
 
+- Blueprint files use the **same JSON schema** as the clipboard format (`PlanBlueprintToJson` / `PlanBlueprintFromJson`).
+- Saving uses an **atomic write** to avoid partial/corrupted files.
+
+## Code changes (Round 35)
+
+- `src/game/editor/Blueprint.*`
+  - Added transform helpers (rotate/flip).
+- `src/game/editor/BlueprintLibrary.*`
+  - New helper module for saving/loading/listing blueprint files on disk.
+- `src/game/PrototypeGame_UI_Panels.cpp`
+  - Added transform buttons and the Blueprint Library UI.
+- `src/game/PrototypeGame_SaveLoad.cpp`
+  - Added `blueprintDir()` path helper for the blueprint library.

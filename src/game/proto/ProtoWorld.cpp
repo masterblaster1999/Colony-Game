@@ -592,11 +592,206 @@ OrderResult World::CancelColonistJob(int colonistId) noexcept
     Colonist* c = findColonistById(colonistId);
     if (!c)
         return OrderResult::InvalidColonist;
+
+    // "Stop" cancels the active job and clears any queued manual orders.
+    c->manualQueue.clear();
     cancelJob(*c);
     return OrderResult::Ok;
 }
 
-OrderResult World::OrderColonistMove(int colonistId, int targetX, int targetY) noexcept
+OrderResult World::startManualMove(Colonist& c, int targetX, int targetY) noexcept
+{
+    if (!c.drafted)
+        return OrderResult::NotDrafted;
+    if (!inBounds(targetX, targetY))
+        return OrderResult::OutOfBounds;
+    if (!m_nav.passable(targetX, targetY))
+        return OrderResult::TargetBlocked;
+
+    // Robustness: ensure we aren't carrying a stale job state.
+    cancelJob(c);
+
+    c.targetX = targetX;
+    c.targetY = targetY;
+    c.jobKind = Colonist::JobKind::ManualMove;
+    c.hasJob = true;
+
+    if (!computePathToTile(c, targetX, targetY))
+    {
+        cancelJob(c);
+        return OrderResult::NoPath;
+    }
+
+    return OrderResult::Ok;
+}
+
+OrderResult World::startManualBuild(Colonist& c, int planX, int planY) noexcept
+{
+    if (!c.drafted)
+        return OrderResult::NotDrafted;
+    if (!inBounds(planX, planY))
+        return OrderResult::OutOfBounds;
+
+    Cell& target = cell(planX, planY);
+    if (target.planned == TileType::Empty || target.planned == target.built)
+        return OrderResult::TargetNotPlanned;
+    if (target.reservedBy != -1 && target.reservedBy != c.id)
+        return OrderResult::TargetReserved;
+
+    // Find a path to any adjacent tile.
+    const int sx = posToTile(c.x);
+    const int sy = posToTile(c.y);
+
+    std::vector<colony::pf::IVec2> p;
+    if (!computePathToAdjacentFrom(sx, sy, planX, planY, p))
+        return OrderResult::NoPath;
+
+    cancelJob(c);
+
+    target.reservedBy = c.id;
+    c.targetX = planX;
+    c.targetY = planY;
+    c.jobKind = Colonist::JobKind::BuildPlan;
+    c.hasJob = true;
+    c.path = std::move(p);
+    c.pathIndex = 0;
+
+    return OrderResult::Ok;
+}
+
+OrderResult World::startManualHarvest(Colonist& c, int farmX, int farmY) noexcept
+{
+    if (!c.drafted)
+        return OrderResult::NotDrafted;
+    if (!inBounds(farmX, farmY))
+        return OrderResult::OutOfBounds;
+
+    Cell& farm = cell(farmX, farmY);
+    if (farm.built != TileType::Farm)
+        return OrderResult::TargetNotFarm;
+    if (farm.farmReservedBy != -1 && farm.farmReservedBy != c.id)
+        return OrderResult::TargetReserved;
+
+    // Find a path to any adjacent tile.
+    const int sx = posToTile(c.x);
+    const int sy = posToTile(c.y);
+
+    std::vector<colony::pf::IVec2> p;
+    if (!computePathToAdjacentFrom(sx, sy, farmX, farmY, p))
+        return OrderResult::NoPath;
+
+    cancelJob(c);
+
+    farm.farmReservedBy = c.id;
+    c.targetX = farmX;
+    c.targetY = farmY;
+    c.jobKind = Colonist::JobKind::Harvest;
+    c.hasJob = true;
+    c.path = std::move(p);
+    c.pathIndex = 0;
+    c.harvestWorkRemaining = static_cast<float>(std::max(0.0, harvestDurationSeconds));
+
+    return OrderResult::Ok;
+}
+
+void World::tryStartQueuedManualOrders(Colonist& c) noexcept
+{
+    if (!c.drafted)
+        return;
+    if (c.hasJob)
+        return;
+    if (c.manualQueue.empty())
+        return;
+
+    // If hungry, let the eat system take over first.
+    const float threshold = static_cast<float>(std::max(0.0, colonistEatThresholdFood));
+    if (threshold > 0.0f && c.personalFood <= threshold)
+        return;
+
+    // Drain invalid orders from the front until we either start one or hit a soft failure.
+    int guard = 0;
+    while (!c.manualQueue.empty() && guard++ < 32)
+    {
+        const Colonist::ManualOrder& o = c.manualQueue.front();
+        OrderResult r = OrderResult::Ok;
+
+        switch (o.kind)
+        {
+        case Colonist::ManualOrder::Kind::Move:
+            r = startManualMove(c, o.x, o.y);
+            break;
+        case Colonist::ManualOrder::Kind::Build:
+            r = startManualBuild(c, o.x, o.y);
+            break;
+        case Colonist::ManualOrder::Kind::Harvest:
+            r = startManualHarvest(c, o.x, o.y);
+            break;
+        default:
+            r = OrderResult::Ok;
+            break;
+        }
+
+        if (r == OrderResult::Ok)
+            return; // order started (front remains the in-progress order)
+
+        // Hard-fail cases should be dropped so the queue doesn't stall forever.
+        bool drop = false;
+        switch (o.kind)
+        {
+        case Colonist::ManualOrder::Kind::Move:
+            drop = (r == OrderResult::OutOfBounds || r == OrderResult::TargetBlocked);
+            break;
+        case Colonist::ManualOrder::Kind::Build:
+            drop = (r == OrderResult::OutOfBounds || r == OrderResult::TargetNotPlanned);
+            break;
+        case Colonist::ManualOrder::Kind::Harvest:
+            drop = (r == OrderResult::OutOfBounds || r == OrderResult::TargetNotFarm);
+            break;
+        default:
+            drop = true;
+            break;
+        }
+
+        if (drop)
+        {
+            c.manualQueue.erase(c.manualQueue.begin());
+            continue;
+        }
+
+        // Soft failure (reserved/no path/not ready) -> keep it and retry later.
+        break;
+    }
+}
+
+void World::completeQueuedManualOrder(Colonist& c) noexcept
+{
+    if (c.manualQueue.empty())
+        return;
+
+    const Colonist::ManualOrder& o = c.manualQueue.front();
+    bool match = false;
+
+    switch (o.kind)
+    {
+    case Colonist::ManualOrder::Kind::Move:
+        match = (c.jobKind == Colonist::JobKind::ManualMove && c.targetX == o.x && c.targetY == o.y);
+        break;
+    case Colonist::ManualOrder::Kind::Build:
+        match = (c.jobKind == Colonist::JobKind::BuildPlan && c.targetX == o.x && c.targetY == o.y);
+        break;
+    case Colonist::ManualOrder::Kind::Harvest:
+        match = (c.jobKind == Colonist::JobKind::Harvest && c.targetX == o.x && c.targetY == o.y);
+        break;
+    default:
+        match = false;
+        break;
+    }
+
+    if (match)
+        c.manualQueue.erase(c.manualQueue.begin());
+}
+
+OrderResult World::OrderColonistMove(int colonistId, int targetX, int targetY, bool queue) noexcept
 {
     Colonist* c = findColonistById(colonistId);
     if (!c)
@@ -608,24 +803,35 @@ OrderResult World::OrderColonistMove(int colonistId, int targetX, int targetY) n
     if (!m_nav.passable(targetX, targetY))
         return OrderResult::TargetBlocked;
 
-    cancelJob(*c);
-
-    c->targetX = targetX;
-    c->targetY = targetY;
-    c->jobKind = Colonist::JobKind::ManualMove;
-    c->hasJob = true;
-    c->path.clear();
-    c->pathIndex = 0;
-
-    if (!computePathToTile(*c, targetX, targetY))
+    if (queue)
     {
-        cancelJob(*c);
-        return OrderResult::NoPath;
+        Colonist::ManualOrder o;
+        o.kind = Colonist::ManualOrder::Kind::Move;
+        o.x = targetX;
+        o.y = targetY;
+        c->manualQueue.push_back(o);
+
+        // If idle, start immediately.
+        tryStartQueuedManualOrders(*c);
+        return OrderResult::Ok;
     }
-    return OrderResult::Ok;
+
+    // Replace any existing queue with this single order.
+    c->manualQueue.clear();
+
+    const OrderResult r = startManualMove(*c, targetX, targetY);
+    if (r == OrderResult::Ok)
+    {
+        Colonist::ManualOrder o;
+        o.kind = Colonist::ManualOrder::Kind::Move;
+        o.x = targetX;
+        o.y = targetY;
+        c->manualQueue.push_back(o);
+    }
+    return r;
 }
 
-OrderResult World::OrderColonistBuild(int colonistId, int planX, int planY) noexcept
+OrderResult World::OrderColonistBuild(int colonistId, int planX, int planY, bool queue) noexcept
 {
     Colonist* c = findColonistById(colonistId);
     if (!c)
@@ -635,35 +841,39 @@ OrderResult World::OrderColonistBuild(int colonistId, int planX, int planY) noex
     if (!inBounds(planX, planY))
         return OrderResult::OutOfBounds;
 
-    Cell& target = cell(planX, planY);
+    const Cell& target = cell(planX, planY);
     if (target.planned == TileType::Empty || target.planned == target.built)
         return OrderResult::TargetNotPlanned;
-    if (target.reservedBy != -1 && target.reservedBy != colonistId)
-        return OrderResult::TargetReserved;
 
-    cancelJob(*c);
-
-    const int sx = posToTile(c->x);
-    const int sy = posToTile(c->y);
-
-    std::vector<colony::pf::IVec2> p;
-    if (!computePathToAdjacentFrom(sx, sy, planX, planY, p))
+    if (queue)
     {
-        cancelJob(*c);
-        return OrderResult::NoPath;
+        Colonist::ManualOrder o;
+        o.kind = Colonist::ManualOrder::Kind::Build;
+        o.x = planX;
+        o.y = planY;
+        c->manualQueue.push_back(o);
+
+        // If idle, start immediately (may soft-fail and wait).
+        tryStartQueuedManualOrders(*c);
+        return OrderResult::Ok;
     }
 
-    target.reservedBy = colonistId;
-    c->targetX = planX;
-    c->targetY = planY;
-    c->jobKind = Colonist::JobKind::BuildPlan;
-    c->hasJob = true;
-    c->path = std::move(p);
-    c->pathIndex = 0;
-    return OrderResult::Ok;
+    // Replace any existing queue with this single order.
+    c->manualQueue.clear();
+
+    const OrderResult r = startManualBuild(*c, planX, planY);
+    if (r == OrderResult::Ok)
+    {
+        Colonist::ManualOrder o;
+        o.kind = Colonist::ManualOrder::Kind::Build;
+        o.x = planX;
+        o.y = planY;
+        c->manualQueue.push_back(o);
+    }
+    return r;
 }
 
-OrderResult World::OrderColonistHarvest(int colonistId, int farmX, int farmY) noexcept
+OrderResult World::OrderColonistHarvest(int colonistId, int farmX, int farmY, bool queue) noexcept
 {
     Colonist* c = findColonistById(colonistId);
     if (!c)
@@ -673,35 +883,38 @@ OrderResult World::OrderColonistHarvest(int colonistId, int farmX, int farmY) no
     if (!inBounds(farmX, farmY))
         return OrderResult::OutOfBounds;
 
-    Cell& farm = cell(farmX, farmY);
+    const Cell& farm = cell(farmX, farmY);
     if (farm.built != TileType::Farm)
         return OrderResult::TargetNotFarm;
-    if (farm.farmGrowth < 1.0f)
+    if (!queue && farm.farmGrowth < 1.0f)
         return OrderResult::TargetNotHarvestable;
-    if (farm.farmReservedBy != -1 && farm.farmReservedBy != colonistId)
-        return OrderResult::TargetReserved;
 
-    cancelJob(*c);
-
-    const int sx = posToTile(c->x);
-    const int sy = posToTile(c->y);
-
-    std::vector<colony::pf::IVec2> p;
-    if (!computePathToAdjacentFrom(sx, sy, farmX, farmY, p))
+    if (queue)
     {
-        cancelJob(*c);
-        return OrderResult::NoPath;
+        Colonist::ManualOrder o;
+        o.kind = Colonist::ManualOrder::Kind::Harvest;
+        o.x = farmX;
+        o.y = farmY;
+        c->manualQueue.push_back(o);
+
+        // If idle, start immediately.
+        tryStartQueuedManualOrders(*c);
+        return OrderResult::Ok;
     }
 
-    farm.farmReservedBy = colonistId;
-    c->targetX = farmX;
-    c->targetY = farmY;
-    c->jobKind = Colonist::JobKind::Harvest;
-    c->hasJob = true;
-    c->path = std::move(p);
-    c->pathIndex = 0;
-    c->harvestWorkRemaining = static_cast<float>(std::max(0.0, farmHarvestDurationSeconds));
-    return OrderResult::Ok;
+    // Replace any existing queue with this single order.
+    c->manualQueue.clear();
+
+    const OrderResult r = startManualHarvest(*c, farmX, farmY);
+    if (r == OrderResult::Ok)
+    {
+        Colonist::ManualOrder o;
+        o.kind = Colonist::ManualOrder::Kind::Harvest;
+        o.x = farmX;
+        o.y = farmY;
+        c->manualQueue.push_back(o);
+    }
+    return r;
 }
 
 PlacePlanResult World::placePlan(int x, int y, TileType plan, std::uint8_t planPriority)
@@ -1230,7 +1443,14 @@ void World::tick(double dtSeconds)
     // Job assignment (hungry first, then harvesting, then construction)
     // -----------------------------------------------------------------
     assignEatJobs(dtSeconds);
-    assignHarvestJobs(dtSeconds);
+
+// Drafted colonists with queued manual orders should claim targets before the
+// autonomous job assignment runs.
+for (Colonist& c : m_colonists)
+    tryStartQueuedManualOrders(c);
+
+assignHarvestJobs(dtSeconds);
+
     assignJobs(dtSeconds);
     assignHaulJobs(dtSeconds);
 
@@ -3023,7 +3243,10 @@ void World::stepColonist(Colonist& c, double dtSeconds)
 
     // Player move orders complete when we reach the final path node.
     if (c.jobKind == Colonist::JobKind::ManualMove && c.pathIndex >= c.path.size())
+    {
+        completeQueuedManualOrder(c);
         cancelJob(c);
+    }
 }
 
 void World::stepConstructionIfReady(Colonist& c, double dtSeconds)
@@ -3068,6 +3291,7 @@ void World::stepConstructionIfReady(Colonist& c, double dtSeconds)
     {
         if (planBefore != TileType::Empty)
             c.role.grant_xp(XpForPlanCompletion(planBefore));
+        completeQueuedManualOrder(c);
         cancelJob(c);
     }
 }
@@ -3122,6 +3346,7 @@ void World::stepHarvestIfReady(Colonist& c, double dtSeconds)
     // Reset the farm for the next growth cycle.
     farm.farmGrowth = 0.0f;
 
+    completeQueuedManualOrder(c);
     cancelJob(c);
 }
 

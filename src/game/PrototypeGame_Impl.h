@@ -3,6 +3,7 @@
 #include "game/PrototypeGame.h"
 
 #include "game/editor/Blueprint.h"
+#include "game/editor/BlueprintLibrary.h"
 #include "game/editor/PlanHistory.h"
 #include "game/save/SaveMeta.h"
 
@@ -99,6 +100,17 @@ struct PrototypeGame::Impl {
 
     enum class BlueprintAnchor : std::uint8_t { TopLeft = 0, Center = 1 };
     BlueprintAnchor blueprintAnchor = BlueprintAnchor::TopLeft;
+
+    // Blueprint library (disk) - keeps a small, user-managed collection of reusable plan blueprints.
+    std::array<char, 64> blueprintSaveNameBuf{};
+    bool blueprintSaveOverwrite = false;
+    bool blueprintLibraryDirty  = true;
+    int  blueprintLibrarySelected = -1;
+    std::vector<colony::game::editor::BlueprintFileInfo> blueprintLibraryFiles;
+    colony::game::editor::PlanBlueprint blueprintLibraryPreview;
+    std::string blueprintLibraryPreviewName;
+    std::string blueprintLibraryLastError;
+
 
     // Minimap
     bool  showMinimap         = true;
@@ -237,6 +249,7 @@ struct PrototypeGame::Impl {
     // Persistence (prototype)
     [[nodiscard]] fs::path defaultWorldSavePath() const;
     [[nodiscard]] fs::path worldSaveDir() const;
+    [[nodiscard]] fs::path blueprintDir() const;
     [[nodiscard]] fs::path worldSavePathForSlot(int slot) const;
     [[nodiscard]] fs::path autosavePathForIndex(int index) const;
 

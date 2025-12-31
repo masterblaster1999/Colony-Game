@@ -250,6 +250,23 @@ struct Colonist {
 
     // Seconds remaining for pickup/drop work once the colonist has arrived.
     float haulWorkRemaining = 0.0f;
+
+// -----------------------------------------------------------------
+// Manual order queue (prototype)
+// -----------------------------------------------------------------
+// While drafted, colonists can be given direct orders via right-click.
+// Shift+Right-click queues multiple orders which execute in order.
+struct ManualOrder
+{
+    enum class Kind : std::uint8_t { Move = 0, Build = 1, Harvest = 2 };
+    Kind kind = Kind::Move;
+    int x = 0;
+    int y = 0;
+};
+
+// Queue of manual orders. The front of the queue represents the current
+// in-progress order when a drafted colonist is executing queued commands.
+std::vector<ManualOrder> manualQueue;
 };
 
 enum class PlacePlanResult : std::uint8_t {
@@ -315,9 +332,9 @@ public:
 
     // Issue direct orders. Requires the colonist to be drafted.
     // Build/Harvest orders also respect reservations.
-    OrderResult OrderColonistMove(int colonistId, int targetX, int targetY) noexcept;
-    OrderResult OrderColonistBuild(int colonistId, int planX, int planY) noexcept;
-    OrderResult OrderColonistHarvest(int colonistId, int farmX, int farmY) noexcept;
+    OrderResult OrderColonistMove(int colonistId, int targetX, int targetY, bool queue = false) noexcept;
+    OrderResult OrderColonistBuild(int colonistId, int planX, int planY, bool queue = false) noexcept;
+    OrderResult OrderColonistHarvest(int colonistId, int farmX, int farmY, bool queue = false) noexcept;
 
     [[nodiscard]] const colony::pf::GridMap& nav() const noexcept { return m_nav; }
 
@@ -585,7 +602,22 @@ private:
     void stepHarvestIfReady(Colonist& c, double dtSeconds);
     void stepEatingIfReady(Colonist& c, double dtSeconds);
     void stepHaulIfReady(Colonist& c, double dtSeconds);
-    void cancelJob(Colonist& c) noexcept;
+    
+// Manual (drafted) order queue helpers.
+[[nodiscard]] OrderResult startManualMove(Colonist& c, int targetX, int targetY) noexcept;
+[[nodiscard]] OrderResult startManualBuild(Colonist& c, int planX, int planY) noexcept;
+[[nodiscard]] OrderResult startManualHarvest(Colonist& c, int farmX, int farmY) noexcept;
+
+// Attempts to start the front queued order for a colonist (if idle and not hungry).
+// Drops invalid orders from the front until either:
+//   - an order successfully starts (job becomes active), or
+//   - a "soft" failure occurs (e.g. reserved / no path), or
+//   - the queue becomes empty.
+void tryStartQueuedManualOrders(Colonist& c) noexcept;
+
+// If the colonist just completed the front queued manual order, pop it.
+void completeQueuedManualOrder(Colonist& c) noexcept;
+void cancelJob(Colonist& c) noexcept;
 
     void applyPlanIfComplete(int targetX, int targetY) noexcept;
 

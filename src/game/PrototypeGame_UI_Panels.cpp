@@ -518,6 +518,14 @@ void PrototypeGame::Impl::drawPanelsWindow()
                     }
                     ImGui::TextUnformatted(job);
 
+                if (!c.manualQueue.empty())
+                {
+                    ImGui::SameLine();
+                    ImGui::TextDisabled("Q%d", static_cast<int>(c.manualQueue.size()));
+                    if (ImGui::IsItemHovered())
+                        ImGui::SetTooltip("Manual order queue length");
+                }
+
                     // Food
                     ImGui::TableNextColumn();
                     if (maxPersonalFood > 0.0f)
@@ -535,6 +543,13 @@ void PrototypeGame::Impl::drawPanelsWindow()
                     std::snprintf(stopId, sizeof(stopId), "Stop##%d", c.id);
                     if (ImGui::SmallButton(stopId))
                         (void)world.CancelColonistJob(c.id);
+
+                    ImGui::SameLine();
+
+                    char clearQId[32];
+                    std::snprintf(clearQId, sizeof(clearQId), "ClrQ##%d", c.id);
+                    if (ImGui::SmallButton(clearQId))
+                        c.manualQueue.clear();
 
                     ImGui::SameLine();
                     char resetId[32];
@@ -559,6 +574,100 @@ void PrototypeGame::Impl::drawPanelsWindow()
                 ImGui::EndTable();
             }
         }
+
+// Selected colonist: manual order queue (drafted orders).
+if (selectedColonistId >= 0)
+{
+    proto::Colonist* sel = nullptr;
+    for (auto& c2 : world.colonists())
+    {
+        if (c2.id == selectedColonistId)
+        {
+            sel = &c2;
+            break;
+        }
+    }
+
+    if (sel && ImGui::TreeNode("Manual Orders"))
+    {
+        ImGui::Text("Queue length: %d", static_cast<int>(sel->manualQueue.size()));
+        ImGui::SameLine();
+        if (ImGui::SmallButton("Clear Queue"))
+            sel->manualQueue.clear();
+
+        ImGui::SameLine();
+        if (ImGui::SmallButton("Pop Front") && !sel->manualQueue.empty())
+            sel->manualQueue.erase(sel->manualQueue.begin());
+
+        ImGui::TextDisabled("Tip: Shift+Right-click in the world (Inspect tool) to queue orders.");
+
+        const bool frontActive =
+            sel->hasJob && !sel->manualQueue.empty() &&
+            ((sel->manualQueue.front().kind == proto::Colonist::ManualOrder::Kind::Move &&
+              sel->jobKind == proto::Colonist::JobKind::ManualMove) ||
+             (sel->manualQueue.front().kind == proto::Colonist::ManualOrder::Kind::Build &&
+              sel->jobKind == proto::Colonist::JobKind::BuildPlan) ||
+             (sel->manualQueue.front().kind == proto::Colonist::ManualOrder::Kind::Harvest &&
+              sel->jobKind == proto::Colonist::JobKind::Harvest)) &&
+            sel->targetX == sel->manualQueue.front().x && sel->targetY == sel->manualQueue.front().y;
+
+        if (sel->manualQueue.empty())
+        {
+            ImGui::TextDisabled("(empty)");
+        }
+        else
+        {
+            for (int i = 0; i < static_cast<int>(sel->manualQueue.size()); ++i)
+            {
+                auto& o = sel->manualQueue[i];
+
+                const char* kind = "?";
+                switch (o.kind)
+                {
+                case proto::Colonist::ManualOrder::Kind::Move:
+                    kind = "Move";
+                    break;
+                case proto::Colonist::ManualOrder::Kind::Build:
+                    kind = "Build";
+                    break;
+                case proto::Colonist::ManualOrder::Kind::Harvest:
+                    kind = "Harvest";
+                    break;
+                default:
+                    kind = "?";
+                    break;
+                }
+
+                std::string label = std::to_string(i + 1) + ". " + kind + " @ " + std::to_string(o.x) + "," +
+                                    std::to_string(o.y);
+                if (i == 0 && frontActive)
+                    label += " (active)";
+
+                ImGui::TextUnformatted(label.c_str());
+
+                ImGui::SameLine();
+                const std::string upId = "Up##mq_up_" + std::to_string(i);
+                if (ImGui::SmallButton(upId.c_str()) && i > 0)
+                    std::swap(sel->manualQueue[i - 1], sel->manualQueue[i]);
+
+                ImGui::SameLine();
+                const std::string dnId = "Dn##mq_dn_" + std::to_string(i);
+                if (ImGui::SmallButton(dnId.c_str()) && i + 1 < static_cast<int>(sel->manualQueue.size()))
+                    std::swap(sel->manualQueue[i + 1], sel->manualQueue[i]);
+
+                ImGui::SameLine();
+                const std::string delId = "X##mq_del_" + std::to_string(i);
+                if (ImGui::SmallButton(delId.c_str()))
+                {
+                    sel->manualQueue.erase(sel->manualQueue.begin() + i);
+                    --i;
+                }
+            }
+        }
+
+        ImGui::TreePop();
+    }
+}
 
         ImGui::Separator();
         ImGui::Text("Plans Pending: %d", world.plannedCount());
@@ -1291,6 +1400,41 @@ void PrototypeGame::Impl::drawPanelsWindow()
                 setStatus("Blueprint cleared");
             }
 
+            ImGui::Spacing();
+            ImGui::TextDisabled("Transforms");
+
+            ImGui::BeginDisabled(blueprint.Empty());
+            if (ImGui::Button("Rotate CW"))
+            {
+                blueprint = colony::game::editor::BlueprintRotateCW(blueprint);
+                setStatus("Blueprint rotated: " + std::to_string(blueprint.w) + "x" + std::to_string(blueprint.h));
+            }
+            ImGui::SameLine();
+            if (ImGui::Button("Rotate CCW"))
+            {
+                blueprint = colony::game::editor::BlueprintRotateCCW(blueprint);
+                setStatus("Blueprint rotated: " + std::to_string(blueprint.w) + "x" + std::to_string(blueprint.h));
+            }
+            ImGui::SameLine();
+            if (ImGui::Button("Rotate 180"))
+            {
+                blueprint = colony::game::editor::BlueprintRotate180(blueprint);
+                setStatus("Blueprint rotated: " + std::to_string(blueprint.w) + "x" + std::to_string(blueprint.h));
+            }
+
+            if (ImGui::Button("Flip Horizontal"))
+            {
+                blueprint = colony::game::editor::BlueprintFlipHorizontal(blueprint);
+                setStatus("Blueprint flipped (horizontal)");
+            }
+            ImGui::SameLine();
+            if (ImGui::Button("Flip Vertical"))
+            {
+                blueprint = colony::game::editor::BlueprintFlipVertical(blueprint);
+                setStatus("Blueprint flipped (vertical)");
+            }
+            ImGui::EndDisabled();
+
             ImGui::Separator();
 
             ImGui::Checkbox("Paste includes empty cells (erases plans)", &blueprintPasteIncludeEmpty);
@@ -1299,6 +1443,162 @@ void PrototypeGame::Impl::drawPanelsWindow()
             if (ImGui::Combo("Paste anchor", &anchor, "Top-left\0Center\0"))
             {
                 blueprintAnchor = (anchor == 0) ? BlueprintAnchor::TopLeft : BlueprintAnchor::Center;
+            }
+
+            ImGui::Separator();
+            if (ImGui::CollapsingHeader("Blueprint Library (Disk)", ImGuiTreeNodeFlags_DefaultOpen))
+            {
+                const fs::path bpDir = blueprintDir();
+                const std::string bpDirUtf8 = colony::util::PathToUtf8String(bpDir);
+                ImGui::TextWrapped("Folder: %s", bpDirUtf8.c_str());
+
+                if (ImGui::Button("Show Folder in Explorer##bp"))
+                {
+                    const std::wstring w = bpDir.wstring();
+                    ::ShellExecuteW(nullptr, L"open", w.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+                }
+                ImGui::SameLine();
+                if (ImGui::Button("Refresh##bp"))
+                {
+                    blueprintLibraryDirty = true;
+                }
+
+                ImGui::Spacing();
+
+                ImGui::BeginDisabled(blueprint.Empty());
+                ImGui::InputText("Save name", blueprintSaveNameBuf.data(), blueprintSaveNameBuf.size());
+                ImGui::SameLine();
+                ImGui::Checkbox("Overwrite##bp_overwrite", &blueprintSaveOverwrite);
+                ImGui::SameLine();
+                if (ImGui::Button("Save current##bp"))
+                {
+                    std::string err;
+                    if (!colony::game::editor::EnsureBlueprintDir(bpDir, &err))
+                    {
+                        setStatus("Blueprint save failed: " + err, 4.0f);
+                    }
+                    else
+                    {
+                        const fs::path outPath = colony::game::editor::BlueprintPathForName(bpDir, blueprintSaveNameBuf.data());
+                        std::error_code ec;
+                        const bool exists = fs::exists(outPath, ec) && !ec;
+                        if (exists && !blueprintSaveOverwrite)
+                        {
+                            setStatus("Blueprint exists. Enable Overwrite to replace.", 4.0f);
+                        }
+                        else if (colony::game::editor::SaveBlueprintToFile(blueprint, outPath, &err))
+                        {
+                            blueprintLibraryDirty = true;
+                            setStatus("Blueprint saved: " + colony::util::PathToUtf8String(outPath), 3.0f);
+                        }
+                        else
+                        {
+                            setStatus("Blueprint save failed: " + err, 4.0f);
+                        }
+                    }
+                }
+                ImGui::EndDisabled();
+
+                if (blueprintLibraryDirty)
+                {
+                    blueprintLibraryFiles = colony::game::editor::ListBlueprintFiles(bpDir);
+                    blueprintLibraryDirty = false;
+
+                    if (blueprintLibrarySelected >= static_cast<int>(blueprintLibraryFiles.size()))
+                        blueprintLibrarySelected = blueprintLibraryFiles.empty() ? -1 : 0;
+
+                    blueprintLibraryPreviewName.clear();
+                    blueprintLibraryLastError.clear();
+                }
+
+                if (blueprintLibraryFiles.empty())
+                {
+                    ImGui::TextDisabled("No saved blueprints yet.");
+                }
+                else
+                {
+                    ImGui::BeginChild("bp_lib_list", ImVec2(0, 120), true);
+                    for (int i = 0; i < static_cast<int>(blueprintLibraryFiles.size()); ++i)
+                    {
+                        const auto& e = blueprintLibraryFiles[i];
+                        std::string label = e.name;
+                        if (e.modifiedUtcSeconds > 0)
+                            label += "  [" + save::FormatLocalTime(e.modifiedUtcSeconds) + "]";
+
+                        if (ImGui::Selectable(label.c_str(), blueprintLibrarySelected == i))
+                            blueprintLibrarySelected = i;
+                    }
+                    ImGui::EndChild();
+
+                    if (blueprintLibrarySelected >= 0 && blueprintLibrarySelected < static_cast<int>(blueprintLibraryFiles.size()))
+                    {
+                        const auto& sel = blueprintLibraryFiles[blueprintLibrarySelected];
+                        const std::string selPathUtf8 = colony::util::PathToUtf8String(sel.path);
+
+                        // Load preview on selection change (or refresh).
+                        if (blueprintLibraryPreviewName != selPathUtf8)
+                        {
+                            blueprintLibraryPreviewName = selPathUtf8;
+                            blueprintLibraryLastError.clear();
+
+                            colony::game::editor::PlanBlueprint tmp;
+                            std::string err;
+                            if (colony::game::editor::LoadBlueprintFromFile(sel.path, tmp, &err))
+                            {
+                                blueprintLibraryPreview = std::move(tmp);
+                            }
+                            else
+                            {
+                                blueprintLibraryPreview.Clear();
+                                blueprintLibraryLastError = err;
+                            }
+                        }
+
+                        ImGui::TextWrapped("Selected: %s", selPathUtf8.c_str());
+                        ImGui::Text("Size: %llu bytes", static_cast<unsigned long long>(sel.sizeBytes));
+                        if (!blueprintLibraryLastError.empty())
+                            ImGui::TextWrapped("Preview error: %s", blueprintLibraryLastError.c_str());
+
+                        if (!blueprintLibraryPreview.Empty())
+                        {
+                            ImGui::Text("Preview: %dx%d", blueprintLibraryPreview.w, blueprintLibraryPreview.h);
+                            DrawBlueprintThumbnail(blueprintLibraryPreview, blueprintPasteIncludeEmpty);
+                        }
+
+                        if (ImGui::Button("Load selected -> current blueprint##bp"))
+                        {
+                            std::string err;
+                            colony::game::editor::PlanBlueprint tmp;
+                            if (colony::game::editor::LoadBlueprintFromFile(sel.path, tmp, &err))
+                            {
+                                blueprint = std::move(tmp);
+                                setStatus("Blueprint loaded: " + std::to_string(blueprint.w) + "x" + std::to_string(blueprint.h));
+                            }
+                            else
+                            {
+                                setStatus("Blueprint load failed: " + err, 4.0f);
+                            }
+                        }
+                        ImGui::SameLine();
+                        if (ImGui::Button("Delete selected##bp"))
+                        {
+                            const std::string deletedName = sel.name;
+                            std::string err;
+                            if (colony::game::editor::DeleteBlueprintFile(sel.path, &err))
+                            {
+                                setStatus("Blueprint deleted: " + deletedName, 3.0f);
+                                blueprintLibraryDirty = true;
+                                blueprintLibrarySelected = -1;
+                                blueprintLibraryPreview.Clear();
+                                blueprintLibraryPreviewName.clear();
+                            }
+                            else
+                            {
+                                setStatus("Blueprint delete failed: " + err, 4.0f);
+                            }
+                        }
+                    }
+                }
             }
 
             if (ImGui::Button("Select Blueprint tool (9)"))

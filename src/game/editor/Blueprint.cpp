@@ -160,7 +160,6 @@ bool PlanBlueprintFromJson(std::string_view text, PlanBlueprint& out, std::strin
         return false;
     }
 
-    const std::size_t expected = static_cast<std::size_t>(w) * static_cast<std::size_t>(h);
     if (expected > (1u << 24))
     {
         if (outError)
@@ -246,6 +245,176 @@ bool PlanBlueprintFromJson(std::string_view text, PlanBlueprint& out, std::strin
     if (outError)
         *outError = "Blueprint JSON missing 'rle' (or legacy 'cells') field.";
     return false;
+}
+
+
+PlanBlueprint BlueprintRotateCW(const PlanBlueprint& bp) noexcept
+{
+    PlanBlueprint out;
+    if (bp.Empty())
+        return out;
+
+    const int w = bp.w;
+    const int h = bp.h;
+    if (w <= 0 || h <= 0)
+        return out;
+
+
+    out.w = h;
+    out.h = w;
+    out.packed.assign(static_cast<std::size_t>(out.w) * static_cast<std::size_t>(out.h), std::uint8_t{0});
+
+    for (int y = 0; y < h; ++y)
+    {
+        for (int x = 0; x < w; ++x)
+        {
+            const std::size_t src = static_cast<std::size_t>(y) * static_cast<std::size_t>(w) + static_cast<std::size_t>(x);
+            const std::uint8_t v = (src < bp.packed.size()) ? bp.packed[src] : std::uint8_t{0};
+
+            // (x, y) -> (h-1-y, x)
+            const int nx = h - 1 - y;
+            const int ny = x;
+            const std::size_t dst = static_cast<std::size_t>(ny) * static_cast<std::size_t>(out.w) + static_cast<std::size_t>(nx);
+            if (dst < out.packed.size())
+                out.packed[dst] = v;
+        }
+    }
+
+    return out;
+}
+
+PlanBlueprint BlueprintRotateCCW(const PlanBlueprint& bp) noexcept
+{
+    PlanBlueprint out;
+    if (bp.Empty())
+        return out;
+
+    const int w = bp.w;
+    const int h = bp.h;
+    if (w <= 0 || h <= 0)
+        return out;
+
+    out.w = h;
+    out.h = w;
+    out.packed.assign(static_cast<std::size_t>(out.w) * static_cast<std::size_t>(out.h), std::uint8_t{0});
+
+    for (int y = 0; y < h; ++y)
+    {
+        for (int x = 0; x < w; ++x)
+        {
+            const std::size_t src = static_cast<std::size_t>(y) * static_cast<std::size_t>(w) + static_cast<std::size_t>(x);
+            const std::uint8_t v = (src < bp.packed.size()) ? bp.packed[src] : std::uint8_t{0};
+
+            // (x, y) -> (y, w-1-x)
+            const int nx = y;
+            const int ny = w - 1 - x;
+            const std::size_t dst = static_cast<std::size_t>(ny) * static_cast<std::size_t>(out.w) + static_cast<std::size_t>(nx);
+            if (dst < out.packed.size())
+                out.packed[dst] = v;
+        }
+    }
+
+    return out;
+}
+
+PlanBlueprint BlueprintRotate180(const PlanBlueprint& bp) noexcept
+{
+    PlanBlueprint out;
+    if (bp.Empty())
+        return out;
+
+    const int w = bp.w;
+    const int h = bp.h;
+    if (w <= 0 || h <= 0)
+        return out;
+
+    out.w = w;
+    out.h = h;
+    out.packed.assign(static_cast<std::size_t>(w) * static_cast<std::size_t>(h), std::uint8_t{0});
+
+    for (int y = 0; y < h; ++y)
+    {
+        for (int x = 0; x < w; ++x)
+        {
+            const std::size_t src = static_cast<std::size_t>(y) * static_cast<std::size_t>(w) + static_cast<std::size_t>(x);
+            const std::uint8_t v = (src < bp.packed.size()) ? bp.packed[src] : std::uint8_t{0};
+
+            // (x, y) -> (w-1-x, h-1-y)
+            const int nx = w - 1 - x;
+            const int ny = h - 1 - y;
+            const std::size_t dst = static_cast<std::size_t>(ny) * static_cast<std::size_t>(w) + static_cast<std::size_t>(nx);
+            if (dst < out.packed.size())
+                out.packed[dst] = v;
+        }
+    }
+
+    return out;
+}
+
+PlanBlueprint BlueprintFlipHorizontal(const PlanBlueprint& bp) noexcept
+{
+    PlanBlueprint out;
+    if (bp.Empty())
+        return out;
+
+    const int w = bp.w;
+    const int h = bp.h;
+    if (w <= 0 || h <= 0)
+        return out;
+
+    out.w = w;
+    out.h = h;
+    out.packed.assign(static_cast<std::size_t>(w) * static_cast<std::size_t>(h), std::uint8_t{0});
+
+    for (int y = 0; y < h; ++y)
+    {
+        for (int x = 0; x < w; ++x)
+        {
+            const std::size_t src = static_cast<std::size_t>(y) * static_cast<std::size_t>(w) + static_cast<std::size_t>(x);
+            const std::uint8_t v = (src < bp.packed.size()) ? bp.packed[src] : std::uint8_t{0};
+
+            const int nx = w - 1 - x;
+            const int ny = y;
+            const std::size_t dst = static_cast<std::size_t>(ny) * static_cast<std::size_t>(w) + static_cast<std::size_t>(nx);
+            if (dst < out.packed.size())
+                out.packed[dst] = v;
+        }
+    }
+
+    return out;
+}
+
+PlanBlueprint BlueprintFlipVertical(const PlanBlueprint& bp) noexcept
+{
+    PlanBlueprint out;
+    if (bp.Empty())
+        return out;
+
+    const int w = bp.w;
+    const int h = bp.h;
+    if (w <= 0 || h <= 0)
+        return out;
+
+    out.w = w;
+    out.h = h;
+    out.packed.assign(static_cast<std::size_t>(w) * static_cast<std::size_t>(h), std::uint8_t{0});
+
+    for (int y = 0; y < h; ++y)
+    {
+        for (int x = 0; x < w; ++x)
+        {
+            const std::size_t src = static_cast<std::size_t>(y) * static_cast<std::size_t>(w) + static_cast<std::size_t>(x);
+            const std::uint8_t v = (src < bp.packed.size()) ? bp.packed[src] : std::uint8_t{0};
+
+            const int nx = x;
+            const int ny = h - 1 - y;
+            const std::size_t dst = static_cast<std::size_t>(ny) * static_cast<std::size_t>(w) + static_cast<std::size_t>(nx);
+            if (dst < out.packed.size())
+                out.packed[dst] = v;
+        }
+    }
+
+    return out;
 }
 
 } // namespace colony::game::editor

@@ -33,6 +33,17 @@ struct PlanBlueprint {
 [[nodiscard]] colony::proto::TileType BlueprintUnpackTile(std::uint8_t packed) noexcept;
 [[nodiscard]] std::uint8_t BlueprintUnpackPriority(std::uint8_t packed) noexcept;
 
+// Blueprint transforms (operate on the packed cell data).
+//
+// Rotation is around the blueprint's origin (top-left).
+// All transforms preserve the packed byte (tile + priority).
+[[nodiscard]] PlanBlueprint BlueprintRotateCW(const PlanBlueprint& bp) noexcept;
+[[nodiscard]] PlanBlueprint BlueprintRotateCCW(const PlanBlueprint& bp) noexcept;
+[[nodiscard]] PlanBlueprint BlueprintRotate180(const PlanBlueprint& bp) noexcept;
+[[nodiscard]] PlanBlueprint BlueprintFlipHorizontal(const PlanBlueprint& bp) noexcept;
+[[nodiscard]] PlanBlueprint BlueprintFlipVertical(const PlanBlueprint& bp) noexcept;
+
+
 // JSON serialization used for clipboard exchange.
 //
 // The string is a single JSON object with a lightweight RLE payload.

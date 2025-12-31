@@ -237,7 +237,13 @@ bool World::SaveJson(const std::filesystem::path& path, std::string* outError) c
 
         json colonists = json::array();
         colonists.get_ref<json::array_t&>().reserve(m_colonists.size());
-        for (const Colonist& c : m_colonists)
+                for (const Colonist& c : m_colonists)
+        {
+            json mq = json::array();
+            mq.get_ref<json::array_t&>().reserve(c.manualQueue.size());
+            for (const auto& o : c.manualQueue)
+                mq.push_back({static_cast<int>(o.kind), o.x, o.y});
+
             colonists.push_back({
                 {"id", c.id},
                 {"x", c.x},
@@ -256,8 +262,13 @@ bool World::SaveJson(const std::filesystem::path& path, std::string* outError) c
                     {"farm", static_cast<int>(c.workPrio.farm)},
                     {"haul", static_cast<int>(c.workPrio.haul)},
                 }},
+
+                // v12+: drafted manual order queue.
+                {"manualQueue", std::move(mq)},
             });
-        j["colonists"] = std::move(colonists);
+        }
+
+j["colonists"] = std::move(colonists);
 
         const std::string bytes = j.dump(2);
 
@@ -597,6 +608,28 @@ bool World::LoadJson(const std::filesystem::path& path, std::string* outError) n
                 else
                 {
                     c.workPrio = DefaultWorkPriorities(c.role.role);
+                }
+
+                // Manual order queue (v12+). Optional field so older saves still load.
+                c.manualQueue.clear();
+                if (item.contains("manualQueue") && item["manualQueue"].is_array())
+                {
+                    const json& mq = item["manualQueue"];
+                    for (const auto& q : mq)
+                    {
+                        if (!q.is_array() || q.size() < 3)
+                            continue;
+
+                        const int kindI = ArrInt(q, 0, 0);
+                        const int x = ArrInt(q, 1, 0);
+                        const int y = ArrInt(q, 2, 0);
+
+                        Colonist::ManualOrder o;
+                        o.kind = static_cast<Colonist::ManualOrder::Kind>(std::clamp(kindI, 0, 2));
+                        o.x = x;
+                        o.y = y;
+                        c.manualQueue.push_back(o);
+                    }
                 }
 
                 // Clear job/path (reassigned on next tick).

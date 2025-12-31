@@ -26,6 +26,7 @@ inline constexpr const char* kWorldFormatLegacy = "colony_proto_world"; // legac
 //  v9: Per-colonist work priorities (build/farm/haul)
 //  v10: Doors (new tile type) + derived room/indoors cache
 //  v11: Pathfinding tuning (AStar/JPS selection, path cache knobs, terrain traversal costs)
-inline constexpr int         kWorldVersion      = 11;
+//  v12: Drafted manual order queue (Shift+Right-click queues multiple orders)
+inline constexpr int         kWorldVersion      = 12;
 
 } // namespace colony::proto::savefmt

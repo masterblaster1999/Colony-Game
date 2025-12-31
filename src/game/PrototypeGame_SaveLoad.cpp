@@ -747,6 +747,18 @@ fs::path PrototypeGame::Impl::worldSaveDir() const
     return winpath::saved_games_dir();
 }
 
+
+fs::path PrototypeGame::Impl::blueprintDir() const
+{
+    // Keep reusable blueprints alongside saves for easy discovery and backup.
+    // Folder: <Saved Games>/<Product>/blueprints
+    const fs::path dir = worldSaveDir() / "blueprints";
+
+    std::error_code ec;
+    fs::create_directories(dir, ec);
+    return dir;
+}
+
 fs::path PrototypeGame::Impl::defaultWorldSavePath() const
 {
     // Prefer the user's "Saved Games" folder for quick iteration and easy discovery.
