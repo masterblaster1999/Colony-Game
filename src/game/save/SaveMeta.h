@@ -65,4 +65,8 @@ struct SaveSummary {
 // Formats a duration in seconds as "H:MM:SS".
 [[nodiscard]] std::string FormatDurationHMS(double seconds) noexcept;
 
+// Formats a compact, one-line summary for save browser UI.
+// Designed to be stable and readable even when some fields are missing.
+[[nodiscard]] std::string FormatSummaryLine(const SaveSummary& s) noexcept;
+
 } // namespace colony::game::save

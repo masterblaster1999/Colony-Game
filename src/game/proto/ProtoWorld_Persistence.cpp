@@ -18,6 +18,11 @@ namespace {
 
 using json = nlohmann::json;
 
+[[nodiscard]] float clampf(float v, float lo, float hi) noexcept
+{
+    return std::max(lo, std::min(v, hi));
+}
+
 [[nodiscard]] TileType BuiltTileFromInt(int v) noexcept
 {
     if (v < 0) v = 0;

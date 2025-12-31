@@ -956,7 +956,9 @@ if (c.id == selectedColonistId && !c.manualQueue.empty())
                 if (idx >= blueprint.packed.size())
                     continue;
 
-                const std::uint32_t packed = blueprint.packed[idx];
+                // Blueprint cells are stored as packed bytes; keep the type narrow to avoid
+                // accidental widening + MSVC C4244 noise.
+                const std::uint8_t packed = blueprint.packed[idx];
                 proto::TileType plan = colony::game::editor::BlueprintUnpackTile(packed);
                 std::uint8_t pr = colony::game::editor::BlueprintUnpackPriority(packed);
 
@@ -1029,7 +1031,9 @@ if (c.id == selectedColonistId && !c.manualQueue.empty())
                     if (idx >= blueprint.packed.size())
                         continue;
 
-                    const std::uint32_t packed = blueprint.packed[idx];
+                    // Blueprint cells are stored as packed bytes; keep the type narrow to avoid
+                    // accidental widening + MSVC C4244 noise.
+                    const std::uint8_t packed = blueprint.packed[idx];
                     proto::TileType plan = colony::game::editor::BlueprintUnpackTile(packed);
                     std::uint8_t pr = colony::game::editor::BlueprintUnpackPriority(packed);
 
@@ -1303,7 +1307,7 @@ if (c.id == selectedColonistId && !c.manualQueue.empty())
                 ImGui::Separator();
                 ImGui::Text("Blueprint stamp:");
                 ImGui::Text("Size: %dx%d", blueprint.w, blueprint.h);
-                ImGui::Text("Anchor: %s", (blueprintAnchor == colony::game::editor::BlueprintAnchor::TopLeft) ? "Top-left" : "Center");
+                ImGui::Text("Anchor: %s", (blueprintAnchor == BlueprintAnchor::TopLeft) ? "Top-left" : "Center");
                 ImGui::Text("Top-left: (%d, %d)", bx, by);
 
                 if (prev.truncated)

@@ -10,6 +10,7 @@
 #include <cstdio>
 #include <ctime>
 #include <fstream>
+#include <iomanip>
 #include <sstream>
 
 #include <nlohmann/json.hpp>
@@ -202,6 +203,52 @@ std::string FormatDurationHMS(double seconds) noexcept
                         static_cast<long long>(m),
                         static_cast<long long>(s));
     return std::string(buf);
+}
+
+std::string FormatSummaryLine(const SaveSummary& s) noexcept
+{
+    std::ostringstream oss;
+
+    // Kind
+    switch (s.kind)
+    {
+    case SaveKind::Manual:   oss << "Manual"; break;
+    case SaveKind::Autosave: oss << "Autosave"; break;
+    default:                oss << "Save"; break;
+    }
+
+    // Playtime
+    if (s.playtimeSeconds > 0.0)
+        oss << " | " << FormatDurationHMS(s.playtimeSeconds);
+
+    // World size
+    if (s.worldW > 0 && s.worldH > 0)
+        oss << " | " << s.worldW << "x" << s.worldH;
+
+    // Counts
+    if (s.population > 0)
+        oss << " | Pop " << s.population;
+    if (s.plannedCount > 0)
+        oss << " | Plans " << s.plannedCount;
+
+    // Inventory
+    if (s.wood != 0)
+        oss << " | Wood " << s.wood;
+    if (s.food != 0.0f)
+        oss << " | Food " << std::fixed << std::setprecision(1) << static_cast<double>(s.food);
+
+    // Built snapshot (subset)
+    const int builtSum = s.builtFloors + s.builtWalls + s.builtFarms + s.builtStockpiles;
+    if (builtSum > 0)
+    {
+        oss << " | Built";
+        if (s.builtFloors)     oss << " F:" << s.builtFloors;
+        if (s.builtWalls)      oss << " W:" << s.builtWalls;
+        if (s.builtFarms)      oss << " Farm:" << s.builtFarms;
+        if (s.builtStockpiles) oss << " Stock:" << s.builtStockpiles;
+    }
+
+    return oss.str();
 }
 
 } // namespace colony::game::save
