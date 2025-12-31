@@ -1,0 +1,1020 @@
+#pragma once
+
+#include <cstdint>
+#include <array>
+#include <filesystem>
+#include <functional>
+#include <list>
+#include <random>
+#include <string>
+#include <string_view>
+#include <unordered_map>
+#include <vector>
+
+#include "game/Role.hpp"
+
+#include "colony/pathfinding/AStar.hpp"
+#include "colony/pathfinding/GridMap.hpp"
+
+namespace colony::proto {
+
+// Extremely small, gameplay-forward "proto" world:
+//  - 2D tile grid
+//  - player places *plans* (blueprints)
+//  - colonists pathfind to an adjacent tile and construct them
+//  - simple food production/consumption
+
+enum class TileType : std::uint8_t {
+    Empty = 0,
+    Floor,
+    Wall,
+    Farm,
+    Stockpile,
+
+    // Plan-only: marks an existing built tile for deconstruction.
+    Remove,
+
+    // Natural obstacle/resource: can be chopped (via Demolish plan) for wood.
+    Tree,
+
+    // Door: passable barrier that still counts as a room boundary for indoors detection.
+    Door,
+
+    // Bed: placeable furniture that colonists can sleep in.
+    Bed,
+};
+
+
+[[nodiscard]] const char* TileTypeName(TileType t) noexcept;
+[[nodiscard]] bool TileIsWalkable(TileType t) noexcept;
+[[nodiscard]] int TileWoodCost(TileType t) noexcept;
+[[nodiscard]] float TileBuildTimeSeconds(TileType t) noexcept;
+
+struct Inventory {
+    int wood = 50;
+    float food = 20.0f;
+};
+
+// -----------------------------------------------------------------
+// Work priorities (prototype)
+// -----------------------------------------------------------------
+// Per-colonist priorities for autonomous work selection.
+//  - 0 = Off (never take this job autonomously)
+//  - 1 = Highest
+//  - 4 = Lowest
+//
+// Ties are broken by the engine's job assignment order (Harvest > Build > Haul).
+struct WorkPriorities
+{
+    std::uint8_t build = 2;
+    std::uint8_t farm  = 2;
+    std::uint8_t haul  = 2;
+};
+
+// -----------------------------------------------------------------
+// Pathfinding tuning (prototype)
+// -----------------------------------------------------------------
+// AStar: classic A* pathfinding.
+// JumpPointSearch: JPS (usually faster on open grids); expanded back into
+// tile-by-tile steps so movement/path validation remains correct.
+enum class PathAlgo : std::uint8_t
+{
+    AStar = 0,
+    JumpPointSearch = 1,
+};
+
+[[nodiscard]] const char* PathAlgoName(PathAlgo a) noexcept;
+[[nodiscard]] PathAlgo PathAlgoFromName(std::string_view s) noexcept;
+
+[[nodiscard]] inline constexpr WorkPriorities ClampWorkPriorities(WorkPriorities p) noexcept
+{
+    auto clamp01_4 = [](std::uint8_t v) constexpr noexcept -> std::uint8_t {
+        return (v > 4u) ? 4u : v;
+    };
+    p.build = clamp01_4(p.build);
+    p.farm  = clamp01_4(p.farm);
+    p.haul  = clamp01_4(p.haul);
+    return p;
+}
+
+// Default priorities biased by role/capabilities.
+// Jobs a role cannot perform default to Off (0).
+[[nodiscard]] inline constexpr WorkPriorities DefaultWorkPriorities(RoleId role) noexcept
+{
+    WorkPriorities p{};
+    p.build = 0;
+    p.farm  = 0;
+    p.haul  = 0;
+
+    const Capability caps = RoleDefOf(role).caps;
+
+    if (HasAny(caps, Capability::Building)) p.build = 2;
+    if (HasAny(caps, Capability::Farming))  p.farm  = 2;
+    if (HasAny(caps, Capability::Hauling))  p.haul  = 2;
+
+    // Role-flavored bias (still editable by the player).
+    switch (role)
+    {
+    case RoleId::Builder: if (p.build) p.build = 1; break;
+    case RoleId::Farmer:  if (p.farm)  p.farm  = 1; break;
+    case RoleId::Hauler:  if (p.haul)  p.haul  = 1; break;
+    default: break;
+    }
+
+    return p;
+}
+
+struct Cell {
+    TileType built = TileType::Empty;
+
+    // True if the current built tile was produced by completing a plan (i.e., player-built),
+    // as opposed to being part of the pre-seeded starting area / borders.
+    //
+    // This lets deconstruction refund wood without allowing "free wood" from the seeded tiles.
+    bool builtFromPlan = false;
+
+    TileType planned = TileType::Empty;
+
+    // Plan priority (prototype).
+    //  - 0 = lowest (displayed as 1)
+    //  - 3 = highest (displayed as 4)
+    // Only meaningful while planned != Empty && planned != built.
+    std::uint8_t planPriority = 0;
+
+    // Remaining construction work for the planned tile.
+    // Only meaningful while planned != built.
+    float workRemaining = 0.0f;
+
+    // Simple reservation to avoid multiple colonists picking the same plan.
+    // -1 = unreserved
+    int reservedBy = -1;
+
+    // -----------------------------------------------------------------
+    // Farm simulation (prototype)
+    // -----------------------------------------------------------------
+    // Farm growth progress in [0, 1]. Only meaningful when built == Farm.
+    // 0 = newly planted, 1 = ready to harvest.
+    float farmGrowth = 0.0f;
+
+    // Reservation for harvesting (separate from plan reservations).
+    // -1 = unreserved.
+    int farmReservedBy = -1;
+
+    // -----------------------------------------------------------------
+    // Sleep (prototype)
+    // -----------------------------------------------------------------
+    // Reservation for beds: prevents multiple colonists sleeping in the same bed.
+    // Only meaningful when built == Bed.
+    // -1 = unreserved.
+    int bedReservedBy = -1;
+
+    // -----------------------------------------------------------------
+    // Loose resources (prototype)
+    // -----------------------------------------------------------------
+    // Wood dropped on the ground. Colonists with Hauling capability can
+    // move this to a Stockpile, where it becomes usable by the global
+    // inventory (m_inv.wood).
+    int looseWood = 0;
+
+    // Reservation to avoid multiple colonists hauling the same stack.
+    // -1 = unreserved.
+    int looseWoodReservedBy = -1;
+};
+
+// -----------------------------------------------------------------
+// Planning helpers (pure functions)
+// -----------------------------------------------------------------
+// These helpers mirror World::placePlan's semantics without mutating the world.
+// They are used by the UI to implement cost previews and atomic batch placement.
+//
+// PlanDeltaWoodCost returns the *net* wood delta of applying `plan` to `c`:
+//  - positive => additional wood required
+//  - negative => wood refunded
+//  - 0 => no wood change (including priority-only edits)
+//
+// PlanWouldChange returns true if World::placePlan would return Ok for the given
+// plan/priority on this cell (ignores out-of-bounds).
+[[nodiscard]] int PlanDeltaWoodCost(const Cell& c, TileType plan) noexcept;
+[[nodiscard]] bool PlanWouldChange(const Cell& c, TileType plan, std::uint8_t planPriority) noexcept;
+
+struct Colonist {
+    int id = 0;
+
+    // Position in tile coordinates (e.g. 10.5f means center of tile x=10).
+    float x = 0.5f;
+    float y = 0.5f;
+
+    // -----------------------------------------------------------------
+    // Needs (prototype)
+    // -----------------------------------------------------------------
+    // Personal food reserve ("stomach") in the same units as Inventory::food.
+    // The world drains this over time; when it gets low, colonists will seek
+    // food and refill it from the global inventory.
+    float personalFood = 0.0f;
+
+    // Personal rest reserve in [0, colonistMaxPersonalRest].
+    // The world drains this over time; when it gets low, colonists will seek
+    // a Bed (or sleep in place if none are available) to restore it.
+    float personalRest = 0.0f;
+
+    // -----------------------------------------------------------------
+    // Role / progression (prototype)
+    // -----------------------------------------------------------------
+    // Role influences what jobs a colonist will take automatically (capabilities)
+    // and can apply movement/work multipliers.
+    //
+    // role.level / role.xp are updated as colonists complete work.
+    RoleComponent role{};
+
+    // Per-colonist work priorities (autonomous job selection).
+    WorkPriorities workPrio = DefaultWorkPriorities(RoleId::Worker);
+
+    // -----------------------------------------------------------------
+    // Player control
+    // -----------------------------------------------------------------
+    // Drafted colonists do not take autonomous build/harvest jobs.
+    // They can still eat when hungry, but otherwise wait for manual orders.
+    bool drafted = false;
+
+    // -----------------------------------------------------------------
+    // Job / pathing
+    // -----------------------------------------------------------------
+    enum class JobKind : std::uint8_t {
+        None = 0,
+        BuildPlan,
+        Harvest,
+        Eat,
+        Sleep,
+        HaulWood,
+        // Player-issued "go here" order (requires drafted).
+        ManualMove,
+    };
+
+    JobKind jobKind = JobKind::None;
+
+    // Job / pathing
+    bool hasJob = false;
+    int targetX = 0;
+    int targetY = 0;
+
+    std::vector<colony::pf::IVec2> path;
+    std::size_t pathIndex = 0;
+
+    // Seconds remaining for the "Eat" job once the colonist has arrived.
+    float eatWorkRemaining = 0.0f;
+
+    // Seconds remaining for the "Harvest" job once the colonist has arrived.
+    float harvestWorkRemaining = 0.0f;
+
+    // -----------------------------------------------------------------
+    // Hauling (prototype)
+    // -----------------------------------------------------------------
+    // Amount of wood currently being carried by this colonist.
+    int   carryingWood = 0;
+
+    // HaulWood is a 2-stage job:
+    //   1) walk to a loose-wood tile (haulPickupX/Y) and pick it up
+    //   2) walk to a stockpile tile (haulDropX/Y) and deposit it
+    int   haulPickupX = 0;
+    int   haulPickupY = 0;
+    int   haulDropX   = 0;
+    int   haulDropY   = 0;
+    bool  haulingToDropoff = false;
+
+    // Seconds remaining for pickup/drop work once the colonist has arrived.
+    float haulWorkRemaining = 0.0f;
+
+// -----------------------------------------------------------------
+// Manual order queue (prototype)
+// -----------------------------------------------------------------
+// While drafted, colonists can be given direct orders via right-click.
+// Shift+Right-click queues multiple orders which execute in order.
+struct ManualOrder
+{
+    enum class Kind : std::uint8_t { Move = 0, Build = 1, Harvest = 2 };
+    Kind kind = Kind::Move;
+    int x = 0;
+    int y = 0;
+};
+
+// Queue of manual orders. The front of the queue represents the current
+// in-progress order when a drafted colonist is executing queued commands.
+std::vector<ManualOrder> manualQueue;
+};
+
+enum class PlacePlanResult : std::uint8_t {
+    Ok = 0,
+    OutOfBounds,
+    NoChange,
+    NotEnoughWood,
+};
+
+[[nodiscard]] const char* PlacePlanResultName(PlacePlanResult r) noexcept;
+
+// Direct (player-issued) colonist orders.
+enum class OrderResult : std::uint8_t {
+    Ok = 0,
+    InvalidColonist,
+    NotDrafted,
+    OutOfBounds,
+    TargetBlocked,
+    NoPath,
+    TargetNotPlanned,
+    TargetReserved,
+    TargetNotFarm,
+    TargetNotHarvestable,
+};
+
+[[nodiscard]] const char* OrderResultName(OrderResult r) noexcept;
+
+class World {
+public:
+    World();
+    explicit World(int w, int h, std::uint32_t seed = 1);
+
+    void reset(int w, int h, std::uint32_t seed = 1);
+
+    [[nodiscard]] int width() const noexcept { return m_w; }
+    [[nodiscard]] int height() const noexcept { return m_h; }
+
+    [[nodiscard]] bool inBounds(int x, int y) const noexcept;
+
+    [[nodiscard]] const Cell& cell(int x, int y) const noexcept;
+    [[nodiscard]] Cell& cell(int x, int y) noexcept;
+
+    [[nodiscard]] const Inventory& inventory() const noexcept { return m_inv; }
+    [[nodiscard]] Inventory& inventory() noexcept { return m_inv; }
+
+    [[nodiscard]] const std::vector<Colonist>& colonists() const noexcept { return m_colonists; }
+    [[nodiscard]] std::vector<Colonist>& colonists() noexcept { return m_colonists; }
+
+    // ------------------------------------------------------------
+    // Player orders
+    // ------------------------------------------------------------
+    // Drafted colonists do not take autonomous build/harvest jobs.
+    // They can still eat when hungry.
+    bool SetColonistDrafted(int colonistId, bool drafted) noexcept;
+
+    // Sets a colonist's role (prototype).
+    // If the colonist is currently doing a job that the new role cannot perform
+    // autonomously, the job is cancelled so it can be reassigned.
+    bool SetColonistRole(int colonistId, RoleId role) noexcept;
+
+    // Cancels any current job (and releases reservations). Does not change drafted state.
+    OrderResult CancelColonistJob(int colonistId) noexcept;
+
+    // Issue direct orders. Requires the colonist to be drafted.
+    // Build/Harvest orders also respect reservations.
+    OrderResult OrderColonistMove(int colonistId, int targetX, int targetY, bool queue = false) noexcept;
+    OrderResult OrderColonistBuild(int colonistId, int planX, int planY, bool queue = false) noexcept;
+    OrderResult OrderColonistHarvest(int colonistId, int farmX, int farmY, bool queue = false) noexcept;
+
+    [[nodiscard]] const colony::pf::GridMap& nav() const noexcept { return m_nav; }
+
+    // Plan placement. Plans are blueprints and are built by colonists over time.
+    // Costs are applied as a delta between old plan and new plan.
+    PlacePlanResult placePlan(int x, int y, TileType plan, std::uint8_t planPriority = 0);
+
+    void clearAllPlans();
+
+    // Clears all colonist jobs and all per-cell reservations.
+    // Useful after player edits plans (undo/redo) so colonists don't keep walking
+    // toward a plan that no longer exists.
+    void CancelAllJobsAndClearReservations() noexcept;
+
+    [[nodiscard]] int plannedCount() const noexcept;
+    [[nodiscard]] int builtCount(TileType t) const noexcept;
+    [[nodiscard]] int harvestableFarmCount() const noexcept;
+
+    // Total wood dropped on the ground (not yet in the global inventory).
+    [[nodiscard]] int looseWoodTotal() const noexcept { return m_looseWoodTotal; }
+
+    // -----------------------------------------------------------------
+    // Rooms / indoors-outdoors (prototype)
+    // -----------------------------------------------------------------
+    // A "room" is a connected component of open tiles (Empty/Floor/Farm/Stockpile)
+    // separated by room boundaries (Wall/Tree/Door and out-of-bounds).
+    //
+    // A room is considered "indoors" if it is not reachable from the map edge
+    // through open tiles (i.e., it's fully enclosed).
+    struct RoomInfo
+    {
+        int id = -1;
+        bool indoors = false;
+        int area = 0;
+
+        // Perimeter length in tile-edges (counts boundary edges touching walls/trees/doors/out-of-bounds).
+        int perimeter = 0;
+
+        // Number of unique adjacent door tiles along the room perimeter.
+        int doorCount = 0;
+
+        // Bounding box in tile coordinates (inclusive).
+        int minX = 0;
+        int minY = 0;
+        int maxX = 0;
+        int maxY = 0;
+    };
+
+    // Returns -1 if this tile is not considered a room-space tile.
+    [[nodiscard]] int roomIdAt(int x, int y) const noexcept;
+    [[nodiscard]] bool tileIndoors(int x, int y) const noexcept;
+
+    // Returns nullptr if roomId is invalid.
+    [[nodiscard]] const RoomInfo* roomInfoById(int roomId) const noexcept;
+
+    [[nodiscard]] int roomCount() const noexcept { return static_cast<int>(m_rooms.size()); }
+    [[nodiscard]] int indoorsRoomCount() const noexcept { return m_indoorsRoomCount; }
+    [[nodiscard]] int indoorsTileCount() const noexcept { return m_indoorsTileCount; }
+
+    // Debug helpers (tests / tooling)
+    // Directly edits a built tile while keeping derived caches consistent.
+    // Intended for unit tests and editor/debug tools.
+    [[nodiscard]] bool DebugSetBuiltTile(int x, int y, TileType built, bool builtFromPlan = false) noexcept;
+
+    // Forces a room-cache rebuild if it is marked dirty.
+    void DebugRebuildRoomsNow() noexcept;
+
+
+
+    // Simulation tick (fixed dt). dt is seconds.
+    void tick(double dtSeconds);
+
+    // -----------------------------------------------------------------
+    // Time (prototype)
+    // -----------------------------------------------------------------
+    // The world maintains a simple clock used for day/night-dependent behavior.
+    [[nodiscard]] double timeSeconds() const noexcept { return m_timeSeconds; }
+    [[nodiscard]] double timeOfDay01() const noexcept; // [0,1)
+    [[nodiscard]] bool isNight() const noexcept;
+
+    // ---------------------------------------------------------------------
+    // Persistence (prototype)
+    // ---------------------------------------------------------------------
+    // Save/load to a JSON file. Intended for the prototype game only.
+    //
+    // On load, derived caches (nav + planned-cache) are rebuilt and colonist
+    // jobs/paths are cleared.
+    [[nodiscard]] bool SaveJson(const std::filesystem::path& path, std::string* outError = nullptr) const noexcept;
+    [[nodiscard]] bool LoadJson(const std::filesystem::path& path, std::string* outError = nullptr) noexcept;
+
+    // Tuning knobs (can be edited live from UI)
+    double buildWorkPerSecond = 1.0; // work units/sec
+    double colonistWalkSpeed = 3.0;  // tiles/sec
+
+    // Farming (prototype): farms grow over time and must be harvested by colonists.
+    // When a farm reaches full growth (farmGrowth == 1), a colonist can harvest it
+    // to convert the crop into food in the global inventory.
+    //
+    // farmGrowDurationSeconds: seconds for a farm to go from 0 -> 1 growth.
+    // farmHarvestYieldFood:    food produced by one harvest.
+    // farmHarvestDurationSeconds: time a colonist spends harvesting after arriving.
+    double farmGrowDurationSeconds    = 40.0;
+    double farmHarvestYieldFood       = 10.0;
+    double farmHarvestDurationSeconds = 1.0;
+
+
+    // Forestry (prototype): Trees are natural obstacles that can be chopped for wood.
+    // Over time, trees can spread into nearby empty tiles (simple regrowth).
+    //
+    // treeChopYieldWood: wood added to inventory when a tree is removed (Demolish) or built over.
+    // treeSpreadAttemptsPerSecond: how many random empty tiles are considered per second for growth.
+    // treeSpreadChancePerAttempt: probability of growth on a valid candidate (adjacent to an existing tree).
+    int treeChopYieldWood = 4;
+    double treeSpreadAttemptsPerSecond  = 2.5;
+    double treeSpreadChancePerAttempt   = 0.15;
+
+    double foodPerColonistPerSecond = 0.05;
+
+    // Hunger/eating (prototype): colonists maintain a personal food reserve.
+    // When personalFood drops below colonistEatThresholdFood, they seek food.
+    double colonistMaxPersonalFood     = 6.0;
+    double colonistEatThresholdFood    = 2.0;
+    double colonistEatDurationSeconds  = 1.5;
+
+    // Sleep / rest (prototype): colonists maintain a personal rest reserve.
+    // When personalRest drops below a threshold, they will sleep to restore it.
+    double restPerColonistPerSecond           = 0.0075;
+    double colonistMaxPersonalRest            = 10.0;
+    double colonistSleepThresholdRestDay      = 2.0;
+    double colonistSleepThresholdRestNight    = 5.0;
+    double colonistSleepRestorePerSecond      = 0.9;  // in a bed
+    double colonistSleepRestorePerSecondNoBed = 0.45; // sleeping on the ground
+
+    // Day/Night (prototype): purely a clock, used to vary sleep thresholds.
+    // A "day" is dayLengthSeconds; night is an interval in [0,1) that may wrap.
+    double dayLengthSeconds = 300.0;
+    double nightStart01 = 0.75; // 18:00
+    double nightEnd01   = 0.25; // 06:00
+
+    // Hauling (prototype): loose wood is dropped on the ground and must be hauled
+    // to a Stockpile before it becomes usable by the colony inventory.
+    //
+    // haulCarryCapacity: base number of wood units a colonist can carry (role carryBonus is added).
+    // haulPickupDurationSeconds / haulDropoffDurationSeconds: time spent picking up / depositing.
+    int    haulCarryCapacity           = 25;
+    double haulPickupDurationSeconds   = 0.25;
+    double haulDropoffDurationSeconds  = 0.25;
+
+    // -----------------------------------------------------------------
+    // Pathfinding (prototype)
+    // -----------------------------------------------------------------
+    // pathAlgo:
+    //   - AStar: classic A*.
+    //   - JumpPointSearch: JPS (usually faster on open grids). Any JPS output
+    //     is expanded back into tile-by-tile steps so movement & validation
+    //     remain correct.
+    PathAlgo pathAlgo = PathAlgo::AStar;
+
+    // Path cache: speeds up repeated direct-order and repath queries.
+    // Cached paths are validated against the current nav grid before reuse.
+    bool pathCacheEnabled = true;
+    int  pathCacheMaxEntries = 1024;
+
+    // Terrain traversal costs (affects both pathfinding cost and actual movement):
+    //   - Farms are slower to traverse.
+    //   - Stockpiles are slightly slower (clutter).
+    //   - Doors are slightly slower (opening).
+    bool navUseTerrainCosts = true;
+
+    struct PathfindStats
+    {
+        std::uint64_t reqTile = 0;
+        std::uint64_t reqAdjacent = 0;
+        std::uint64_t hitTile = 0;
+        std::uint64_t hitAdjacent = 0;
+        std::uint64_t computedAStar = 0;
+        std::uint64_t computedJps = 0;
+        std::uint64_t invalidated = 0;
+        std::uint64_t evicted = 0;
+
+        // Build job assignment acceleration: multi-source "nearest plan" distance field.
+        // This reduces per-colonist Dijkstra work when many builders are idle.
+        std::uint64_t buildFieldComputed = 0; // how many times the field was built
+        std::uint64_t buildFieldSources  = 0; // number of source tiles inserted (sum)
+        std::uint64_t buildFieldAssigned = 0; // jobs assigned directly from the field
+        std::uint64_t buildFieldFallback = 0; // jobs that fell back to per-colonist search
+
+        // Haul job assignment acceleration:
+        //   - stockpile field: multi-source distance field from all built stockpiles (dropoff routing)
+        //   - pickup field: multi-source distance field from unreserved loose-wood tiles, seeded with
+        //     each tile's distance-to-stockpile so haulers prefer "deliverable" piles.
+        std::uint64_t haulStockpileFieldComputed = 0;
+        std::uint64_t haulStockpileFieldSources  = 0;
+        std::uint64_t haulStockpileFieldUsed     = 0;
+
+        std::uint64_t haulPickupFieldComputed    = 0;
+        std::uint64_t haulPickupFieldSources     = 0;
+        std::uint64_t haulPickupFieldAssigned    = 0;
+        std::uint64_t haulPickupFieldFallback    = 0;
+
+        // Eat job assignment acceleration: cached multi-source distance field
+        // from all built food-source tiles (stockpiles/farms).
+        //
+        // This reduces per-colonist Dijkstra work when multiple colonists become hungry.
+        std::uint64_t eatFieldComputed  = 0;
+        std::uint64_t eatFieldSources   = 0;
+        std::uint64_t eatFieldAssigned  = 0;
+        std::uint64_t eatFieldFallback  = 0;
+
+        // Harvest job assignment acceleration: multi-source distance field
+        // from work-tiles adjacent to unreserved harvestable farms.
+        std::uint64_t harvestFieldComputed = 0;
+        std::uint64_t harvestFieldSources  = 0;
+        std::uint64_t harvestFieldAssigned = 0;
+        std::uint64_t harvestFieldFallback = 0;
+
+        // Sleep job assignment acceleration: multi-source distance field
+        // from unreserved beds.
+        std::uint64_t sleepFieldComputed = 0;
+        std::uint64_t sleepFieldSources  = 0;
+        std::uint64_t sleepFieldAssigned = 0;
+        std::uint64_t sleepFieldFallback = 0;
+    };
+
+    // Debug/maintenance helpers.
+    void ClearPathCache() noexcept;
+    void ResetPathStats() noexcept;
+
+    [[nodiscard]] std::size_t pathCacheSize() const noexcept;
+    [[nodiscard]] PathfindStats pathStats() const noexcept;
+
+    // Convenience setters that apply any required side effects (nav rebuild, cache trim).
+    bool SetNavTerrainCostsEnabled(bool enabled) noexcept;
+    bool SetPathAlgo(PathAlgo algo) noexcept;
+    bool SetPathCacheEnabled(bool enabled) noexcept;
+    bool SetPathCacheMaxEntries(int maxEntries) noexcept;
+
+private:
+    static constexpr std::size_t kTileTypeCount = static_cast<std::size_t>(TileType::Bed) + 1u;
+
+    [[nodiscard]] std::size_t idx(int x, int y) const noexcept
+    {
+        return static_cast<std::size_t>(y * m_w + x);
+    }
+
+    void syncNavCell(int x, int y) noexcept;
+    void syncAllNav() noexcept;
+
+    // ---------------------------------------------------------------------
+    // Plan tracking
+    // ---------------------------------------------------------------------
+    // The prototype started with a naive full-grid scan for plannedCount() and
+    // job assignment. That becomes expensive as the grid grows. We keep a small
+    // index of *active* plans (planned != Empty && planned != built) to:
+    //   - make plannedCount() O(1)
+    //   - avoid scanning every tile for job assignment
+    //
+    // Implementation details:
+    //   - m_plannedCells stores the list of active-plan coordinates.
+    //   - m_plannedIndex maps a flattened cell index -> index into m_plannedCells
+    //     (or -1 if the cell is not currently an active plan).
+    void rebuildPlannedCache() noexcept;
+    void planCacheAdd(int x, int y) noexcept;
+    void planCacheRemove(int x, int y) noexcept;
+
+    // Cache of built farms (built == Farm) so we can update growth
+    // and search for harvest jobs without scanning the entire grid.
+    void rebuildFarmCache() noexcept;
+    void farmCacheAdd(int x, int y) noexcept;
+    void farmCacheRemove(int x, int y) noexcept;
+
+    // Cache of built beds (built == Bed) so sleep assignment can avoid scanning the entire grid.
+    void rebuildBedCache() noexcept;
+    void bedCacheAdd(int x, int y) noexcept;
+    void bedCacheRemove(int x, int y) noexcept;
+
+    // Cache of tiles containing loose wood (looseWood > 0).
+    void rebuildLooseWoodCache() noexcept;
+    void looseWoodCacheAdd(int x, int y) noexcept;
+    void looseWoodCacheRemove(int x, int y) noexcept;
+    void adjustLooseWood(int x, int y, int delta) noexcept;
+
+    // Rooms (indoors/outdoors) derived from built tile topology.
+    void rebuildRooms() noexcept;
+
+
+    // Job assignment: assign idle colonists to nearby unreserved plans.
+    // Throttled to avoid doing expensive path searches every tick when no jobs can be found.
+    void assignJobs(double dtSeconds);
+
+    // Assign hungry colonists to the nearest reachable food source (stockpile/farm).
+    void assignEatJobs(double dtSeconds);
+
+    // Assign tired colonists to sleep (prefer beds if available).
+    void assignSleepJobs(double dtSeconds);
+
+    // Assign idle colonists to harvest ripe farms.
+    void assignHarvestJobs(double dtSeconds);
+
+    // Assign idle colonists to haul loose wood to the nearest stockpile.
+    void assignHaulJobs(double dtSeconds);
+
+    // Finds a path from (startX,startY) to the nearest walkable "work tile" that is
+    // adjacent to an available plan.
+    //
+    // If requiredPriority >= 0, only plans with that planPriority are considered.
+    [[nodiscard]] bool findPathToNearestAvailablePlan(int startX, int startY,
+                                                      int& outPlanX, int& outPlanY,
+                                                      std::vector<colony::pf::IVec2>& outPath,
+                                                      int requiredPriority) const;
+
+    // Builds a multi-source distance field from all unreserved plan-adjacent work tiles.
+    // Returns a non-zero stamp value that must be passed to queryPlanField().
+    // (A stamp of 0 means "no sources".)
+    [[nodiscard]] std::uint32_t buildPlanField(int requiredPriority) const;
+
+    // Queries the most recently built plan field (identified by stamp).
+    // Returns a dense path from (startX,startY) to the nearest plan-adjacent work tile,
+    // and outputs the targeted plan tile coordinates.
+    [[nodiscard]] bool queryPlanField(std::uint32_t stamp,
+                                      int startX, int startY,
+                                      int& outPlanX, int& outPlanY,
+                                      std::vector<colony::pf::IVec2>& outPath) const;
+
+    // -----------------------------------------------------------------
+    // Eat distance field (prototype)
+    // -----------------------------------------------------------------
+    // Build (and cache) a multi-source distance field from all walkable tiles
+    // adjacent to built food sources (stockpiles/farms).
+    // Returns a non-zero stamp that must be passed to queryFoodField().
+    // (A stamp of 0 means "no sources").
+    [[nodiscard]] std::uint32_t buildFoodField() const;
+
+    // Queries the most recently built food field (identified by stamp).
+    // Returns a dense path from (startX,startY) to the selected work tile and
+    // outputs the targeted food source tile coordinates.
+    [[nodiscard]] bool queryFoodField(std::uint32_t stamp,
+                                     int startX, int startY,
+                                     int& outFoodX, int& outFoodY,
+                                     std::vector<colony::pf::IVec2>& outPath) const;
+
+    // Finds a path from (startX,startY) to the nearest walkable tile that is
+    // adjacent to a built food source (stockpile/farm).
+    [[nodiscard]] bool findPathToNearestFoodSource(int startX, int startY,
+                                                   int& outFoodX, int& outFoodY,
+                                                   std::vector<colony::pf::IVec2>& outPath) const;
+
+
+    // -----------------------------------------------------------------
+    // Sleep distance field (prototype)
+    // -----------------------------------------------------------------
+    // Builds a multi-source distance field from all built, unreserved beds.
+    // Returns a non-zero stamp that must be passed to queryBedField().
+    // (A stamp of 0 means "no beds").
+    [[nodiscard]] std::uint32_t buildBedField() const;
+
+    // Queries the most recently built bed field (identified by stamp).
+    // Returns a dense path from (startX,startY) to the selected bed tile and
+    // outputs the targeted bed tile coordinates.
+    [[nodiscard]] bool queryBedField(std::uint32_t stamp,
+                                     int startX, int startY,
+                                     int& outBedX, int& outBedY,
+                                     std::vector<colony::pf::IVec2>& outPath) const;
+
+    // Finds a path from (startX,startY) to the nearest reachable available bed
+    // (built == Bed && bedReservedBy == -1).
+    [[nodiscard]] bool findPathToNearestAvailableBed(int startX, int startY,
+                                                     int& outBedX, int& outBedY,
+                                                     std::vector<colony::pf::IVec2>& outPath) const;
+
+
+    // -----------------------------------------------------------------
+    // Harvest distance field (prototype)
+    // -----------------------------------------------------------------
+    // Builds a multi-source distance field from all walkable tiles adjacent to
+    // currently-harvestable (ripe + unreserved) farms.
+    // Returns a non-zero stamp that must be passed to queryHarvestField().
+    // (A stamp of 0 means "no sources").
+    [[nodiscard]] std::uint32_t buildHarvestField() const;
+
+    // Queries the most recently built harvest field (identified by stamp).
+    // Returns a dense path from (startX,startY) to the selected work tile and
+    // outputs the targeted farm tile coordinates.
+    [[nodiscard]] bool queryHarvestField(std::uint32_t stamp,
+                                        int startX, int startY,
+                                        int& outFarmX, int& outFarmY,
+                                        std::vector<colony::pf::IVec2>& outPath) const;
+
+    // Finds a path from (startX,startY) to the nearest walkable tile that is
+    // adjacent to a harvestable farm (built == Farm && farmGrowth == 1).
+    [[nodiscard]] bool findPathToNearestHarvestableFarm(int startX, int startY,
+                                                        int& outFarmX, int& outFarmY,
+                                                        std::vector<colony::pf::IVec2>& outPath) const;
+
+
+// Finds a path from (startX,startY) to the nearest reachable tile that contains
+// loose wood (looseWood > 0) that is not reserved.
+[[nodiscard]] bool findPathToNearestLooseWood(int startX, int startY,
+                                              int& outWoodX, int& outWoodY,
+                                              std::vector<colony::pf::IVec2>& outPath) const;
+
+// Finds a path from (startX,startY) to the nearest reachable built Stockpile tile.
+[[nodiscard]] bool findPathToNearestStockpile(int startX, int startY,
+                                              int& outX, int& outY,
+                                              std::vector<colony::pf::IVec2>& outPath) const;
+
+
+// -----------------------------------------------------------------
+// Hauling distance fields (prototype)
+// -----------------------------------------------------------------
+// Builds (and caches) a multi-source distance field from all built stockpile tiles.
+// Returns a non-zero stamp value that must be passed to queryStockpileField() /
+// stockpileFieldDistAt(). A stamp of 0 means "no stockpiles".
+[[nodiscard]] std::uint32_t buildStockpileField() const;
+
+// Queries the most recently built stockpile field (identified by stamp).
+// Returns a dense path from (startX,startY) to the nearest built stockpile tile,
+// and outputs that stockpile tile coordinate.
+[[nodiscard]] bool queryStockpileField(std::uint32_t stamp,
+                                       int startX, int startY,
+                                       int& outStockX, int& outStockY,
+                                       std::vector<colony::pf::IVec2>& outPath) const;
+
+// Returns the distance from (x,y) to the nearest stockpile in the cached field,
+// or +inf if unreachable/not present.
+[[nodiscard]] float stockpileFieldDistAt(std::uint32_t stamp, int x, int y) const noexcept;
+
+// Builds a multi-source "best delivery" field from all unreserved loose-wood tiles.
+// Each source is seeded with its distance-to-stockpile, so querying the field at a
+// colonist position approximates: dist(colonist->wood) + dist(wood->stockpile).
+[[nodiscard]] std::uint32_t buildHaulPickupField(std::uint32_t stockpileStamp) const;
+
+// Queries the haul pickup field (identified by stamp). Returns a dense path from
+// (startX,startY) to the selected loose-wood tile, and outputs that tile coordinate.
+[[nodiscard]] bool queryHaulPickupField(std::uint32_t haulStamp,
+                                        int startX, int startY,
+                                        int& outWoodX, int& outWoodY,
+                                        std::vector<colony::pf::IVec2>& outPath) const;
+
+// Per-colonist fallback search used when the field-picked target becomes reserved.
+// Unlike findPathToNearestLooseWood(), this also filters out piles that cannot reach
+// any stockpile (based on stockpileStamp).
+[[nodiscard]] bool findPathToBestLooseWoodForDelivery(std::uint32_t stockpileStamp,
+                                                      int startX, int startY,
+                                                      int& outWoodX, int& outWoodY,
+                                                      std::vector<colony::pf::IVec2>& outPath) const;
+
+    static constexpr double kJobAssignIntervalSeconds = 0.20;
+    static constexpr double kSleepAssignIntervalSeconds = 0.20;
+
+    [[nodiscard]] Colonist* findColonistById(int colonistId) noexcept;
+    [[nodiscard]] const Colonist* findColonistById(int colonistId) const noexcept;
+
+    bool computePathToAdjacent(Colonist& c, int targetX, int targetY);
+    bool computePathToAdjacentFrom(int startX, int startY,
+                                   int targetX, int targetY,
+                                   std::vector<colony::pf::IVec2>& outPath) const;
+
+    bool computePathToTile(Colonist& c, int targetX, int targetY);
+    bool computePathToTileFrom(int startX, int startY,
+                               int targetX, int targetY,
+                               std::vector<colony::pf::IVec2>& outPath) const;
+
+    void stepColonist(Colonist& c, double dtSeconds);
+    void stepConstructionIfReady(Colonist& c, double dtSeconds);
+    void stepHarvestIfReady(Colonist& c, double dtSeconds);
+    void stepEatingIfReady(Colonist& c, double dtSeconds);
+    void stepSleepingIfReady(Colonist& c, double dtSeconds);
+    void stepHaulIfReady(Colonist& c, double dtSeconds);
+    
+// Manual (drafted) order queue helpers.
+[[nodiscard]] OrderResult startManualMove(Colonist& c, int targetX, int targetY) noexcept;
+[[nodiscard]] OrderResult startManualBuild(Colonist& c, int planX, int planY) noexcept;
+[[nodiscard]] OrderResult startManualHarvest(Colonist& c, int farmX, int farmY) noexcept;
+
+// Attempts to start the front queued order for a colonist (if idle and not hungry).
+// Drops invalid orders from the front until either:
+//   - an order successfully starts (job becomes active), or
+//   - a "soft" failure occurs (e.g. reserved / no path), or
+//   - the queue becomes empty.
+void tryStartQueuedManualOrders(Colonist& c) noexcept;
+
+// If the colonist just completed the front queued manual order, pop it.
+void completeQueuedManualOrder(Colonist& c) noexcept;
+void cancelJob(Colonist& c) noexcept;
+
+    void applyPlanIfComplete(int targetX, int targetY) noexcept;
+
+    // Drops loose wood on or near a tile. This is used for tree chopping and
+    // deconstruction refunds. If no reachable drop tile exists, the wood is
+    // added directly to the global inventory as a fallback.
+    void dropLooseWoodNear(int x, int y, int amount) noexcept;
+
+    // Cached counts for *built* tiles. This avoids full-grid scans in tick/UI.
+    void rebuildBuiltCounts() noexcept;
+    void builtCountAdjust(TileType oldBuilt, TileType newBuilt) noexcept;
+
+    // -----------------------------------------------------------------
+    // Path cache (LRU)
+    // -----------------------------------------------------------------
+    struct PathCacheKey
+    {
+        int sx = 0;
+        int sy = 0;
+        int tx = 0;
+        int ty = 0;
+        std::uint8_t mode = 0; // 0 = tile, 1 = adjacent-to-target
+
+        bool operator==(const PathCacheKey& o) const noexcept
+        {
+            return sx == o.sx && sy == o.sy && tx == o.tx && ty == o.ty && mode == o.mode;
+        }
+    };
+
+    struct PathCacheKeyHash
+    {
+        std::size_t operator()(const PathCacheKey& k) const noexcept
+        {
+            // A small hash combiner (similar to boost::hash_combine).
+            auto mix = [](std::size_t& h, std::size_t v) noexcept {
+                h ^= v + 0x9e3779b97f4a7c15ull + (h << 6) + (h >> 2);
+            };
+
+            std::size_t h = 0;
+            mix(h, std::hash<int>{}(k.sx));
+            mix(h, std::hash<int>{}(k.sy));
+            mix(h, std::hash<int>{}(k.tx));
+            mix(h, std::hash<int>{}(k.ty));
+            mix(h, static_cast<std::size_t>(k.mode));
+            return h;
+        }
+    };
+
+    struct PathCacheValue
+    {
+        std::vector<colony::pf::IVec2> path;
+        std::list<PathCacheKey>::iterator lruIt;
+    };
+
+    int m_w = 0;
+    int m_h = 0;
+
+    std::vector<Cell> m_cells;
+    Inventory m_inv{};
+
+    std::vector<Colonist> m_colonists;
+    colony::pf::GridMap m_nav;
+
+    // Active plan cache.
+    std::vector<colony::pf::IVec2> m_plannedCells;
+    std::vector<int>              m_plannedIndex;
+
+    // Built farm cache.
+    std::vector<colony::pf::IVec2> m_farmCells;
+    std::vector<int>              m_farmIndex;
+
+    // Built bed cache.
+    std::vector<colony::pf::IVec2> m_bedCells;
+    std::vector<int>              m_bedIndex;
+
+    // Loose wood cache (tiles with looseWood > 0).
+    std::vector<colony::pf::IVec2> m_looseWoodCells;
+    std::vector<int>              m_looseWoodIndex;
+    int                           m_looseWoodTotal = 0;
+
+    // Room cache: per-tile room id (-1 for non-room-space tiles) plus room metadata.
+    std::vector<int> m_roomIds;
+    std::vector<RoomInfo> m_rooms;
+    int m_indoorsRoomCount = 0;
+    int m_indoorsTileCount = 0;
+    bool m_roomsDirty = true;
+
+    std::array<int, kTileTypeCount> m_builtCounts{};
+
+    double m_jobAssignCooldown = 0.0;
+    double m_sleepAssignCooldown = 0.0;
+    double m_harvestAssignCooldown = 0.0;
+    double m_haulAssignCooldown = 0.0;
+    // Accumulator for fractional tree spread attempts.
+    double m_treeSpreadAccum = 0.0;
+
+    // World clock (seconds since start). Used for day/night logic.
+    double m_timeSeconds = 0.0;
+
+
+    // Scratch buffers for nearest-plan search (Dijkstra / uniform-cost search).
+    // Reused across calls to avoid per-call allocations and O(w*h) clears.
+    mutable std::vector<float> m_nearestDist;
+    mutable std::vector<colony::pf::NodeId> m_nearestParent;
+    mutable std::vector<std::uint32_t> m_nearestStamp;
+    mutable std::uint32_t m_nearestStampValue = 1;
+
+    // Scratch buffers for multi-source "nearest plan" field during job assignment.
+    mutable std::vector<float> m_planFieldDist;
+    mutable std::vector<colony::pf::NodeId> m_planFieldParent;
+    mutable std::vector<std::uint32_t> m_planFieldStamp;
+    mutable std::vector<std::uint64_t> m_planFieldPlanKey;
+    mutable std::uint32_t m_planFieldStampValue = 1;
+
+
+    // Scratch buffers for cached "nearest stockpile" field (used by hauling).
+    mutable std::vector<float> m_stockpileFieldDist;
+    mutable std::vector<colony::pf::NodeId> m_stockpileFieldParent;
+    mutable std::vector<std::uint32_t> m_stockpileFieldStamp;
+    mutable std::vector<std::uint64_t> m_stockpileFieldStockpileKey;
+    mutable std::uint32_t m_stockpileFieldStampValue = 1;
+    mutable std::uint32_t m_stockpileFieldCachedStamp = 0;
+    mutable bool m_stockpileFieldDirty = true;
+
+    // Scratch buffers for hauling pickup field (seeded by stockpile distances).
+    mutable std::vector<float> m_haulFieldDist;
+    mutable std::vector<colony::pf::NodeId> m_haulFieldParent;
+    mutable std::vector<std::uint32_t> m_haulFieldStamp;
+    mutable std::vector<std::uint64_t> m_haulFieldWoodKey;
+    mutable std::uint32_t m_haulFieldStampValue = 1;
+
+    // Cached multi-source distance field for "Eat" job assignment.
+    // Sources are walkable tiles adjacent to built Stockpiles/Farms.
+    mutable std::vector<float> m_foodFieldDist;
+    mutable std::vector<colony::pf::NodeId> m_foodFieldParent;
+    mutable std::vector<std::uint32_t> m_foodFieldStamp;
+    mutable std::vector<std::uint64_t> m_foodFieldFoodKey;
+    mutable std::uint32_t m_foodFieldStampValue = 1;
+    mutable std::uint32_t m_foodFieldCachedStamp = 0;
+    mutable bool m_foodFieldDirty = true;
+
+    // Multi-source distance field for sleep job assignment.
+    // Sources are built, unreserved bed tiles.
+    mutable std::vector<float> m_bedFieldDist;
+    mutable std::vector<colony::pf::NodeId> m_bedFieldParent;
+    mutable std::vector<std::uint32_t> m_bedFieldStamp;
+    mutable std::vector<std::uint64_t> m_bedFieldBedKey;
+    mutable std::uint32_t m_bedFieldStampValue = 1;
+
+    // Multi-source distance field for harvest job assignment.
+    // Sources are walkable tiles adjacent to harvestable farms.
+    mutable std::vector<float> m_harvestFieldDist;
+    mutable std::vector<colony::pf::NodeId> m_harvestFieldParent;
+    mutable std::vector<std::uint32_t> m_harvestFieldStamp;
+    mutable std::vector<std::uint64_t> m_harvestFieldFarmKey;
+    mutable std::uint32_t m_harvestFieldStampValue = 1;
+
+    mutable std::list<PathCacheKey> m_pathCacheLru;
+    mutable std::unordered_map<PathCacheKey, PathCacheValue, PathCacheKeyHash> m_pathCache;
+    mutable PathfindStats m_pathStats{};
+
+    std::mt19937 m_rng{};
+};
+
+} // namespace colony::proto
