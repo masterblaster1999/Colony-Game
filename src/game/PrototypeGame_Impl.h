@@ -7,12 +7,16 @@
 #include "game/editor/PlanHistory.h"
 #include "game/save/SaveMeta.h"
 
+#include "game/util/NotificationLog.h"
+
 #include "game/proto/ProtoWorld.h"
 #include "input/InputMapper.h"
 #include "loop/DebugCamera.h"
 #include "platform/win32/Win32Debug.h"
 
+#include <algorithm>
 #include <array>
+#include <bitset>
 #include <cstdint>
 #include <filesystem>
 #include <limits>
@@ -74,17 +78,120 @@ struct PrototypeGame::Impl {
     int  planBrushPriority  = 1;
     bool showPlanPriorities = false;
 
+    // When enabled, batch plan placement (Shift-rect + blueprint stamp) is transactional:
+    // it either fully applies or does nothing (if insufficient wood).
+    bool atomicPlanPlacement = false;
+
     // Rooms / indoors overlay
     bool showRoomsOverlay = false;
+    bool roomsOverlayIndoorsOnly = true;
+
     bool showRoomIds      = false;
+    bool showRoomIdsIndoorsOnly = true;
+
+    // Room selection (for inspector/overlay)
+    int  selectedRoomId = -1;
+    bool showSelectedRoomOutline = true;
 
     // Selection (Inspect tool)
     int selectedX = -1;
     int selectedY = -1;
 
-    // Selected colonist (Inspect tool). -1 = none.
+    // Selected colonists (Inspect tool).
+    //
+    // - selectedColonistIds: multi-selection set (unique, sorted for stable UI)
+    // - selectedColonistId:  primary selection (used for Follow + manual order queue UI)
+    //
+    // Selection UX (implemented in UI):
+    //  - Left-click selects a single colonist
+    //  - Ctrl+Left-click toggles colonists in/out of the selection
+    //  - Move orders apply to all selected colonists
+    //  - Build/Harvest orders apply to the primary selection only
+    std::vector<int> selectedColonistIds{};
     int  selectedColonistId   = -1;
     bool followSelectedColonist = false;
+
+    [[nodiscard]] bool isColonistInSelection(int id) const noexcept
+    {
+        for (const int v : selectedColonistIds)
+            if (v == id)
+                return true;
+        return false;
+    }
+
+    void normalizeColonistSelection() noexcept
+    {
+        if (selectedColonistIds.empty())
+        {
+            selectedColonistId = -1;
+            followSelectedColonist = false;
+            return;
+        }
+
+        std::sort(selectedColonistIds.begin(), selectedColonistIds.end());
+        selectedColonistIds.erase(std::unique(selectedColonistIds.begin(), selectedColonistIds.end()),
+                                  selectedColonistIds.end());
+
+        if (selectedColonistId < 0 || !isColonistInSelection(selectedColonistId))
+            selectedColonistId = selectedColonistIds.front();
+    }
+
+    void clearColonistSelection() noexcept
+    {
+        selectedColonistIds.clear();
+        selectedColonistId = -1;
+        followSelectedColonist = false;
+    }
+
+    void selectColonistExclusive(int id) noexcept
+    {
+        selectedColonistIds.clear();
+        if (id >= 0)
+            selectedColonistIds.push_back(id);
+        selectedColonistId = id;
+        if (id < 0)
+            followSelectedColonist = false;
+        normalizeColonistSelection();
+    }
+
+    void addColonistToSelection(int id, bool makePrimary) noexcept
+    {
+        if (id < 0)
+            return;
+
+        if (!isColonistInSelection(id))
+            selectedColonistIds.push_back(id);
+
+        if (makePrimary)
+            selectedColonistId = id;
+
+        normalizeColonistSelection();
+    }
+
+    void removeColonistFromSelection(int id) noexcept
+    {
+        if (selectedColonistIds.empty())
+            return;
+
+        selectedColonistIds.erase(std::remove(selectedColonistIds.begin(), selectedColonistIds.end(), id),
+                                  selectedColonistIds.end());
+
+        if (selectedColonistId == id)
+            selectedColonistId = -1;
+
+        normalizeColonistSelection();
+    }
+
+    void toggleColonistSelection(int id, bool makePrimaryIfAdding) noexcept
+    {
+        if (id < 0)
+            return;
+
+        if (isColonistInSelection(id))
+            removeColonistFromSelection(id);
+        else
+            addColonistToSelection(id, makePrimaryIfAdding);
+    }
 
     // Selection rectangle (Inspect + Shift + drag)
     bool selectRectActive = false;
@@ -95,8 +202,9 @@ struct PrototypeGame::Impl {
     int  selectRectEndY   = 0;
 
     // Blueprint copy/paste options.
-    bool blueprintCopyPlansOnly     = false; // if true, copies only active plans (ignores built)
-    bool blueprintPasteIncludeEmpty = false; // if true, Empty cells erase plans
+    bool blueprintCopyPlansOnly         = false; // if true, copies only active plans (ignores built)
+    bool blueprintCopyTrimEmptyBorders  = false; // if true, trims empty rows/cols when copying a selection
+    bool blueprintPasteIncludeEmpty     = false; // if true, Empty cells erase plans
 
     enum class BlueprintAnchor : std::uint8_t { TopLeft = 0, Center = 1 };
     BlueprintAnchor blueprintAnchor = BlueprintAnchor::TopLeft;
@@ -135,6 +243,98 @@ struct PrototypeGame::Impl {
     std::string statusText;
     float       statusTtl = 0.f;
 
+    // -----------------------------------------------------------------
+    // Notifications + alerts (prototype)
+    // -----------------------------------------------------------------
+    colony::game::util::NotificationLog notify;
+
+    bool  alertsEnabled              = true;
+    bool  alertsShowToasts           = true;
+    bool  alertsShowResolveMessages  = true;
+    bool  alertsAutoPauseOnCritical  = false;
+    float alertsCheckIntervalSeconds = 1.0f;
+
+    int   alertsLowWoodThreshold     = 10;
+    float alertsLowFoodThreshold     = 5.0f;
+    float alertsStarvingThreshold    = 0.25f; // personalFood
+    float alertsToastSecondsInfo     = 2.5f;
+    float alertsToastSecondsWarning  = 3.0f;
+    float alertsToastSecondsError    = 4.0f;
+
+    float alertsAccumSeconds = 0.0f;
+
+    struct AlertState
+    {
+        bool lowWood        = false;
+        bool lowFood        = false;
+        bool noStockpiles   = false;
+
+        bool noBuilders     = false;
+        bool noFarmers      = false;
+        bool noHaulers      = false;
+
+        bool criticalStarving = false;
+    };
+
+    AlertState alertState{};
+
+    void logMessage(colony::game::util::NotifySeverity sev,
+                    std::string text,
+                    colony::game::util::NotifyTarget target = colony::game::util::NotifyTarget::None()) noexcept
+    {
+        notify.push(std::move(text), sev, playtimeSeconds, /*toastTtlSeconds=*/0.0f, target, /*pushToast=*/false);
+    }
+
+    void pushNotification(colony::game::util::NotifySeverity sev,
+                          std::string text,
+                          float toastTtlSeconds,
+                          colony::game::util::NotifyTarget target = colony::game::util::NotifyTarget::None()) noexcept
+    {
+        const float toast = (alertsShowToasts ? std::max(0.0f, toastTtlSeconds) : 0.0f);
+        notify.push(std::move(text), sev, playtimeSeconds, toast, target, /*pushToast=*/alertsShowToasts);
+    }
+
+    void pushNotificationAutoToast(colony::game::util::NotifySeverity sev,
+                                   std::string text,
+                                   colony::game::util::NotifyTarget target = colony::game::util::NotifyTarget::None()) noexcept
+    {
+        float ttl = alertsToastSecondsInfo;
+        switch (sev)
+        {
+        case colony::game::util::NotifySeverity::Info: ttl = alertsToastSecondsInfo; break;
+        case colony::game::util::NotifySeverity::Warning: ttl = alertsToastSecondsWarning; break;
+        case colony::game::util::NotifySeverity::Error: ttl = alertsToastSecondsError; break;
+        }
+        pushNotification(sev, std::move(text), ttl, target);
+    }
+
+    void focusNotificationTarget(const colony::game::util::NotifyTarget& t) noexcept
+    {
+        const DebugCameraState& s = camera.State();
+
+        switch (t.kind)
+        {
+        case colony::game::util::NotifyTarget::Kind::Tile:
+            (void)camera.ApplyPan((static_cast<float>(t.tileX) + 0.5f) - s.panX,
+                                  (static_cast<float>(t.tileY) + 0.5f) - s.panY);
+            break;
+        case colony::game::util::NotifyTarget::Kind::WorldPos:
+            (void)camera.ApplyPan(t.worldX - s.panX, t.worldY - s.panY);
+            break;
+        case colony::game::util::NotifyTarget::Kind::Colonist:
+            for (const auto& c : world.colonists())
+            {
+                if (c.id != t.colonistId)
+                    continue;
+                (void)camera.ApplyPan(c.x - s.panX, c.y - s.panY);
+                break;
+            }
+            break;
+        default:
+            break;
+        }
+    }
+
     // Simple paint state (avoid re-placing on the same tile every frame while dragging).
     int lastPaintX = std::numeric_limits<int>::min();
     int lastPaintY = std::numeric_limits<int>::min();
@@ -172,13 +372,18 @@ struct PrototypeGame::Impl {
     AsyncSaveManagerPtr saveMgr;
     double playtimeSeconds = 0.0; // real-time seconds since launch (for save metadata)
 
+    void updateAlerts(float dtSeconds) noexcept;
+
     // Save browser state (uses small sidecar meta files to avoid parsing huge world JSON in UI).
     struct SaveBrowserEntry
     {
-        enum class Kind : std::uint8_t { Slot = 0, Autosave };
+        enum class Kind : std::uint8_t { Slot = 0, Autosave, Named };
 
         Kind kind = Kind::Slot;
-        int index = 0; // slot number or autosave index
+        int index = 0; // slot number or autosave index (Named uses -1)
+
+        // For Kind::Named only: friendly display name (typically filename stem).
+        std::string displayName;
 
         fs::path path;
         fs::path metaPath;
@@ -204,6 +409,26 @@ struct PrototypeGame::Impl {
     float saveBrowserPendingDeleteTtl  = 0.f;
     bool  saveBrowserDirty             = true;
 
+    // Named/manual saves (prototype)
+    std::array<char, 64> namedSaveNameBuf{};
+    bool namedSaveOverwrite = false;
+
+    // Save browser UX state
+    std::array<char, 64> saveBrowserFilterBuf{};
+    int  saveBrowserSortMode = 0; // 0=Kind, 1=Time (newest), 2=Name
+    bool saveBrowserShowSlots    = true;
+    bool saveBrowserShowAutosaves = true;
+    bool saveBrowserShowNamed    = true;
+
+    int  saveBrowserLastSelected = -1;
+    std::array<char, 64> saveBrowserRenameBuf{};
+    bool saveBrowserRenameOverwrite = false;
+
+    int  saveBrowserCopyToSlot = 0;
+    bool saveBrowserCopyOverwrite = true;
+    std::array<char, 64> saveBrowserCopyNameBuf{};
+    bool saveBrowserCopyNameOverwrite = false;
+
 
     // Input binding hot reload
     bool                        bindingHotReloadEnabled = false;
@@ -222,6 +447,13 @@ struct PrototypeGame::Impl {
     std::string bindingsEditorMessage;
     float bindingsEditorMessageTtl = 0.f;
     std::array<std::string, static_cast<std::size_t>(colony::input::Action::Count)> bindingsEditorText;
+
+    // Optional quality-of-life: capture a chord by pressing keys/mouse instead of typing tokens.
+    bool bindingsEditorCaptureActive = false;
+    bool bindingsEditorCaptureAppend = false;
+    int  bindingsEditorCaptureAction = -1; // Action enum index
+    std::bitset<colony::input::kInputCodeCount> bindingsEditorCaptureDown{};
+    std::vector<std::uint32_t> bindingsEditorCaptureCodes;
 #endif
 
     Impl();

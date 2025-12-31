@@ -122,6 +122,19 @@ namespace winpath {
                            int max_attempts = 64) noexcept;
 
 
+    // Best-effort file copy.
+    // Returns true on success; false on failure.
+    //
+    // Notes:
+    // - If overwrite_existing is true, an existing destination will be overwritten.
+    // - Handles common transient Windows sharing violations by retrying with backoff.
+    bool copy_file_with_retry(const std::filesystem::path& from,
+                             const std::filesystem::path& to,
+                             bool overwrite_existing = true,
+                             std::error_code* out_ec = nullptr,
+                             int max_attempts = 64) noexcept;
+
+
     // Robust read helper: reads a file into a string with retry/backoff for transient locks.
     // This is useful on Windows where background scanners or Explorer can briefly lock files.
     // - Returns true on success, false on failure.

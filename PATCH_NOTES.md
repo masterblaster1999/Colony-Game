@@ -1,98 +1,91 @@
-# Colony-Game Patch (Round 36)
+# Colony-Game Patch (Round 47)
 
-This round adds a **manual order queue** for **drafted colonists** (combat-style command queue):
+## Rooms Inspector + selected-room overlay
 
-- **Shift + Right-click** (Inspect tool) now **queues** manual orders (Move / Build / Harvest).
-- Queued orders execute **in sequence**, and the **front order persists** through interruptions
-  (e.g. hunger/eating) until it completes.
-- UI improvements:
-  - Colonist table shows **Q#** when a manual queue exists, plus a **ClrQ** button.
-  - Selected-colonist **Manual Orders** tree lets you **reorder / delete / clear** queued orders.
-  - The world view draws **queue markers** (numbered dots) for the selected colonist.
+This round expands the room system + debug tooling:
 
-## How to use
+- **Room stats**: rooms now track:
+  - **perimeter** (tile-edge boundary length)
+  - **door count** (unique adjacent door tiles along the perimeter)
+- **Correct cache invalidation**: room caches are marked dirty not only when tiles transition between room-space and boundaries, but also when **doors are added/removed** (stats depend on boundary type).
+- **Panels → Rooms**:
+  - overlay controls (indoors-only toggle)
+  - room ID labels (indoors-only toggle)
+  - selected-room outline toggle
+  - selected room info + **Focus camera** button
+  - **Room Inspector** table (filter indoors/outdoors, click to select, “Go” to focus)
+- **World interaction**:
+  - **Alt+left-click (Inspect)** selects the room under the cursor (also updates status text).
+  - selected room draws with stronger overlay tint + optional outline border.
+  - minimap shows selected room bounding box.
 
-1) Select a colonist (Inspect tool → **Left-click** the colonist).
-2) **Draft** the colonist.
-3) Issue orders:
-   - **Right-click**: replaces the queue with a single order (immediate).
-   - **Shift + Right-click**: **adds** an order to the end of the queue.
+### Tests
 
-Notes:
-- Build orders only queue on **planned** tiles.
-- Harvest orders only queue on **ripe farms** (growth ≥ 1.0), matching the previous behavior.
-
-## Save compatibility
-
-- Save format version bumped to **v12** to persist the manual order queue.
-- Older saves still load (queue defaults empty).
-
-## Code changes (Round 36)
-
-- `src/game/proto/ProtoWorld.h/.cpp`
-  - Added `Colonist::ManualOrder` + `manualQueue`
-  - Added queue execution + completion popping
-  - Added Shift-queue support to `OrderColonistMove/Build/Harvest`
-- `src/game/proto/ProtoWorld_Persistence.cpp`
-  - Save/load `manualQueue`
-- `src/game/proto/ProtoWorld_SaveFormat.h`
-  - Save version → v12
-- `src/game/PrototypeGame_UI_World.cpp`
-  - Shift+Right-click queuing
-  - World overlay for queued orders
-- `src/game/PrototypeGame_UI_Panels.cpp`
-  - Queue indicators + queue management UI
+- Added a doctest verifying **perimeter** and **door count** for a simple enclosed room.
 
 ---
 
-# Colony-Game Patch (Round 35)
+# Colony-Game Patch (Round 46)
 
-This round focuses on **Blueprint tooling** improvements (planning/QoL):
+## Save Browser 2.0: Named saves + copy/rename workflow
 
-- Adds **Blueprint transforms**: rotate (CW / CCW / 180) and flip (horizontal / vertical).
-- Adds a **Blueprint Library (Disk)** panel:
-  - Save the current blueprint to disk under the game's Saved Games folder.
-  - Browse saved blueprints (newest-first), preview them, load into the active blueprint, and delete.
-  - Quick button to open the blueprint folder in Explorer.
+- **Named saves**: create arbitrary save files (not limited to slots) directly from the Save Browser.
+- **Directory scan**: the browser now lists *all* `*.json` saves in the save folder (excluding `*.meta.json` sidecars), in addition to the standard Slot/Autosave entries.
+- **Filter + sort**: quick filter box, category toggles (Slots/Autosaves/Named), and sorting by Kind / Time / Name.
+- **Copy / promote tools**:
+  - Copy any selected save to a target slot (handy for promoting an autosave).
+  - Copy any selected save to a new named save (quick backups / branching).
+- **Rename (named saves only)**: rename/move the save (and its meta file when present) with optional overwrite.
+- **Safer delete UX**: delete still uses a short confirmation window and now clears selection & refreshes cleanly.
+- **Toasts**: copy/rename/delete operations post notifications (and warnings on partial failures).
 
-## New editor tools / UI
+## Platform utilities
 
-### 1) Blueprint transforms
+- Added `winpath::copy_file_with_retry()` to match the existing remove/rename retry helpers (plus a unit test).
 
-In **Panels → Blueprints**, you now have transform buttons:
+---
 
-- **Rotate CW / CCW / 180**
-- **Flip Horizontal / Vertical**
+# Colony-Game Patch (Round 45)
 
-These operate directly on the current blueprint (including priorities) and preserve the packed plan data.
+This round adds a **Notification / Alerts system** (quality-of-life + playability):
 
-### 2) Blueprint library (disk)
+- Added a lightweight **notification log** that records important events (bounded history).
+- Added expiring **toast notifications** drawn in the world HUD (top-left).
+- Added an **Alerts** section in the Panels window for:
+  - enabling/disabling alerts
+  - toggling toast overlay
+  - tuning alert thresholds + polling interval
+  - clearing the message log / toasts
+  - viewing a scrollable message history (with optional **Focus** button on targeted alerts)
 
-In **Panels → Blueprints → Blueprint Library (Disk)**:
+### Implemented prototype alerts
 
-- Choose a **Save name** and click **Save current** to write a blueprint file.
-- Use **Refresh** to rescan the folder.
-- Select a file to see a **preview** and then:
-  - **Load selected → current blueprint**
-  - **Delete selected**
+- **Low wood** and **Low food** threshold warnings (with optional “resolved” messages).
+- **No stockpiles** while loose wood exists (hauling cannot happen).
+- **No builders / farmers / haulers** available (capabilities or priorities all Off) while work exists.
+- **Critical starvation**: colonists below a personal-food threshold while colony food is **0**
+  - can optionally auto-pause the simulation.
 
-Blueprints are stored at:
+### Tests
 
-- `<Saved Games>/<Product>/blueprints`
-  - (The exact Saved Games base is resolved by PathUtilWin and will fall back to LocalAppData if needed.)
+- Added doctest coverage for the new bounded notification log + toast expiry behavior.
 
-## Implementation notes
+## Code changes (Round 45)
 
-- Blueprint files use the **same JSON schema** as the clipboard format (`PlanBlueprintToJson` / `PlanBlueprintFromJson`).
-- Saving uses an **atomic write** to avoid partial/corrupted files.
-
-## Code changes (Round 35)
-
-- `src/game/editor/Blueprint.*`
-  - Added transform helpers (rotate/flip).
-- `src/game/editor/BlueprintLibrary.*`
-  - New helper module for saving/loading/listing blueprint files on disk.
-- `src/game/PrototypeGame_UI_Panels.cpp`
-  - Added transform buttons and the Blueprint Library UI.
+- `src/game/util/NotificationLog.h`
+  - New small, dependency-free notification log + toast queue.
+- `src/game/PrototypeGame_Impl.h`
+  - Added notification state + live-tunable alert parameters.
+  - Added helper methods: `pushNotification*`, `logMessage`, `focusNotificationTarget`, `updateAlerts`.
+- `src/game/PrototypeGame_Sim.cpp`
+  - Alert evaluation/polling (`updateAlerts`) + toast TTL ticking.
 - `src/game/PrototypeGame_SaveLoad.cpp`
-  - Added `blueprintDir()` path helper for the blueprint library.
+  - Save/autosave completions now also enter the notification log (failures toast as Error).
+- `src/game/PrototypeGame_UI_Panels.cpp`
+  - New “Alerts” panel section (settings + history log + focus buttons).
+- `src/game/PrototypeGame_UI_World.cpp`
+  - Toast notifications overlay in the world HUD.
+- `tests/notification_log_tests.cpp`
+  - New unit tests for notifications.
+
+---

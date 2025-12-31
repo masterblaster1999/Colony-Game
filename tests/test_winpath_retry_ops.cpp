@@ -100,6 +100,43 @@ TEST_CASE("winpath::rename_with_retry reports error for missing source")
     fs::remove_all(dir, dec);
 }
 
+TEST_CASE("winpath::copy_file_with_retry copies a file (and supports overwrite toggle)")
+{
+    const fs::path dir  = make_unique_temp_dir();
+    const fs::path from = dir / "from.txt";
+    const fs::path to   = dir / "to.txt";
+
+    std::error_code ec;
+    CHECK(winpath::atomic_write_file(from, "hello copy\n", &ec));
+    CHECK(ec.value() == 0);
+
+    // First copy should succeed.
+    ec.clear();
+    const bool ok1 = winpath::copy_file_with_retry(from, to, /*overwrite_existing=*/true, &ec, /*max_attempts=*/16);
+    INFO("copy_file_with_retry ec: ", ec.message(), " (code ", ec.value(), ")");
+    CHECK(ok1);
+    CHECK(ec.value() == 0);
+
+    // Verify content.
+    std::string got;
+    ec.clear();
+    CHECK(winpath::read_file_to_string_with_retry(to, got, &ec, /*max_bytes=*/64 * 1024, /*max_attempts=*/16));
+    CHECK(ec.value() == 0);
+    CHECK(got == "hello copy\n");
+
+    // If overwrite is disabled, copying onto an existing file should fail.
+    ec.clear();
+    const bool ok2 = winpath::copy_file_with_retry(from, to, /*overwrite_existing=*/false, &ec, /*max_attempts=*/4);
+    CHECK_FALSE(ok2);
+    CHECK(ec.value() != 0);
+
+    // Cleanup.
+    (void)winpath::remove_with_retry(from, &ec, /*max_attempts=*/32);
+    (void)winpath::remove_with_retry(to, &ec, /*max_attempts=*/32);
+    std::error_code dec;
+    fs::remove_all(dir, dec);
+}
+
 TEST_CASE("winpath::remove_with_retry deletes read-only files")
 {
     const fs::path dir = make_unique_temp_dir();

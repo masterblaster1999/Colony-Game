@@ -57,6 +57,45 @@ namespace {
     }
 }
 
+[[nodiscard]] std::uint64_t PackPlanKey(int x, int y) noexcept
+{
+    // Pack into a sortable key (Y-major) without assuming small map sizes.
+    // Lowest Y/X sorts first.
+    const std::uint64_t ux = static_cast<std::uint64_t>(static_cast<std::uint32_t>(x));
+    const std::uint64_t uy = static_cast<std::uint64_t>(static_cast<std::uint32_t>(y));
+    return (uy << 32) | ux;
+}
+
+[[nodiscard]] int UnpackPlanX(std::uint64_t k) noexcept
+{
+    return static_cast<int>(static_cast<std::uint32_t>(k & 0xFFFF'FFFFu));
+}
+
+[[nodiscard]] int UnpackPlanY(std::uint64_t k) noexcept
+{
+    return static_cast<int>(static_cast<std::uint32_t>((k >> 32) & 0xFFFF'FFFFu));
+}
+
+// Food target key packs a type rank into the top bit so we can deterministically
+// prefer Stockpiles over Farms when distances tie (used by the eat distance field).
+constexpr std::uint64_t kFoodRankBit = (1ull << 63);
+
+[[nodiscard]] std::uint64_t PackFoodKey(int x, int y, bool isStockpile) noexcept
+{
+    const std::uint64_t base = PackPlanKey(x, y);
+    return isStockpile ? base : (base | kFoodRankBit);
+}
+
+[[nodiscard]] int UnpackFoodX(std::uint64_t k) noexcept
+{
+    return UnpackPlanX(k);
+}
+
+[[nodiscard]] int UnpackFoodY(std::uint64_t k) noexcept
+{
+    return UnpackPlanY(k & ~kFoodRankBit);
+}
+
 void ExpandSparsePath(const std::vector<colony::pf::IVec2>& in,
                       std::vector<colony::pf::IVec2>& out)
 {
@@ -306,6 +345,57 @@ int TileWoodCost(TileType t) noexcept
     default: return 0;
     }
 }
+
+int PlanDeltaWoodCost(const Cell& c, TileType plan) noexcept
+{
+    // Keep this logic in sync with World::placePlan.
+    if (plan == TileType::Remove && c.built == TileType::Empty)
+        plan = TileType::Empty;
+
+    // Clearing a plan refunds the old planned material cost.
+    if (plan == TileType::Empty)
+    {
+        if (c.planned == TileType::Empty)
+            return 0;
+        return -TileWoodCost(c.planned);
+    }
+
+    const TileType oldPlan = (c.planned == TileType::Empty) ? c.built : c.planned;
+    if (oldPlan == plan)
+        return 0;
+
+    // Delta-cost the plan swap, but do not refund built tiles (handled by placePlan when demolishing).
+    const int oldCost = TileWoodCost(c.planned);
+    const int newCost = (plan == c.built) ? 0 : TileWoodCost(plan);
+    return newCost - oldCost;
+}
+
+bool PlanWouldChange(const Cell& c, TileType plan, std::uint8_t planPriority) noexcept
+{
+    if (planPriority > 3u)
+        planPriority = 3u;
+
+    // Match the "Remove on empty built" special-case from placePlan.
+    if (plan == TileType::Remove && c.built == TileType::Empty)
+        plan = TileType::Empty;
+
+    // Clearing plan.
+    if (plan == TileType::Empty)
+        return c.planned != TileType::Empty;
+
+    const TileType oldPlan = (c.planned == TileType::Empty) ? c.built : c.planned;
+    if (oldPlan == plan)
+    {
+        // Only an active plan carries a priority.
+        if (c.planned != TileType::Empty && c.planned != c.built)
+            return c.planPriority != planPriority;
+        return false;
+    }
+
+    // Different plan tile always mutates the cell.
+    return true;
+}
+
 
 float TileBuildTimeSeconds(TileType t) noexcept
 {
@@ -689,7 +779,7 @@ OrderResult World::startManualHarvest(Colonist& c, int farmX, int farmY) noexcep
     c.hasJob = true;
     c.path = std::move(p);
     c.pathIndex = 0;
-    c.harvestWorkRemaining = static_cast<float>(std::max(0.0, harvestDurationSeconds));
+    c.harvestWorkRemaining = static_cast<float>(std::max(0.0, farmHarvestDurationSeconds));
 
     return OrderResult::Ok;
 }
@@ -1134,6 +1224,64 @@ const World::RoomInfo* World::roomInfoById(int roomId) const noexcept
     return &m_rooms[i];
 }
 
+bool World::DebugSetBuiltTile(int x, int y, TileType built, bool builtFromPlan) noexcept
+{
+    if (!inBounds(x, y))
+        return false;
+
+    Cell& c = cell(x, y);
+    const TileType oldBuilt = c.built;
+
+    if (oldBuilt == built && c.builtFromPlan == builtFromPlan)
+        return true;
+
+    // Remove from caches that depend on built tile type.
+    if (oldBuilt == TileType::Farm && built != TileType::Farm)
+        farmCacheRemove(x, y);
+    if (oldBuilt != TileType::Farm && built == TileType::Farm)
+        farmCacheAdd(x, y);
+
+    // Clear any active plan state for this tile.
+    if (c.planned != TileType::Empty && c.planned != oldBuilt)
+        planCacheRemove(x, y);
+
+    c.planned = TileType::Empty;
+    c.planPriority = 0;
+    c.workRemaining = 0.0f;
+    c.reservedBy = -1;
+
+    // Update built counts + derived dirty flags.
+    builtCountAdjust(oldBuilt, built);
+
+    c.built = built;
+    c.builtFromPlan = builtFromPlan;
+
+    // Reset farm state when directly editing.
+    if (built == TileType::Farm)
+    {
+        if (oldBuilt != TileType::Farm)
+            c.farmGrowth = 0.0f;
+        c.farmReservedBy = -1;
+    }
+    else
+    {
+        c.farmGrowth = 0.0f;
+        c.farmReservedBy = -1;
+    }
+
+    // Clear other reservation state that might become invalid.
+    c.looseWoodReservedBy = -1;
+
+    syncNavCell(x, y);
+    return true;
+}
+
+void World::DebugRebuildRoomsNow() noexcept
+{
+    if (m_roomsDirty)
+        rebuildRooms();
+}
+
 void World::rebuildRooms() noexcept
 {
     m_roomsDirty = false;
@@ -1160,6 +1308,9 @@ void World::rebuildRooms() noexcept
     std::vector<colony::pf::IVec2> stack;
     stack.reserve(256);
 
+    std::vector<std::uint32_t> doorAdj;
+    doorAdj.reserve(64);
+
     int nextId = 0;
 
     constexpr int kDirs[4][2] = { {1, 0}, {-1, 0}, {0, 1}, {0, -1} };
@@ -1185,6 +1336,8 @@ void World::rebuildRooms() noexcept
 
             bool touchesBorder = (x == 0 || y == 0 || x == w - 1 || y == h - 1);
             int area = 0;
+            int perimeter = 0;
+            doorAdj.clear();
 
             stack.clear();
             stack.push_back({x, y});
@@ -1211,14 +1364,29 @@ void World::rebuildRooms() noexcept
                     const int ny = p.y + d[1];
 
                     if (!inBounds(nx, ny))
+                    {
+                        // Room-space tiles cannot reach out-of-bounds unless they sit on the border,
+                        // but count this edge for completeness.
+                        ++perimeter;
                         continue;
+                    }
+
+                    const TileType nb = cell(nx, ny).built;
+                    if (!TileIsRoomSpace(nb))
+                    {
+                        // Boundary edge contributes to the room perimeter.
+                        ++perimeter;
+
+                        // Track adjacent doors for room stats/inspector UI.
+                        if (nb == TileType::Door)
+                            doorAdj.push_back(static_cast<std::uint32_t>(idx(nx, ny)));
+
+                        continue;
+                    }
 
                     const std::size_t nf = idx(nx, ny);
 
                     if (m_roomIds[nf] != -1)
-                        continue;
-
-                    if (!TileIsRoomSpace(cell(nx, ny).built))
                         continue;
 
                     m_roomIds[nf] = nextId;
@@ -1227,6 +1395,19 @@ void World::rebuildRooms() noexcept
             }
 
             info.area = area;
+            info.perimeter = perimeter;
+
+            if (!doorAdj.empty())
+            {
+                std::sort(doorAdj.begin(), doorAdj.end());
+                doorAdj.erase(std::unique(doorAdj.begin(), doorAdj.end()), doorAdj.end());
+                info.doorCount = static_cast<int>(doorAdj.size());
+            }
+            else
+            {
+                info.doorCount = 0;
+            }
+
             info.indoors = !touchesBorder;
 
             m_rooms.push_back(info);
@@ -1277,10 +1458,15 @@ void World::builtCountAdjust(TileType oldBuilt, TileType newBuilt) noexcept
     if (in < m_builtCounts.size())
         ++m_builtCounts[in];
 
-
     // Room topology only changes when a tile transitions between open-space and a boundary.
-    if (TileIsRoomSpace(oldBuilt) != TileIsRoomSpace(newBuilt))
+    //
+    // However, we also track room statistics that depend on boundary *type* (e.g. door counts),
+    // so mark rooms dirty when doors are added/removed as well.
+    if (TileIsRoomSpace(oldBuilt) != TileIsRoomSpace(newBuilt) ||
+        oldBuilt == TileType::Door || newBuilt == TileType::Door)
+    {
         m_roomsDirty = true;
+    }
 }
 
 void World::tick(double dtSeconds)
@@ -1479,6 +1665,14 @@ void World::syncNavCell(int x, int y) noexcept
 
     const float cost = navUseTerrainCosts ? TileNavCost(built) : 1.0f;
     m_nav.set_tile_cost(x, y, cost);
+
+    // Any local nav edit invalidates the cached stockpile distance field.
+    m_stockpileFieldDirty = true;
+    m_stockpileFieldCachedStamp = 0u;
+
+    // Any local nav edit invalidates the cached food distance field.
+    m_foodFieldDirty = true;
+    m_foodFieldCachedStamp = 0u;
 }
 
 void World::syncAllNav() noexcept
@@ -1723,7 +1917,1057 @@ bool World::findPathToNearestAvailablePlan(int startX, int startY,
         }
     }
 
-return false;
+    return false;
+}
+
+std::uint32_t World::buildPlanField(int requiredPriority) const
+{
+    // Multi-source Dijkstra: start from *all* walkable tiles adjacent to any
+    // unreserved plan matching requiredPriority.
+    //
+    // This lets assignJobs() find nearest plans for many colonists with a
+    // single Dijkstra instead of one per colonist.
+
+    if (m_plannedCells.empty())
+        return 0u;
+
+    const int w = m_w;
+    const int h = m_h;
+    if (w <= 0 || h <= 0)
+        return 0u;
+
+    constexpr float kInf = std::numeric_limits<float>::infinity();
+    const std::size_t n = static_cast<std::size_t>(w * h);
+
+    // Scratch buffers (mutable) to avoid per-call allocations and O(n) clears.
+    if (m_planFieldDist.size() != n)
+    {
+        m_planFieldDist.assign(n, 0.0f);
+        m_planFieldParent.assign(n, colony::pf::kInvalid);
+        m_planFieldStamp.assign(n, 0u);
+        m_planFieldPlanKey.assign(n, 0u);
+        m_planFieldStampValue = 1;
+    }
+
+    // Bump generation (stamp 0 means "never visited"). Handle wrap.
+    std::uint32_t stamp = m_planFieldStampValue + 1u;
+    if (stamp == 0u)
+    {
+        std::fill(m_planFieldStamp.begin(), m_planFieldStamp.end(), 0u);
+        stamp = 1u;
+    }
+    m_planFieldStampValue = stamp;
+
+    auto getDist = [&](colony::pf::NodeId id) -> float {
+        return (m_planFieldStamp[id] == stamp) ? m_planFieldDist[id] : kInf;
+    };
+
+    auto getPlanKey = [&](colony::pf::NodeId id) -> std::uint64_t {
+        return (m_planFieldStamp[id] == stamp) ? m_planFieldPlanKey[id] : std::numeric_limits<std::uint64_t>::max();
+    };
+
+    auto setNode = [&](colony::pf::NodeId id,
+                       float d,
+                       colony::pf::NodeId parent,
+                       std::uint64_t planKey)
+    {
+        m_planFieldStamp[id]   = stamp;
+        m_planFieldDist[id]    = d;
+        m_planFieldParent[id]  = parent;
+        m_planFieldPlanKey[id] = planKey;
+    };
+
+    struct QN {
+        float d;
+        colony::pf::NodeId id;
+        bool operator>(const QN& o) const { return d > o.d; }
+    };
+    std::priority_queue<QN, std::vector<QN>, std::greater<QN>> open;
+
+    std::uint64_t sourcesAdded = 0;
+
+    auto tryAddSource = [&](int wx, int wy, int planX, int planY)
+    {
+        if (!inBounds(wx, wy) || !m_nav.passable(wx, wy))
+            return;
+
+        const colony::pf::NodeId wid = colony::pf::to_id(wx, wy, w);
+        const std::uint64_t pkey = PackPlanKey(planX, planY);
+
+        const float oldD = getDist(wid);
+        const std::uint64_t oldKey = getPlanKey(wid);
+
+        // Keep the closest source; break ties deterministically by plan key (Y-major).
+        if (0.0f < oldD || (oldD == 0.0f && pkey < oldKey))
+        {
+            setNode(wid, 0.0f, colony::pf::kInvalid, pkey);
+            open.push({0.0f, wid});
+            ++sourcesAdded;
+        }
+    };
+
+    // Seed sources.
+    constexpr int kAdj4[4][2] = { {1, 0}, {-1, 0}, {0, 1}, {0, -1} };
+
+    for (const auto& pos : m_plannedCells)
+    {
+        if (!inBounds(pos.x, pos.y))
+            continue;
+
+        const Cell& c = cell(pos.x, pos.y);
+        if (c.planned == TileType::Empty || c.planned == c.built)
+            continue;
+        if (requiredPriority >= 0 && static_cast<int>(c.planPriority) != requiredPriority)
+            continue;
+        if (c.reservedBy != -1)
+            continue;
+
+        for (const auto& d : kAdj4)
+        {
+            const int wx = pos.x + d[0];
+            const int wy = pos.y + d[1];
+            tryAddSource(wx, wy, pos.x, pos.y);
+        }
+    }
+
+    if (open.empty())
+        return 0u;
+
+    ++m_pathStats.buildFieldComputed;
+    m_pathStats.buildFieldSources += sourcesAdded;
+
+    // Classic Dijkstra expansion.
+    constexpr int DIRS = 8;
+    static const int dx[DIRS] = { 1, -1, 0, 0,  1,  1, -1, -1 };
+    static const int dy[DIRS] = { 0,  0, 1, -1, 1, -1,  1, -1 };
+
+    while (!open.empty())
+    {
+        const QN cur = open.top();
+        open.pop();
+
+        if (cur.d != getDist(cur.id))
+            continue;
+
+        const colony::pf::IVec2 C = colony::pf::from_id(cur.id, w);
+        const std::uint64_t curKey = m_planFieldPlanKey[cur.id];
+
+        for (int dir = 0; dir < DIRS; ++dir)
+        {
+            if (!m_nav.can_step(C.x, C.y, dx[dir], dy[dir]))
+                continue;
+
+            const int nx = C.x + dx[dir];
+            const int ny = C.y + dy[dir];
+            if (!inBounds(nx, ny))
+                continue;
+
+            const colony::pf::NodeId nid = colony::pf::to_id(nx, ny, w);
+            const float nd = cur.d + m_nav.step_cost(C.x, C.y, dx[dir], dy[dir]);
+
+            const float oldD = getDist(nid);
+            if (nd < oldD)
+            {
+                setNode(nid, nd, cur.id, curKey);
+                open.push({nd, nid});
+            }
+            else if (nd == oldD && curKey < getPlanKey(nid))
+            {
+                setNode(nid, nd, cur.id, curKey);
+                open.push({nd, nid});
+            }
+        }
+    }
+
+    return stamp;
+}
+
+bool World::queryPlanField(std::uint32_t stamp,
+                           int startX, int startY,
+                           int& outPlanX, int& outPlanY,
+                           std::vector<colony::pf::IVec2>& outPath) const
+{
+    outPlanX = -1;
+    outPlanY = -1;
+    outPath.clear();
+
+    if (stamp == 0u)
+        return false;
+
+    if (!inBounds(startX, startY) || !m_nav.passable(startX, startY))
+        return false;
+
+    const int w = m_w;
+    const int h = m_h;
+    if (w <= 0 || h <= 0)
+        return false;
+
+    const std::size_t n = static_cast<std::size_t>(w * h);
+    const colony::pf::NodeId sid = colony::pf::to_id(startX, startY, w);
+    if (static_cast<std::size_t>(sid) >= n)
+        return false;
+
+    if (m_planFieldStamp.size() != n || m_planFieldStamp[sid] != stamp)
+        return false;
+
+    const std::uint64_t pkey = m_planFieldPlanKey[sid];
+    outPlanX = UnpackPlanX(pkey);
+    outPlanY = UnpackPlanY(pkey);
+
+    colony::pf::NodeId t = sid;
+    while (t != colony::pf::kInvalid)
+    {
+        if (m_planFieldStamp[t] != stamp)
+            break;
+        outPath.push_back(colony::pf::from_id(t, w));
+        t = m_planFieldParent[t];
+    }
+
+    if (outPath.empty() || outPath.front().x != startX || outPath.front().y != startY)
+        return false;
+
+    return true;
+}
+
+std::uint32_t World::buildStockpileField() const
+{
+    // If there are no stockpiles, the hauling system cannot route to a dropoff.
+    if (builtCount(TileType::Stockpile) <= 0)
+    {
+        m_stockpileFieldDirty = false;
+        m_stockpileFieldCachedStamp = 0;
+        return 0u;
+    }
+
+    const int w = m_w;
+    const int h = m_h;
+    if (w <= 0 || h <= 0)
+        return 0u;
+
+    const std::size_t n = static_cast<std::size_t>(w * h);
+
+    // Reuse the last computed field when nothing relevant has changed.
+    if (!m_stockpileFieldDirty && m_stockpileFieldCachedStamp != 0u &&
+        m_stockpileFieldStamp.size() == n)
+    {
+        return m_stockpileFieldCachedStamp;
+    }
+
+    // Scratch buffers (mutable) to avoid per-call allocations and O(n) clears.
+    if (m_stockpileFieldDist.size() != n)
+    {
+        m_stockpileFieldDist.assign(n, 0.0f);
+        m_stockpileFieldParent.assign(n, colony::pf::kInvalid);
+        m_stockpileFieldStamp.assign(n, 0u);
+        m_stockpileFieldStockpileKey.assign(n, std::numeric_limits<std::uint64_t>::max());
+        m_stockpileFieldStampValue = 1;
+    }
+
+    // Bump generation (stamp 0 means "never visited"). Handle wrap.
+    std::uint32_t stamp = m_stockpileFieldStampValue + 1u;
+    if (stamp == 0u)
+    {
+        std::fill(m_stockpileFieldStamp.begin(), m_stockpileFieldStamp.end(), 0u);
+        stamp = 1u;
+    }
+    m_stockpileFieldStampValue = stamp;
+
+    constexpr float kInf = std::numeric_limits<float>::infinity();
+
+    auto getDist = [&](colony::pf::NodeId id) -> float {
+        return (m_stockpileFieldStamp[id] == stamp) ? m_stockpileFieldDist[id] : kInf;
+    };
+    auto getKey = [&](colony::pf::NodeId id) -> std::uint64_t {
+        return (m_stockpileFieldStamp[id] == stamp) ? m_stockpileFieldStockpileKey[id]
+                                                    : std::numeric_limits<std::uint64_t>::max();
+    };
+    auto setNode = [&](colony::pf::NodeId id, float d, colony::pf::NodeId parent, std::uint64_t skey) {
+        m_stockpileFieldStamp[id] = stamp;
+        m_stockpileFieldDist[id] = d;
+        m_stockpileFieldParent[id] = parent;
+        m_stockpileFieldStockpileKey[id] = skey;
+    };
+
+    struct QN
+    {
+        float d;
+        colony::pf::NodeId id;
+        bool operator>(const QN& o) const { return d > o.d; }
+    };
+    std::priority_queue<QN, std::vector<QN>, std::greater<QN>> open;
+
+    std::uint64_t sourcesAdded = 0;
+
+    for (int y = 0; y < h; ++y)
+    {
+        for (int x = 0; x < w; ++x)
+        {
+            const Cell& c = cell(x, y);
+            if (c.built != TileType::Stockpile)
+                continue;
+
+            if (!m_nav.passable(x, y))
+                continue;
+
+            const colony::pf::NodeId id = colony::pf::to_id(x, y, w);
+            const std::uint64_t skey = PackPlanKey(x, y);
+
+            const float oldD = getDist(id);
+            const std::uint64_t oldKey = getKey(id);
+
+            // If this tile is already a source, keep the lowest key for determinism.
+            if (0.0f < oldD || (oldD == 0.0f && skey < oldKey))
+            {
+                setNode(id, 0.0f, colony::pf::kInvalid, skey);
+                open.push({0.0f, id});
+                ++sourcesAdded;
+            }
+        }
+    }
+
+    if (open.empty())
+    {
+        m_stockpileFieldDirty = false;
+        m_stockpileFieldCachedStamp = 0;
+        return 0u;
+    }
+
+    ++m_pathStats.haulStockpileFieldComputed;
+    m_pathStats.haulStockpileFieldSources += sourcesAdded;
+
+    constexpr int DIRS = 8;
+    static const int dx[DIRS] = { 1, -1, 0, 0,  1,  1, -1, -1 };
+    static const int dy[DIRS] = { 0,  0, 1, -1, 1, -1,  1, -1 };
+
+    while (!open.empty())
+    {
+        const QN cur = open.top();
+        open.pop();
+
+        if (cur.d > getDist(cur.id))
+            continue;
+
+        const colony::pf::IVec2 C = colony::pf::from_id(cur.id, w);
+        const std::uint64_t curKey = m_stockpileFieldStockpileKey[cur.id];
+
+        for (int dir = 0; dir < DIRS; ++dir)
+        {
+            if (!m_nav.can_step(C.x, C.y, dx[dir], dy[dir]))
+                continue;
+
+            const int nx = C.x + dx[dir];
+            const int ny = C.y + dy[dir];
+            if (!inBounds(nx, ny))
+                continue;
+
+            const colony::pf::NodeId nid = colony::pf::to_id(nx, ny, w);
+            const float nd = cur.d + m_nav.step_cost(C.x, C.y, dx[dir], dy[dir]);
+
+            const float oldD = getDist(nid);
+            if (nd < oldD)
+            {
+                setNode(nid, nd, cur.id, curKey);
+                open.push({nd, nid});
+            }
+            else if (nd == oldD && curKey < getKey(nid))
+            {
+                setNode(nid, nd, cur.id, curKey);
+                open.push({nd, nid});
+            }
+        }
+    }
+
+    m_stockpileFieldDirty = false;
+    m_stockpileFieldCachedStamp = stamp;
+    return stamp;
+}
+
+bool World::queryStockpileField(std::uint32_t stamp,
+                               int startX, int startY,
+                               int& outStockX, int& outStockY,
+                               std::vector<colony::pf::IVec2>& outPath) const
+{
+    outStockX = -1;
+    outStockY = -1;
+    outPath.clear();
+
+    if (stamp == 0u)
+        return false;
+
+    if (!inBounds(startX, startY) || !m_nav.passable(startX, startY))
+        return false;
+
+    const int w = m_w;
+    const int h = m_h;
+    if (w <= 0 || h <= 0)
+        return false;
+
+    const std::size_t n = static_cast<std::size_t>(w * h);
+    const colony::pf::NodeId sid = colony::pf::to_id(startX, startY, w);
+    if (static_cast<std::size_t>(sid) >= n)
+        return false;
+
+    if (m_stockpileFieldStamp.size() != n || m_stockpileFieldStamp[sid] != stamp)
+        return false;
+
+    const std::uint64_t skey = m_stockpileFieldStockpileKey[sid];
+    outStockX = UnpackPlanX(skey);
+    outStockY = UnpackPlanY(skey);
+
+    colony::pf::NodeId t = sid;
+    while (t != colony::pf::kInvalid)
+    {
+        if (m_stockpileFieldStamp[t] != stamp)
+            break;
+        outPath.push_back(colony::pf::from_id(t, w));
+        t = m_stockpileFieldParent[t];
+    }
+
+    if (outPath.empty() || outPath.front().x != startX || outPath.front().y != startY)
+        return false;
+
+    ++m_pathStats.haulStockpileFieldUsed;
+    return true;
+}
+
+float World::stockpileFieldDistAt(std::uint32_t stamp, int x, int y) const noexcept
+{
+    constexpr float kInf = std::numeric_limits<float>::infinity();
+
+    if (stamp == 0u)
+        return kInf;
+
+    if (!inBounds(x, y))
+        return kInf;
+
+    const int w = m_w;
+    const int h = m_h;
+    if (w <= 0 || h <= 0)
+        return kInf;
+
+    const std::size_t n = static_cast<std::size_t>(w * h);
+    const colony::pf::NodeId id = colony::pf::to_id(x, y, w);
+    if (static_cast<std::size_t>(id) >= n)
+        return kInf;
+
+    if (m_stockpileFieldStamp.size() != n || m_stockpileFieldStamp[id] != stamp)
+        return kInf;
+
+    return m_stockpileFieldDist[id];
+}
+
+std::uint32_t World::buildHaulPickupField(std::uint32_t stockpileStamp) const
+{
+    if (stockpileStamp == 0u)
+        return 0u;
+
+    if (m_looseWoodCells.empty() || m_looseWoodTotal <= 0)
+        return 0u;
+
+    const int w = m_w;
+    const int h = m_h;
+    if (w <= 0 || h <= 0)
+        return 0u;
+
+    const std::size_t n = static_cast<std::size_t>(w * h);
+
+    // Scratch buffers (mutable) to avoid per-call allocations and O(n) clears.
+    if (m_haulFieldDist.size() != n)
+    {
+        m_haulFieldDist.assign(n, 0.0f);
+        m_haulFieldParent.assign(n, colony::pf::kInvalid);
+        m_haulFieldStamp.assign(n, 0u);
+        m_haulFieldWoodKey.assign(n, std::numeric_limits<std::uint64_t>::max());
+        m_haulFieldStampValue = 1;
+    }
+
+    // Bump generation (stamp 0 means "never visited"). Handle wrap.
+    std::uint32_t stamp = m_haulFieldStampValue + 1u;
+    if (stamp == 0u)
+    {
+        std::fill(m_haulFieldStamp.begin(), m_haulFieldStamp.end(), 0u);
+        stamp = 1u;
+    }
+    m_haulFieldStampValue = stamp;
+
+    constexpr float kInf = std::numeric_limits<float>::infinity();
+
+    auto getDist = [&](colony::pf::NodeId id) -> float {
+        return (m_haulFieldStamp[id] == stamp) ? m_haulFieldDist[id] : kInf;
+    };
+    auto getKey = [&](colony::pf::NodeId id) -> std::uint64_t {
+        return (m_haulFieldStamp[id] == stamp) ? m_haulFieldWoodKey[id]
+                                               : std::numeric_limits<std::uint64_t>::max();
+    };
+    auto setNode = [&](colony::pf::NodeId id, float d, colony::pf::NodeId parent, std::uint64_t wkey) {
+        m_haulFieldStamp[id] = stamp;
+        m_haulFieldDist[id] = d;
+        m_haulFieldParent[id] = parent;
+        m_haulFieldWoodKey[id] = wkey;
+    };
+
+    struct QN
+    {
+        float d;
+        colony::pf::NodeId id;
+        bool operator>(const QN& o) const { return d > o.d; }
+    };
+    std::priority_queue<QN, std::vector<QN>, std::greater<QN>> open;
+
+    std::uint64_t sourcesAdded = 0;
+
+    // Sources: all unreserved loose-wood tiles that can reach a stockpile.
+    for (const auto& pos : m_looseWoodCells)
+    {
+        const int x = pos.x;
+        const int y = pos.y;
+        if (!inBounds(x, y))
+            continue;
+
+        const Cell& c = cell(x, y);
+        if (c.looseWood <= 0)
+            continue;
+        if (c.looseWoodReservedBy != -1)
+            continue;
+        if (!m_nav.passable(x, y))
+            continue;
+
+        const float dropDist = stockpileFieldDistAt(stockpileStamp, x, y);
+        if (!std::isfinite(dropDist))
+            continue; // unreachable to any stockpile
+
+        const colony::pf::NodeId id = colony::pf::to_id(x, y, w);
+        const std::uint64_t wkey = PackPlanKey(x, y);
+
+        const float oldD = getDist(id);
+        const std::uint64_t oldKey = getKey(id);
+
+        if (dropDist < oldD || (dropDist == oldD && wkey < oldKey))
+        {
+            setNode(id, dropDist, colony::pf::kInvalid, wkey);
+            open.push({dropDist, id});
+            ++sourcesAdded;
+        }
+    }
+
+    if (open.empty())
+        return 0u;
+
+    ++m_pathStats.haulPickupFieldComputed;
+    m_pathStats.haulPickupFieldSources += sourcesAdded;
+
+    constexpr int DIRS = 8;
+    static const int dx[DIRS] = { 1, -1, 0, 0,  1,  1, -1, -1 };
+    static const int dy[DIRS] = { 0,  0, 1, -1, 1, -1,  1, -1 };
+
+    while (!open.empty())
+    {
+        const QN cur = open.top();
+        open.pop();
+
+        if (cur.d > getDist(cur.id))
+            continue;
+
+        const colony::pf::IVec2 C = colony::pf::from_id(cur.id, w);
+        const std::uint64_t curKey = m_haulFieldWoodKey[cur.id];
+
+        for (int dir = 0; dir < DIRS; ++dir)
+        {
+            if (!m_nav.can_step(C.x, C.y, dx[dir], dy[dir]))
+                continue;
+
+            const int nx = C.x + dx[dir];
+            const int ny = C.y + dy[dir];
+            if (!inBounds(nx, ny))
+                continue;
+
+            const colony::pf::NodeId nid = colony::pf::to_id(nx, ny, w);
+            const float nd = cur.d + m_nav.step_cost(C.x, C.y, dx[dir], dy[dir]);
+
+            const float oldD = getDist(nid);
+            if (nd < oldD)
+            {
+                setNode(nid, nd, cur.id, curKey);
+                open.push({nd, nid});
+            }
+            else if (nd == oldD && curKey < getKey(nid))
+            {
+                setNode(nid, nd, cur.id, curKey);
+                open.push({nd, nid});
+            }
+        }
+    }
+
+    return stamp;
+}
+
+bool World::queryHaulPickupField(std::uint32_t haulStamp,
+                                int startX, int startY,
+                                int& outWoodX, int& outWoodY,
+                                std::vector<colony::pf::IVec2>& outPath) const
+{
+    outWoodX = -1;
+    outWoodY = -1;
+    outPath.clear();
+
+    if (haulStamp == 0u)
+        return false;
+
+    if (!inBounds(startX, startY) || !m_nav.passable(startX, startY))
+        return false;
+
+    const int w = m_w;
+    const int h = m_h;
+    if (w <= 0 || h <= 0)
+        return false;
+
+    const std::size_t n = static_cast<std::size_t>(w * h);
+    const colony::pf::NodeId sid = colony::pf::to_id(startX, startY, w);
+    if (static_cast<std::size_t>(sid) >= n)
+        return false;
+
+    if (m_haulFieldStamp.size() != n || m_haulFieldStamp[sid] != haulStamp)
+        return false;
+
+    const std::uint64_t wkey = m_haulFieldWoodKey[sid];
+    outWoodX = UnpackPlanX(wkey);
+    outWoodY = UnpackPlanY(wkey);
+
+    colony::pf::NodeId t = sid;
+    while (t != colony::pf::kInvalid)
+    {
+        if (m_haulFieldStamp[t] != haulStamp)
+            break;
+        outPath.push_back(colony::pf::from_id(t, w));
+        t = m_haulFieldParent[t];
+    }
+
+    if (outPath.empty() || outPath.front().x != startX || outPath.front().y != startY)
+        return false;
+
+    return true;
+}
+
+std::uint32_t World::buildFoodField() const
+{
+    // Cached multi-source Dijkstra: start from *all* walkable tiles adjacent to
+    // any built food source (Stockpile/Farm).
+    //
+    // This accelerates assignEatJobs() by replacing per-colonist Dijkstra searches
+    // with a single shared distance field (reused until the navigation grid changes).
+
+    if (builtCount(TileType::Stockpile) <= 0 && builtCount(TileType::Farm) <= 0)
+    {
+        m_foodFieldDirty = false;
+        m_foodFieldCachedStamp = 0u;
+        return 0u;
+    }
+
+    const int w = m_w;
+    const int h = m_h;
+    if (w <= 0 || h <= 0)
+        return 0u;
+
+    const std::size_t n = static_cast<std::size_t>(w * h);
+
+    // Reuse the last computed field when nothing relevant has changed.
+    if (!m_foodFieldDirty && m_foodFieldCachedStamp != 0u && m_foodFieldStamp.size() == n)
+        return m_foodFieldCachedStamp;
+
+    // Scratch buffers (mutable) to avoid per-call allocations and O(n) clears.
+    if (m_foodFieldDist.size() != n)
+    {
+        m_foodFieldDist.assign(n, 0.0f);
+        m_foodFieldParent.assign(n, colony::pf::kInvalid);
+        m_foodFieldStamp.assign(n, 0u);
+        m_foodFieldFoodKey.assign(n, std::numeric_limits<std::uint64_t>::max());
+        m_foodFieldStampValue = 1;
+    }
+
+    // Bump generation (stamp 0 means "never visited"). Handle wrap.
+    std::uint32_t stamp = m_foodFieldStampValue + 1u;
+    if (stamp == 0u)
+    {
+        std::fill(m_foodFieldStamp.begin(), m_foodFieldStamp.end(), 0u);
+        stamp = 1u;
+    }
+    m_foodFieldStampValue = stamp;
+
+    constexpr float kInf = std::numeric_limits<float>::infinity();
+
+    auto getDist = [&](colony::pf::NodeId id) -> float {
+        return (m_foodFieldStamp[id] == stamp) ? m_foodFieldDist[id] : kInf;
+    };
+    auto getKey = [&](colony::pf::NodeId id) -> std::uint64_t {
+        return (m_foodFieldStamp[id] == stamp) ? m_foodFieldFoodKey[id]
+                                               : std::numeric_limits<std::uint64_t>::max();
+    };
+    auto setNode = [&](colony::pf::NodeId id, float d, colony::pf::NodeId parent, std::uint64_t fkey) {
+        m_foodFieldStamp[id] = stamp;
+        m_foodFieldDist[id] = d;
+        m_foodFieldParent[id] = parent;
+        m_foodFieldFoodKey[id] = fkey;
+    };
+
+    struct QN
+    {
+        float d;
+        colony::pf::NodeId id;
+        bool operator>(const QN& o) const { return d > o.d; }
+    };
+    std::priority_queue<QN, std::vector<QN>, std::greater<QN>> open;
+
+    std::uint64_t sourcesAdded = 0;
+
+    auto tryAddSource = [&](int wx, int wy, int foodX, int foodY, bool isStockpile) {
+        if (!inBounds(wx, wy) || !m_nav.passable(wx, wy))
+            return;
+
+        const colony::pf::NodeId id = colony::pf::to_id(wx, wy, w);
+        const std::uint64_t fkey = PackFoodKey(foodX, foodY, isStockpile);
+
+        const float oldD = getDist(id);
+        const std::uint64_t oldKey = getKey(id);
+
+        // Keep the closest source; break ties deterministically by key,
+        // with Stockpiles preferred over Farms (see PackFoodKey).
+        if (0.0f < oldD || (oldD == 0.0f && fkey < oldKey))
+        {
+            setNode(id, 0.0f, colony::pf::kInvalid, fkey);
+            open.push({0.0f, id});
+            ++sourcesAdded;
+        }
+    };
+
+    // Seed sources: any walkable tile adjacent to a built food source.
+    constexpr int kAdj4[4][2] = { {1, 0}, {-1, 0}, {0, 1}, {0, -1} };
+
+    for (int y = 0; y < h; ++y)
+    {
+        for (int x = 0; x < w; ++x)
+        {
+            const TileType b = cell(x, y).built;
+            if (b != TileType::Stockpile && b != TileType::Farm)
+                continue;
+
+            const bool isStockpile = (b == TileType::Stockpile);
+
+            for (const auto& d : kAdj4)
+            {
+                const int wx = x + d[0];
+                const int wy = y + d[1];
+                tryAddSource(wx, wy, x, y, isStockpile);
+            }
+        }
+    }
+
+    if (open.empty())
+    {
+        m_foodFieldDirty = false;
+        m_foodFieldCachedStamp = 0u;
+        return 0u;
+    }
+
+    ++m_pathStats.eatFieldComputed;
+    m_pathStats.eatFieldSources += sourcesAdded;
+
+    // Classic Dijkstra expansion.
+    constexpr int DIRS = 8;
+    static const int dx[DIRS] = { 1, -1, 0, 0,  1,  1, -1, -1 };
+    static const int dy[DIRS] = { 0,  0, 1, -1, 1, -1,  1, -1 };
+
+    while (!open.empty())
+    {
+        const QN cur = open.top();
+        open.pop();
+
+        if (cur.d > getDist(cur.id))
+            continue;
+
+        const colony::pf::IVec2 C = colony::pf::from_id(cur.id, w);
+        const std::uint64_t curKey = m_foodFieldFoodKey[cur.id];
+
+        for (int dir = 0; dir < DIRS; ++dir)
+        {
+            if (!m_nav.can_step(C.x, C.y, dx[dir], dy[dir]))
+                continue;
+
+            const int nx = C.x + dx[dir];
+            const int ny = C.y + dy[dir];
+            if (!inBounds(nx, ny))
+                continue;
+
+            const colony::pf::NodeId nid = colony::pf::to_id(nx, ny, w);
+            const float nd = cur.d + m_nav.step_cost(C.x, C.y, dx[dir], dy[dir]);
+
+            const float oldD = getDist(nid);
+            if (nd < oldD)
+            {
+                setNode(nid, nd, cur.id, curKey);
+                open.push({nd, nid});
+            }
+            else if (nd == oldD && curKey < getKey(nid))
+            {
+                setNode(nid, nd, cur.id, curKey);
+                open.push({nd, nid});
+            }
+        }
+    }
+
+    m_foodFieldDirty = false;
+    m_foodFieldCachedStamp = stamp;
+    return stamp;
+}
+
+bool World::queryFoodField(std::uint32_t stamp,
+                           int startX, int startY,
+                           int& outFoodX, int& outFoodY,
+                           std::vector<colony::pf::IVec2>& outPath) const
+{
+    outFoodX = -1;
+    outFoodY = -1;
+    outPath.clear();
+
+    if (stamp == 0u)
+        return false;
+
+    if (!inBounds(startX, startY) || !m_nav.passable(startX, startY))
+        return false;
+
+    const int w = m_w;
+    const int h = m_h;
+    if (w <= 0 || h <= 0)
+        return false;
+
+    const std::size_t n = static_cast<std::size_t>(w * h);
+    const colony::pf::NodeId sid = colony::pf::to_id(startX, startY, w);
+    if (static_cast<std::size_t>(sid) >= n)
+        return false;
+
+    if (m_foodFieldStamp.size() != n || m_foodFieldStamp[sid] != stamp)
+        return false;
+
+    const std::uint64_t fkey = m_foodFieldFoodKey[sid];
+    outFoodX = UnpackFoodX(fkey);
+    outFoodY = UnpackFoodY(fkey);
+
+    colony::pf::NodeId t = sid;
+    while (t != colony::pf::kInvalid)
+    {
+        if (m_foodFieldStamp[t] != stamp)
+            break;
+        outPath.push_back(colony::pf::from_id(t, w));
+        t = m_foodFieldParent[t];
+    }
+
+    if (outPath.empty() || outPath.front().x != startX || outPath.front().y != startY)
+        return false;
+
+    return true;
+}
+
+std::uint32_t World::buildHarvestField() const
+{
+    // Multi-source Dijkstra: start from *all* walkable tiles adjacent to any
+    // unreserved harvestable farm.
+    //
+    // This accelerates assignHarvestJobs() by replacing per-colonist Dijkstra searches
+    // with a single shared distance field.
+
+    if (m_farmCells.empty())
+        return 0u;
+
+    const int w = m_w;
+    const int h = m_h;
+    if (w <= 0 || h <= 0)
+        return 0u;
+
+    constexpr float kInf = std::numeric_limits<float>::infinity();
+    const std::size_t n = static_cast<std::size_t>(w * h);
+
+    // Scratch buffers (mutable) to avoid per-call allocations and O(n) clears.
+    if (m_harvestFieldDist.size() != n)
+    {
+        m_harvestFieldDist.assign(n, 0.0f);
+        m_harvestFieldParent.assign(n, colony::pf::kInvalid);
+        m_harvestFieldStamp.assign(n, 0u);
+        m_harvestFieldFarmKey.assign(n, std::numeric_limits<std::uint64_t>::max());
+        m_harvestFieldStampValue = 1;
+    }
+
+    // Bump generation (stamp 0 means "never visited"). Handle wrap.
+    std::uint32_t stamp = m_harvestFieldStampValue + 1u;
+    if (stamp == 0u)
+    {
+        std::fill(m_harvestFieldStamp.begin(), m_harvestFieldStamp.end(), 0u);
+        stamp = 1u;
+    }
+    m_harvestFieldStampValue = stamp;
+
+    auto getDist = [&](colony::pf::NodeId id) -> float {
+        return (m_harvestFieldStamp[id] == stamp) ? m_harvestFieldDist[id] : kInf;
+    };
+    auto getKey = [&](colony::pf::NodeId id) -> std::uint64_t {
+        return (m_harvestFieldStamp[id] == stamp) ? m_harvestFieldFarmKey[id]
+                                                  : std::numeric_limits<std::uint64_t>::max();
+    };
+    auto setNode = [&](colony::pf::NodeId id, float d, colony::pf::NodeId parent, std::uint64_t farmKey) {
+        m_harvestFieldStamp[id] = stamp;
+        m_harvestFieldDist[id] = d;
+        m_harvestFieldParent[id] = parent;
+        m_harvestFieldFarmKey[id] = farmKey;
+    };
+
+    struct QN
+    {
+        float d;
+        colony::pf::NodeId id;
+        bool operator>(const QN& o) const { return d > o.d; }
+    };
+    std::priority_queue<QN, std::vector<QN>, std::greater<QN>> open;
+
+    std::uint64_t sourcesAdded = 0;
+
+    auto tryAddSource = [&](int wx, int wy, int farmX, int farmY) {
+        if (!inBounds(wx, wy) || !m_nav.passable(wx, wy))
+            return;
+
+        const colony::pf::NodeId id = colony::pf::to_id(wx, wy, w);
+        const std::uint64_t fkey = PackPlanKey(farmX, farmY);
+
+        const float oldD = getDist(id);
+        const std::uint64_t oldKey = getKey(id);
+
+        // Keep the closest source; break ties deterministically by farm key (Y-major).
+        if (0.0f < oldD || (oldD == 0.0f && fkey < oldKey))
+        {
+            setNode(id, 0.0f, colony::pf::kInvalid, fkey);
+            open.push({0.0f, id});
+            ++sourcesAdded;
+        }
+    };
+
+    // Seed sources.
+    constexpr int kAdj4[4][2] = { {1, 0}, {-1, 0}, {0, 1}, {0, -1} };
+
+    for (const auto& pos : m_farmCells)
+    {
+        if (!inBounds(pos.x, pos.y))
+            continue;
+
+        const Cell& c = cell(pos.x, pos.y);
+        if (c.built != TileType::Farm)
+            continue;
+        if (c.farmGrowth < 1.0f)
+            continue;
+        if (c.farmReservedBy != -1)
+            continue;
+
+        for (const auto& d : kAdj4)
+        {
+            const int wx = pos.x + d[0];
+            const int wy = pos.y + d[1];
+            tryAddSource(wx, wy, pos.x, pos.y);
+        }
+    }
+
+    if (open.empty())
+        return 0u;
+
+    ++m_pathStats.harvestFieldComputed;
+    m_pathStats.harvestFieldSources += sourcesAdded;
+
+    // Classic Dijkstra expansion.
+    constexpr int DIRS = 8;
+    static const int dx[DIRS] = { 1, -1, 0, 0,  1,  1, -1, -1 };
+    static const int dy[DIRS] = { 0,  0, 1, -1, 1, -1,  1, -1 };
+
+    while (!open.empty())
+    {
+        const QN cur = open.top();
+        open.pop();
+
+        if (cur.d > getDist(cur.id))
+            continue;
+
+        const colony::pf::IVec2 C = colony::pf::from_id(cur.id, w);
+        const std::uint64_t curKey = m_harvestFieldFarmKey[cur.id];
+
+        for (int dir = 0; dir < DIRS; ++dir)
+        {
+            if (!m_nav.can_step(C.x, C.y, dx[dir], dy[dir]))
+                continue;
+
+            const int nx = C.x + dx[dir];
+            const int ny = C.y + dy[dir];
+            if (!inBounds(nx, ny))
+                continue;
+
+            const colony::pf::NodeId nid = colony::pf::to_id(nx, ny, w);
+            const float nd = cur.d + m_nav.step_cost(C.x, C.y, dx[dir], dy[dir]);
+
+            const float oldD = getDist(nid);
+            if (nd < oldD)
+            {
+                setNode(nid, nd, cur.id, curKey);
+                open.push({nd, nid});
+            }
+            else if (nd == oldD && curKey < getKey(nid))
+            {
+                setNode(nid, nd, cur.id, curKey);
+                open.push({nd, nid});
+            }
+        }
+    }
+
+    return stamp;
+}
+
+bool World::queryHarvestField(std::uint32_t stamp,
+                              int startX, int startY,
+                              int& outFarmX, int& outFarmY,
+                              std::vector<colony::pf::IVec2>& outPath) const
+{
+    outFarmX = -1;
+    outFarmY = -1;
+    outPath.clear();
+
+    if (stamp == 0u)
+        return false;
+
+    if (!inBounds(startX, startY) || !m_nav.passable(startX, startY))
+        return false;
+
+    const int w = m_w;
+    const int h = m_h;
+    if (w <= 0 || h <= 0)
+        return false;
+
+    const std::size_t n = static_cast<std::size_t>(w * h);
+    const colony::pf::NodeId sid = colony::pf::to_id(startX, startY, w);
+    if (static_cast<std::size_t>(sid) >= n)
+        return false;
+
+    if (m_harvestFieldStamp.size() != n || m_harvestFieldStamp[sid] != stamp)
+        return false;
+
+    const std::uint64_t fkey = m_harvestFieldFarmKey[sid];
+    outFarmX = UnpackPlanX(fkey);
+    outFarmY = UnpackPlanY(fkey);
+
+    colony::pf::NodeId t = sid;
+    while (t != colony::pf::kInvalid)
+    {
+        if (m_harvestFieldStamp[t] != stamp)
+            break;
+        outPath.push_back(colony::pf::from_id(t, w));
+        t = m_harvestFieldParent[t];
+    }
+
+    if (outPath.empty() || outPath.front().x != startX || outPath.front().y != startY)
+        return false;
+
+    return true;
 }
 
 bool World::findPathToNearestFoodSource(int startX, int startY,
@@ -2202,6 +3446,166 @@ bool World::findPathToNearestLooseWood(int startX, int startY,
     return false;
 }
 
+bool World::findPathToBestLooseWoodForDelivery(std::uint32_t stockpileStamp,
+                                              int startX, int startY,
+                                              int& outWoodX, int& outWoodY,
+                                              std::vector<colony::pf::IVec2>& outPath) const
+{
+    outPath.clear();
+    outWoodX = -1;
+    outWoodY = -1;
+
+    if (stockpileStamp == 0u)
+        return false;
+
+    if (!inBounds(startX, startY) || !m_nav.passable(startX, startY))
+        return false;
+
+    if (m_looseWoodCells.empty() || m_looseWoodTotal <= 0)
+        return false;
+
+    const int w = m_w;
+    const int h = m_h;
+    if (w <= 0 || h <= 0)
+        return false;
+
+    const std::size_t n = static_cast<std::size_t>(w * h);
+    constexpr float kInf = std::numeric_limits<float>::infinity();
+
+    // Scratch buffers (mutable) to avoid per-call allocations and O(n) clears.
+    if (m_nearestDist.size() != n)
+    {
+        m_nearestDist.assign(n, 0.0f);
+        m_nearestParent.assign(n, colony::pf::kInvalid);
+        m_nearestStamp.assign(n, 0u);
+        m_nearestStampValue = 1;
+    }
+
+    // Bump generation (stamp 0 means "never visited"). Handle wrap.
+    std::uint32_t stamp = m_nearestStampValue + 1u;
+    if (stamp == 0u)
+    {
+        std::fill(m_nearestStamp.begin(), m_nearestStamp.end(), 0u);
+        stamp = 1u;
+    }
+    m_nearestStampValue = stamp;
+
+    auto getDist = [&](colony::pf::NodeId id) -> float {
+        if (m_nearestStamp[id] != stamp)
+            return kInf;
+        return m_nearestDist[id];
+    };
+    auto setNode = [&](colony::pf::NodeId id, float d, colony::pf::NodeId parent) {
+        m_nearestStamp[id] = stamp;
+        m_nearestDist[id] = d;
+        m_nearestParent[id] = parent;
+    };
+
+    struct QN
+    {
+        float d;
+        colony::pf::NodeId id;
+        bool operator>(const QN& o) const { return d > o.d; }
+    };
+    std::priority_queue<QN, std::vector<QN>, std::greater<QN>> open;
+
+    const colony::pf::NodeId sid = colony::pf::to_id(startX, startY, w);
+    setNode(sid, 0.0f, colony::pf::kInvalid);
+    open.push({0.0f, sid});
+
+    float bestCombined = kInf;
+    colony::pf::NodeId bestId = colony::pf::kInvalid;
+    std::uint64_t bestKey = std::numeric_limits<std::uint64_t>::max();
+
+    while (!open.empty())
+    {
+        const QN cur = open.top();
+        open.pop();
+
+        // Skip if this is an outdated entry.
+        if (cur.d != getDist(cur.id))
+            continue;
+
+        // Because dropDist >= 0, no future candidate can beat bestCombined once
+        // the frontier distance exceeds it.
+        if (cur.d > bestCombined)
+            break;
+
+        const colony::pf::IVec2 C = colony::pf::from_id(cur.id, w);
+        const Cell& cc = cell(C.x, C.y);
+
+        if (cc.looseWood > 0 && cc.looseWoodReservedBy == -1)
+        {
+            const float dropDist = stockpileFieldDistAt(stockpileStamp, C.x, C.y);
+            if (std::isfinite(dropDist))
+            {
+                const float combined = cur.d + dropDist;
+                const std::uint64_t key = PackPlanKey(C.x, C.y);
+
+                if (combined < bestCombined || (combined == bestCombined && key < bestKey))
+                {
+                    bestCombined = combined;
+                    bestId = cur.id;
+                    bestKey = key;
+                }
+            }
+        }
+
+        constexpr int DIRS = 8;
+        static const int dx[DIRS] = { 1, -1, 0, 0,  1,  1, -1, -1 };
+        static const int dy[DIRS] = { 0,  0, 1, -1, 1, -1,  1, -1 };
+
+        for (int dir = 0; dir < DIRS; ++dir)
+        {
+            if (!m_nav.can_step(C.x, C.y, dx[dir], dy[dir]))
+                continue;
+
+            const int nx = C.x + dx[dir];
+            const int ny = C.y + dy[dir];
+            if (!inBounds(nx, ny))
+                continue;
+
+            const colony::pf::NodeId nid = colony::pf::to_id(nx, ny, w);
+            const float nd = cur.d + m_nav.step_cost(C.x, C.y, dx[dir], dy[dir]);
+
+            if (nd < getDist(nid))
+            {
+                setNode(nid, nd, cur.id);
+                open.push({nd, nid});
+            }
+        }
+    }
+
+    if (bestId == colony::pf::kInvalid)
+        return false;
+
+    const colony::pf::IVec2 bestPos = colony::pf::from_id(bestId, w);
+    outWoodX = bestPos.x;
+    outWoodY = bestPos.y;
+
+    // Reconstruct path: start -> best
+    std::vector<colony::pf::IVec2> rev;
+    colony::pf::NodeId t = bestId;
+    while (t != colony::pf::kInvalid)
+    {
+        if (m_nearestStamp[t] != stamp)
+            break;
+
+        rev.push_back(colony::pf::from_id(t, w));
+        if (t == sid)
+            break;
+
+        t = m_nearestParent[t];
+    }
+
+    if (rev.empty() || rev.back().x != startX || rev.back().y != startY)
+        return false;
+
+    std::reverse(rev.begin(), rev.end());
+    outPath.swap(rev);
+    return !outPath.empty();
+}
+
 bool World::findPathToNearestStockpile(int startX, int startY,
                                        int& outX, int& outY,
                                        std::vector<colony::pf::IVec2>& outPath) const
@@ -2353,6 +3757,11 @@ void World::assignEatJobs(double dtSeconds)
             cancelJob(c);
     }
 
+    // Build a shared food distance field once. This field is cached and reused
+    // until the navigation grid changes (walls built, etc.).
+    const std::uint32_t foodStamp = buildFoodField();
+    const float eatDur = static_cast<float>(std::max(0.0, colonistEatDurationSeconds));
+
     // Second pass: assign eat jobs to hungry, idle colonists.
     for (Colonist& c : m_colonists)
     {
@@ -2371,13 +3780,39 @@ void World::assignEatJobs(double dtSeconds)
         int foodY = -1;
         std::vector<colony::pf::IVec2> path;
 
-        if (!findPathToNearestFoodSource(sx, sy, foodX, foodY, path))
+        bool found = false;
+
+        if (foodStamp != 0u && queryFoodField(foodStamp, sx, sy, foodX, foodY, path))
         {
-            // No stockpiles/farms yet (or none reachable). Fall back to eating in-place.
-            foodX = sx;
-            foodY = sy;
-            path.clear();
-            path.push_back({sx, sy});
+            if (inBounds(foodX, foodY))
+            {
+                const TileType b = cell(foodX, foodY).built;
+                if (b == TileType::Stockpile || b == TileType::Farm)
+                    found = true;
+            }
+        }
+
+        if (found)
+        {
+            ++m_pathStats.eatFieldAssigned;
+        }
+        else if (foodStamp != 0u)
+        {
+            // Field exists but didn't yield a usable result. Fall back to a per-colonist
+            // search to preserve behavior and robustness.
+            ++m_pathStats.eatFieldFallback;
+        }
+
+        if (!found)
+        {
+            if (foodStamp == 0u || !findPathToNearestFoodSource(sx, sy, foodX, foodY, path))
+            {
+                // No stockpiles/farms yet (or none reachable). Fall back to eating in-place.
+                foodX = sx;
+                foodY = sy;
+                path.clear();
+                path.push_back({sx, sy});
+            }
         }
 
         c.hasJob = true;
@@ -2386,7 +3821,7 @@ void World::assignEatJobs(double dtSeconds)
         c.targetY = foodY;
         c.path = std::move(path);
         c.pathIndex = 0;
-        c.eatWorkRemaining = static_cast<float>(std::max(0.0, colonistEatDurationSeconds));
+        c.eatWorkRemaining = eatDur;
     }
 }
 
@@ -2497,6 +3932,10 @@ void World::assignHarvestJobs(double dtSeconds)
         }
     }
 
+    // Build a shared harvest distance field once for this assignment pass.
+    const std::uint32_t harvestStamp = buildHarvestField();
+    const float harvestDur = static_cast<float>(std::max(0.0, farmHarvestDurationSeconds));
+
     bool assignedAny = false;
 
     for (Colonist& c : m_colonists)
@@ -2534,8 +3973,33 @@ void World::assignHarvestJobs(double dtSeconds)
         int farmY = -1;
         std::vector<colony::pf::IVec2> path;
 
-        if (!findPathToNearestHarvestableFarm(sx, sy, farmX, farmY, path))
-            continue;
+        bool found = false;
+        if (harvestStamp != 0u && queryHarvestField(harvestStamp, sx, sy, farmX, farmY, path))
+        {
+            if (inBounds(farmX, farmY))
+            {
+                const Cell& farm = cell(farmX, farmY);
+                if (farm.built == TileType::Farm && farm.farmGrowth >= 1.0f && farm.farmReservedBy == -1)
+                    found = true;
+            }
+        }
+
+        if (found)
+        {
+            ++m_pathStats.harvestFieldAssigned;
+        }
+        else if (harvestStamp != 0u)
+        {
+            // The field exists but didn't provide a valid/available target (e.g. got reserved).
+            ++m_pathStats.harvestFieldFallback;
+        }
+
+        if (!found)
+        {
+            // Fallback to the per-colonist Dijkstra for correctness under dynamic reservations.
+            if (harvestStamp == 0u || !findPathToNearestHarvestableFarm(sx, sy, farmX, farmY, path))
+                continue;
+        }
 
         if (!inBounds(farmX, farmY))
             continue;
@@ -2555,7 +4019,7 @@ void World::assignHarvestJobs(double dtSeconds)
         c.targetY = farmY;
         c.path = std::move(path);
         c.pathIndex = 0;
-        c.harvestWorkRemaining = static_cast<float>(std::max(0.0, farmHarvestDurationSeconds));
+        c.harvestWorkRemaining = harvestDur;
 
         assignedAny = true;
     }
@@ -2666,74 +4130,114 @@ void World::assignJobs(double dtSeconds)
 
     m_jobAssignCooldown = kJobAssignIntervalSeconds;
 
-    for (Colonist& c : m_colonists)
+    // ------------------------------------------------------------
+    // Multi-source plan distance field
+    // ------------------------------------------------------------
+    // We build a Dijkstra field once per plan priority and then query it
+    // for each idle builder.
+    //
+    // This avoids doing a full Dijkstra per colonist when many colonists are idle.
+    // If the field points at a plan that has been reserved earlier in this same
+    // tick, we fall back to the legacy per-colonist search.
+
+    for (int pr = 3; pr >= 0; --pr)
     {
-        if (c.hasJob)
+        if (!anyUnreservedAtPriority[static_cast<std::size_t>(pr)])
             continue;
 
-        // Drafted colonists are manually controlled.
-        if (c.drafted)
+        const std::uint32_t fieldStamp = buildPlanField(pr);
+        if (fieldStamp == 0u)
             continue;
 
-        // Role capability gate: only colonists with Building can take build plans.
-        if (!HasCap(c, Capability::Building))
-            continue;
-
-        // Hungry colonists should not pick up construction jobs.
-        if (eatThreshold > 0.0f && c.personalFood <= eatThreshold)
-            continue;
-
-        // Respect per-colonist work priorities.
+        for (Colonist& c : m_colonists)
         {
-            const int best = BestWorkPrio(c, /*buildAvailable=*/anyUnreserved, farmWorkAvailable, haulWorkAvailable);
-            if (best == kWorkPrioOff || WorkPrioEff(c.workPrio.build) != best)
-                continue;
-        }
-
-        const int sx = static_cast<int>(std::floor(c.x));
-        const int sy = static_cast<int>(std::floor(c.y));
-
-        // If we're currently on an invalid tile (should not happen), idle.
-        if (!inBounds(sx, sy) || !m_nav.passable(sx, sy))
-            continue;
-
-        int targetX = -1;
-        int targetY = -1;
-        std::vector<colony::pf::IVec2> path;
-
-        bool found = false;
-        // Prefer higher priority plans, then nearest within that priority.
-        // (Priority range is small; attempting in descending order is cheap and stable.)
-        for (int pr = 3; pr >= 0; --pr)
-        {
-            if (!anyUnreservedAtPriority[static_cast<std::size_t>(pr)])
+            if (c.hasJob)
                 continue;
 
-            if (findPathToNearestAvailablePlan(sx, sy, targetX, targetY, path, pr))
+            // Drafted colonists are manually controlled.
+            if (c.drafted)
+                continue;
+
+            // Role capability gate: only colonists with Building can take build plans.
+            if (!HasCap(c, Capability::Building))
+                continue;
+
+            // Hungry colonists should not pick up construction jobs.
+            if (eatThreshold > 0.0f && c.personalFood <= eatThreshold)
+                continue;
+
+            // Respect per-colonist work priorities.
             {
-                found = true;
-                break;
+                const int best = BestWorkPrio(c, /*buildAvailable=*/anyUnreserved, farmWorkAvailable, haulWorkAvailable);
+                if (best == kWorkPrioOff || WorkPrioEff(c.workPrio.build) != best)
+                    continue;
             }
+
+            const int sx = static_cast<int>(std::floor(c.x));
+            const int sy = static_cast<int>(std::floor(c.y));
+
+            // If we're currently on an invalid tile (should not happen), idle.
+            if (!inBounds(sx, sy) || !m_nav.passable(sx, sy))
+                continue;
+
+            int targetX = -1;
+            int targetY = -1;
+            std::vector<colony::pf::IVec2> path;
+
+            bool found = queryPlanField(fieldStamp, sx, sy, targetX, targetY, path);
+            bool usedFallback = false;
+
+            if (found)
+            {
+                // The field is built from an unreserved snapshot, but reservations can change
+                // while we're assigning. Validate the plan is still buildable.
+                if (!inBounds(targetX, targetY))
+                {
+                    found = false;
+                }
+                else
+                {
+                    const Cell& tc = cell(targetX, targetY);
+                    if (tc.planned == TileType::Empty || tc.planned == tc.built)
+                        found = false;
+                    else if (static_cast<int>(std::min<std::uint8_t>(3, tc.planPriority)) != pr)
+                        found = false;
+                    else if (tc.reservedBy != -1)
+                        found = false;
+                }
+            }
+
+            if (!found)
+            {
+                // Fallback: per-colonist search for this priority.
+                usedFallback = findPathToNearestAvailablePlan(sx, sy, targetX, targetY, path, pr);
+                found = usedFallback;
+            }
+
+            if (!found)
+                continue;
+
+            // Reserve the plan for this colonist (re-check in case it raced).
+            if (!inBounds(targetX, targetY))
+                continue;
+
+            Cell& target = cell(targetX, targetY);
+            if (target.reservedBy != -1)
+                continue;
+            target.reservedBy = c.id;
+
+            if (usedFallback)
+                ++m_pathStats.buildFieldFallback;
+            else
+                ++m_pathStats.buildFieldAssigned;
+
+            c.hasJob = true;
+            c.jobKind = Colonist::JobKind::BuildPlan;
+            c.targetX = targetX;
+            c.targetY = targetY;
+            c.path = std::move(path);
+            c.pathIndex = 0;
         }
-
-        // Fallback: if we failed to find a reachable plan of any known priority,
-        // do a last attempt without filtering (handles corrupted saves/custom tools).
-        if (!found)
-            found = findPathToNearestAvailablePlan(sx, sy, targetX, targetY, path, /*requiredPriority=*/-1);
-
-        if (!found)
-            continue;
-
-        // Reserve the plan for this colonist.
-        Cell& target = cell(targetX, targetY);
-        target.reservedBy = c.id;
-
-        c.hasJob = true;
-        c.jobKind = Colonist::JobKind::BuildPlan;
-        c.targetX = targetX;
-        c.targetY = targetY;
-        c.path = std::move(path);
-        c.pathIndex = 0;
     }
 }
 
@@ -2809,6 +4313,15 @@ void World::assignHaulJobs(double dtSeconds)
         break;
     }
 
+    // Build the shared fields once; per-colonist assignment is O(pathLength).
+    const std::uint32_t stockpileStamp = buildStockpileField();
+    if (stockpileStamp == 0u)
+        return;
+
+    const std::uint32_t haulStamp = buildHaulPickupField(stockpileStamp);
+    if (haulStamp == 0u)
+        return;
+
     const float eatThreshold = static_cast<float>(std::max(0.0, colonistEatThresholdFood));
 
     for (auto& c : m_colonists)
@@ -2833,21 +4346,57 @@ void World::assignHaulJobs(double dtSeconds)
                 continue;
         }
 
+        const int sx = posToTile(c.x);
+        const int sy = posToTile(c.y);
+
         int woodX = -1;
         int woodY = -1;
         std::vector<colony::pf::IVec2> path;
-        if (!findPathToNearestLooseWood(posToTile(c.x), posToTile(c.y), woodX, woodY, path))
+
+        bool usedFallback = false;
+        bool ok = queryHaulPickupField(haulStamp, sx, sy, woodX, woodY, path);
+
+        if (ok)
+        {
+            if (!inBounds(woodX, woodY))
+            {
+                ok = false;
+            }
+            else
+            {
+                const Cell& srcC = cell(woodX, woodY);
+                if (srcC.looseWood <= 0 || srcC.looseWoodReservedBy != -1)
+                    ok = false;
+            }
+        }
+
+        if (!ok)
+        {
+            usedFallback = findPathToBestLooseWoodForDelivery(stockpileStamp, sx, sy, woodX, woodY, path);
+            ok = usedFallback;
+        }
+
+        if (!ok)
             continue;
 
         if (!inBounds(woodX, woodY))
             continue;
 
+        // Validate (again) and reserve the stack so multiple haulers don't target the same tile.
         Cell& src = cell(woodX, woodY);
         if (src.looseWood <= 0 || src.looseWoodReservedBy != -1)
             continue;
 
-        // Reserve the stack so multiple haulers don't target the same tile.
+        // Ensure this pile can reach some stockpile (otherwise we'd pick up and then be unable to deliver).
+        if (!std::isfinite(stockpileFieldDistAt(stockpileStamp, woodX, woodY)))
+            continue;
+
         src.looseWoodReservedBy = c.id;
+
+        if (usedFallback)
+            ++m_pathStats.haulPickupFieldFallback;
+        else
+            ++m_pathStats.haulPickupFieldAssigned;
 
         c.hasJob = true;
         c.jobKind = Colonist::JobKind::HaulWood;
@@ -3455,11 +5004,25 @@ void World::stepHaulIfReady(Colonist& c, double dtSeconds)
 
         c.carryingWood = take;
 
-        // Find a stockpile to deliver to.
+        // Find a stockpile to deliver to (prefer the cached stockpile field; fall back if needed).
         int spX = -1;
         int spY = -1;
         std::vector<colony::pf::IVec2> path;
-        if (!findPathToNearestStockpile(tx, ty, spX, spY, path))
+
+        const std::uint32_t stockpileStamp = buildStockpileField();
+        bool found = queryStockpileField(stockpileStamp, tx, ty, spX, spY, path);
+
+        if (found)
+        {
+            // Validate the destination is still a stockpile (it could have been deconstructed).
+            if (!inBounds(spX, spY) || cell(spX, spY).built != TileType::Stockpile)
+                found = false;
+        }
+
+        if (!found)
+            found = findPathToNearestStockpile(tx, ty, spX, spY, path);
+
+        if (!found)
         {
             // No reachable stockpile; drop what we're carrying and give up.
             dropLooseWoodNear(tx, ty, c.carryingWood);
@@ -3497,7 +5060,20 @@ void World::stepHaulIfReady(Colonist& c, double dtSeconds)
         int spX = -1;
         int spY = -1;
         std::vector<colony::pf::IVec2> path;
-        if (findPathToNearestStockpile(tx, ty, spX, spY, path))
+
+        const std::uint32_t stockpileStamp = buildStockpileField();
+        bool found = queryStockpileField(stockpileStamp, tx, ty, spX, spY, path);
+
+        if (found)
+        {
+            if (!inBounds(spX, spY) || cell(spX, spY).built != TileType::Stockpile)
+                found = false;
+        }
+
+        if (!found)
+            found = findPathToNearestStockpile(tx, ty, spX, spY, path);
+
+        if (found)
         {
             c.haulDropX = spX;
             c.haulDropY = spY;

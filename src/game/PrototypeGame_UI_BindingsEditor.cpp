@@ -240,6 +240,12 @@ void PrototypeGame::Impl::drawBindingsEditorWindow()
 
         bindingsEditorMessage.clear();
         bindingsEditorMessageTtl = 0.f;
+
+        // Clear any pending capture state from a previous session.
+        bindingsEditorCaptureActive = false;
+        bindingsEditorCaptureAction = -1;
+        bindingsEditorCaptureDown.reset();
+        bindingsEditorCaptureCodes.clear();
         bindingsEditorInit = true;
     }
 
@@ -267,6 +273,27 @@ void PrototypeGame::Impl::drawBindingsEditorWindow()
         ImGui::TextWrapped("Loaded file: (defaults)");
 
     ImGui::TextWrapped("Target file: %s", colony::util::PathToUtf8String(bindingsEditorTargetPath).c_str());
+
+    ImGui::Checkbox("Capture appends", &bindingsEditorCaptureAppend);
+    ImGui::SameLine();
+    ImGui::TextDisabled("(when enabled, captured chords are appended instead of replacing)");
+
+    if (bindingsEditorCaptureActive &&
+        bindingsEditorCaptureAction >= 0 &&
+        bindingsEditorCaptureAction < static_cast<int>(colony::input::Action::Count))
+    {
+        const auto a = static_cast<colony::input::Action>(bindingsEditorCaptureAction);
+        ImGui::Separator();
+        ImGui::TextColored(ImVec4(1.0f, 0.85f, 0.25f, 1.0f),
+                           "Capturing for %s... press keys/mouse, then release to commit (Esc cancels).",
+                           colony::input::InputMapper::ActionName(a));
+        if (!bindingsEditorCaptureCodes.empty())
+        {
+            const std::string preview = chordCodesToString(
+                std::span<const std::uint32_t>(bindingsEditorCaptureCodes.data(), bindingsEditorCaptureCodes.size()));
+            ImGui::TextDisabled("Captured so far: %s", preview.c_str());
+        }
+    }
 
 #if defined(_WIN32)
     {
@@ -323,6 +350,57 @@ void PrototypeGame::Impl::drawBindingsEditorWindow()
             }
         }
 
+        // Detect duplicate chord assignments across actions (usually accidental).
+        {
+            std::vector<std::pair<std::string, std::string>> chordUses;
+            chordUses.reserve(64);
+
+            for (std::size_t i = 0; i < kActCount; ++i)
+            {
+                if (clearFlags[i])
+                    continue;
+
+                const auto a = static_cast<colony::input::Action>(i);
+                for (const auto& chord : parsed[i])
+                {
+                    const std::string c = chordCodesToString(std::span<const std::uint32_t>(chord.data(), chord.size()));
+                    chordUses.emplace_back(c, colony::input::InputMapper::ActionName(a));
+                }
+            }
+
+            std::sort(chordUses.begin(), chordUses.end(),
+                      [](const auto& lhs, const auto& rhs) { return lhs.first < rhs.first; });
+
+            std::string dup;
+            for (std::size_t i = 0; i < chordUses.size(); )
+            {
+                const std::size_t j0 = i;
+                const std::string& chord = chordUses[i].first;
+                while (i < chordUses.size() && chordUses[i].first == chord) ++i;
+
+                const std::size_t count = i - j0;
+                if (count > 1)
+                {
+                    dup += "  ";
+                    dup += chord;
+                    dup += " -> ";
+                    for (std::size_t j = j0; j < i; ++j)
+                    {
+                        if (j != j0)
+                            dup += ", ";
+                        dup += chordUses[j].second;
+                    }
+                    dup += "\n";
+                }
+            }
+
+            if (!dup.empty())
+            {
+                warnings += "Duplicate chords detected (same chord bound to multiple actions):\n";
+                warnings += dup;
+            }
+        }
+
         // Apply atomically.
         for (std::size_t i = 0; i < kActCount; ++i)
         {
@@ -372,6 +450,57 @@ void PrototypeGame::Impl::drawBindingsEditorWindow()
             {
                 const auto a = static_cast<colony::input::Action>(i);
                 warnings += std::string("[") + colony::input::InputMapper::ActionName(a) + "] " + warn + "\n";
+            }
+        }
+
+        // Detect duplicate chord assignments across actions (usually accidental).
+        {
+            std::vector<std::pair<std::string, std::string>> chordUses;
+            chordUses.reserve(64);
+
+            for (std::size_t i = 0; i < kActCount; ++i)
+            {
+                if (clearFlags[i])
+                    continue;
+
+                const auto a = static_cast<colony::input::Action>(i);
+                for (const auto& chord : parsed[i])
+                {
+                    const std::string c = chordCodesToString(std::span<const std::uint32_t>(chord.data(), chord.size()));
+                    chordUses.emplace_back(c, colony::input::InputMapper::ActionName(a));
+                }
+            }
+
+            std::sort(chordUses.begin(), chordUses.end(),
+                      [](const auto& lhs, const auto& rhs) { return lhs.first < rhs.first; });
+
+            std::string dup;
+            for (std::size_t i = 0; i < chordUses.size(); )
+            {
+                const std::size_t j0 = i;
+                const std::string& chord = chordUses[i].first;
+                while (i < chordUses.size() && chordUses[i].first == chord) ++i;
+
+                const std::size_t count = i - j0;
+                if (count > 1)
+                {
+                    dup += "  ";
+                    dup += chord;
+                    dup += " -> ";
+                    for (std::size_t j = j0; j < i; ++j)
+                    {
+                        if (j != j0)
+                            dup += ", ";
+                        dup += chordUses[j].second;
+                    }
+                    dup += "\n";
+                }
+            }
+
+            if (!dup.empty())
+            {
+                warnings += "Duplicate chords detected (same chord bound to multiple actions):\n";
+                warnings += dup;
             }
         }
 
@@ -480,12 +609,13 @@ void PrototypeGame::Impl::drawBindingsEditorWindow()
 
     ImGui::Separator();
 
-    if (ImGui::BeginTable("bindings_table", 2,
+    if (ImGui::BeginTable("bindings_table", 3,
                           ImGuiTableFlags_RowBg | ImGuiTableFlags_Borders | ImGuiTableFlags_Resizable |
                               ImGuiTableFlags_SizingStretchProp))
     {
         ImGui::TableSetupColumn("Action", ImGuiTableColumnFlags_WidthFixed, 160.f);
         ImGui::TableSetupColumn("Bindings", ImGuiTableColumnFlags_WidthStretch);
+        ImGui::TableSetupColumn("Capture", ImGuiTableColumnFlags_WidthFixed, 90.f);
         ImGui::TableHeadersRow();
 
         for (std::size_t i = 0; i < static_cast<std::size_t>(colony::input::Action::Count); ++i)
@@ -499,6 +629,37 @@ void PrototypeGame::Impl::drawBindingsEditorWindow()
             ImGui::TableNextColumn();
             const std::string label = std::string("##bind_") + colony::input::InputMapper::ActionName(a);
             InputTextStdString(label.c_str(), &bindingsEditorText[i]);
+
+            ImGui::TableNextColumn();
+            {
+                const std::string capLabel = std::string("Capture##") + colony::input::InputMapper::ActionName(a);
+                const std::string cancelLabel = std::string("Cancel##") + colony::input::InputMapper::ActionName(a);
+
+                if (bindingsEditorCaptureActive && bindingsEditorCaptureAction == static_cast<int>(i))
+                {
+                    if (ImGui::Button(cancelLabel.c_str()))
+                    {
+                        bindingsEditorCaptureActive = false;
+                        bindingsEditorCaptureAction = -1;
+                        bindingsEditorCaptureDown.reset();
+                        bindingsEditorCaptureCodes.clear();
+                        bindingsEditorMessage = "Capture canceled";
+                        bindingsEditorMessageTtl = 2.f;
+                    }
+                }
+                else
+                {
+                    if (ImGui::Button(capLabel.c_str()))
+                    {
+                        bindingsEditorCaptureActive = true;
+                        bindingsEditorCaptureAction = static_cast<int>(i);
+                        bindingsEditorCaptureDown.reset();
+                        bindingsEditorCaptureCodes.clear();
+                        bindingsEditorMessage = std::string("Capturing: ") + colony::input::InputMapper::ActionName(a);
+                        bindingsEditorMessageTtl = 2.f;
+                    }
+                }
+            }
         }
 
         ImGui::EndTable();

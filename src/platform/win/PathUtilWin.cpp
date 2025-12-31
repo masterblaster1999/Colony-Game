@@ -546,6 +546,61 @@ namespace winpath {
 
 
 
+    bool copy_file_with_retry(const fs::path& from,
+                             const fs::path& to,
+                             bool overwrite_existing,
+                             std::error_code* out_ec,
+                             int max_attempts) noexcept
+    {
+        if (out_ec) out_ec->clear();
+        if (from.empty() || to.empty()) return false;
+
+        std::error_code ec;
+
+        const int attempts = (max_attempts <= 0) ? 1 : max_attempts;
+        for (int attempt = 0; attempt < attempts; ++attempt)
+        {
+            ec.clear();
+
+            const fs::copy_options opt = overwrite_existing
+                                           ? fs::copy_options::overwrite_existing
+                                           : fs::copy_options::none;
+
+            fs::copy_file(from, to, opt, ec);
+
+            if (!ec)
+                return true;
+
+            // Missing source isn't retryable.
+            if (IsMissingPathError(ec))
+            {
+                if (out_ec) *out_ec = ec;
+                return false;
+            }
+
+            // If access denied, clear read-only attribute on both ends best-effort.
+            if (static_cast<DWORD>(ec.value()) == ERROR_ACCESS_DENIED)
+            {
+                ClearReadonlyAttributeBestEffort(from);
+                ClearReadonlyAttributeBestEffort(to);
+            }
+
+            if (IsTransientSharingError(ec))
+            {
+                SleepBackoffMs(attempt);
+                continue;
+            }
+
+            if (out_ec) *out_ec = ec;
+            return false;
+        }
+
+        if (out_ec) *out_ec = ec;
+        return false;
+    }
+
+
+
     bool read_file_to_string_with_retry(const fs::path& path,
                                         std::string& out,
                                         std::error_code* out_ec,

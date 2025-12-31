@@ -143,6 +143,18 @@ bool PlanBlueprintFromJson(std::string_view text, PlanBlueprint& out, std::strin
         return false;
     }
 
+    // Optional sanity check: if a `type` field exists, it must match our blueprint identifier.
+    if (j.contains("type"))
+    {
+        const auto& t = j["type"];
+        if (!t.is_string() || t.get<std::string>() != "colony_plan_blueprint")
+        {
+            if (outError)
+                *outError = "JSON is not a colony plan blueprint.";
+            return false;
+        }
+    }
+
     const int version = j.value("version", 0);
     if (version != kBlueprintVersion)
     {
@@ -160,12 +172,14 @@ bool PlanBlueprintFromJson(std::string_view text, PlanBlueprint& out, std::strin
         return false;
     }
 
-    if (expected > (1u << 24))
+    const std::uint64_t expected64 = static_cast<std::uint64_t>(w) * static_cast<std::uint64_t>(h);
+    if (expected64 == 0 || expected64 > (1ull << 24))
     {
         if (outError)
             *outError = "Blueprint is too large.";
         return false;
     }
+    const std::size_t expected = static_cast<std::size_t>(expected64);
 
     // New format: RLE.
     if (j.contains("rle"))
@@ -416,5 +430,133 @@ PlanBlueprint BlueprintFlipVertical(const PlanBlueprint& bp) noexcept
 
     return out;
 }
+
+
+
+BlueprintBounds BlueprintNonEmptyBounds(const PlanBlueprint& bp) noexcept
+{
+    BlueprintBounds bounds;
+    if (bp.Empty())
+        return bounds;
+
+    int minX = bp.w;
+    int minY = bp.h;
+    int maxX = -1;
+    int maxY = -1;
+
+    const int w = bp.w;
+    const int h = bp.h;
+
+    for (int y = 0; y < h; ++y)
+    {
+        for (int x = 0; x < w; ++x)
+        {
+            const std::size_t idx =
+                static_cast<std::size_t>(y) * static_cast<std::size_t>(w) + static_cast<std::size_t>(x);
+            if (idx >= bp.packed.size())
+                continue;
+
+            if (BlueprintUnpackTile(bp.packed[idx]) == colony::proto::TileType::Empty)
+                continue;
+
+            minX = std::min(minX, x);
+            minY = std::min(minY, y);
+            maxX = std::max(maxX, x);
+            maxY = std::max(maxY, y);
+        }
+    }
+
+    if (maxX < minX || maxY < minY)
+        return bounds;
+
+    bounds.x0 = minX;
+    bounds.y0 = minY;
+    bounds.x1 = maxX;
+    bounds.y1 = maxY;
+    return bounds;
+}
+
+PlanBlueprint BlueprintCrop(const PlanBlueprint& bp, int x0, int y0, int w, int h) noexcept
+{
+    PlanBlueprint out;
+    if (bp.Empty() || w <= 0 || h <= 0)
+        return out;
+
+    out.w = w;
+    out.h = h;
+    out.packed.assign(static_cast<std::size_t>(w) * static_cast<std::size_t>(h), std::uint8_t{0});
+
+    const int srcW = bp.w;
+    const int srcH = bp.h;
+
+    for (int y = 0; y < h; ++y)
+    {
+        const int sy = y0 + y;
+        if (sy < 0 || sy >= srcH)
+            continue;
+
+        for (int x = 0; x < w; ++x)
+        {
+            const int sx = x0 + x;
+            if (sx < 0 || sx >= srcW)
+                continue;
+
+            const std::size_t src =
+                static_cast<std::size_t>(sy) * static_cast<std::size_t>(srcW) + static_cast<std::size_t>(sx);
+            const std::size_t dst =
+                static_cast<std::size_t>(y) * static_cast<std::size_t>(w) + static_cast<std::size_t>(x);
+
+            if (src < bp.packed.size() && dst < out.packed.size())
+                out.packed[dst] = bp.packed[src];
+        }
+    }
+
+    return out;
+}
+
+PlanBlueprint BlueprintTrimEmptyBorders(const PlanBlueprint& bp) noexcept
+{
+    if (bp.Empty())
+        return {};
+
+    const BlueprintBounds b = BlueprintNonEmptyBounds(bp);
+    if (b.Empty())
+        return {};
+
+    return BlueprintCrop(bp, b.x0, b.y0, b.Width(), b.Height());
+}
+
+std::uint64_t BlueprintHash64(const PlanBlueprint& bp) noexcept
+{
+    // 64-bit FNV-1a.
+    constexpr std::uint64_t kOffset = 14695981039346656037ull;
+    constexpr std::uint64_t kPrime  = 1099511628211ull;
+
+    std::uint64_t h = kOffset;
+
+    auto addByte = [&](std::uint8_t b) {
+        h ^= static_cast<std::uint64_t>(b);
+        h *= kPrime;
+    };
+
+    auto addU32 = [&](std::uint32_t v) {
+        addByte(static_cast<std::uint8_t>((v >> 0) & 0xFFu));
+        addByte(static_cast<std::uint8_t>((v >> 8) & 0xFFu));
+        addByte(static_cast<std::uint8_t>((v >> 16) & 0xFFu));
+        addByte(static_cast<std::uint8_t>((v >> 24) & 0xFFu));
+    };
+
+    const std::uint32_t w = (bp.w > 0) ? static_cast<std::uint32_t>(bp.w) : 0u;
+    const std::uint32_t hgt = (bp.h > 0) ? static_cast<std::uint32_t>(bp.h) : 0u;
+
+    addU32(w);
+    addU32(hgt);
+
+    for (const std::uint8_t b : bp.packed)
+        addByte(b);
+
+    return h;
+}
+
 
 } // namespace colony::game::editor

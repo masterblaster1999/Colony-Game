@@ -237,6 +237,7 @@ if(EXISTS "${CMAKE_SOURCE_DIR}/src/game/proto/ProtoWorld.cpp")
     "${CMAKE_SOURCE_DIR}/src/game/proto/ProtoWorld.cpp"
     "${CMAKE_SOURCE_DIR}/src/game/proto/ProtoWorld_Persistence.cpp"
     "${CMAKE_SOURCE_DIR}/src/game/editor/PlanHistory.cpp"
+    "${CMAKE_SOURCE_DIR}/src/game/editor/Blueprint.cpp"
   )
 endif()
 

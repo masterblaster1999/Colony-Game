@@ -8,7 +8,9 @@
 #include <cmath>
 #include <chrono>
 #include <cstdio>
+#include <cctype>
 #include <system_error>
+#include <string_view>
 #include <shellapi.h>
 
 namespace colony::game {
@@ -39,6 +41,13 @@ namespace {
     return (c & 0x00FFFFFFu) | 0x88000000u;
 }
 
+[[nodiscard]] std::uint8_t ClampPlanPriorityByte(std::uint8_t p) noexcept
+{
+    // std::clamp requires the same type for value and bounds.
+    // planPriority is stored as a byte, so clamp in int-space.
+    return static_cast<std::uint8_t>(std::clamp<int>(static_cast<int>(p), 0, 3));
+}
+
 [[nodiscard]] proto::TileType SafeTileTypeFromNibble(std::uint8_t v) noexcept
 {
     // TileType is currently 0..7 (up through Door); anything else is treated as Empty.
@@ -54,6 +63,262 @@ namespace {
     const auto sctp = time_point_cast<system_clock::duration>(
         ft - fs::file_time_type::clock::now() + system_clock::now());
     return duration_cast<seconds>(sctp.time_since_epoch()).count();
+}
+
+[[nodiscard]] char AsciiToLower(char c) noexcept
+{
+    if (c >= 'A' && c <= 'Z')
+        return static_cast<char>(c - 'A' + 'a');
+    return c;
+}
+
+[[nodiscard]] char AsciiToUpper(char c) noexcept
+{
+    if (c >= 'a' && c <= 'z')
+        return static_cast<char>(c - 'a' + 'A');
+    return c;
+}
+
+[[nodiscard]] bool StartsWithInsensitive(std::string_view s, std::string_view prefix) noexcept
+{
+    if (prefix.size() > s.size())
+        return false;
+
+    for (std::size_t i = 0; i < prefix.size(); ++i)
+    {
+        if (AsciiToLower(s[i]) != AsciiToLower(prefix[i]))
+            return false;
+    }
+
+    return true;
+}
+
+[[nodiscard]] bool EndsWithInsensitive(std::string_view s, std::string_view suffix) noexcept
+{
+    if (suffix.size() > s.size())
+        return false;
+
+    const std::size_t offset = s.size() - suffix.size();
+    for (std::size_t i = 0; i < suffix.size(); ++i)
+    {
+        if (AsciiToLower(s[offset + i]) != AsciiToLower(suffix[i]))
+            return false;
+    }
+
+    return true;
+}
+
+[[nodiscard]] bool ContainsInsensitive(std::string_view haystack, std::string_view needle) noexcept
+{
+    if (needle.empty())
+        return true;
+
+    if (needle.size() > haystack.size())
+        return false;
+
+    for (std::size_t i = 0; i + needle.size() <= haystack.size(); ++i)
+    {
+        bool match = true;
+        for (std::size_t j = 0; j < needle.size(); ++j)
+        {
+            if (AsciiToLower(haystack[i + j]) != AsciiToLower(needle[j]))
+            {
+                match = false;
+                break;
+            }
+        }
+        if (match)
+            return true;
+    }
+
+    return false;
+}
+
+[[nodiscard]] bool IsAsciiDigit(char c) noexcept { return (c >= '0' && c <= '9'); }
+
+[[nodiscard]] std::string ToUpperAscii(std::string_view s) noexcept
+{
+    std::string out;
+    out.reserve(s.size());
+    for (char c : s)
+        out.push_back(AsciiToUpper(c));
+    return out;
+}
+
+[[nodiscard]] bool IsReservedWindowsDeviceName(std::string_view upper) noexcept
+{
+    // Avoid awkward/confusing filenames on Windows (matches Blueprint sanitizer).
+    return upper == "CON" || upper == "PRN" || upper == "AUX" || upper == "NUL" ||
+           upper == "COM1" || upper == "COM2" || upper == "COM3" || upper == "COM4" ||
+           upper == "COM5" || upper == "COM6" || upper == "COM7" || upper == "COM8" ||
+           upper == "COM9" || upper == "LPT1" || upper == "LPT2" || upper == "LPT3" ||
+           upper == "LPT4" || upper == "LPT5" || upper == "LPT6" || upper == "LPT7" ||
+           upper == "LPT8" || upper == "LPT9";
+}
+
+[[nodiscard]] bool IsSlotSaveFilename(std::string_view filename, int& outSlot) noexcept
+{
+    constexpr std::string_view kSlot0 = "proto_world.json";
+    if (filename.size() == kSlot0.size() && EndsWithInsensitive(filename, kSlot0))
+    {
+        outSlot = 0;
+        return true;
+    }
+
+    // proto_world_slot_<n>.json
+    constexpr std::string_view prefix = "proto_world_slot_";
+    constexpr std::string_view suffix = ".json";
+
+    if (!StartsWithInsensitive(filename, prefix) || !EndsWithInsensitive(filename, suffix))
+        return false;
+
+    const std::size_t begin = prefix.size();
+    const std::size_t end   = filename.size() - suffix.size();
+    if (end <= begin)
+        return false;
+
+    const std::string_view mid = filename.substr(begin, end - begin);
+
+    int value = 0;
+    for (char c : mid)
+    {
+        if (!IsAsciiDigit(c))
+            return false;
+
+        value = value * 10 + (c - '0');
+    }
+
+    outSlot = value;
+    return true;
+}
+
+[[nodiscard]] bool IsAutosaveFilename(std::string_view filename, int& outIndex) noexcept
+{
+    // autosave_<nn>.json
+    constexpr std::string_view prefix = "autosave_";
+    constexpr std::string_view suffix = ".json";
+
+    if (!StartsWithInsensitive(filename, prefix) || !EndsWithInsensitive(filename, suffix))
+        return false;
+
+    const std::size_t begin = prefix.size();
+    const std::size_t end   = filename.size() - suffix.size();
+    if (end <= begin)
+        return false;
+
+    const std::string_view mid = filename.substr(begin, end - begin);
+    if (mid.size() != 2)
+        return false;
+
+    if (!IsAsciiDigit(mid[0]) || !IsAsciiDigit(mid[1]))
+        return false;
+
+    outIndex = (mid[0] - '0') * 10 + (mid[1] - '0');
+    return true;
+}
+
+[[nodiscard]] bool IsReservedWorldSaveStemUpper(std::string_view upperStem) noexcept
+{
+    if (upperStem == "PROTO_WORLD")
+        return true;
+
+    // PROTO_WORLD_SLOT_<n>
+    constexpr std::string_view slotPrefix = "PROTO_WORLD_SLOT_";
+    if (StartsWithInsensitive(upperStem, slotPrefix))
+    {
+        const std::string_view rest = upperStem.substr(slotPrefix.size());
+        if (!rest.empty())
+        {
+            bool allDigits = true;
+            for (char c : rest)
+            {
+                if (!IsAsciiDigit(c))
+                {
+                    allDigits = false;
+                    break;
+                }
+            }
+            if (allDigits)
+                return true;
+        }
+    }
+
+    // AUTOSAVE_<nn>
+    constexpr std::string_view autoPrefix = "AUTOSAVE_";
+    if (StartsWithInsensitive(upperStem, autoPrefix))
+    {
+        const std::string_view rest = upperStem.substr(autoPrefix.size());
+        if (rest.size() == 2 && IsAsciiDigit(rest[0]) && IsAsciiDigit(rest[1]))
+            return true;
+    }
+
+    return false;
+}
+
+[[nodiscard]] std::string SanitizeSaveName(std::string_view name) noexcept
+{
+    // Trim whitespace
+    std::size_t a = 0;
+    std::size_t b = name.size();
+    while (a < b && std::isspace(static_cast<unsigned char>(name[a])))
+        ++a;
+    while (b > a && std::isspace(static_cast<unsigned char>(name[b - 1])))
+        --b;
+
+    std::string base(name.substr(a, b - a));
+
+    // Strip extension if the user typed it.
+    if (EndsWithInsensitive(base, ".meta.json"))
+        base.resize(base.size() - std::string_view(".meta.json").size());
+    else if (EndsWithInsensitive(base, ".json"))
+        base.resize(base.size() - std::string_view(".json").size());
+
+    // Replace dangerous characters (path separators, quotes, control chars) with underscores.
+    std::string out;
+    out.reserve(base.size());
+    for (char ch : base)
+    {
+        const unsigned char c = static_cast<unsigned char>(ch);
+        if (std::isalnum(c) || ch == '-' || ch == '_' || ch == '.' || ch == ' ')
+            out.push_back(ch);
+        else
+            out.push_back('_');
+    }
+
+    // Trim trailing dots/spaces (problematic on Windows).
+    while (!out.empty() && (out.back() == ' ' || out.back() == '.'))
+        out.pop_back();
+
+    // Collapse multiple spaces.
+    std::string compact;
+    compact.reserve(out.size());
+    bool prevSpace = false;
+    for (char ch : out)
+    {
+        const bool sp = (ch == ' ');
+        if (sp && prevSpace)
+            continue;
+        compact.push_back(ch);
+        prevSpace = sp;
+    }
+
+    if (compact.empty())
+        compact = "save";
+
+    const std::string upper = ToUpperAscii(compact);
+    if (IsReservedWindowsDeviceName(upper))
+        compact = "_" + compact;
+
+    if (IsReservedWorldSaveStemUpper(upper))
+        compact = "save_" + compact;
+
+    return compact;
+}
+
+[[nodiscard]] fs::path NamedWorldSavePathForName(const fs::path& dir, std::string_view userName) noexcept
+{
+    const std::string base = SanitizeSaveName(userName);
+    return dir / (base + ".json");
 }
 
 void DrawSaveThumbnail(const save::SaveSummary& s) noexcept
@@ -222,10 +487,91 @@ void PrototypeGame::Impl::drawPanelsWindow()
             }
         }
 
+        if (ImGui::CollapsingHeader("Alerts"))
+        {
+            ImGui::Checkbox("Enable alerts", &alertsEnabled);
+            ImGui::SameLine();
+            ImGui::Checkbox("Toast overlay", &alertsShowToasts);
+
+            ImGui::Checkbox("Resolve messages", &alertsShowResolveMessages);
+            ImGui::SameLine();
+            ImGui::Checkbox("Auto pause on critical", &alertsAutoPauseOnCritical);
+
+            // Limits and thresholds
+            {
+                int maxLog = static_cast<int>(notify.maxLogEntries());
+                if (ImGui::SliderInt("Max log entries", &maxLog, 20, 500))
+                    notify.setMaxLogEntries(static_cast<std::size_t>(std::max(1, maxLog)));
+
+                int maxToasts = static_cast<int>(notify.maxToasts());
+                if (ImGui::SliderInt("Max toasts", &maxToasts, 1, 10))
+                    notify.setMaxToasts(static_cast<std::size_t>(std::max(1, maxToasts)));
+            }
+
+            ImGui::SliderFloat("Check interval (s)", &alertsCheckIntervalSeconds, 0.1f, 5.0f, "%.1f");
+            ImGui::SliderInt("Low wood threshold", &alertsLowWoodThreshold, 0, 200);
+            ImGui::SliderFloat("Low food threshold", &alertsLowFoodThreshold, 0.0f, 50.0f, "%.1f");
+            ImGui::SliderFloat("Starving personal food", &alertsStarvingThreshold, 0.0f, 2.0f, "%.2f");
+
+            if (ImGui::Button("Clear log"))
+                notify.clearLog();
+            ImGui::SameLine();
+            if (ImGui::Button("Clear toasts"))
+                notify.clearToasts();
+            ImGui::SameLine();
+            if (ImGui::Button("Test toast"))
+                pushNotificationAutoToast(util::NotifySeverity::Info, "Test notification");
+
+            const auto& log = notify.log();
+            ImGui::TextDisabled("Messages: %d", static_cast<int>(log.size()));
+
+            ImGui::BeginChild("##notify_log", ImVec2(0, 180), true);
+
+            const ImVec4 colInfo{1.0f, 1.0f, 1.0f, 0.90f};
+            const ImVec4 colWarn{1.0f, 0.80f, 0.30f, 1.00f};
+            const ImVec4 colErr {1.0f, 0.35f, 0.35f, 1.00f};
+
+            for (int i = static_cast<int>(log.size()) - 1; i >= 0; --i)
+            {
+                const util::NotificationEntry& e = log[static_cast<std::size_t>(i)];
+
+                const int t = static_cast<int>(std::max(0.0, e.timeSeconds));
+                const int mm = t / 60;
+                const int ss = t % 60;
+
+                const ImVec4 c = (e.severity == util::NotifySeverity::Error)
+                    ? colErr
+                    : (e.severity == util::NotifySeverity::Warning)
+                        ? colWarn
+                        : colInfo;
+
+                ImGui::PushID(i);
+
+                if (e.target.kind != util::NotifyTarget::Kind::None)
+                {
+                    if (ImGui::SmallButton("Focus"))
+                        focusNotificationTarget(e.target);
+                    ImGui::SameLine();
+                }
+
+                ImGui::TextColored(c,
+                                   "%02d:%02d [%s] %s",
+                                   mm,
+                                   ss,
+                                   util::NotifySeverityName(e.severity),
+                                   e.text.c_str());
+
+                ImGui::PopID();
+            }
+
+            ImGui::EndChild();
+        }
+
         if (ImGui::CollapsingHeader("Colonists"))
         {
-            ImGui::TextDisabled("Inspect tool: left-click a colonist to select. Drafted colonists ignore auto build/harvest.\n"
-                                "While drafted: right-click in the world to order Move / Build / Harvest.");
+            ImGui::TextDisabled("Inspect tool: left-click selects a primary colonist; Ctrl+click toggles multi-select.\n"
+                                "Drafted colonists ignore auto build/harvest.\n"
+                                "While drafted: right-click orders Move (all selected) / Build+Harvest (primary). Shift+right-click queues.");
 
             if (ImGui::Button("Draft all"))
             {
@@ -374,16 +720,33 @@ void PrototypeGame::Impl::drawPanelsWindow()
                 {
                     ImGui::TableNextRow();
 
-                    // Select
+                    // Select (multi-select)
                     ImGui::TableNextColumn();
-                    char idLabel[16];
-                    std::snprintf(idLabel, sizeof(idLabel), "C%02d", c.id);
-                    const bool isSel = (c.id == selectedColonistId);
-                    if (ImGui::Selectable(idLabel, isSel))
                     {
-                        selectedColonistId = c.id;
-                        selectedX = static_cast<int>(std::floor(c.x));
-                        selectedY = static_cast<int>(std::floor(c.y));
+                        bool inSel = isColonistInSelection(c.id);
+                        char selId[32];
+                        std::snprintf(selId, sizeof(selId), "##sel_%d", c.id);
+
+                        if (ImGui::Checkbox(selId, &inSel))
+                        {
+                            if (inSel)
+                                addColonistToSelection(c.id, /*makePrimary=*/ (selectedColonistId < 0));
+                            else
+                                removeColonistFromSelection(c.id);
+                        }
+
+                        ImGui::SameLine();
+
+                        char idLabel[16];
+                        std::snprintf(idLabel, sizeof(idLabel), "C%02d", c.id);
+
+                        const bool isPrimary = (c.id == selectedColonistId);
+                        if (ImGui::Selectable(idLabel, isPrimary))
+                        {
+                            addColonistToSelection(c.id, /*makePrimary=*/ true);
+                            selectedX = static_cast<int>(std::floor(c.x));
+                            selectedY = static_cast<int>(std::floor(c.y));
+                        }
                     }
 
                     // Draft
@@ -574,6 +937,143 @@ void PrototypeGame::Impl::drawPanelsWindow()
                 ImGui::EndTable();
             }
         }
+
+// Selection (multi-select)
+if (ImGui::CollapsingHeader("Selection"))
+{
+    ImGui::Text("Selected: %d colonist(s)", static_cast<int>(selectedColonistIds.size()));
+
+    if (selectedColonistIds.empty())
+    {
+        ImGui::TextDisabled("Tip: In the world (Inspect tool), Ctrl+Left-click colonists to multi-select.");
+    }
+    else
+    {
+        // Quick ID display.
+        std::string ids;
+        for (std::size_t i = 0; i < selectedColonistIds.size(); ++i)
+        {
+            if (i > 0)
+                ids += ", ";
+            ids += "C" + (selectedColonistIds[i] < 10 ? std::string("0") : std::string("")) +
+                   std::to_string(selectedColonistIds[i]);
+        }
+        ImGui::TextDisabled("IDs: %s", ids.c_str());
+
+        if (ImGui::SmallButton("Clear selection"))
+        {
+            clearColonistSelection();
+        }
+        ImGui::SameLine();
+        if (ImGui::SmallButton("Select all"))
+        {
+            selectedColonistIds.clear();
+            selectedColonistIds.reserve(world.colonists().size());
+            for (const auto& c : world.colonists())
+                selectedColonistIds.push_back(c.id);
+            // Keep primary stable-ish (first).
+            selectedColonistId = selectedColonistIds.empty() ? -1 : selectedColonistIds.front();
+            normalizeColonistSelection();
+        }
+
+        // Focus group: pan camera to average position.
+        ImGui::SameLine();
+        if (ImGui::SmallButton("Focus group"))
+        {
+            float ax = 0.0f;
+            float ay = 0.0f;
+            int   n  = 0;
+            for (const auto& c : world.colonists())
+            {
+                if (!isColonistInSelection(c.id))
+                    continue;
+                ax += c.x;
+                ay += c.y;
+                ++n;
+            }
+
+            if (n > 0)
+            {
+                ax /= static_cast<float>(n);
+                ay /= static_cast<float>(n);
+
+                const DebugCameraState& s = camera.State();
+                (void)camera.ApplyPan(ax - s.panX, ay - s.panY);
+            }
+        }
+
+        if (ImGui::SmallButton("Draft selected"))
+        {
+            for (const int cid : selectedColonistIds)
+                world.SetColonistDrafted(cid, true);
+        }
+        ImGui::SameLine();
+        if (ImGui::SmallButton("Undraft selected"))
+        {
+            for (const int cid : selectedColonistIds)
+                world.SetColonistDrafted(cid, false);
+        }
+
+        ImGui::SameLine();
+        if (ImGui::SmallButton("Cancel jobs"))
+        {
+            for (const int cid : selectedColonistIds)
+                (void)world.CancelColonistJob(cid);
+        }
+
+        ImGui::SameLine();
+        if (ImGui::SmallButton("Clear queues"))
+        {
+            for (auto& c : world.colonists())
+                if (isColonistInSelection(c.id))
+                    c.manualQueue.clear();
+        }
+
+        // Group role assignment.
+        RoleId commonRole = RoleId::Worker;
+        bool mixed = false;
+        bool first = true;
+        for (const auto& c : world.colonists())
+        {
+            if (!isColonistInSelection(c.id))
+                continue;
+
+            if (first)
+            {
+                commonRole = c.role.role;
+                first = false;
+            }
+            else if (c.role.role != commonRole)
+            {
+                mixed = true;
+                break;
+            }
+        }
+
+        const char* preview = mixed ? "<mixed>" : RoleDefOf(commonRole).name;
+        if (ImGui::BeginCombo("Role (selected)", preview))
+        {
+            for (int i = 0; i < static_cast<int>(RoleId::Count); ++i)
+            {
+                const RoleId rid = static_cast<RoleId>(i);
+                const bool selected = (!mixed && rid == commonRole);
+
+                if (ImGui::Selectable(RoleDefOf(rid).name, selected))
+                {
+                    for (const int cid : selectedColonistIds)
+                        (void)world.SetColonistRole(cid, rid);
+                }
+
+                if (selected)
+                    ImGui::SetItemDefaultFocus();
+            }
+            ImGui::EndCombo();
+        }
+
+        ImGui::TextDisabled("Tip: Move orders apply to all selected colonists.\n"
+                            "Build/Harvest orders apply to the primary selection only.");
+    }
+}
 
 // Selected colonist: manual order queue (drafted orders).
 if (selectedColonistId >= 0)
@@ -820,136 +1320,242 @@ if (selectedColonistId >= 0)
                     saveBrowserPendingDelete = -1;
             }
 
+            auto beginDisabledIf = [&](bool disabled) {
+#if defined(IMGUI_VERSION_NUM) && IMGUI_VERSION_NUM >= 18400
+                if (disabled)
+                    ImGui::BeginDisabled(true);
+#else
+                if (disabled)
+                    ImGui::PushStyleVar(ImGuiStyleVar_Alpha, ImGui::GetStyle().Alpha * 0.5f);
+#endif
+            };
+
+            auto endDisabledIf = [&](bool disabled) {
+#if defined(IMGUI_VERSION_NUM) && IMGUI_VERSION_NUM >= 18400
+                if (disabled)
+                    ImGui::EndDisabled();
+#else
+                if (disabled)
+                    ImGui::PopStyleVar();
+#endif
+            };
+
+            // Create a named/manual save (writes a regular .json alongside a tiny .meta.json).
+            ImGui::TextDisabled("Create named save");
+            ImGui::InputText("Name##named_save", namedSaveNameBuf.data(), namedSaveNameBuf.size());
+            ImGui::SameLine();
+            ImGui::Checkbox("Overwrite##named_save_over", &namedSaveOverwrite);
+
+            const fs::path namedPreview = NamedWorldSavePathForName(worldSaveDir(), namedSaveNameBuf.data());
+            ImGui::TextWrapped("Path: %s", colony::util::PathToUtf8String(namedPreview).c_str());
+
+            if (ImGui::Button("Save As##named_save"))
+            {
+                const std::string nm = namedSaveNameBuf.data();
+                if (nm.empty())
+                {
+                    setStatus("Enter a save name", 2.0f);
+                }
+                else
+                {
+                    std::error_code ec;
+                    const bool exists = fs::exists(namedPreview, ec) && !ec;
+                    if (exists && !namedSaveOverwrite)
+                    {
+                        setStatus("Save already exists (enable Overwrite)", 3.0f);
+                    }
+                    else
+                    {
+                        (void)saveWorldToPath(namedPreview, /*showStatus=*/true);
+                        saveBrowserDirty = true;
+                    }
+                }
+            }
+            ImGui::SameLine();
+            if (ImGui::Button("Clear##named_save_clear"))
+            {
+                namedSaveNameBuf[0] = '\0';
+            }
+
+            ImGui::Separator();
+
+            // Browser options
+            ImGui::InputText("Filter##savebrowser_filter", saveBrowserFilterBuf.data(), saveBrowserFilterBuf.size());
+            ImGui::SameLine();
+            ImGui::Checkbox("Slots##sb_slots", &saveBrowserShowSlots);
+            ImGui::SameLine();
+            ImGui::Checkbox("Autosaves##sb_autosaves", &saveBrowserShowAutosaves);
+            ImGui::SameLine();
+            ImGui::Checkbox("Named##sb_named", &saveBrowserShowNamed);
+
+            const char* sortItems[] = {"Kind", "Time (newest)", "Name"};
+            ImGui::Combo("Sort##sb_sort", &saveBrowserSortMode, sortItems, IM_ARRAYSIZE(sortItems));
+
             auto refreshSaveBrowser = [&]() {
+                // Attempt to preserve selection by path across refreshes.
+                fs::path prevPath;
+                if (saveBrowserSelected >= 0 && saveBrowserSelected < static_cast<int>(saveBrowserEntries.size()))
+                    prevPath = saveBrowserEntries[saveBrowserSelected].path;
+
                 saveBrowserEntries.clear();
-                saveBrowserSelected = -1;
-                saveBrowserPendingDelete = -1;
+                saveBrowserSelected         = -1;
+                saveBrowserPendingDelete    = -1;
                 saveBrowserPendingDeleteTtl = 0.f;
 
                 const fs::path dir = worldSaveDir();
 
-                // Slots 0..9
+                auto fillEntry = [&](SaveBrowserEntry& e) {
+                    std::error_code ec;
+
+                    e.exists = fs::exists(e.path, ec) && !ec;
+                    ec.clear();
+                    e.metaExists = fs::exists(e.metaPath, ec) && !ec;
+
+                    // Size (world file only)
+                    e.sizeBytes = 0;
+                    if (e.exists)
+                    {
+                        ec.clear();
+                        e.sizeBytes = fs::file_size(e.path, ec);
+                        if (ec)
+                            e.sizeBytes = 0;
+                    }
+
+                    // Meta read (fast; avoids parsing the full world JSON)
+                    e.metaOk = false;
+                    e.metaError.clear();
+                    e.summary = save::SaveSummary{};
+                    if (e.metaExists)
+                    {
+                        std::string err;
+                        e.metaOk = save::ReadMetaFile(e.metaPath, e.summary, &err);
+                        if (!e.metaOk)
+                            e.metaError = err;
+                    }
+
+                    // Best-effort timestamp for list sorting/display.
+                    // Prefer meta's savedUnixSecondsUtc; fall back to last_write_time().
+                    e.displayUnixSecondsUtc = 0;
+                    e.timeFromMeta          = false;
+                    if (e.metaOk && e.summary.savedUnixSecondsUtc > 0)
+                    {
+                        e.displayUnixSecondsUtc = e.summary.savedUnixSecondsUtc;
+                        e.timeFromMeta          = true;
+                    }
+                    else
+                    {
+                        const fs::path tpath = e.exists ? e.path : (e.metaExists ? e.metaPath : fs::path{});
+                        if (!tpath.empty())
+                        {
+                            std::error_code tec;
+                            const fs::file_time_type ft = fs::last_write_time(tpath, tec);
+                            if (!tec)
+                                e.displayUnixSecondsUtc = FileTimeToUnixSecondsUtc(ft);
+                        }
+                    }
+                };
+
+                // Slots (always show 0..9)
                 for (int slot = 0; slot <= 9; ++slot)
                 {
                     SaveBrowserEntry e;
                     e.kind = SaveBrowserEntry::Kind::Slot;
                     e.index = slot;
+                    e.displayName.clear();
                     e.path = worldSavePathForSlot(slot);
                     e.metaPath = save::MetaPathFor(e.path);
-
-                    std::error_code ec;
-                    e.exists = fs::exists(e.path, ec) && !ec;
-                    ec.clear();
-                    e.metaExists = fs::exists(e.metaPath, ec) && !ec;
-
-                    ec.clear();
-                    if (e.exists)
-                    {
-                        e.sizeBytes = fs::file_size(e.path, ec);
-                        if (ec) e.sizeBytes = 0;
-                    }
-
-                    if (e.metaExists)
-                    {
-                        std::string err;
-                        e.metaOk = save::ReadMetaFile(e.metaPath, e.summary, &err);
-                        if (!e.metaOk)
-                            e.metaError = err;
-                    }
-
-                    
-                    // Compute best-effort timestamp for display.
-                    // Prefer meta's saved timestamp; fall back to filesystem mtime.
-                    e.displayUnixSecondsUtc = 0;
-                    e.timeFromMeta = false;
-                    if (e.metaOk && e.summary.savedUnixSecondsUtc > 0)
-                    {
-                        e.displayUnixSecondsUtc = e.summary.savedUnixSecondsUtc;
-                        e.timeFromMeta = true;
-                    }
-                    else
-                    {
-                        const fs::path tpath = e.exists ? e.path : (e.metaExists ? e.metaPath : fs::path{});
-                        if (!tpath.empty())
-                        {
-                            std::error_code tec;
-                            const fs::file_time_type ft = fs::last_write_time(tpath, tec);
-                            if (!tec)
-                                e.displayUnixSecondsUtc = FileTimeToUnixSecondsUtc(ft);
-                        }
-                    }
-
+                    fillEntry(e);
                     saveBrowserEntries.push_back(std::move(e));
                 }
 
-                // Autosaves 00..19 (we show only existing files)
+                // Autosaves (show 00..19; include meta-only entries so users can clean up orphaned meta files)
                 for (int i = 0; i < 20; ++i)
                 {
                     char buf[32] = {};
                     std::snprintf(buf, sizeof(buf), "autosave_%02d.json", i);
-                    const fs::path p = dir / buf;
 
                     SaveBrowserEntry e;
                     e.kind = SaveBrowserEntry::Kind::Autosave;
                     e.index = i;
-                    e.path = p;
+                    e.displayName.clear();
+                    e.path = dir / buf;
                     e.metaPath = save::MetaPathFor(e.path);
-
-                    std::error_code ec;
-                    e.exists = fs::exists(e.path, ec) && !ec;
-                    ec.clear();
-                    e.metaExists = fs::exists(e.metaPath, ec) && !ec;
+                    fillEntry(e);
 
                     if (!e.exists && !e.metaExists)
                         continue;
 
-                    ec.clear();
-                    if (e.exists)
-                    {
-                        e.sizeBytes = fs::file_size(e.path, ec);
-                        if (ec) e.sizeBytes = 0;
-                    }
-
-                    if (e.metaExists)
-                    {
-                        std::string err;
-                        e.metaOk = save::ReadMetaFile(e.metaPath, e.summary, &err);
-                        if (!e.metaOk)
-                            e.metaError = err;
-                    }
-
-                    
-                    // Compute best-effort timestamp for display.
-                    // Prefer meta's saved timestamp; fall back to filesystem mtime.
-                    e.displayUnixSecondsUtc = 0;
-                    e.timeFromMeta = false;
-                    if (e.metaOk && e.summary.savedUnixSecondsUtc > 0)
-                    {
-                        e.displayUnixSecondsUtc = e.summary.savedUnixSecondsUtc;
-                        e.timeFromMeta = true;
-                    }
-                    else
-                    {
-                        const fs::path tpath = e.exists ? e.path : (e.metaExists ? e.metaPath : fs::path{});
-                        if (!tpath.empty())
-                        {
-                            std::error_code tec;
-                            const fs::file_time_type ft = fs::last_write_time(tpath, tec);
-                            if (!tec)
-                                e.displayUnixSecondsUtc = FileTimeToUnixSecondsUtc(ft);
-                        }
-                    }
-
                     saveBrowserEntries.push_back(std::move(e));
                 }
 
-                // Select first existing entry by default.
-                for (int i = 0; i < static_cast<int>(saveBrowserEntries.size()); ++i)
+                // Named saves: any other "*.json" in the save directory (excluding "*.meta.json")
                 {
-                    if (saveBrowserEntries[i].exists)
+                    std::error_code dec;
+                    if (fs::exists(dir, dec) && !dec)
                     {
-                        saveBrowserSelected = i;
-                        break;
+                        for (const fs::directory_entry& de : fs::directory_iterator(dir, dec))
+                        {
+                            if (dec)
+                                break;
+
+                            if (!de.is_regular_file(dec) || dec)
+                                continue;
+
+                            const fs::path p = de.path();
+                            const std::string fname = colony::util::PathToUtf8String(p.filename());
+
+                            if (!EndsWithInsensitive(fname, ".json"))
+                                continue;
+
+                            if (EndsWithInsensitive(fname, ".meta.json"))
+                                continue;
+
+                            int tmp = 0;
+                            if (IsSlotSaveFilename(fname, tmp))
+                                continue;
+
+                            if (IsAutosaveFilename(fname, tmp))
+                                continue;
+
+                            SaveBrowserEntry e;
+                            e.kind = SaveBrowserEntry::Kind::Named;
+                            e.index = -1;
+                            e.path = p;
+                            e.metaPath = save::MetaPathFor(e.path);
+                            e.displayName = colony::util::PathToUtf8String(p.stem());
+                            fillEntry(e);
+
+                            if (!e.exists && !e.metaExists)
+                                continue;
+
+                            saveBrowserEntries.push_back(std::move(e));
+                        }
+                    }
+                }
+
+                // Restore selection if possible.
+                if (!prevPath.empty())
+                {
+                    for (int i = 0; i < static_cast<int>(saveBrowserEntries.size()); ++i)
+                    {
+                        if (saveBrowserEntries[i].path == prevPath)
+                        {
+                            saveBrowserSelected = i;
+                            break;
+                        }
+                    }
+                }
+
+                // Default to first existing world file if nothing is selected.
+                if (saveBrowserSelected < 0)
+                {
+                    for (int i = 0; i < static_cast<int>(saveBrowserEntries.size()); ++i)
+                    {
+                        if (saveBrowserEntries[i].exists)
+                        {
+                            saveBrowserSelected = i;
+                            break;
+                        }
                     }
                 }
 
@@ -968,39 +1574,191 @@ if (selectedColonistId >= 0)
 
             ImGui::TextWrapped("Folder: %s", colony::util::PathToUtf8String(worldSaveDir()).c_str());
 
-            ImGui::BeginChild("##savebrowser_list", ImVec2(0, 140), true);
+            auto formatBytes = [&](std::uintmax_t bytes) -> std::string {
+                const double b = static_cast<double>(bytes);
+                const double kb = 1024.0;
+                const double mb = kb * 1024.0;
+                const double gb = mb * 1024.0;
+                char buf[64] = {};
+                if (b >= gb)
+                    std::snprintf(buf, sizeof(buf), "%.2f GiB", b / gb);
+                else if (b >= mb)
+                    std::snprintf(buf, sizeof(buf), "%.2f MiB", b / mb);
+                else if (b >= kb)
+                    std::snprintf(buf, sizeof(buf), "%.1f KiB", b / kb);
+                else
+                    std::snprintf(buf, sizeof(buf), "%llu B", static_cast<unsigned long long>(bytes));
+                return buf;
+            };
+
+            auto buildBaseLabel = [&](const SaveBrowserEntry& e) -> std::string {
+                switch (e.kind)
+                {
+                case SaveBrowserEntry::Kind::Slot:
+                    return (e.index == 0) ? std::string("Slot 0 (Main)") : (std::string("Slot ") + std::to_string(e.index));
+                case SaveBrowserEntry::Kind::Autosave:
+                    {
+                        char buf[32] = {};
+                        std::snprintf(buf, sizeof(buf), "Autosave %02d", e.index);
+                        return buf;
+                    }
+                case SaveBrowserEntry::Kind::Named:
+                    return e.displayName.empty() ? std::string("Named Save") : (std::string("Named: ") + e.displayName);
+                }
+                return std::string("Save");
+            };
+
+            auto buildListLabel = [&](const SaveBrowserEntry& e) -> std::string {
+                std::string label = buildBaseLabel(e);
+
+                if (e.displayUnixSecondsUtc > 0)
+                {
+                    label += "  ";
+                    label += save::FormatLocalTime(e.displayUnixSecondsUtc);
+                }
+
+                if (e.exists)
+                {
+                    label += "  (";
+                    label += formatBytes(e.sizeBytes);
+                    label += ")";
+                }
+
+                if (!e.exists)
+                    label += "  [missing]";
+
+                if (e.metaExists && !e.metaOk)
+                    label += "  [bad meta]";
+
+                return label;
+            };
+
+            // Filter and sort the visible list without mutating the underlying storage.
+            std::vector<int> visible;
+            visible.reserve(saveBrowserEntries.size());
+
+            const std::string filter = saveBrowserFilterBuf.data();
             for (int i = 0; i < static_cast<int>(saveBrowserEntries.size()); ++i)
             {
                 const SaveBrowserEntry& e = saveBrowserEntries[i];
 
-                std::string label;
-                if (e.kind == SaveBrowserEntry::Kind::Slot)
-                {
-                    label = "Slot " + std::to_string(e.index);
-                    if (e.index == 0)
-                        label += " (default)";
-                }
-                else
-                {
-                    char tmp[32] = {};
-                    std::snprintf(tmp, sizeof(tmp), "Autosave %02d", e.index);
-                    label = tmp;
-                }
+                if (e.kind == SaveBrowserEntry::Kind::Slot && !saveBrowserShowSlots)
+                    continue;
+                if (e.kind == SaveBrowserEntry::Kind::Autosave && !saveBrowserShowAutosaves)
+                    continue;
+                if (e.kind == SaveBrowserEntry::Kind::Named && !saveBrowserShowNamed)
+                    continue;
 
-                const std::string when = save::FormatLocalTime(e.displayUnixSecondsUtc);
-                if (!when.empty())
+                if (!filter.empty())
                 {
-                    if (e.timeFromMeta)
-                        label += "  [" + when + "]";
-                    else
-                        label += "  [" + when + " (mtime)]";
+                    const std::string base = buildBaseLabel(e);
+                    const std::string fname = colony::util::PathToUtf8String(e.path.filename());
+                    if (!ContainsInsensitive(base, filter) && !ContainsInsensitive(fname, filter))
+                        continue;
                 }
 
-                if (!e.exists)
-                    label += "  (missing)";
+                visible.push_back(i);
+            }
 
-                if (ImGui::Selectable(label.c_str(), saveBrowserSelected == i))
-                    saveBrowserSelected = i;
+            // Ensure selection remains visible.
+            if (saveBrowserSelected >= 0)
+            {
+                bool selVis = false;
+                for (int idx : visible)
+                {
+                    if (idx == saveBrowserSelected)
+                    {
+                        selVis = true;
+                        break;
+                    }
+                }
+                if (!selVis && !visible.empty())
+                    saveBrowserSelected = visible[0];
+            }
+            else if (!visible.empty())
+            {
+                saveBrowserSelected = visible[0];
+            }
+
+            auto kindOrder = [&](SaveBrowserEntry::Kind k) -> int {
+                switch (k)
+                {
+                case SaveBrowserEntry::Kind::Slot: return 0;
+                case SaveBrowserEntry::Kind::Autosave: return 1;
+                case SaveBrowserEntry::Kind::Named: return 2;
+                }
+                return 3;
+            };
+
+            auto ciLess = [&](const std::string& a, const std::string& b) {
+                const std::size_t n = std::min(a.size(), b.size());
+                for (std::size_t i = 0; i < n; ++i)
+                {
+                    const char ca = AsciiToLower(a[i]);
+                    const char cb = AsciiToLower(b[i]);
+                    if (ca < cb) return true;
+                    if (ca > cb) return false;
+                }
+                return a.size() < b.size();
+            };
+
+            if (saveBrowserSortMode == 1)
+            {
+                // Time (newest first)
+                std::sort(visible.begin(), visible.end(), [&](int ia, int ib) {
+                    const SaveBrowserEntry& a = saveBrowserEntries[ia];
+                    const SaveBrowserEntry& b = saveBrowserEntries[ib];
+
+                    if (a.displayUnixSecondsUtc != b.displayUnixSecondsUtc)
+                        return a.displayUnixSecondsUtc > b.displayUnixSecondsUtc;
+
+                    const int ka = kindOrder(a.kind);
+                    const int kb = kindOrder(b.kind);
+                    if (ka != kb) return ka < kb;
+
+                    return ciLess(buildBaseLabel(a), buildBaseLabel(b));
+                });
+            }
+            else if (saveBrowserSortMode == 2)
+            {
+                // Name
+                std::sort(visible.begin(), visible.end(), [&](int ia, int ib) {
+                    const SaveBrowserEntry& a = saveBrowserEntries[ia];
+                    const SaveBrowserEntry& b = saveBrowserEntries[ib];
+
+                    const std::string la = buildBaseLabel(a);
+                    const std::string lb = buildBaseLabel(b);
+                    if (la != lb)
+                        return ciLess(la, lb);
+
+                    return a.displayUnixSecondsUtc > b.displayUnixSecondsUtc;
+                });
+            }
+            else
+            {
+                // Kind (stable grouping)
+                std::sort(visible.begin(), visible.end(), [&](int ia, int ib) {
+                    const SaveBrowserEntry& a = saveBrowserEntries[ia];
+                    const SaveBrowserEntry& b = saveBrowserEntries[ib];
+
+                    const int ka = kindOrder(a.kind);
+                    const int kb = kindOrder(b.kind);
+                    if (ka != kb) return ka < kb;
+
+                    if (a.kind != SaveBrowserEntry::Kind::Named)
+                        return a.index < b.index;
+
+                    return ciLess(a.displayName, b.displayName);
+                });
+            }
+
+            ImGui::BeginChild("##savebrowser_list", ImVec2(0, 240), true);
+            for (int idx : visible)
+            {
+                const SaveBrowserEntry& e = saveBrowserEntries[idx];
+                const std::string label = buildListLabel(e);
+                if (ImGui::Selectable(label.c_str(), saveBrowserSelected == idx))
+                    saveBrowserSelected = idx;
             }
             ImGui::EndChild();
 
@@ -1008,123 +1766,319 @@ if (selectedColonistId >= 0)
             {
                 SaveBrowserEntry& e = saveBrowserEntries[saveBrowserSelected];
 
-                ImGui::Spacing();
-                ImGui::TextWrapped("Path: %s", colony::util::PathToUtf8String(e.path).c_str());
-                if (e.exists)
-                    ImGui::Text("File size: %.1f KB", static_cast<double>(e.sizeBytes) / 1024.0);
-
-                if (e.metaExists)
+                if (saveBrowserLastSelected != saveBrowserSelected)
                 {
-                    if (e.metaOk)
-                    {
-                        ImGui::Text("Saved: %s", save::FormatLocalTime(e.summary.savedUnixSecondsUtc).c_str());
-                        ImGui::Text("Playtime: %s", save::FormatDurationHMS(e.summary.playtimeSeconds).c_str());
-                        ImGui::Text("World: %dx%d", e.summary.worldW, e.summary.worldH);
-                        ImGui::Text("Population: %d", e.summary.population);
-                        ImGui::Text("Plans pending: %d", e.summary.plannedCount);
-                        ImGui::Text("Wood: %d   Food: %.1f", e.summary.wood, e.summary.food);
-                        ImGui::Text("Built: Floor %d | Wall %d | Farm %d | Stockpile %d",
-                                    e.summary.builtFloors, e.summary.builtWalls, e.summary.builtFarms, e.summary.builtStockpiles);
+                    saveBrowserLastSelected = saveBrowserSelected;
 
-                        ImGui::Spacing();
-                        ImGui::TextDisabled("Preview");
-                        if (!e.summary.thumbPacked.empty() && e.summary.thumbW > 0 && e.summary.thumbH > 0)
-                        {
-                            DrawSaveThumbnail(e.summary);
-                        }
-                        else
-                        {
-                            ImGui::TextDisabled("(no thumbnail yet — make a new save to generate one)");
-                        }
+                    if (e.kind == SaveBrowserEntry::Kind::Named)
+                    {
+                        std::snprintf(saveBrowserRenameBuf.data(), saveBrowserRenameBuf.size(), "%s", e.displayName.c_str());
                     }
                     else
                     {
-                        ImGui::TextDisabled("Meta read failed: %s", e.metaError.c_str());
+                        saveBrowserRenameBuf[0] = '\0';
                     }
+
+                    // Reset copy-name suggestion for the new selection.
+                    const std::string base = (e.kind == SaveBrowserEntry::Kind::Named)
+                                               ? e.displayName
+                                               : buildBaseLabel(e);
+                    std::snprintf(saveBrowserCopyNameBuf.data(), saveBrowserCopyNameBuf.size(), "%s copy", base.c_str());
+                }
+
+                ImGui::Separator();
+                ImGui::TextWrapped("Selected path: %s", colony::util::PathToUtf8String(e.path).c_str());
+                ImGui::TextDisabled("%s", buildBaseLabel(e).c_str());
+
+                if (e.metaOk)
+                {
+                    const std::string summaryLine = save::FormatSummaryLine(e.summary);
+                    ImGui::TextWrapped("%s", summaryLine.c_str());
+                    if (e.displayUnixSecondsUtc > 0)
+                        ImGui::TextDisabled("Saved: %s%s", save::FormatLocalTime(e.displayUnixSecondsUtc).c_str(), e.timeFromMeta ? " (meta)" : " (file)");
+
+                    DrawSaveThumbnail(e.summary);
+                }
+                else if (e.metaExists)
+                {
+                    ImGui::TextColored(ImVec4(1, 0.35f, 0.35f, 1), "Meta file error: %s", e.metaError.c_str());
                 }
                 else
                 {
-                    ImGui::TextDisabled("No meta file (create a new save to generate one).");
+                    ImGui::TextDisabled("No meta file yet. Make a new save to generate one.");
                 }
 
-                if (!e.timeFromMeta && e.displayUnixSecondsUtc > 0)
-                {
-                    ImGui::Text("Modified: %s", save::FormatLocalTime(e.displayUnixSecondsUtc).c_str());
-                }
+                if (e.exists)
+                    ImGui::TextDisabled("World size: %s", formatBytes(e.sizeBytes).c_str());
+                else
+                    ImGui::TextDisabled("World file missing.");
 
-                ImGui::Spacing();
-                const bool canLoad = e.exists;
+                // Primary actions
+                beginDisabledIf(!e.exists);
                 if (ImGui::Button("Load Selected"))
-                {
-                    if (canLoad)
-                        (void)loadWorldFromPath(e.path, /*showStatus=*/true);
-                    else
-                        setStatus("Save file missing", 2.0f);
-                }
+                    (void)loadWorldFromPath(e.path, /*showStatus=*/true);
+                endDisabledIf(!e.exists);
 
                 ImGui::SameLine();
-                if (ImGui::Button("Show in Explorer##savebrowser_show"))
+                if (ImGui::Button("Show in Explorer##savebrowser_selected"))
                 {
                     const std::wstring w = e.path.wstring();
                     std::wstring args = L"/select,\"" + w + L"\"";
                     ::ShellExecuteW(nullptr, L"open", L"explorer.exe", args.c_str(), nullptr, SW_SHOWNORMAL);
                 }
 
+                // Delete with a short confirmation window.
                 ImGui::SameLine();
-                const bool canDelete = e.exists || e.metaExists;
-                if (ImGui::Button("Delete##savebrowser_delete"))
-                {
-                    if (canDelete)
-                    {
-                        saveBrowserPendingDelete = saveBrowserSelected;
-                        saveBrowserPendingDeleteTtl = 6.f;
-                    }
-                    else
-                    {
-                        setStatus("Nothing to delete", 2.0f);
-                    }
-                }
-
                 if (saveBrowserPendingDelete == saveBrowserSelected)
                 {
-                    ImGui::Spacing();
-                    ImGui::TextDisabled("Confirm delete? (this cannot be undone)");
-
-                    if (ImGui::Button("CONFIRM DELETE"))
+                    ImGui::PushStyleColor(ImGuiCol_Button, IM_COL32(200, 60, 60, 255));
+                    if (ImGui::Button("Confirm Delete"))
                     {
-                        const bool needWorld = e.exists;
-                        const bool needMeta  = e.metaExists;
+                        std::error_code ec;
+                        bool ok = true;
 
-                        std::error_code ec1;
-                        const bool ok1 = !needWorld || winpath::remove_with_retry(e.path, &ec1);
+                        if (e.exists)
+                            ok &= winpath::remove_with_retry(e.path, &ec, /*max_attempts=*/64);
 
-                        std::error_code ec2;
-                        const bool ok2 = !needMeta || winpath::remove_with_retry(e.metaPath, &ec2);
+                        if (e.metaExists)
+                            ok &= winpath::remove_with_retry(e.metaPath, &ec, /*max_attempts=*/64);
 
-                        if (ok1 && ok2)
+                        if (ok)
                         {
-                            setStatus("Deleted save entry", 2.0f);
+                            setStatus("Deleted save", 2.0f);
+                            pushNotificationAutoToast(util::NotifySeverity::Info, "Deleted save: " + colony::util::PathToUtf8String(e.path.filename()));
                         }
                         else
                         {
-                            const std::error_code& use = (!ok1 ? ec1 : ec2);
-                            setStatus(std::string("Delete failed: ") + use.message(), 4.0f);
+                            setStatus("Delete failed: " + ec.message(), 4.0f);
+                            pushNotificationAutoToast(util::NotifySeverity::Warning, "Delete failed: " + ec.message());
                         }
 
                         saveBrowserPendingDelete = -1;
                         saveBrowserPendingDeleteTtl = 0.f;
+                        saveBrowserSelected = -1;
+                        saveBrowserLastSelected = -1;
                         saveBrowserDirty = true;
+                        refreshSaveBrowser();
                     }
+                    ImGui::PopStyleColor();
+
                     ImGui::SameLine();
-                    if (ImGui::Button("Cancel##savebrowser_cancel"))
+                    if (ImGui::Button("Cancel"))
                     {
                         saveBrowserPendingDelete = -1;
                         saveBrowserPendingDeleteTtl = 0.f;
                     }
                 }
+                else
+                {
+                    if (ImGui::Button("Delete##savebrowser_delete"))
+                    {
+                        saveBrowserPendingDelete = saveBrowserSelected;
+                        saveBrowserPendingDeleteTtl = 4.f;
+                    }
+                }
+
+                // Copy / Rename
+                ImGui::Spacing();
+                ImGui::TextDisabled("Copy / Rename");
+
+                // Rename (Named saves only)
+                {
+                    const bool canRename = (e.kind == SaveBrowserEntry::Kind::Named);
+
+                    beginDisabledIf(!canRename);
+                    ImGui::InputText("Rename to##savebrowser_rename", saveBrowserRenameBuf.data(), saveBrowserRenameBuf.size());
+                    ImGui::SameLine();
+                    ImGui::Checkbox("Overwrite##savebrowser_rename_over", &saveBrowserRenameOverwrite);
+
+                    if (ImGui::Button("Rename##savebrowser_rename_btn"))
+                    {
+                        const std::string newName = saveBrowserRenameBuf.data();
+                        if (newName.empty())
+                        {
+                            setStatus("Enter a new name", 2.0f);
+                        }
+                        else
+                        {
+                            const fs::path dst = NamedWorldSavePathForName(worldSaveDir(), newName);
+                            if (dst == e.path)
+                            {
+                                setStatus("Name unchanged", 1.5f);
+                            }
+                            else
+                            {
+                                std::error_code ec;
+                                const bool dstExists = fs::exists(dst, ec) && !ec;
+                                if (dstExists && !saveBrowserRenameOverwrite)
+                                {
+                                    setStatus("Target exists (enable Overwrite)", 3.0f);
+                                }
+                                else
+                                {
+                                    const fs::path metaSrc = e.metaPath;
+                                    const fs::path metaDst = save::MetaPathFor(dst);
+
+                                    if (dstExists && saveBrowserRenameOverwrite)
+                                    {
+                                        (void)winpath::remove_with_retry(dst, &ec, /*max_attempts=*/64);
+                                        (void)winpath::remove_with_retry(metaDst, &ec, /*max_attempts=*/64);
+                                    }
+
+                                    ec.clear();
+                                    const bool ok = winpath::rename_with_retry(e.path, dst, &ec, /*max_attempts=*/64);
+                                    if (ok)
+                                    {
+                                        // Update in-memory entry so refresh preserves selection.
+                                        e.path = dst;
+                                        e.metaPath = metaDst;
+                                        e.displayName = colony::util::PathToUtf8String(dst.stem());
+
+                                        if (e.metaExists)
+                                        {
+                                            std::error_code mec;
+                                            const bool metaOk = winpath::rename_with_retry(metaSrc, metaDst, &mec, /*max_attempts=*/64);
+                                            if (!metaOk)
+                                            {
+                                                pushNotificationAutoToast(util::NotifySeverity::Warning,
+                                                                          "Renamed save, but meta rename failed: " + mec.message());
+                                            }
+                                        }
+
+                                        setStatus("Renamed save", 2.0f);
+                                        pushNotificationAutoToast(util::NotifySeverity::Info,
+                                                                  "Renamed save to: " + colony::util::PathToUtf8String(dst.filename()));
+                                        saveBrowserDirty = true;
+                                    }
+                                    else
+                                    {
+                                        setStatus("Rename failed: " + ec.message(), 4.0f);
+                                        pushNotificationAutoToast(util::NotifySeverity::Warning, "Rename failed: " + ec.message());
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    endDisabledIf(!canRename);
+                }
+
+                // Copy selected -> slot
+                {
+                    beginDisabledIf(!e.exists);
+                    ImGui::InputInt("Target slot##savebrowser_copy_slot", &saveBrowserCopyToSlot);
+                    saveBrowserCopyToSlot = std::clamp(saveBrowserCopyToSlot, 0, 9);
+                    ImGui::SameLine();
+                    ImGui::Checkbox("Overwrite##savebrowser_copy_slot_over", &saveBrowserCopyOverwrite);
+
+                    if (ImGui::Button("Copy to Slot##savebrowser_copy_slot_btn"))
+                    {
+                        const fs::path dst = worldSavePathForSlot(saveBrowserCopyToSlot);
+                        const fs::path metaDst = save::MetaPathFor(dst);
+
+                        std::error_code ec;
+                        const bool dstExists = fs::exists(dst, ec) && !ec;
+
+                        if (dstExists && !saveBrowserCopyOverwrite)
+                        {
+                            setStatus("Target slot exists (enable Overwrite)", 3.0f);
+                        }
+                        else
+                        {
+                            ec.clear();
+                            const bool ok = winpath::copy_file_with_retry(e.path, dst, /*overwrite_existing=*/saveBrowserCopyOverwrite, &ec, /*max_attempts=*/64);
+                            if (ok)
+                            {
+                                // Copy meta if available; otherwise remove stale destination meta when overwriting.
+                                if (e.metaExists)
+                                {
+                                    std::error_code mec;
+                                    (void)winpath::copy_file_with_retry(e.metaPath, metaDst, /*overwrite_existing=*/true, &mec, /*max_attempts=*/64);
+                                }
+                                else if (saveBrowserCopyOverwrite)
+                                {
+                                    std::error_code mec;
+                                    (void)winpath::remove_with_retry(metaDst, &mec, /*max_attempts=*/32);
+                                }
+
+                                setStatus("Copied save to slot " + std::to_string(saveBrowserCopyToSlot), 2.0f);
+                                pushNotificationAutoToast(util::NotifySeverity::Info,
+                                                          "Copied save to slot " + std::to_string(saveBrowserCopyToSlot));
+                                saveBrowserDirty = true;
+                            }
+                            else
+                            {
+                                setStatus("Copy failed: " + ec.message(), 4.0f);
+                                pushNotificationAutoToast(util::NotifySeverity::Warning, "Copy failed: " + ec.message());
+                            }
+                        }
+                    }
+                    endDisabledIf(!e.exists);
+                }
+
+                // Copy selected -> named save
+                {
+                    beginDisabledIf(!e.exists);
+                    ImGui::InputText("Copy name##savebrowser_copy_name", saveBrowserCopyNameBuf.data(), saveBrowserCopyNameBuf.size());
+                    ImGui::SameLine();
+                    ImGui::Checkbox("Overwrite##savebrowser_copy_name_over", &saveBrowserCopyNameOverwrite);
+
+                    if (ImGui::Button("Copy to Named Save##savebrowser_copy_name_btn"))
+                    {
+                        const std::string nm = saveBrowserCopyNameBuf.data();
+                        if (nm.empty())
+                        {
+                            setStatus("Enter a name", 2.0f);
+                        }
+                        else
+                        {
+                            const fs::path dst = NamedWorldSavePathForName(worldSaveDir(), nm);
+                            const fs::path metaDst = save::MetaPathFor(dst);
+
+                            std::error_code ec;
+                            const bool dstExists = fs::exists(dst, ec) && !ec;
+
+                            if (dst == e.path)
+                            {
+                                setStatus("Target is the selected file", 2.0f);
+                            }
+                            else if (dstExists && !saveBrowserCopyNameOverwrite)
+                            {
+                                setStatus("Target exists (enable Overwrite)", 3.0f);
+                            }
+                            else
+                            {
+                                ec.clear();
+                                const bool ok = winpath::copy_file_with_retry(e.path, dst, /*overwrite_existing=*/saveBrowserCopyNameOverwrite, &ec, /*max_attempts=*/64);
+                                if (ok)
+                                {
+                                    if (e.metaExists)
+                                    {
+                                        std::error_code mec;
+                                        (void)winpath::copy_file_with_retry(e.metaPath, metaDst, /*overwrite_existing=*/true, &mec, /*max_attempts=*/64);
+                                    }
+                                    else if (saveBrowserCopyNameOverwrite)
+                                    {
+                                        std::error_code mec;
+                                        (void)winpath::remove_with_retry(metaDst, &mec, /*max_attempts=*/32);
+                                    }
+
+                                    setStatus("Copied save", 2.0f);
+                                    pushNotificationAutoToast(util::NotifySeverity::Info,
+                                                              "Copied save to: " + colony::util::PathToUtf8String(dst.filename()));
+                                    saveBrowserDirty = true;
+                                }
+                                else
+                                {
+                                    setStatus("Copy failed: " + ec.message(), 4.0f);
+                                    pushNotificationAutoToast(util::NotifySeverity::Warning, "Copy failed: " + ec.message());
+                                }
+                            }
+                        }
+                    }
+                    endDisabledIf(!e.exists);
+                }
             }
         }
-
         ImGui::Separator();
         ImGui::TextUnformatted("Build Tools");
 
@@ -1168,6 +2122,12 @@ if (selectedColonistId >= 0)
                 planBrushPriority = std::clamp(brushP - 1, 0, 3);
             ImGui::TextDisabled("Higher priority plans are assigned first (default hotkeys: PgUp/PgDn).");
         }
+
+        if (ImGui::Checkbox("Atomic placement (full brush / rect / blueprint)", &atomicPlanPlacement))
+        {
+            setStatus(std::string("Atomic placement ") + (atomicPlanPlacement ? "enabled" : "disabled"), 1.5f);
+        }
+        ImGui::TextDisabled("When enabled, batch plan edits either fully apply or do nothing if you lack wood.");
 
         ImGui::Separator();
         ImGui::TextUnformatted("Selection");
@@ -1273,6 +2233,7 @@ if (selectedColonistId >= 0)
             }
 
             ImGui::Checkbox("Copy plans only (ignore built tiles)", &blueprintCopyPlansOnly);
+            ImGui::Checkbox("Trim empty borders on copy", &blueprintCopyTrimEmptyBorders);
 
             if (ImGui::Button("Copy selection -> blueprint"))
             {
@@ -1306,7 +2267,7 @@ if (selectedColonistId >= 0)
                                 if (hasActivePlan)
                                 {
                                     t  = c.planned;
-                                    pr = static_cast<std::uint8_t>(std::clamp(c.planPriority, 0, 3));
+                                    pr = ClampPlanPriorityByte(c.planPriority);
                                 }
                             }
                             else
@@ -1314,7 +2275,7 @@ if (selectedColonistId >= 0)
                                 if (hasActivePlan)
                                 {
                                     t  = c.planned;
-                                    pr = static_cast<std::uint8_t>(std::clamp(c.planPriority, 0, 3));
+                                    pr = ClampPlanPriorityByte(c.planPriority);
                                 }
                                 else
                                 {
@@ -1334,7 +2295,34 @@ if (selectedColonistId >= 0)
                         }
                     }
 
-                    setStatus("Blueprint copied: " + std::to_string(bw) + "x" + std::to_string(bh) + " (" + std::to_string(nonEmpty) + " non-empty)");
+                    if (blueprintCopyTrimEmptyBorders)
+                    {
+                        const int oldW = blueprint.w;
+                        const int oldH = blueprint.h;
+
+                        blueprint = colony::game::editor::BlueprintTrimEmptyBorders(blueprint);
+
+                        if (blueprint.Empty() || nonEmpty == 0)
+                        {
+                            setStatus("Blueprint copied: selection was empty (no plans/built).", 3.0f);
+                        }
+                        else if (blueprint.w != oldW || blueprint.h != oldH)
+                        {
+                            setStatus("Blueprint copied+trimmed: " + std::to_string(oldW) + "x" + std::to_string(oldH) +
+                                      " -> " + std::to_string(blueprint.w) + "x" + std::to_string(blueprint.h) +
+                                      " (" + std::to_string(nonEmpty) + " non-empty)");
+                        }
+                        else
+                        {
+                            setStatus("Blueprint copied: " + std::to_string(oldW) + "x" + std::to_string(oldH) + " (" +
+                                      std::to_string(nonEmpty) + " non-empty)");
+                        }
+                    }
+                    else
+                    {
+                        setStatus("Blueprint copied: " + std::to_string(bw) + "x" + std::to_string(bh) + " (" +
+                                  std::to_string(nonEmpty) + " non-empty)");
+                    }
                 }
             }
             ImGui::SameLine();
@@ -1432,6 +2420,27 @@ if (selectedColonistId >= 0)
             {
                 blueprint = colony::game::editor::BlueprintFlipVertical(blueprint);
                 setStatus("Blueprint flipped (vertical)");
+            }
+
+            if (ImGui::Button("Trim Empty Borders"))
+            {
+                const int oldW = blueprint.w;
+                const int oldH = blueprint.h;
+                blueprint = colony::game::editor::BlueprintTrimEmptyBorders(blueprint);
+
+                if (blueprint.Empty())
+                {
+                    setStatus("Blueprint trimmed: empty", 3.0f);
+                }
+                else if (blueprint.w != oldW || blueprint.h != oldH)
+                {
+                    setStatus("Blueprint trimmed: " + std::to_string(oldW) + "x" + std::to_string(oldH) + " -> " +
+                              std::to_string(blueprint.w) + "x" + std::to_string(blueprint.h));
+                }
+                else
+                {
+                    setStatus("Blueprint trimmed: no change");
+                }
             }
             ImGui::EndDisabled();
 
@@ -1684,7 +2693,17 @@ if (selectedColonistId >= 0)
                             const float u = std::clamp(c.x / static_cast<float>(worldW), 0.f, 1.f);
                             const float v = std::clamp(c.y / static_cast<float>(worldH), 0.f, 1.f);
                             const ImVec2 mp = {p0.x + u * mapW, p0.y + v * mapH};
-                            dl->AddCircleFilled(mp, 2.2f, IM_COL32(235, 235, 245, 220));
+
+                            const bool inSel   = isColonistInSelection(c.id);
+                            const bool primary = (c.id == selectedColonistId);
+
+                            const float r = primary ? 3.2f : (inSel ? 2.7f : 2.2f);
+                            const ImU32 col = inSel ? IM_COL32(255, 240, 120, 240) : IM_COL32(235, 235, 245, 220);
+
+                            dl->AddCircleFilled(mp, r, col);
+
+                            if (primary)
+                                dl->AddCircle(mp, r + 1.0f, IM_COL32(40, 40, 40, 180), 0, 1.5f);
                         }
                     }
 
@@ -1712,6 +2731,23 @@ if (selectedColonistId >= 0)
                         const float v1 = static_cast<float>(ry1 + 1) / static_cast<float>(worldH);
 
                         dl->AddRect({p0.x + u0 * mapW, p0.y + v0 * mapH}, {p0.x + u1 * mapW, p0.y + v1 * mapH}, IM_COL32(255, 240, 140, 200), 0.f, 0, 2.f);
+                    }
+
+                    // Selected room bounds
+                    if (selectedRoomId >= 0)
+                    {
+                        const proto::World::RoomInfo* ri = world.roomInfoById(selectedRoomId);
+                        if (ri)
+                        {
+                            const float u0 = static_cast<float>(ri->minX) / static_cast<float>(worldW);
+                            const float v0 = static_cast<float>(ri->minY) / static_cast<float>(worldH);
+                            const float u1 = static_cast<float>(ri->maxX + 1) / static_cast<float>(worldW);
+                            const float v1 = static_cast<float>(ri->maxY + 1) / static_cast<float>(worldH);
+
+                            dl->AddRect({p0.x + u0 * mapW, p0.y + v0 * mapH},
+                                        {p0.x + u1 * mapW, p0.y + v1 * mapH},
+                                        IM_COL32(180, 220, 255, 200), 0.f, 0, 2.f);
+                        }
                     }
 
                     // Viewport rectangle (approx)
@@ -1780,11 +2816,142 @@ if (selectedColonistId >= 0)
         ImGui::Checkbox("Show colonist paths", &showJobPaths);
         ImGui::Checkbox("Show reservations", &showReservations);
         ImGui::Checkbox("Show plan priorities", &showPlanPriorities);
+
+        ImGui::SeparatorText("Rooms");
+
         ImGui::Checkbox("Show rooms overlay", &showRoomsOverlay);
         ImGui::SameLine();
+        ImGui::Checkbox("Indoors only##rooms_overlay", &roomsOverlayIndoorsOnly);
+
         ImGui::Checkbox("Show room IDs", &showRoomIds);
+        ImGui::SameLine();
+        ImGui::Checkbox("Indoors only##room_ids", &showRoomIdsIndoorsOnly);
+
+        ImGui::Checkbox("Outline selected room", &showSelectedRoomOutline);
+
         ImGui::Text("Indoors: %d rooms, %d tiles", world.indoorsRoomCount(), world.indoorsTileCount());
 
+        const bool canPickTileRoom = (selectedX >= 0 && selectedY >= 0 && world.inBounds(selectedX, selectedY));
+        if (!canPickTileRoom)
+            ImGui::BeginDisabled();
+
+        if (ImGui::Button("Select room from selected tile"))
+            selectedRoomId = world.roomIdAt(selectedX, selectedY);
+
+        if (!canPickTileRoom)
+            ImGui::EndDisabled();
+
+        ImGui::SameLine();
+        if (ImGui::Button("Clear room selection"))
+            selectedRoomId = -1;
+
+        if (selectedRoomId >= 0)
+        {
+            const proto::World::RoomInfo* ri = world.roomInfoById(selectedRoomId);
+            if (ri)
+            {
+        ImGui::Text("Selected R%d: %s", ri->id, ri->indoors ? "indoors" : "outdoors");
+        ImGui::Text("Area: %d | Perim: %d | Doors: %d", ri->area, ri->perimeter, ri->doorCount);
+        ImGui::Text("Bounds: (%d,%d) - (%d,%d)", ri->minX, ri->minY, ri->maxX, ri->maxY);
+
+        if (ImGui::SmallButton("Focus camera on selected room"))
+        {
+            const auto& cam = camera.State();
+            const float cx = (static_cast<float>(ri->minX + ri->maxX) + 1.0f) * 0.5f;
+            const float cy = (static_cast<float>(ri->minY + ri->maxY) + 1.0f) * 0.5f;
+            camera.ApplyPan(cx - cam.panX, cy - cam.panY);
+        }
+            }
+            else
+            {
+        ImGui::TextDisabled("Selected room id is invalid (no room at that id).");
+            }
+        }
+        else
+        {
+            ImGui::TextDisabled("Tip: Alt+click a tile in Inspect to select its room.");
+        }
+
+        if (ImGui::CollapsingHeader("Room Inspector", ImGuiTreeNodeFlags_DefaultOpen))
+        {
+            static bool showIndoors = true;
+            static bool showOutdoors = true;
+
+            ImGui::Checkbox("Indoors##rooms_filter_in", &showIndoors);
+            ImGui::SameLine();
+            ImGui::Checkbox("Outdoors##rooms_filter_out", &showOutdoors);
+
+            if (!showIndoors && !showOutdoors)
+            {
+        ImGui::TextDisabled("Enable at least one filter to show rooms.");
+            }
+            else if (ImGui::BeginTable("rooms_table", 7,
+                               ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg | ImGuiTableFlags_ScrollY,
+                               ImVec2(0.f, 220.f)))
+            {
+        ImGui::TableSetupColumn("ID", ImGuiTableColumnFlags_WidthFixed, 46.f);
+        ImGui::TableSetupColumn("In", ImGuiTableColumnFlags_WidthFixed, 30.f);
+        ImGui::TableSetupColumn("Area", ImGuiTableColumnFlags_WidthFixed, 52.f);
+        ImGui::TableSetupColumn("Perim", ImGuiTableColumnFlags_WidthFixed, 58.f);
+        ImGui::TableSetupColumn("Doors", ImGuiTableColumnFlags_WidthFixed, 54.f);
+        ImGui::TableSetupColumn("Bounds", ImGuiTableColumnFlags_WidthStretch);
+        ImGui::TableSetupColumn("Go", ImGuiTableColumnFlags_WidthFixed, 34.f);
+        ImGui::TableHeadersRow();
+
+        for (int rid = 0; rid < world.roomCount(); ++rid)
+        {
+            const proto::World::RoomInfo* ri = world.roomInfoById(rid);
+            if (!ri)
+                continue;
+
+            if (ri->indoors && !showIndoors)
+                continue;
+            if (!ri->indoors && !showOutdoors)
+                continue;
+
+            ImGui::TableNextRow();
+            ImGui::PushID(rid);
+
+            ImGui::TableSetColumnIndex(0);
+            const bool isSel = (selectedRoomId == rid);
+            char idBuf[16] = {};
+            (void)std::snprintf(idBuf, sizeof(idBuf), "R%d", rid);
+
+            if (ImGui::Selectable(idBuf, isSel, ImGuiSelectableFlags_SpanAllColumns | ImGuiSelectableFlags_AllowItemOverlap))
+                selectedRoomId = rid;
+
+            ImGui::SetItemAllowOverlap();
+
+            ImGui::TableSetColumnIndex(1);
+            ImGui::TextUnformatted(ri->indoors ? "Y" : "N");
+
+            ImGui::TableSetColumnIndex(2);
+            ImGui::Text("%d", ri->area);
+
+            ImGui::TableSetColumnIndex(3);
+            ImGui::Text("%d", ri->perimeter);
+
+            ImGui::TableSetColumnIndex(4);
+            ImGui::Text("%d", ri->doorCount);
+
+            ImGui::TableSetColumnIndex(5);
+            ImGui::Text("(%d,%d)-(%d,%d)", ri->minX, ri->minY, ri->maxX, ri->maxY);
+
+            ImGui::TableSetColumnIndex(6);
+            if (ImGui::SmallButton("Go"))
+            {
+                const auto& cam = camera.State();
+                const float cx = (static_cast<float>(ri->minX + ri->maxX) + 1.0f) * 0.5f;
+                const float cy = (static_cast<float>(ri->minY + ri->maxY) + 1.0f) * 0.5f;
+                camera.ApplyPan(cx - cam.panX, cy - cam.panY);
+            }
+
+            ImGui::PopID();
+        }
+
+        ImGui::EndTable();
+            }
+        }
         ImGui::Separator();
         ImGui::TextUnformatted("Simulation");
         ImGui::Checkbox("Paused (P)", &paused);
@@ -1954,6 +3121,43 @@ if (selectedColonistId >= 0)
                 ImGui::Text("Hit rate: %.1f%%", hitRate);
                 ImGui::Text("Compute: A* %llu, JPS %llu", astar, jps);
                 ImGui::Text("Invalidated: %llu, evicted: %llu", invalid, evicted);
+
+                ImGui::SeparatorText("Build assignment");
+                const unsigned long long fieldBuilds   = static_cast<unsigned long long>(stats.buildFieldComputed);
+                const unsigned long long fieldSources  = static_cast<unsigned long long>(stats.buildFieldSources);
+                const unsigned long long fieldAssigned = static_cast<unsigned long long>(stats.buildFieldAssigned);
+                const unsigned long long fieldFallback = static_cast<unsigned long long>(stats.buildFieldFallback);
+                ImGui::Text("Plan distance-field builds: %llu (sources %llu)", fieldBuilds, fieldSources);
+                ImGui::Text("Assigned via field: %llu (fallback: %llu)", fieldAssigned, fieldFallback);
+
+                ImGui::SeparatorText("Hauling assignment");
+                const unsigned long long spBuilds   = static_cast<unsigned long long>(stats.haulStockpileFieldComputed);
+                const unsigned long long spSources  = static_cast<unsigned long long>(stats.haulStockpileFieldSources);
+                const unsigned long long spUsed     = static_cast<unsigned long long>(stats.haulStockpileFieldUsed);
+                const unsigned long long hwBuilds   = static_cast<unsigned long long>(stats.haulPickupFieldComputed);
+                const unsigned long long hwSources  = static_cast<unsigned long long>(stats.haulPickupFieldSources);
+                const unsigned long long hwAssigned = static_cast<unsigned long long>(stats.haulPickupFieldAssigned);
+                const unsigned long long hwFallback = static_cast<unsigned long long>(stats.haulPickupFieldFallback);
+
+                ImGui::Text("Stockpile field: %llu builds (sources %llu), used %llu", spBuilds, spSources, spUsed);
+                ImGui::Text("Pickup field:    %llu builds (sources %llu)", hwBuilds, hwSources);
+                ImGui::Text("Assigned via field: %llu (fallback: %llu)", hwAssigned, hwFallback);
+
+                ImGui::SeparatorText("Harvest assignment");
+                const unsigned long long hfBuilds   = static_cast<unsigned long long>(stats.harvestFieldComputed);
+                const unsigned long long hfSources  = static_cast<unsigned long long>(stats.harvestFieldSources);
+                const unsigned long long hfAssigned = static_cast<unsigned long long>(stats.harvestFieldAssigned);
+                const unsigned long long hfFallback = static_cast<unsigned long long>(stats.harvestFieldFallback);
+                ImGui::Text("Harvest field builds: %llu (sources %llu)", hfBuilds, hfSources);
+                ImGui::Text("Assigned via field: %llu (fallback: %llu)", hfAssigned, hfFallback);
+
+                ImGui::SeparatorText("Eat assignment");
+                const unsigned long long efBuilds   = static_cast<unsigned long long>(stats.eatFieldComputed);
+                const unsigned long long efSources  = static_cast<unsigned long long>(stats.eatFieldSources);
+                const unsigned long long efAssigned = static_cast<unsigned long long>(stats.eatFieldAssigned);
+                const unsigned long long efFallback = static_cast<unsigned long long>(stats.eatFieldFallback);
+                ImGui::Text("Food field builds: %llu (sources %llu)", efBuilds, efSources);
+                ImGui::Text("Assigned via field: %llu (fallback: %llu)", efAssigned, efFallback);
             }
         }
 

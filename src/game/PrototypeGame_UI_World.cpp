@@ -5,6 +5,7 @@
 #include <cstdio>
 #include <cstdint>
 #include <limits>
+#include <vector>
 
 namespace colony::game {
 
@@ -15,6 +16,73 @@ namespace {
 [[nodiscard]] float clampf(float v, float lo, float hi) noexcept
 {
     return std::max(lo, std::min(v, hi));
+}
+
+struct IntTile {
+    int x = 0;
+    int y = 0;
+};
+
+[[nodiscard]] std::vector<IntTile> gatherMoveDestinations(const proto::World& world,
+                                                          int targetX, int targetY,
+                                                          int count) noexcept
+{
+    std::vector<IntTile> out;
+    if (count <= 0)
+        return out;
+
+    const auto& nav = world.nav();
+    if (!world.inBounds(targetX, targetY) || !nav.passable(targetX, targetY))
+        return out;
+
+    const int w = world.width();
+    const int h = world.height();
+
+    out.reserve(static_cast<std::size_t>(count));
+
+    std::vector<std::uint8_t> visited(static_cast<std::size_t>(w * h), 0);
+    const auto toIdx = [w](int x, int y) noexcept -> std::size_t {
+        return static_cast<std::size_t>(y * w + x);
+    };
+
+    std::vector<IntTile> q;
+    q.reserve(256);
+    q.push_back({targetX, targetY});
+    visited[toIdx(targetX, targetY)] = 1;
+
+    static constexpr int dirs[8][2] = {
+        { 1,  0}, {-1,  0}, { 0,  1}, { 0, -1},
+        { 1,  1}, { 1, -1}, {-1,  1}, {-1, -1},
+    };
+
+    std::size_t head = 0;
+    while (head < q.size() && static_cast<int>(out.size()) < count)
+    {
+        const IntTile p = q[head++];
+
+        // All nodes in the queue are passable.
+        out.push_back(p);
+
+        for (const auto& d : dirs)
+        {
+            const int dx = d[0];
+            const int dy = d[1];
+            if (!nav.can_step(p.x, p.y, dx, dy))
+                continue;
+
+            const int nx = p.x + dx;
+            const int ny = p.y + dy;
+
+            const std::size_t i = toIdx(nx, ny);
+            if (visited[i])
+                continue;
+            visited[i] = 1;
+
+            q.push_back({nx, ny});
+        }
+    }
+
+    return out;
 }
 
 struct CanvasXform {
@@ -70,6 +138,20 @@ struct CanvasXform {
     const int g = 60 + static_cast<int>((h >> 8) & 0x7F);
     const int b = 60 + static_cast<int>((h >> 16) & 0x7F);
     const int a = indoors ? 60 : 25;
+
+    return IM_COL32(r, g, b, a);
+}
+
+[[nodiscard]] ImU32 roomOverlayColorSelected(int roomId, bool indoors) noexcept
+{
+    // Same deterministic palette as roomOverlayColor(), but with a stronger alpha
+    // so the selected room stands out.
+    std::uint32_t h = static_cast<std::uint32_t>(roomId) * 2654435761u;
+
+    const int r = 60 + static_cast<int>((h >> 0) & 0x7F);
+    const int g = 60 + static_cast<int>((h >> 8) & 0x7F);
+    const int b = 60 + static_cast<int>((h >> 16) & 0x7F);
+    const int a = indoors ? 110 : 70;
 
     return IM_COL32(r, g, b, a);
 }
@@ -234,14 +316,24 @@ void PrototypeGame::Impl::drawWorldWindow()
                     dl->AddRect(p0, p1, IM_COL32(255, 245, 170, 150), 0.f, 0, 2.f);
             }
 
-            // Rooms overlay (indoors)
-            if (showRoomsOverlay && cx.tilePx >= 8.f)
-            {
-                const int rid = world.roomIdAt(x, y);
-                const proto::World::RoomInfo* ri = world.roomInfoById(rid);
-                if (ri && ri->indoors)
-                    dl->AddRectFilled(p0, p1, roomOverlayColor(ri->id, ri->indoors));
-            }
+            // Rooms overlay
+if (showRoomsOverlay && cx.tilePx >= 8.f)
+{
+    const int rid = world.roomIdAt(x, y);
+    const proto::World::RoomInfo* ri = world.roomInfoById(rid);
+    if (ri)
+    {
+        if (!roomsOverlayIndoorsOnly || ri->indoors)
+        {
+            const bool selectedRoom = (selectedRoomId >= 0) && (ri->id == selectedRoomId);
+            const ImU32 col = selectedRoom
+                ? roomOverlayColorSelected(ri->id, ri->indoors)
+                : roomOverlayColor(ri->id, ri->indoors);
+
+            dl->AddRectFilled(p0, p1, col);
+        }
+    }
+}
 
             // Planned overlay
             if (c.planned != proto::TileType::Empty && c.planned != c.built) {
@@ -304,24 +396,72 @@ void PrototypeGame::Impl::drawWorldWindow()
         }
     }
 
-    // Room labels (indoors only)
-    if (showRoomIds && cx.tilePx >= 18.f)
+    // Room labels
+if (showRoomIds && cx.tilePx >= 18.f)
+{
+    for (int rid = 0; rid < world.roomCount(); ++rid)
     {
-        for (int rid = 0; rid < world.roomCount(); ++rid)
+        const proto::World::RoomInfo* ri = world.roomInfoById(rid);
+        if (!ri)
+            continue;
+
+        if (showRoomIdsIndoorsOnly && !ri->indoors)
+            continue;
+
+        const float wx = (static_cast<float>(ri->minX + ri->maxX) + 1.0f) * 0.5f;
+        const float wy = (static_cast<float>(ri->minY + ri->maxY) + 1.0f) * 0.5f;
+        const ImVec2 pos = worldToScreen(cam3, cx, {wx, wy});
+
+        char buf[16] = {};
+        (void)std::snprintf(buf, sizeof(buf), "R%d", ri->id);
+
+        const ImU32 col = (selectedRoomId >= 0 && ri->id == selectedRoomId)
+            ? IM_COL32(255, 245, 170, 230)
+            : IM_COL32(255, 255, 255, 200);
+
+        dl->AddText({pos.x - 8.f, pos.y - 6.f}, col, buf);
+    }
+}
+
+// Selected room outline (tile-edge border)
+if (showSelectedRoomOutline && selectedRoomId >= 0 && cx.tilePx >= 6.f)
+{
+    const ImU32 col = IM_COL32(255, 245, 170, 220);
+    const float thick = (cx.tilePx >= 18.f) ? 3.f : 2.f;
+
+    for (int y = minY; y <= maxY; ++y)
+    {
+        for (int x = minX; x <= maxX; ++x)
         {
-            const proto::World::RoomInfo* ri = world.roomInfoById(rid);
-            if (!ri || !ri->indoors)
+            if (!world.inBounds(x, y))
                 continue;
 
-            const float wx = (static_cast<float>(ri->minX + ri->maxX) + 1.0f) * 0.5f;
-            const float wy = (static_cast<float>(ri->minY + ri->maxY) + 1.0f) * 0.5f;
-            const ImVec2 pos = worldToScreen(cam3, cx, {wx, wy});
+            if (world.roomIdAt(x, y) != selectedRoomId)
+                continue;
 
-            char buf[16] = {};
-            (void)std::snprintf(buf, sizeof(buf), "R%d", ri->id);
-            dl->AddText({pos.x - 8.f, pos.y - 6.f}, IM_COL32(255, 255, 255, 200), buf);
+            const ImVec2 tileCenter = worldToScreen(cam3, cx, {x + 0.5f, y + 0.5f});
+            const ImVec2 half       = {cx.tilePx * 0.5f, cx.tilePx * 0.5f};
+            const ImVec2 p0         = {tileCenter.x - half.x, tileCenter.y - half.y};
+            const ImVec2 p1         = {tileCenter.x + half.x, tileCenter.y + half.y};
+
+            // Left edge
+            if (!world.inBounds(x - 1, y) || world.roomIdAt(x - 1, y) != selectedRoomId)
+                dl->AddLine({p0.x, p0.y}, {p0.x, p1.y}, col, thick);
+
+            // Right edge
+            if (!world.inBounds(x + 1, y) || world.roomIdAt(x + 1, y) != selectedRoomId)
+                dl->AddLine({p1.x, p0.y}, {p1.x, p1.y}, col, thick);
+
+            // Top edge
+            if (!world.inBounds(x, y - 1) || world.roomIdAt(x, y - 1) != selectedRoomId)
+                dl->AddLine({p0.x, p0.y}, {p1.x, p0.y}, col, thick);
+
+            // Bottom edge
+            if (!world.inBounds(x, y + 1) || world.roomIdAt(x, y + 1) != selectedRoomId)
+                dl->AddLine({p0.x, p1.y}, {p1.x, p1.y}, col, thick);
         }
     }
+}
 
     // Draw colonists
     for (const proto::Colonist& c : world.colonists()) {
@@ -345,8 +485,13 @@ void PrototypeGame::Impl::drawWorldWindow()
         // Draft / selection outlines.
         if (c.drafted)
             dl->AddCircle(pos, r + 2.f, IM_COL32(220, 80, 80, 220), 0, 2.0f);
-        if (c.id == selectedColonistId)
-            dl->AddCircle(pos, r + 4.f, IM_COL32(255, 240, 120, 240), 0, 3.0f);
+
+        if (isColonistInSelection(c.id))
+        {
+            const float extra = (c.id == selectedColonistId) ? 4.f : 3.f;
+            const float thick = (c.id == selectedColonistId) ? 3.0f : 2.0f;
+            dl->AddCircle(pos, r + extra, IM_COL32(255, 240, 120, 240), 0, thick);
+        }
 
         // Role label (v7+)
         if (cx.tilePx >= 18.f)
@@ -424,7 +569,7 @@ if (c.id == selectedColonistId && !c.manualQueue.empty())
          (o0.kind == proto::Colonist::ManualOrder::Kind::Harvest && c.jobKind == proto::Colonist::JobKind::Harvest)) &&
         c.targetX == o0.x && c.targetY == o0.y;
 
-    const float r = std::max(2.0f, cx.tilePx * 0.12f);
+    const float qR = std::max(2.0f, cx.tilePx * 0.12f);
 
     // Draw connecting lines between queued order targets (skipping the in-progress front order, if any).
     ImVec2 prev = pos;
@@ -462,17 +607,17 @@ if (c.id == selectedColonistId && !c.manualQueue.empty())
             break;
         }
 
-        dl->AddCircleFilled(pt, r, col);
+        dl->AddCircleFilled(pt, qR, col);
         if (qi == 0 && frontActive)
-            dl->AddCircle(pt, r + 1.5f, IM_COL32(255, 255, 255, 180), 0, 2.0f);
+            dl->AddCircle(pt, qR + 1.5f, IM_COL32(255, 255, 255, 180), 0, 2.0f);
 
         // Numeric labels when zoomed in.
         if (cx.tilePx >= 18.0f)
         {
             const std::string label = std::to_string(qi + 1);
-            dl->AddText({pt.x - r * 0.6f + 1.0f, pt.y - r * 0.8f + 1.0f}, IM_COL32(0, 0, 0, 220),
+            dl->AddText({pt.x - qR * 0.6f + 1.0f, pt.y - qR * 0.8f + 1.0f}, IM_COL32(0, 0, 0, 220),
                         label.c_str());
-            dl->AddText({pt.x - r * 0.6f, pt.y - r * 0.8f}, IM_COL32(255, 255, 255, 220), label.c_str());
+            dl->AddText({pt.x - qR * 0.6f, pt.y - qR * 0.8f}, IM_COL32(255, 255, 255, 220), label.c_str());
         }
     }
 }
@@ -485,46 +630,152 @@ if (c.id == selectedColonistId && !c.manualQueue.empty())
         const int rx1 = std::max(x0, x1);
         const int ry1 = std::max(y0, y1);
 
+        const std::uint8_t priority = (plan == proto::TileType::Empty)
+            ? static_cast<std::uint8_t>(0)
+            : static_cast<std::uint8_t>(std::max(0, std::min(3, planBrushPriority)));
+
+        // We keep attempted as "in-bounds tiles in the rect" for consistent status messages.
+        int attempted = 0;
+
+        // If atomic placement is enabled, precompute the full batch and verify we can afford it.
+        struct RectOp
+        {
+            int x = 0;
+            int y = 0;
+            PlanSnapshot before{};
+            int deltaWood = 0;
+        };
+
+        std::vector<RectOp> ops;
+        ops.reserve(static_cast<std::size_t>(std::max(0, (rx1 - rx0 + 1))) *
+                    static_cast<std::size_t>(std::max(0, (ry1 - ry0 + 1))));
+
+        int totalDeltaWood  = 0;
+        int totalCostWood   = 0;
+        int totalRefundWood = 0;
+
+        if (atomicPlanPlacement)
+        {
+            for (int yy = ry0; yy <= ry1; ++yy)
+            {
+                for (int xx = rx0; xx <= rx1; ++xx)
+                {
+                    if (!world.inBounds(xx, yy))
+                        continue;
+
+                    ++attempted;
+
+                    const proto::Cell& beforeC = world.cell(xx, yy);
+                    if (!proto::PlanWouldChange(beforeC, plan, priority))
+                        continue;
+
+                    RectOp op;
+                    op.x = xx;
+                    op.y = yy;
+                    op.before = snapshotFromCell(beforeC);
+                    op.deltaWood = proto::PlanDeltaWoodCost(beforeC, plan);
+                    ops.push_back(op);
+
+                    totalDeltaWood += op.deltaWood;
+                    if (op.deltaWood > 0)
+                        totalCostWood += op.deltaWood;
+                    else
+                        totalRefundWood += -op.deltaWood;
+                }
+            }
+
+            if (attempted == 0)
+                return;
+
+            // Not enough wood to apply the entire rectangle.
+            if (totalDeltaWood > world.inventory().wood)
+            {
+                const int need = totalDeltaWood - world.inventory().wood;
+                setStatus("Not enough wood for atomic placement: need " + std::to_string(need) +
+                          " more (delta " + std::to_string(totalDeltaWood) +
+                          ", cost " + std::to_string(totalCostWood) +
+                          ", refund " + std::to_string(totalRefundWood) + ")");
+                return;
+            }
+        }
+
         // One undoable command.
         if (planHistory.HasActiveCommand())
             (void)planHistory.CommitCommand(world.inventory().wood);
         planHistory.BeginCommand(world.inventory().wood);
 
-        const std::uint8_t priority = (plan == proto::TileType::Empty)
-            ? static_cast<std::uint8_t>(0)
-            : static_cast<std::uint8_t>(std::max(0, std::min(3, planBrushPriority)));
-
         int changed = 0;
-        int attempted = 0;
         bool notEnough = false;
 
-        for (int yy = ry0; yy <= ry1; ++yy) {
-            for (int xx = rx0; xx <= rx1; ++xx) {
-                if (!world.inBounds(xx, yy))
-                    continue;
-                ++attempted;
-                const proto::Cell& beforeC = world.cell(xx, yy);
-                const PlanSnapshot before = snapshotFromCell(beforeC);
-
-                const auto r = world.placePlan(xx, yy, plan, priority);
+        if (atomicPlanPlacement)
+        {
+            // Apply refunds first to maximize the chance of success when swapping plans.
+            auto applyOne = [&](const RectOp& op) {
+                const auto r = world.placePlan(op.x, op.y, plan, priority);
                 if (r == proto::PlacePlanResult::Ok)
                 {
                     ++changed;
-                    const proto::Cell& afterC = world.cell(xx, yy);
-                    const PlanSnapshot after = snapshotFromCell(afterC);
-                    planHistory.RecordChange(xx, yy, before, after);
+                    const PlanSnapshot after = snapshotFromCell(world.cell(op.x, op.y));
+                    planHistory.RecordChange(op.x, op.y, op.before, after);
                 }
-                else if (r == proto::PlacePlanResult::NotEnoughWood) {
+                else if (r == proto::PlacePlanResult::NotEnoughWood)
+                {
+                    // Should never happen due to the pre-check, but keep a safety flag.
                     notEnough = true;
-                    // Remaining tiles will also fail for positive-cost placements.
-                    if (reportNotEnoughWood)
-                        goto done;
+                }
+            };
+
+            // deltaWood < 0 => refund
+            for (const RectOp& op : ops)
+                if (op.deltaWood < 0)
+                    applyOne(op);
+
+            // deltaWood == 0 => priority-only or free plan swap
+            for (const RectOp& op : ops)
+                if (op.deltaWood == 0)
+                    applyOne(op);
+
+            // deltaWood > 0 => cost
+            for (const RectOp& op : ops)
+                if (op.deltaWood > 0)
+                    applyOne(op);
+
+            // In atomic mode, attempted count was already computed in the prepass.
+        }
+        else
+        {
+            for (int yy = ry0; yy <= ry1; ++yy)
+            {
+                for (int xx = rx0; xx <= rx1; ++xx)
+                {
+                    if (!world.inBounds(xx, yy))
+                        continue;
+                    ++attempted;
+
+                    const proto::Cell& beforeC = world.cell(xx, yy);
+                    const PlanSnapshot before = snapshotFromCell(beforeC);
+
+                    const auto r = world.placePlan(xx, yy, plan, priority);
+                    if (r == proto::PlacePlanResult::Ok)
+                    {
+                        ++changed;
+                        const PlanSnapshot after = snapshotFromCell(world.cell(xx, yy));
+                        planHistory.RecordChange(xx, yy, before, after);
+                    }
+                    else if (r == proto::PlacePlanResult::NotEnoughWood)
+                    {
+                        notEnough = true;
+                        // Remaining tiles will also fail for positive-cost placements.
+                        if (reportNotEnoughWood)
+                            goto done;
+                    }
                 }
             }
         }
 
     done:
-        if (attempted == 0) {
+        if (attempted == 0)
+        {
             planHistory.CancelCommand();
             return;
         }
@@ -533,9 +784,12 @@ if (c.id == selectedColonistId && !c.manualQueue.empty())
         if (committed)
             world.CancelAllJobsAndClearReservations();
 
-        if (notEnough && reportNotEnoughWood) {
+        if (notEnough && reportNotEnoughWood)
+        {
             setStatus("Not enough wood (" + std::to_string(changed) + "/" + std::to_string(attempted) + ")");
-        } else {
+        }
+        else
+        {
             if (plan == proto::TileType::Remove)
                 setStatus("Marked " + std::to_string(changed) + " tiles for demolition (P" + std::to_string(static_cast<int>(priority) + 1) + ")");
             else if (plan != proto::TileType::Empty)
@@ -669,64 +923,257 @@ if (c.id == selectedColonistId && !c.manualQueue.empty())
         }
     };
 
-    auto applyBlueprintAt = [&](int topLeftX, int topLeftY) {
+    struct BlueprintStampPreview
+    {
+        int attempted   = 0;
+        int wouldChange = 0;
+        int deltaWood   = 0;
+        int costWood    = 0;
+        int refundWood  = 0;
+        bool truncated  = false;
+    };
+
+    auto previewBlueprintStampAt = [&](int topLeftX, int topLeftY) -> BlueprintStampPreview {
+        BlueprintStampPreview out;
         if (blueprint.Empty())
-            return;
+            return out;
 
-        // Finish any in-progress paint gesture so this stamp is a single undo step.
-        if (planHistory.HasActiveCommand())
-            (void)planHistory.CommitCommand(world.inventory().wood);
-
-        planHistory.BeginCommand(world.inventory().wood);
-
-        int changed   = 0;
-        int attempted = 0;
-        bool notEnough = false;
+        constexpr std::size_t kMaxPreviewCells = 20000u;
+        if (blueprint.packed.size() > kMaxPreviewCells)
+        {
+            out.truncated = true;
+            return out;
+        }
 
         const int bw = blueprint.w;
         const int bh = blueprint.h;
 
-        for (int by = 0; by < bh; ++by) {
-            for (int bx = 0; bx < bw; ++bx) {
+        for (int by = 0; by < bh; ++by)
+        {
+            for (int bx = 0; bx < bw; ++bx)
+            {
                 const std::size_t idx = static_cast<std::size_t>(by * bw + bx);
                 if (idx >= blueprint.packed.size())
                     continue;
 
-                const std::uint8_t cellPacked = blueprint.packed[idx];
-                const proto::TileType plan    = colony::game::editor::BlueprintUnpackTile(cellPacked);
+                const std::uint32_t packed = blueprint.packed[idx];
+                proto::TileType plan = colony::game::editor::BlueprintUnpackTile(packed);
+                std::uint8_t pr = colony::game::editor::BlueprintUnpackPriority(packed);
 
-                if (plan == proto::TileType::Empty && !blueprintPasteIncludeEmpty)
-                    continue;
+                if (plan == proto::TileType::Empty)
+                {
+                    if (!blueprintPasteIncludeEmpty)
+                        continue;
+                    pr = 0;
+                }
 
                 const int wx = topLeftX + bx;
                 const int wy = topLeftY + by;
                 if (!world.inBounds(wx, wy))
                     continue;
 
-                ++attempted;
+                ++out.attempted;
 
-                const proto::Cell& beforeC = world.cell(wx, wy);
-                const PlanSnapshot before = snapshotFromCell(beforeC);
+                const proto::Cell& c = world.cell(wx, wy);
+                if (!proto::PlanWouldChange(c, plan, pr))
+                    continue;
 
-                const std::uint8_t priority = (plan == proto::TileType::Empty)
-                    ? static_cast<std::uint8_t>(0)
-                    : colony::game::editor::BlueprintUnpackPriority(cellPacked);
+                ++out.wouldChange;
 
-                const auto r = world.placePlan(wx, wy, plan, priority);
-                if (r == proto::PlacePlanResult::Ok) {
-                    const PlanSnapshot after = snapshotFromCell(world.cell(wx, wy));
-                    planHistory.RecordEdit(wx, wy, before, after);
-                    ++changed;
+                const int d = proto::PlanDeltaWoodCost(c, plan);
+                out.deltaWood += d;
+                if (d > 0)
+                    out.costWood += d;
+                else
+                    out.refundWood += -d;
+            }
+        }
+
+        return out;
+    };
+
+    auto applyBlueprintAt = [&](int topLeftX, int topLeftY) {
+        if (blueprint.Empty())
+            return;
+
+        struct StampOp
+        {
+            int x = 0;
+            int y = 0;
+            proto::TileType plan = proto::TileType::Empty;
+            std::uint8_t priority = 0;
+            PlanSnapshot before{};
+            int deltaWood = 0;
+        };
+
+        // Optional prepass for atomic placement.
+        std::vector<StampOp> ops;
+        int attempted = 0;
+
+        int totalDeltaWood  = 0;
+        int totalCostWood   = 0;
+        int totalRefundWood = 0;
+
+        if (atomicPlanPlacement)
+        {
+            ops.reserve(blueprint.packed.size());
+
+            const int bw = blueprint.w;
+            const int bh = blueprint.h;
+
+            for (int by = 0; by < bh; ++by)
+            {
+                for (int bx = 0; bx < bw; ++bx)
+                {
+                    const std::size_t idx = static_cast<std::size_t>(by * bw + bx);
+                    if (idx >= blueprint.packed.size())
+                        continue;
+
+                    const std::uint32_t packed = blueprint.packed[idx];
+                    proto::TileType plan = colony::game::editor::BlueprintUnpackTile(packed);
+                    std::uint8_t pr = colony::game::editor::BlueprintUnpackPriority(packed);
+
+                    // Empty blueprint cells optionally erase plans.
+                    if (plan == proto::TileType::Empty)
+                    {
+                        if (!blueprintPasteIncludeEmpty)
+                            continue;
+                        pr = 0;
+                    }
+
+                    const int wx = topLeftX + bx;
+                    const int wy = topLeftY + by;
+                    if (!world.inBounds(wx, wy))
+                        continue;
+
+                    ++attempted;
+
+                    const proto::Cell& beforeC = world.cell(wx, wy);
+                    if (!proto::PlanWouldChange(beforeC, plan, pr))
+                        continue;
+
+                    StampOp op;
+                    op.x = wx;
+                    op.y = wy;
+                    op.plan = plan;
+                    op.priority = pr;
+                    op.before = snapshotFromCell(beforeC);
+                    op.deltaWood = proto::PlanDeltaWoodCost(beforeC, plan);
+
+                    ops.push_back(op);
+
+                    totalDeltaWood += op.deltaWood;
+                    if (op.deltaWood > 0)
+                        totalCostWood += op.deltaWood;
+                    else
+                        totalRefundWood += -op.deltaWood;
                 }
-                else if (r == proto::PlacePlanResult::NotEnoughWood) {
+            }
+
+            if (attempted == 0)
+            {
+                setStatus("Blueprint paste: nothing to apply.", 3.0f);
+                return;
+            }
+
+            if (totalDeltaWood > world.inventory().wood)
+            {
+                const int need = totalDeltaWood - world.inventory().wood;
+                setStatus("Blueprint paste blocked (atomic): need " + std::to_string(need) +
+                          " more wood (delta " + std::to_string(totalDeltaWood) +
+                          ", cost " + std::to_string(totalCostWood) +
+                          ", refund " + std::to_string(totalRefundWood) + ")", 4.0f);
+                return;
+            }
+        }
+
+        // One undoable command.
+        if (planHistory.HasActiveCommand())
+            (void)planHistory.CommitCommand(world.inventory().wood);
+        planHistory.BeginCommand(world.inventory().wood);
+
+        int changed = 0;
+        bool notEnough = false;
+
+        if (atomicPlanPlacement)
+        {
+            auto applyOne = [&](const StampOp& op) {
+                const auto r = world.placePlan(op.x, op.y, op.plan, op.priority);
+                if (r == proto::PlacePlanResult::Ok)
+                {
+                    ++changed;
+                    const PlanSnapshot after = snapshotFromCell(world.cell(op.x, op.y));
+                    planHistory.RecordChange(op.x, op.y, op.before, after);
+                }
+                else if (r == proto::PlacePlanResult::NotEnoughWood)
+                {
+                    // Should never happen due to the pre-check.
                     notEnough = true;
+                }
+            };
+
+            // Refund-first ordering for deterministic + robust batch placement.
+            for (const StampOp& op : ops)
+                if (op.deltaWood < 0)
+                    applyOne(op);
+            for (const StampOp& op : ops)
+                if (op.deltaWood == 0)
+                    applyOne(op);
+            for (const StampOp& op : ops)
+                if (op.deltaWood > 0)
+                    applyOne(op);
+        }
+        else
+        {
+            const int bw = blueprint.w;
+            const int bh = blueprint.h;
+
+            for (int by = 0; by < bh; ++by) {
+                for (int bx = 0; bx < bw; ++bx) {
+                    const std::size_t idx = static_cast<std::size_t>(by * bw + bx);
+                    if (idx >= blueprint.packed.size())
+                        continue;
+
+                    const auto packed = blueprint.packed[idx];
+                    const proto::TileType plan = colony::game::editor::BlueprintUnpackTile(packed);
+
+                    // Empty blueprint cells optionally erase plans.
+                    if (plan == proto::TileType::Empty && !blueprintPasteIncludeEmpty)
+                        continue;
+
+                    const int wx = topLeftX + bx;
+                    const int wy = topLeftY + by;
+                    if (!world.inBounds(wx, wy))
+                        continue;
+
+                    ++attempted;
+
+                    const proto::Cell& beforeC = world.cell(wx, wy);
+                    const PlanSnapshot before = snapshotFromCell(beforeC);
+
+                    const std::uint8_t priority = (plan == proto::TileType::Empty)
+                        ? static_cast<std::uint8_t>(0)
+                        : colony::game::editor::BlueprintUnpackPriority(packed);
+
+                    const auto r = world.placePlan(wx, wy, plan, priority);
+                    if (r == proto::PlacePlanResult::Ok)
+                    {
+                        ++changed;
+                        const PlanSnapshot after = snapshotFromCell(world.cell(wx, wy));
+                        planHistory.RecordChange(wx, wy, before, after);
+                    }
+                    else if (r == proto::PlacePlanResult::NotEnoughWood)
+                    {
+                        notEnough = true;
+                    }
                 }
             }
         }
 
-        if (attempted == 0) {
+        if (attempted == 0)
+        {
             planHistory.CancelCommand();
-            setStatus("Blueprint paste: nothing to apply");
+            setStatus("Blueprint paste: nothing to apply.", 3.0f);
             return;
         }
 
@@ -734,11 +1181,16 @@ if (c.id == selectedColonistId && !c.manualQueue.empty())
         if (committed)
             world.CancelAllJobsAndClearReservations();
 
-        std::string msg = "Blueprint paste: " + std::to_string(changed) + "/" + std::to_string(attempted);
         if (notEnough)
-            msg += " (not enough wood)";
-        setStatus(std::move(msg));
+        {
+            setStatus("Blueprint paste: " + std::to_string(changed) + "/" + std::to_string(attempted) + " (not enough wood)", 4.0f);
+        }
+        else
+        {
+            setStatus("Blueprint paste: " + std::to_string(changed) + "/" + std::to_string(attempted), 3.0f);
+        }
     };
+
     // Hover / interaction
     if (canvas_hovered) {
         const ImVec2 mouse = ImGui::GetIO().MousePos;
@@ -757,6 +1209,8 @@ if (c.id == selectedColonistId && !c.manualQueue.empty())
             // Interaction modifiers
             const bool spaceHeld = ImGui::IsKeyDown(ImGuiKey_Space);
             const bool shiftHeld = ImGui::GetIO().KeyShift;
+            const bool ctrlHeld  = ImGui::GetIO().KeyCtrl;
+            const bool altHeld   = ImGui::GetIO().KeyAlt;
 
             // If we're in Inspect, allow clicking a colonist (not just tiles).
             int hoveredColonistId = -1;
@@ -838,6 +1292,34 @@ if (c.id == selectedColonistId && !c.manualQueue.empty())
                     ImGui::Text("Reserved: %d", cell.reservedBy);
             }
 
+            if (tool == Tool::Blueprint && !blueprint.Empty())
+            {
+                int bx = 0;
+                int by = 0;
+                blueprintTopLeftFromHover(tx, ty, bx, by);
+
+                const BlueprintStampPreview prev = previewBlueprintStampAt(bx, by);
+
+                ImGui::Separator();
+                ImGui::Text("Blueprint stamp:");
+                ImGui::Text("Size: %dx%d", blueprint.w, blueprint.h);
+                ImGui::Text("Anchor: %s", (blueprintAnchor == colony::game::editor::BlueprintAnchor::TopLeft) ? "Top-left" : "Center");
+                ImGui::Text("Top-left: (%d, %d)", bx, by);
+
+                if (prev.truncated)
+                {
+                    ImGui::TextDisabled("Preview truncated (blueprint too large).");
+                }
+                else
+                {
+                    ImGui::Text("Would change: %d/%d cells", prev.wouldChange, prev.attempted);
+                    ImGui::Text("Wood delta: %+d (cost %d, refund %d)", prev.deltaWood, prev.costWood, prev.refundWood);
+
+                    if (atomicPlanPlacement && prev.deltaWood > world.inventory().wood)
+                        ImGui::TextDisabled("Atomic placement: need %d more wood", prev.deltaWood - world.inventory().wood);
+                }
+            }
+
             if (hoveredColonistId >= 0)
             {
                 for (const auto& c : world.colonists())
@@ -888,9 +1370,9 @@ if (c.id == selectedColonistId && !c.manualQueue.empty())
                         const int rx1 = std::max(selectRectStartX, selectRectEndX);
                         const int ry1 = std::max(selectRectStartY, selectRectEndY);
 
-                        const int w = rx1 - rx0 + 1;
-                        const int h = ry1 - ry0 + 1;
-                        setStatus("Selected region " + std::to_string(w) + "x" + std::to_string(h));
+                        const int selW = rx1 - rx0 + 1;
+                        const int selH = ry1 - ry0 + 1;
+                        setStatus("Selected region " + std::to_string(selW) + "x" + std::to_string(selH));
                     }
                 }
                 // --- Rectangle paint mode (Shift + drag) ---
@@ -967,46 +1449,109 @@ if (c.id == selectedColonistId && !c.manualQueue.empty())
                         }
 else if (ImGui::IsMouseClicked(ImGuiMouseButton_Right) && tool == Tool::Inspect)
 {
-    // Inspect tool: Shift+Right-click queues a manual order for the selected drafted colonist.
-    if (selectedColonistId < 0)
+    // Inspect tool: Shift+Right-click queues manual orders.
+    //
+    // - Move orders apply to all selected colonists.
+    // - Build/Harvest orders apply to the primary selection only.
+    if (selectedColonistIds.empty())
     {
         setStatus("No colonist selected (left-click a colonist to select).", 2.5f);
     }
     else
     {
-        proto::Cell& cell = world.cell(tx, ty);
-        proto::OrderResult r = proto::OrderResult::Ok;
+        proto::Cell& clickedCell = world.cell(tx, ty);
 
-        // If the tile has an active plan, queue a build order.
-        if (cell.planned != proto::TileType::Empty && cell.planned != cell.built)
+        // Build: primary selection only.
+        if (clickedCell.planned != proto::TileType::Empty && clickedCell.planned != clickedCell.built)
         {
-            r = world.OrderColonistBuild(selectedColonistId, tx, ty, true);
+            const int cid = selectedColonistId;
+            const proto::OrderResult r = world.OrderColonistBuild(cid, tx, ty, /*queue=*/true);
             if (r == proto::OrderResult::Ok)
-                setStatus("Queued C" + std::to_string(selectedColonistId) + " to build at " +
+                setStatus("Queued C" + std::to_string(cid) + " to build at " +
                               std::to_string(tx) + "," + std::to_string(ty),
                           2.5f);
+            else
+                setStatus(std::string("Queue order failed: ") + proto::OrderResultName(r), 2.5f);
         }
-        // Otherwise if it's a ripe farm, queue a harvest order.
-        else if (cell.built == proto::TileType::Farm)
+        // Harvest: primary selection only (farms are exclusive).
+        else if (clickedCell.built == proto::TileType::Farm)
         {
-            r = world.OrderColonistHarvest(selectedColonistId, tx, ty, true);
+            const int cid = selectedColonistId;
+            const proto::OrderResult r = world.OrderColonistHarvest(cid, tx, ty, /*queue=*/true);
             if (r == proto::OrderResult::Ok)
-                setStatus("Queued C" + std::to_string(selectedColonistId) + " to harvest at " +
+                setStatus("Queued C" + std::to_string(cid) + " to harvest at " +
                               std::to_string(tx) + "," + std::to_string(ty),
                           2.5f);
+            else
+                setStatus(std::string("Queue order failed: ") + proto::OrderResultName(r), 2.5f);
         }
-        // Otherwise queue a move order.
+        // Move: apply to all selected.
         else
         {
-            r = world.OrderColonistMove(selectedColonistId, tx, ty, true);
-            if (r == proto::OrderResult::Ok)
-                setStatus("Queued C" + std::to_string(selectedColonistId) + " to move to " +
-                              std::to_string(tx) + "," + std::to_string(ty),
+            if (!world.nav().passable(tx, ty))
+            {
+                setStatus(std::string("Queue order failed: ") +
+                              proto::OrderResultName(proto::OrderResult::TargetBlocked),
                           2.5f);
-        }
+            }
+            else
+            {
+                std::vector<int> orderIds = selectedColonistIds;
+                if (selectedColonistId >= 0 && orderIds.size() > 1)
+                {
+                    auto it = std::find(orderIds.begin(), orderIds.end(), selectedColonistId);
+                    if (it != orderIds.end() && it != orderIds.begin())
+                    {
+                        const int primary = *it;
+                        orderIds.erase(it);
+                        orderIds.insert(orderIds.begin(), primary);
+                    }
+                }
 
-        if (r != proto::OrderResult::Ok)
-            setStatus(std::string("Queue order failed: ") + proto::OrderResultName(r), 2.5f);
+                const std::vector<IntTile> dests =
+                    gatherMoveDestinations(world, tx, ty, static_cast<int>(orderIds.size()));
+
+                int ok = 0;
+                int fail = 0;
+                proto::OrderResult lastFail = proto::OrderResult::Ok;
+
+                for (std::size_t i = 0; i < orderIds.size(); ++i)
+                {
+                    const int cid = orderIds[i];
+                    int dx = tx;
+                    int dy = ty;
+                    if (i < dests.size())
+                    {
+                        dx = dests[i].x;
+                        dy = dests[i].y;
+                    }
+
+                    const proto::OrderResult r = world.OrderColonistMove(cid, dx, dy, /*queue=*/true);
+                    if (r == proto::OrderResult::Ok)
+                        ++ok;
+                    else
+                    {
+                        ++fail;
+                        lastFail = r;
+                    }
+                }
+
+                if (ok > 0)
+                {
+                    std::string msg = "Queued " + std::to_string(ok) + " colonist";
+                    if (ok != 1)
+                        msg += "s";
+                    msg += " to move";
+                    if (fail > 0)
+                        msg += " (" + std::to_string(fail) + " failed)";
+                    setStatus(msg, 2.5f);
+                }
+                else
+                {
+                    setStatus(std::string("Queue order failed: ") + proto::OrderResultName(lastFail), 2.5f);
+                }
+            }
+        }
     }
 }
                     }
@@ -1130,37 +1675,104 @@ else if (ImGui::IsMouseClicked(ImGuiMouseButton_Right) && tool == Tool::Inspect)
                                 tryApplySingle(tx, ty, toolTile(), /*reportNotEnoughWood=*/ true);
                         }
 
-                        // Inspect tool: right-click issues a direct order for the selected drafted colonist.
+                        // Inspect tool: right-click issues direct manual orders.
+                        //
+                        // - Move orders apply to all selected colonists.
+                        // - Build/Harvest orders apply to the primary selection only
+                        //   (because those targets are exclusive/reserved).
                         if (tool == Tool::Inspect && ImGui::IsMouseClicked(ImGuiMouseButton_Right))
                         {
-                            if (selectedColonistId < 0)
+                            if (selectedColonistIds.empty())
                             {
                                 setStatus("No colonist selected (left-click a colonist to select).", 3.0f);
                             }
+                            else if (cell.planned != proto::TileType::Empty && cell.planned != cell.built)
+                            {
+                                const int cid = selectedColonistId;
+                                const proto::OrderResult r = world.OrderColonistBuild(cid, tx, ty, /*queue=*/false);
+                                if (r == proto::OrderResult::Ok)
+                                    setStatus("Ordered C" + std::to_string(cid) + " to build at " +
+                                              std::to_string(tx) + "," + std::to_string(ty),
+                                              3.0f);
+                                else
+                                    setStatus(std::string("Order failed: ") + proto::OrderResultName(r), 3.0f);
+                            }
+                            else if (cell.built == proto::TileType::Farm && cell.farmGrowth >= 1.0f)
+                            {
+                                const int cid = selectedColonistId;
+                                const proto::OrderResult r = world.OrderColonistHarvest(cid, tx, ty, /*queue=*/false);
+                                if (r == proto::OrderResult::Ok)
+                                    setStatus("Ordered C" + std::to_string(cid) + " to harvest at " +
+                                              std::to_string(tx) + "," + std::to_string(ty),
+                                              3.0f);
+                                else
+                                    setStatus(std::string("Order failed: ") + proto::OrderResultName(r), 3.0f);
+                            }
                             else
                             {
-                                proto::OrderResult r = proto::OrderResult::Ok;
-                                if (cell.planned != proto::TileType::Empty && cell.planned != cell.built)
+                                if (!world.nav().passable(tx, ty))
                                 {
-                                    r = world.OrderColonistBuild(selectedColonistId, tx, ty);
-                                    if (r == proto::OrderResult::Ok)
-                                        setStatus("Ordered C" + std::to_string(selectedColonistId) + " to build at " + std::to_string(tx) + "," + std::to_string(ty));
-                                }
-                                else if (cell.built == proto::TileType::Farm && cell.farmGrowth >= 1.0f)
-                                {
-                                    r = world.OrderColonistHarvest(selectedColonistId, tx, ty);
-                                    if (r == proto::OrderResult::Ok)
-                                        setStatus("Ordered C" + std::to_string(selectedColonistId) + " to harvest at " + std::to_string(tx) + "," + std::to_string(ty));
+                                    setStatus(std::string("Order failed: ") +
+                                                  proto::OrderResultName(proto::OrderResult::TargetBlocked),
+                                              3.0f);
                                 }
                                 else
                                 {
-                                    r = world.OrderColonistMove(selectedColonistId, tx, ty);
-                                    if (r == proto::OrderResult::Ok)
-                                        setStatus("Ordered C" + std::to_string(selectedColonistId) + " to move to " + std::to_string(tx) + "," + std::to_string(ty));
-                                }
+                                    std::vector<int> orderIds = selectedColonistIds;
+                                    if (selectedColonistId >= 0 && orderIds.size() > 1)
+                                    {
+                                        auto it = std::find(orderIds.begin(), orderIds.end(), selectedColonistId);
+                                        if (it != orderIds.end() && it != orderIds.begin())
+                                        {
+                                            const int primary = *it;
+                                            orderIds.erase(it);
+                                            orderIds.insert(orderIds.begin(), primary);
+                                        }
+                                    }
 
-                                if (r != proto::OrderResult::Ok)
-                                    setStatus(std::string("Order failed: ") + proto::OrderResultName(r), 3.0f);
+                                    const std::vector<IntTile> dests =
+                                        gatherMoveDestinations(world, tx, ty, static_cast<int>(orderIds.size()));
+
+                                    int ok = 0;
+                                    int fail = 0;
+                                    proto::OrderResult lastFail = proto::OrderResult::Ok;
+
+                                    for (std::size_t i = 0; i < orderIds.size(); ++i)
+                                    {
+                                        const int cid = orderIds[i];
+                                        int dx = tx;
+                                        int dy = ty;
+                                        if (i < dests.size())
+                                        {
+                                            dx = dests[i].x;
+                                            dy = dests[i].y;
+                                        }
+
+                                        const proto::OrderResult r = world.OrderColonistMove(cid, dx, dy, /*queue=*/false);
+                                        if (r == proto::OrderResult::Ok)
+                                            ++ok;
+                                        else
+                                        {
+                                            ++fail;
+                                            lastFail = r;
+                                        }
+                                    }
+
+                                    if (ok > 0)
+                                    {
+                                        std::string msg = "Ordered " + std::to_string(ok) + " colonist";
+                                        if (ok != 1)
+                                            msg += "s";
+                                        msg += " to move";
+                                        if (fail > 0)
+                                            msg += " (" + std::to_string(fail) + " failed)";
+                                        setStatus(msg, 3.0f);
+                                    }
+                                    else
+                                    {
+                                        setStatus(std::string("Order failed: ") + proto::OrderResultName(lastFail), 3.0f);
+                                    }
+                                }
                             }
                         }
 
@@ -1175,27 +1787,66 @@ else if (ImGui::IsMouseClicked(ImGuiMouseButton_Right) && tool == Tool::Inspect)
                         {
                             if (hoveredColonistId >= 0)
                             {
-                                selectedColonistId = hoveredColonistId;
+                                // Ctrl+click toggles multi-selection.
+                                if (ctrlHeld)
+                                    toggleColonistSelection(hoveredColonistId, /*makePrimaryIfAdding=*/ true);
+                                else
+                                    selectColonistExclusive(hoveredColonistId);
 
-                                // Also set the tile selection to the colonist's current tile.
-                                for (const auto& c : world.colonists())
+                                // Snap tile selection to the primary colonist.
+                                if (selectedColonistId >= 0)
                                 {
-                                    if (c.id == hoveredColonistId)
+                                    for (const auto& c : world.colonists())
                                     {
-                                        selectedX = static_cast<int>(std::floor(c.x));
-                                        selectedY = static_cast<int>(std::floor(c.y));
-                                        break;
+                                        if (c.id == selectedColonistId)
+                                        {
+                                            selectedX = static_cast<int>(std::floor(c.x));
+                                            selectedY = static_cast<int>(std::floor(c.y));
+                                            break;
+                                        }
                                     }
                                 }
 
-                                setStatus(std::string("Selected colonist C") + std::to_string(hoveredColonistId));
+                                setStatus("Selected " + std::to_string(selectedColonistIds.size()) + " colonist(s)",
+                                          2.0f);
                             }
                             else
                             {
-                                selectedColonistId = -1;
+                                // Ctrl+clicking a tile does NOT clear the current colonist selection,
+                                // allowing quick inspection while keeping a group selected.
+                                if (!ctrlHeld)
+                                    clearColonistSelection();
+
                                 selectedX = tx;
                                 selectedY = ty;
-                                setStatus(std::string("Selected ") + std::to_string(tx) + "," + std::to_string(ty));
+
+                                int pickedRoomId = -1;
+                                if (altHeld)
+                                {
+                                    pickedRoomId = world.roomIdAt(tx, ty);
+                                    selectedRoomId = pickedRoomId;
+                                }
+
+                                std::string msg;
+                                if (!selectedColonistIds.empty())
+                                {
+                                    msg = std::string("Selected ") + std::to_string(tx) + "," + std::to_string(ty) +
+                                          " (+" + std::to_string(selectedColonistIds.size()) + " colonist(s))";
+                                }
+                                else
+                                {
+                                    msg = std::string("Selected ") + std::to_string(tx) + "," + std::to_string(ty);
+                                }
+
+                                if (altHeld)
+                                {
+                                    if (pickedRoomId >= 0)
+                                        msg += " [R" + std::to_string(pickedRoomId) + "]";
+                                    else
+                                        msg += " [no room]";
+                                }
+
+                                setStatus(msg, 2.0f);
                             }
                         }
                     }
@@ -1354,6 +2005,56 @@ else if (ImGui::IsMouseClicked(ImGuiMouseButton_Right) && tool == Tool::Inspect)
                           bgCol,
                           4.0f);
         dl->AddText(pos, textCol, statusText.c_str());
+    }
+
+    // Toast notifications overlay (top-left, below status).
+    if (alertsShowToasts)
+    {
+        const auto& toasts = notify.toasts();
+        if (!toasts.empty())
+        {
+            float y = canvas_p0.y + 52.f;
+
+            // Render newest -> oldest, capped to avoid filling the screen.
+            const int maxShow = 4;
+            int shown = 0;
+
+            for (int i = static_cast<int>(toasts.size()) - 1; i >= 0 && shown < maxShow; --i)
+            {
+                const util::ToastEntry& t = toasts[static_cast<std::size_t>(i)];
+
+                float a = 1.0f;
+                if (t.ttlSeconds < 0.5f)
+                    a = clampf(t.ttlSeconds / 0.5f, 0.f, 1.f);
+
+                ImU32 textCol = IM_COL32(255, 255, 255, static_cast<int>(220 * a));
+                if (t.entry.severity == util::NotifySeverity::Warning)
+                    textCol = IM_COL32(255, 210, 120, static_cast<int>(230 * a));
+                else if (t.entry.severity == util::NotifySeverity::Error)
+                    textCol = IM_COL32(255, 140, 140, static_cast<int>(240 * a));
+
+                const ImU32 bgCol = IM_COL32(0, 0, 0, static_cast<int>(150 * a));
+
+                char line[512] = {};
+                (void)std::snprintf(line,
+                                    sizeof(line),
+                                    "[%s] %s",
+                                    util::NotifySeverityName(t.entry.severity),
+                                    t.entry.text.c_str());
+
+                const ImVec2 sz = ImGui::CalcTextSize(line);
+                const ImVec2 pos = {canvas_p0.x + 8.f, y};
+
+                dl->AddRectFilled({pos.x - 4.f, pos.y - 2.f},
+                                  {pos.x + sz.x + 4.f, pos.y + sz.y + 2.f},
+                                  bgCol,
+                                  4.0f);
+                dl->AddText(pos, textCol, line);
+
+                y += sz.y + 6.f;
+                ++shown;
+            }
+        }
     }
 
     ImGui::End();

@@ -404,6 +404,7 @@ private:
     {
         try
         {
+            (void)kind; // meta is written to the sidecar .meta.json; keep signature for future extensions.
             json j;
             j["format"] = proto::savefmt::kWorldFormat;
             j["version"] = proto::savefmt::kWorldVersion;
@@ -826,12 +827,12 @@ bool PrototypeGame::Impl::loadWorldFromPath(const fs::path& path, bool showStatu
     // Avoid "stuck drag" behavior and stale paint state after a load that may change world size.
     clearPlanHistory();
 
-    // Clear selection state (tile + colonist) — the loaded world may have
+    // Clear selection state (tile + colonists) — the loaded world may have
     // different dimensions/contents.
     selectedX = -1;
     selectedY = -1;
-    selectedColonistId = -1;
-    followSelectedColonist = false;
+    clearColonistSelection();
+    selectedRoomId = -1;
 
     // Keep the reset UI in sync with the loaded size.
     worldResetW = world.width();
@@ -888,16 +889,34 @@ void PrototypeGame::Impl::pollAsyncSaves() noexcept
         if (!c.ok)
         {
             const char* kind = (c.kind == AsyncSaveManager::Kind::Autosave) ? "Autosave" : "Save";
-            setStatus(std::string(kind) + " failed: " + (c.message.empty() ? "unknown error" : c.message), 4.f);
+            const std::string msg = std::string(kind) + " failed: " + (c.message.empty() ? "unknown error" : c.message);
+            setStatus(msg, 4.f);
+            pushNotificationAutoToast(util::NotifySeverity::Error, msg);
             continue;
+        }
+
+        // Always keep a record in the notifications log;
+        // only show a toast for failures and player-initiated saves.
+        if (c.kind == AsyncSaveManager::Kind::Autosave)
+        {
+            logMessage(util::NotifySeverity::Info,
+                       std::string("Autosaved: ") + colony::util::PathToUtf8String(c.path));
         }
 
         if (c.showStatus)
         {
             if (c.kind == AsyncSaveManager::Kind::Autosave)
-                setStatus(std::string("Autosaved: ") + colony::util::PathToUtf8String(c.path), 2.0f);
+            {
+                const std::string msg = std::string("Autosaved: ") + colony::util::PathToUtf8String(c.path);
+                setStatus(msg, 2.0f);
+                pushNotification(util::NotifySeverity::Info, msg, /*toastTtlSeconds=*/2.0f);
+            }
             else
-                setStatus(std::string("World saved: ") + colony::util::PathToUtf8String(c.path), 3.0f);
+            {
+                const std::string msg = std::string("World saved: ") + colony::util::PathToUtf8String(c.path);
+                setStatus(msg, 3.0f);
+                pushNotification(util::NotifySeverity::Info, msg, /*toastTtlSeconds=*/2.5f);
+            }
         }
     }
 }

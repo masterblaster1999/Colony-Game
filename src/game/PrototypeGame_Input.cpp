@@ -199,6 +199,151 @@ bool PrototypeGame::Impl::OnInput(std::span<const colony::input::InputEvent> eve
 {
     bool changed = false;
 
+#if defined(COLONY_WITH_IMGUI)
+    // When the bindings editor is in "capture" mode we want to record raw input
+    // even while ImGui is actively capturing keyboard/mouse (so action hotkeys
+    // don't fire while rebinding).
+    if (showBindingsEditor && bindingsEditorCaptureActive)
+    {
+        namespace bp = colony::input::bindings;
+        using colony::input::InputEventType;
+
+        auto cancelCapture = [&](std::string msg)
+        {
+            bindingsEditorCaptureActive = false;
+            bindingsEditorCaptureAction = -1;
+            bindingsEditorCaptureDown.reset();
+            bindingsEditorCaptureCodes.clear();
+
+            if (!msg.empty())
+            {
+                bindingsEditorMessage = std::move(msg);
+                bindingsEditorMessageTtl = 3.f;
+            }
+        };
+
+        auto commitCapture = [&](std::span<const std::uint32_t> codes)
+        {
+            if (bindingsEditorCaptureAction < 0 ||
+                bindingsEditorCaptureAction >= static_cast<int>(colony::input::Action::Count))
+            {
+                cancelCapture("Capture failed: invalid action index");
+                return;
+            }
+
+            // Canonicalize.
+            std::vector<std::uint32_t> tmp(codes.begin(), codes.end());
+            std::sort(tmp.begin(), tmp.end());
+            tmp.erase(std::unique(tmp.begin(), tmp.end()), tmp.end());
+
+            // InputMapper supports chords up to 4 buttons.
+            if (tmp.empty())
+            {
+                cancelCapture("Capture failed: empty chord");
+                return;
+            }
+            if (tmp.size() > 4)
+            {
+                cancelCapture("Capture failed: chord too large (max 4 inputs)");
+                return;
+            }
+
+            // Convert to a user-facing chord string.
+            std::string chord;
+            for (std::size_t i = 0; i < tmp.size(); ++i)
+            {
+                if (i != 0)
+                    chord.push_back('+');
+                chord += bp::InputCodeToToken(tmp[i]);
+            }
+
+            std::string& field = bindingsEditorText[static_cast<std::size_t>(bindingsEditorCaptureAction)];
+            if (bindingsEditorCaptureAppend && !bp::Trim(field).empty())
+                field = field + ", " + chord;
+            else
+                field = chord;
+
+            cancelCapture(std::string("Captured: ") + chord);
+            setStatus("Bindings: captured", 2.f);
+        };
+
+        for (const auto& ev : events)
+        {
+            if (!bindingsEditorCaptureActive)
+                break;
+
+            switch (ev.type)
+            {
+            case InputEventType::FocusLost:
+                cancelCapture("Capture canceled: focus lost");
+                break;
+
+            case InputEventType::KeyDown:
+            {
+                if (ev.repeat)
+                    break;
+
+                // ESC cancels capture (bind Esc by typing "Esc" into the field).
+                if (ev.key == bp::kVK_ESCAPE)
+                {
+                    cancelCapture("Capture canceled");
+                    break;
+                }
+
+                if (ev.key < colony::input::kInputCodeCount)
+                {
+                    bindingsEditorCaptureDown.set(ev.key);
+                    // Record the key as part of the chord.
+                    const auto it = std::find(bindingsEditorCaptureCodes.begin(), bindingsEditorCaptureCodes.end(), ev.key);
+                    if (it == bindingsEditorCaptureCodes.end())
+                        bindingsEditorCaptureCodes.push_back(ev.key);
+                }
+                break;
+            }
+
+            case InputEventType::KeyUp:
+                if (ev.key < colony::input::kInputCodeCount)
+                    bindingsEditorCaptureDown.reset(ev.key);
+                break;
+
+            case InputEventType::MouseButtonDown:
+                if (ev.key < colony::input::kInputCodeCount)
+                {
+                    bindingsEditorCaptureDown.set(ev.key);
+                    const auto it = std::find(bindingsEditorCaptureCodes.begin(), bindingsEditorCaptureCodes.end(), ev.key);
+                    if (it == bindingsEditorCaptureCodes.end())
+                        bindingsEditorCaptureCodes.push_back(ev.key);
+                }
+                break;
+
+            case InputEventType::MouseButtonUp:
+                if (ev.key < colony::input::kInputCodeCount)
+                    bindingsEditorCaptureDown.reset(ev.key);
+                break;
+
+            case InputEventType::MouseWheel:
+            {
+                // Wheel is an impulse; finalize immediately after adding.
+                const std::uint32_t wheelCode = (ev.wheelDetents > 0) ? colony::input::kMouseWheelUp : colony::input::kMouseWheelDown;
+                const auto it = std::find(bindingsEditorCaptureCodes.begin(), bindingsEditorCaptureCodes.end(), wheelCode);
+                if (it == bindingsEditorCaptureCodes.end())
+                    bindingsEditorCaptureCodes.push_back(wheelCode);
+                break;
+            }
+
+            default:
+                break;
+            }
+        }
+
+        // Finalize a capture once all pressed keys/buttons have been released.
+        if (bindingsEditorCaptureActive && !bindingsEditorCaptureCodes.empty() && bindingsEditorCaptureDown.none())
+        {
+            commitCapture(std::span<const std::uint32_t>(bindingsEditorCaptureCodes.data(), bindingsEditorCaptureCodes.size()));
+        }
+    }
+#endif
+
     // Feed events into the mapper first (this also resets ActionEvents for this batch).
     (void)input.Consume(events);
 

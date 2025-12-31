@@ -170,6 +170,22 @@ struct Cell {
     int looseWoodReservedBy = -1;
 };
 
+// -----------------------------------------------------------------
+// Planning helpers (pure functions)
+// -----------------------------------------------------------------
+// These helpers mirror World::placePlan's semantics without mutating the world.
+// They are used by the UI to implement cost previews and atomic batch placement.
+//
+// PlanDeltaWoodCost returns the *net* wood delta of applying `plan` to `c`:
+//  - positive => additional wood required
+//  - negative => wood refunded
+//  - 0 => no wood change (including priority-only edits)
+//
+// PlanWouldChange returns true if World::placePlan would return Ok for the given
+// plan/priority on this cell (ignores out-of-bounds).
+[[nodiscard]] int PlanDeltaWoodCost(const Cell& c, TileType plan) noexcept;
+[[nodiscard]] bool PlanWouldChange(const Cell& c, TileType plan, std::uint8_t planPriority) noexcept;
+
 struct Colonist {
     int id = 0;
 
@@ -370,6 +386,12 @@ public:
         bool indoors = false;
         int area = 0;
 
+        // Perimeter length in tile-edges (counts boundary edges touching walls/trees/doors/out-of-bounds).
+        int perimeter = 0;
+
+        // Number of unique adjacent door tiles along the room perimeter.
+        int doorCount = 0;
+
         // Bounding box in tile coordinates (inclusive).
         int minX = 0;
         int minY = 0;
@@ -387,6 +409,15 @@ public:
     [[nodiscard]] int roomCount() const noexcept { return static_cast<int>(m_rooms.size()); }
     [[nodiscard]] int indoorsRoomCount() const noexcept { return m_indoorsRoomCount; }
     [[nodiscard]] int indoorsTileCount() const noexcept { return m_indoorsTileCount; }
+
+    // Debug helpers (tests / tooling)
+    // Directly edits a built tile while keeping derived caches consistent.
+    // Intended for unit tests and editor/debug tools.
+    [[nodiscard]] bool DebugSetBuiltTile(int x, int y, TileType built, bool builtFromPlan = false) noexcept;
+
+    // Forces a room-cache rebuild if it is marked dirty.
+    void DebugRebuildRoomsNow() noexcept;
+
 
 
     // Simulation tick (fixed dt). dt is seconds.
@@ -476,6 +507,42 @@ public:
         std::uint64_t computedJps = 0;
         std::uint64_t invalidated = 0;
         std::uint64_t evicted = 0;
+
+        // Build job assignment acceleration: multi-source "nearest plan" distance field.
+        // This reduces per-colonist Dijkstra work when many builders are idle.
+        std::uint64_t buildFieldComputed = 0; // how many times the field was built
+        std::uint64_t buildFieldSources  = 0; // number of source tiles inserted (sum)
+        std::uint64_t buildFieldAssigned = 0; // jobs assigned directly from the field
+        std::uint64_t buildFieldFallback = 0; // jobs that fell back to per-colonist search
+
+        // Haul job assignment acceleration:
+        //   - stockpile field: multi-source distance field from all built stockpiles (dropoff routing)
+        //   - pickup field: multi-source distance field from unreserved loose-wood tiles, seeded with
+        //     each tile's distance-to-stockpile so haulers prefer "deliverable" piles.
+        std::uint64_t haulStockpileFieldComputed = 0;
+        std::uint64_t haulStockpileFieldSources  = 0;
+        std::uint64_t haulStockpileFieldUsed     = 0;
+
+        std::uint64_t haulPickupFieldComputed    = 0;
+        std::uint64_t haulPickupFieldSources     = 0;
+        std::uint64_t haulPickupFieldAssigned    = 0;
+        std::uint64_t haulPickupFieldFallback    = 0;
+
+        // Eat job assignment acceleration: cached multi-source distance field
+        // from all built food-source tiles (stockpiles/farms).
+        //
+        // This reduces per-colonist Dijkstra work when multiple colonists become hungry.
+        std::uint64_t eatFieldComputed  = 0;
+        std::uint64_t eatFieldSources   = 0;
+        std::uint64_t eatFieldAssigned  = 0;
+        std::uint64_t eatFieldFallback  = 0;
+
+        // Harvest job assignment acceleration: multi-source distance field
+        // from work-tiles adjacent to unreserved harvestable farms.
+        std::uint64_t harvestFieldComputed = 0;
+        std::uint64_t harvestFieldSources  = 0;
+        std::uint64_t harvestFieldAssigned = 0;
+        std::uint64_t harvestFieldFallback = 0;
     };
 
     // Debug/maintenance helpers.
@@ -557,12 +624,59 @@ private:
                                                       std::vector<colony::pf::IVec2>& outPath,
                                                       int requiredPriority) const;
 
+    // Builds a multi-source distance field from all unreserved plan-adjacent work tiles.
+    // Returns a non-zero stamp value that must be passed to queryPlanField().
+    // (A stamp of 0 means "no sources".)
+    [[nodiscard]] std::uint32_t buildPlanField(int requiredPriority) const;
+
+    // Queries the most recently built plan field (identified by stamp).
+    // Returns a dense path from (startX,startY) to the nearest plan-adjacent work tile,
+    // and outputs the targeted plan tile coordinates.
+    [[nodiscard]] bool queryPlanField(std::uint32_t stamp,
+                                      int startX, int startY,
+                                      int& outPlanX, int& outPlanY,
+                                      std::vector<colony::pf::IVec2>& outPath) const;
+
+    // -----------------------------------------------------------------
+    // Eat distance field (prototype)
+    // -----------------------------------------------------------------
+    // Build (and cache) a multi-source distance field from all walkable tiles
+    // adjacent to built food sources (stockpiles/farms).
+    // Returns a non-zero stamp that must be passed to queryFoodField().
+    // (A stamp of 0 means "no sources").
+    [[nodiscard]] std::uint32_t buildFoodField() const;
+
+    // Queries the most recently built food field (identified by stamp).
+    // Returns a dense path from (startX,startY) to the selected work tile and
+    // outputs the targeted food source tile coordinates.
+    [[nodiscard]] bool queryFoodField(std::uint32_t stamp,
+                                     int startX, int startY,
+                                     int& outFoodX, int& outFoodY,
+                                     std::vector<colony::pf::IVec2>& outPath) const;
+
     // Finds a path from (startX,startY) to the nearest walkable tile that is
     // adjacent to a built food source (stockpile/farm).
     [[nodiscard]] bool findPathToNearestFoodSource(int startX, int startY,
                                                    int& outFoodX, int& outFoodY,
                                                    std::vector<colony::pf::IVec2>& outPath) const;
 
+
+    // -----------------------------------------------------------------
+    // Harvest distance field (prototype)
+    // -----------------------------------------------------------------
+    // Builds a multi-source distance field from all walkable tiles adjacent to
+    // currently-harvestable (ripe + unreserved) farms.
+    // Returns a non-zero stamp that must be passed to queryHarvestField().
+    // (A stamp of 0 means "no sources").
+    [[nodiscard]] std::uint32_t buildHarvestField() const;
+
+    // Queries the most recently built harvest field (identified by stamp).
+    // Returns a dense path from (startX,startY) to the selected work tile and
+    // outputs the targeted farm tile coordinates.
+    [[nodiscard]] bool queryHarvestField(std::uint32_t stamp,
+                                        int startX, int startY,
+                                        int& outFarmX, int& outFarmY,
+                                        std::vector<colony::pf::IVec2>& outPath) const;
 
     // Finds a path from (startX,startY) to the nearest walkable tile that is
     // adjacent to a harvestable farm (built == Farm && farmGrowth == 1).
@@ -581,6 +695,47 @@ private:
 [[nodiscard]] bool findPathToNearestStockpile(int startX, int startY,
                                               int& outX, int& outY,
                                               std::vector<colony::pf::IVec2>& outPath) const;
+
+
+// -----------------------------------------------------------------
+// Hauling distance fields (prototype)
+// -----------------------------------------------------------------
+// Builds (and caches) a multi-source distance field from all built stockpile tiles.
+// Returns a non-zero stamp value that must be passed to queryStockpileField() /
+// stockpileFieldDistAt(). A stamp of 0 means "no stockpiles".
+[[nodiscard]] std::uint32_t buildStockpileField() const;
+
+// Queries the most recently built stockpile field (identified by stamp).
+// Returns a dense path from (startX,startY) to the nearest built stockpile tile,
+// and outputs that stockpile tile coordinate.
+[[nodiscard]] bool queryStockpileField(std::uint32_t stamp,
+                                       int startX, int startY,
+                                       int& outStockX, int& outStockY,
+                                       std::vector<colony::pf::IVec2>& outPath) const;
+
+// Returns the distance from (x,y) to the nearest stockpile in the cached field,
+// or +inf if unreachable/not present.
+[[nodiscard]] float stockpileFieldDistAt(std::uint32_t stamp, int x, int y) const noexcept;
+
+// Builds a multi-source "best delivery" field from all unreserved loose-wood tiles.
+// Each source is seeded with its distance-to-stockpile, so querying the field at a
+// colonist position approximates: dist(colonist->wood) + dist(wood->stockpile).
+[[nodiscard]] std::uint32_t buildHaulPickupField(std::uint32_t stockpileStamp) const;
+
+// Queries the haul pickup field (identified by stamp). Returns a dense path from
+// (startX,startY) to the selected loose-wood tile, and outputs that tile coordinate.
+[[nodiscard]] bool queryHaulPickupField(std::uint32_t haulStamp,
+                                        int startX, int startY,
+                                        int& outWoodX, int& outWoodY,
+                                        std::vector<colony::pf::IVec2>& outPath) const;
+
+// Per-colonist fallback search used when the field-picked target becomes reserved.
+// Unlike findPathToNearestLooseWood(), this also filters out piles that cannot reach
+// any stockpile (based on stockpileStamp).
+[[nodiscard]] bool findPathToBestLooseWoodForDelivery(std::uint32_t stockpileStamp,
+                                                      int startX, int startY,
+                                                      int& outWoodX, int& outWoodY,
+                                                      std::vector<colony::pf::IVec2>& outPath) const;
 
     static constexpr double kJobAssignIntervalSeconds = 0.20;
 
@@ -716,6 +871,48 @@ void cancelJob(Colonist& c) noexcept;
     mutable std::vector<colony::pf::NodeId> m_nearestParent;
     mutable std::vector<std::uint32_t> m_nearestStamp;
     mutable std::uint32_t m_nearestStampValue = 1;
+
+    // Scratch buffers for multi-source "nearest plan" field during job assignment.
+    mutable std::vector<float> m_planFieldDist;
+    mutable std::vector<colony::pf::NodeId> m_planFieldParent;
+    mutable std::vector<std::uint32_t> m_planFieldStamp;
+    mutable std::vector<std::uint64_t> m_planFieldPlanKey;
+    mutable std::uint32_t m_planFieldStampValue = 1;
+
+
+    // Scratch buffers for cached "nearest stockpile" field (used by hauling).
+    mutable std::vector<float> m_stockpileFieldDist;
+    mutable std::vector<colony::pf::NodeId> m_stockpileFieldParent;
+    mutable std::vector<std::uint32_t> m_stockpileFieldStamp;
+    mutable std::vector<std::uint64_t> m_stockpileFieldStockpileKey;
+    mutable std::uint32_t m_stockpileFieldStampValue = 1;
+    mutable std::uint32_t m_stockpileFieldCachedStamp = 0;
+    mutable bool m_stockpileFieldDirty = true;
+
+    // Scratch buffers for hauling pickup field (seeded by stockpile distances).
+    mutable std::vector<float> m_haulFieldDist;
+    mutable std::vector<colony::pf::NodeId> m_haulFieldParent;
+    mutable std::vector<std::uint32_t> m_haulFieldStamp;
+    mutable std::vector<std::uint64_t> m_haulFieldWoodKey;
+    mutable std::uint32_t m_haulFieldStampValue = 1;
+
+    // Cached multi-source distance field for "Eat" job assignment.
+    // Sources are walkable tiles adjacent to built Stockpiles/Farms.
+    mutable std::vector<float> m_foodFieldDist;
+    mutable std::vector<colony::pf::NodeId> m_foodFieldParent;
+    mutable std::vector<std::uint32_t> m_foodFieldStamp;
+    mutable std::vector<std::uint64_t> m_foodFieldFoodKey;
+    mutable std::uint32_t m_foodFieldStampValue = 1;
+    mutable std::uint32_t m_foodFieldCachedStamp = 0;
+    mutable bool m_foodFieldDirty = true;
+
+    // Multi-source distance field for harvest job assignment.
+    // Sources are walkable tiles adjacent to harvestable farms.
+    mutable std::vector<float> m_harvestFieldDist;
+    mutable std::vector<colony::pf::NodeId> m_harvestFieldParent;
+    mutable std::vector<std::uint32_t> m_harvestFieldStamp;
+    mutable std::vector<std::uint64_t> m_harvestFieldFarmKey;
+    mutable std::uint32_t m_harvestFieldStampValue = 1;
 
     mutable std::list<PathCacheKey> m_pathCacheLru;
     mutable std::unordered_map<PathCacheKey, PathCacheValue, PathCacheKeyHash> m_pathCache;
